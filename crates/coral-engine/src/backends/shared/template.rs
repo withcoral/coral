@@ -168,8 +168,19 @@ fn string_runtime_value(
     namespace
         .values(context)
         .get(key)
-        .map(|value| Value::String(value.clone()))
+        .map(|value| parse_jsonish_string(value))
         .or_else(|| default.cloned())
+}
+
+fn parse_jsonish_string(v: &str) -> Value {
+    let trimmed = v.trim();
+    if (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('{') && trimmed.ends_with('}'))
+    {
+        serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(v.to_string()))
+    } else {
+        Value::String(v.to_string())
+    }
 }
 
 fn now_minus_seconds(seconds: i64) -> Value {

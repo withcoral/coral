@@ -1942,3 +1942,332 @@ async fn legacy_json_body_array_form_still_works() {
 
     assert_eq!(rows, users_rows());
 }
+
+#[tokio::test]
+async fn filter_json_array_string_is_parsed_as_structured_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/vectors/search"))
+        .and(body_json(json!({
+            "vector": [0.05, 0.61, 0.76, 0.15],
+            "with_payload": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": [{
+                "id": "abc-123",
+                "score": 0.95
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "vec_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "search",
+            "description": "Vector search table",
+            "filters": [
+                { "name": "vector", "required": true }
+            ],
+            "request": {
+                "method": "POST",
+                "path": "/api/vectors/search",
+                "body": [
+                    { "path": ["vector"], "from": "filter", "key": "vector" },
+                    { "path": ["with_payload"], "from": "literal", "value": true }
+                ]
+            },
+            "response": {
+                "rows_path": ["result"]
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "score", "type": "Float64" },
+                {
+                    "name": "vector",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "vector" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, score FROM vec_filter.search \
+             WHERE vector = '[0.05, 0.61, 0.76, 0.15]'",
+        )
+        .await
+        .expect("JSON array filter value should be parsed as structured JSON"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": "abc-123", "score": 0.95})]);
+}
+
+#[tokio::test]
+async fn function_arg_json_array_string_is_parsed_as_structured_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/vectors/search"))
+        .and(body_json(json!({
+            "vector": [0.05, 0.61, 0.76, 0.15],
+            "with_payload": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": [{
+                "id": "abc-123",
+                "score": 0.95
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "vec_func",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "placeholder",
+            "description": "Placeholder table",
+            "request": { "method": "GET", "path": "/api/placeholder" },
+            "columns": [{ "name": "id", "type": "Utf8" }]
+        }],
+        "functions": [{
+            "name": "search_vectors",
+            "description": "Vector similarity search",
+            "args": [
+                { "name": "vector", "required": true, "bind": { "arg": "vector" } }
+            ],
+            "request": {
+                "method": "POST",
+                "path": "/api/vectors/search",
+                "body": [
+                    { "path": ["vector"], "from": "arg", "key": "vector" },
+                    { "path": ["with_payload"], "from": "literal", "value": true }
+                ]
+            },
+            "response": { "rows_path": ["result"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "score", "type": "Float64" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, score FROM vec_func.search_vectors(\
+             vector => '[0.05, 0.61, 0.76, 0.15]')",
+        )
+        .await
+        .expect("JSON array function argument should be parsed as structured JSON"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": "abc-123", "score": 0.95})]);
+}
+
+#[tokio::test]
+async fn filter_json_object_string_is_parsed_as_structured_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/vectors/search"))
+        .and(body_json(json!({
+            "filter": { "must": [{ "key": "city", "match": { "value": "London" } }] },
+            "with_payload": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": [{
+                "id": "xyz-456",
+                "score": 0.88
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "obj_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "search",
+            "description": "Filtered search table",
+            "filters": [
+                { "name": "filter", "required": true }
+            ],
+            "request": {
+                "method": "POST",
+                "path": "/api/vectors/search",
+                "body": [
+                    { "path": ["filter"], "from": "filter", "key": "filter" },
+                    { "path": ["with_payload"], "from": "literal", "value": true }
+                ]
+            },
+            "response": {
+                "rows_path": ["result"]
+            },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "score", "type": "Float64" },
+                {
+                    "name": "filter",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "filter" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            r#"SELECT id, score FROM obj_filter.search
+               WHERE filter = '{"must": [{"key": "city", "match": {"value": "London"}}]}'"#,
+        )
+        .await
+        .expect("JSON object filter value should be parsed as structured JSON"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": "xyz-456", "score": 0.88})]);
+}
+
+#[tokio::test]
+async fn filter_invalid_json_array_string_falls_back_to_string() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/search"))
+        .and(body_json(json!({
+            "tag": "[not valid json"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 1, "name": "Ada" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "fallback",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "items",
+            "description": "Items table",
+            "filters": [{ "name": "tag" }],
+            "request": {
+                "method": "POST",
+                "path": "/api/search",
+                "body": [
+                    { "path": ["tag"], "from": "filter", "key": "tag" }
+                ]
+            },
+            "response": { "rows_path": ["data"] },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "tag",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "tag" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM fallback.items WHERE tag = '[not valid json'",
+        )
+        .await
+        .expect("invalid JSON array string should fall back to plain string"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 1, "name": "Ada"})]);
+}
+
+#[tokio::test]
+async fn filter_bracketed_invalid_json_falls_back_to_string() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/search"))
+        .and(body_json(json!({
+            "tag": "[invalid json]"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 2, "name": "Bob" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "fallback_bracket",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "items",
+            "description": "Items table",
+            "filters": [{ "name": "tag" }],
+            "request": {
+                "method": "POST",
+                "path": "/api/search",
+                "body": [
+                    { "path": ["tag"], "from": "filter", "key": "tag" }
+                ]
+            },
+            "response": { "rows_path": ["data"] },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "tag",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "tag" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM fallback_bracket.items WHERE tag = '[invalid json]'",
+        )
+        .await
+        .expect("bracketed invalid JSON string should fall back to plain string"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2, "name": "Bob"})]);
+}
+

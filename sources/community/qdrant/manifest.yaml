@@ -1,0 +1,759 @@
+dsl_version: 3
+name: qdrant
+version: 1.0.0
+description: >-
+  Query collections, points, cluster information, snapshots, locks,
+  and perform vector similarity search and recommendations in Qdrant.
+backend: http
+base_url: "{{input.QDRANT_HOST}}"
+inputs:
+  QDRANT_HOST:
+    kind: variable
+    default: http://localhost:6333
+    hint: The host URL of your Qdrant instance (e.g., http://localhost:6333 or cloud URL).
+  QDRANT_API_KEY:
+    kind: secret
+    hint: |
+      (Optional) The API Key to access your Qdrant instance. Provide a dummy
+      value (e.g. 'none') if running a local instance without security enabled.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: api-key
+      from: template
+      template: "{{input.QDRANT_API_KEY}}"
+test_queries:
+  - SELECT * FROM qdrant.collections LIMIT 1
+  - SELECT * FROM qdrant.cluster_info
+functions:
+  - name: search_points
+    description: Vector similarity search on Qdrant points
+    args:
+      - name: collection_name
+        required: true
+        bind:
+          arg: collection_name
+      - name: vector
+        required: true
+        bind:
+          arg: vector
+      - name: limit
+        bind:
+          arg: limit
+      - name: score_threshold
+        bind:
+          arg: score_threshold
+    request:
+      method: POST
+      path: /collections/{{arg.collection_name}}/points/search
+      body:
+        - path: [vector]
+          from: arg
+          key: vector
+        - path: [limit]
+          from: arg
+          key: limit
+          default: 10
+        - path: [score_threshold]
+          from: arg
+          key: score_threshold
+        - path: [with_payload]
+          from: literal
+          value: true
+        - path: [with_vector]
+          from: literal
+          value: true
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Json
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: score
+        type: Float64
+        nullable: false
+        expr: {kind: path, path: [score]}
+      - name: payload
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [payload]}
+      - name: vector
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [vector]}
+
+  - name: recommend_points
+    description: Point recommendation based on positive and negative examples
+    args:
+      - name: collection_name
+        required: true
+        bind:
+          arg: collection_name
+      - name: positive
+        required: true
+        bind:
+          arg: positive
+      - name: negative
+        bind:
+          arg: negative
+      - name: limit
+        bind:
+          arg: limit
+      - name: strategy
+        bind:
+          arg: strategy
+    request:
+      method: POST
+      path: /collections/{{arg.collection_name}}/points/recommend
+      body:
+        - path: [positive]
+          from: arg
+          key: positive
+        - path: [negative]
+          from: arg
+          key: negative
+        - path: [limit]
+          from: arg
+          key: limit
+          default: 10
+        - path: [strategy]
+          from: arg
+          key: strategy
+        - path: [with_payload]
+          from: literal
+          value: true
+        - path: [with_vector]
+          from: literal
+          value: true
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Json
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: score
+        type: Float64
+        nullable: false
+        expr: {kind: path, path: [score]}
+      - name: payload
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [payload]}
+      - name: vector
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [vector]}
+
+tables:
+  # 1. Collections List
+  - name: collections
+    description: List names of all Qdrant collections
+    guide: "Shows names of all collections."
+    request:
+      method: GET
+      path: /collections
+    response:
+      rows_path: [result, collections]
+      row_strategy: direct
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [name]}
+
+  # 2. Collection Details
+  - name: collection_details
+    description: Detailed configuration and status for a specific collection
+    guide: "Requires collection_name filter to fetch detailed settings."
+    filters:
+      - name: collection_name
+        required: true
+    request:
+      method: GET
+      path: /collections/{{filter.collection_name}}
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: status
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [status]}
+      - name: optimizer_status
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [optimizer_status]}
+      - name: points_count
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [points_count]}
+      - name: segments_count
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [segments_count]}
+      - name: vectors_count
+        type: Int64
+        nullable: true
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path: [indexed_vectors_count]
+            - kind: path
+              path: [vectors_count]
+      - name: config__params__vectors__size
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [config, params, vectors, size]}
+      - name: config__params__vectors__distance
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [config, params, vectors, distance]}
+
+  # 3. Collection Cluster Info
+  - name: collection_cluster_info
+    description: Cluster shard details for a specific collection
+    filters:
+      - name: collection_name
+        required: true
+    request:
+      method: GET
+      path: /collections/{{filter.collection_name}}/cluster
+    response:
+      rows_path: [result, local_shards]
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: shard_id
+        type: Int64
+        nullable: false
+        expr: {kind: path, path: [shard_id]}
+      - name: points_count
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [points_count]}
+      - name: state
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [state]}
+
+  # 4. Aliases Global List
+  - name: aliases
+    description: List all collection aliases globally
+    request:
+      method: GET
+      path: /aliases
+    response:
+      rows_path: [result, aliases]
+      row_strategy: direct
+    columns:
+      - name: alias_name
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [alias_name]}
+      - name: collection_name
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [collection_name]}
+
+  # 5. Collection Aliases
+  - name: collection_aliases
+    description: List aliases for a specific collection
+    filters:
+      - name: collection_name
+        required: true
+    request:
+      method: GET
+      path: /collections/{{filter.collection_name}}/aliases
+    response:
+      rows_path: [result, aliases]
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: alias_name
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [alias_name]}
+
+  # 6. Snapshots Global List
+  - name: snapshots
+    description: List all storage snapshots in Qdrant
+    request:
+      method: GET
+      path: /snapshots
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [name]}
+      - name: creation_time
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [creation_time]}
+      - name: size
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [size]}
+
+  # 7. Collection Snapshots
+  - name: collection_snapshots
+    description: List snapshots for a specific collection
+    filters:
+      - name: collection_name
+        required: true
+    request:
+      method: GET
+      path: /collections/{{filter.collection_name}}/snapshots
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: name
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [name]}
+      - name: creation_time
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [creation_time]}
+      - name: size
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [size]}
+
+  # 8. Cluster Info
+  - name: cluster_info
+    description: Check the cluster configuration and state
+    request:
+      method: GET
+      path: /cluster
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: status
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [status]}
+      - name: peer_id
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [peer_id]}
+      - name: raft_state
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [raft_state]}
+      - name: peers
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [peers]}
+
+  # 9. Node Locks
+  - name: locks
+    description: Get active lock configurations for the node
+    request:
+      method: GET
+      path: /locks
+    response:
+      allow_404_empty: true
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: write_locked
+        type: Boolean
+        nullable: true
+        expr: {kind: path, path: [write_locked]}
+      - name: error_message
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [error_message]}
+
+  # 10. Node Telemetry
+  - name: telemetry
+    description: Fetch node telemetry data
+    request:
+      method: GET
+      path: /telemetry
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: app
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [app]}
+      - name: collections
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [collections]}
+      - name: cluster
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [cluster]}
+
+  # 11. Scroll Points
+  - name: points
+    description: Scroll points from a collection with pagination support
+    filters:
+      - name: collection_name
+        required: true
+    request:
+      method: POST
+      path: /collections/{{filter.collection_name}}/points/scroll
+      body:
+        - path: [with_payload]
+          from: literal
+          value: true
+        - path: [with_vector]
+          from: literal
+          value: true
+    response:
+      rows_path: [result, points]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [offset]
+      response_cursor_path: [result, next_page_offset]
+      page_size:
+        default: 100
+        max: 1000
+        body_path: [limit]
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: id
+        type: Json
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: vector
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [vector]}
+      - name: payload
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [payload]}
+      - name: payload__name
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [payload, name]}
+      - name: payload__title
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [payload, title]}
+      - name: payload__text
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [payload, text]}
+      - name: payload__content
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [payload, content]}
+
+  # 12. Points by ID
+  - name: points_by_id
+    description: Fetch points by specific list of IDs
+    filters:
+      - name: collection_name
+        required: true
+      - name: ids
+        required: true
+    request:
+      method: POST
+      path: /collections/{{filter.collection_name}}/points
+      body:
+        - path: [ids]
+          from: filter
+          key: ids
+        - path: [with_payload]
+          from: literal
+          value: true
+        - path: [with_vector]
+          from: literal
+          value: true
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: id
+        type: Json
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: vector
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [vector]}
+      - name: payload
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [payload]}
+
+  # 13. Points Search Table
+  - name: points_search
+    description: Query vector similarity search as a SQL table
+    filters:
+      - name: collection_name
+        required: true
+      - name: vector
+        required: true
+      - name: limit
+        required: false
+      - name: score_threshold
+        required: false
+      - name: filter
+        required: false
+    request:
+      method: POST
+      path: /collections/{{filter.collection_name}}/points/search
+      body:
+        - path: [vector]
+          from: filter
+          key: vector
+        - path: [limit]
+          from: filter
+          key: limit
+          default: 10
+        - path: [score_threshold]
+          from: filter
+          key: score_threshold
+        - path: [filter]
+          from: filter
+          key: filter
+        - path: [with_payload]
+          from: literal
+          value: true
+        - path: [with_vector]
+          from: literal
+          value: true
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: id
+        type: Json
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: score
+        type: Float64
+        nullable: false
+        expr: {kind: path, path: [score]}
+      - name: payload
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [payload]}
+      - name: vector
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [vector]}
+      - name: payload__name
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [payload, name]}
+      - name: payload__title
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [payload, title]}
+      - name: payload__text
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [payload, text]}
+      - name: payload__content
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [payload, content]}
+
+  # 14. Points Recommend Table
+  - name: points_recommend
+    description: Query points recommendation as a SQL table
+    filters:
+      - name: collection_name
+        required: true
+      - name: positive
+        required: true
+      - name: negative
+        required: false
+      - name: limit
+        required: false
+      - name: strategy
+        required: false
+      - name: filter
+        required: false
+    request:
+      method: POST
+      path: /collections/{{filter.collection_name}}/points/recommend
+      body:
+        - path: [positive]
+          from: filter
+          key: positive
+        - path: [negative]
+          from: filter
+          key: negative
+        - path: [limit]
+          from: filter
+          key: limit
+          default: 10
+        - path: [strategy]
+          from: filter
+          key: strategy
+        - path: [filter]
+          from: filter
+          key: filter
+        - path: [with_payload]
+          from: literal
+          value: true
+        - path: [with_vector]
+          from: literal
+          value: true
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: id
+        type: Json
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: score
+        type: Float64
+        nullable: false
+        expr: {kind: path, path: [score]}
+      - name: payload
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [payload]}
+      - name: vector
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [vector]}
+
+  # 15. Points Discover Table
+  - name: points_discover
+    description: Query points discovery as a SQL table
+    filters:
+      - name: collection_name
+        required: true
+      - name: target
+        required: true
+      - name: context
+        required: true
+      - name: limit
+        required: false
+      - name: filter
+        required: false
+    request:
+      method: POST
+      path: /collections/{{filter.collection_name}}/points/discover
+      body:
+        - path: [target]
+          from: filter
+          key: target
+        - path: [context]
+          from: filter
+          key: context
+        - path: [limit]
+          from: filter
+          key: limit
+          default: 10
+        - path: [filter]
+          from: filter
+          key: filter
+        - path: [with_payload]
+          from: literal
+          value: true
+        - path: [with_vector]
+          from: literal
+          value: true
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: id
+        type: Json
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: score
+        type: Float64
+        nullable: false
+        expr: {kind: path, path: [score]}
+      - name: payload
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [payload]}
+      - name: vector
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [vector]}
+
+  # 16. Points Count Table
+  - name: points_count
+    description: Get total count of points matching a payload filter
+    filters:
+      - name: collection_name
+        required: true
+      - name: filter
+        required: false
+      - name: exact
+        required: false
+    request:
+      method: POST
+      path: /collections/{{filter.collection_name}}/points/count
+      body:
+        - path: [filter]
+          from: filter
+          key: filter
+        - path: [exact]
+          from: filter
+          key: exact
+    response:
+      row_strategy: direct
+    columns:
+      - name: collection_name
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: collection_name}
+      - name: count
+        type: Int64
+        nullable: false
+        expr: {kind: path, path: [result, count]}
