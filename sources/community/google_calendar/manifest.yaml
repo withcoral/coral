@@ -13,7 +13,6 @@ inputs:
     hint: >
       Google OAuth2 access token with the
       https://www.googleapis.com/auth/calendar.readonly scope.
-      Get one via: https://developers.google.com/oauthplayground
 
 base_url: "https://www.googleapis.com/calendar/v3"
 
@@ -39,7 +38,7 @@ tables:
       cursor_param: pageToken
       max_pages: 50
     filters:
-      - name: minAccessRole
+      - name: min_access_role
         param: minAccessRole
         description: >
           Filter by minimum access role.
@@ -47,18 +46,24 @@ tables:
     columns:
       - name: id
         type: Utf8
-        description: The calendar unique ID. Use as calendarId in the events table.
+        description: The calendar unique ID.
       - name: summary
         type: Utf8
         description: Title of the calendar.
       - name: description
         type: Utf8
         description: Optional description of the calendar.
-      - name: timeZone
+      - name: time_zone
         type: Utf8
+        expr:
+          kind: path
+          path: timeZone
         description: Timezone the calendar uses, e.g. Asia/Kolkata.
-      - name: accessRole
+      - name: access_role
         type: Utf8
+        expr:
+          kind: path
+          path: accessRole
         description: Your access level - freeBusyReader, reader, writer, or owner.
       - name: primary
         type: Boolean
@@ -66,14 +71,23 @@ tables:
       - name: selected
         type: Boolean
         description: True if this calendar is shown in the Google Calendar UI.
-      - name: backgroundColor
+      - name: background_color
         type: Utf8
+        expr:
+          kind: path
+          path: backgroundColor
         description: Hex color code for this calendar.
-      - name: foregroundColor
+      - name: foreground_color
         type: Utf8
+        expr:
+          kind: path
+          path: foregroundColor
         description: Hex color code for text on this calendar.
-      - name: colorId
+      - name: color_id
         type: Utf8
+        expr:
+          kind: path
+          path: colorId
         description: Google color ID string for this calendar.
 
   - name: events
@@ -93,39 +107,28 @@ tables:
       - name: calendarId
         param: calendarId
         default: "primary"
-        description: >
-          The calendar to fetch events from.
-          Use primary for your main calendar, or a full
-          calendar ID from the calendar_list table.
-      - name: timeMin
+        description: The calendar to fetch events from. Use primary for main calendar.
+      - name: time_min
         param: timeMin
-        description: >
-          Lower bound for event start times.
-          RFC3339 format: 2026-05-01T00:00:00Z
-      - name: timeMax
+        description: Lower bound for event start times. RFC3339 format.
+      - name: time_max
         param: timeMax
-        description: >
-          Upper bound for event start times.
-          RFC3339 format: 2026-05-31T23:59:59Z
+        description: Upper bound for event start times. RFC3339 format.
       - name: q
         param: q
-        description: >
-          Free-text search across event summary, description,
-          location, attendees, and organizer.
-      - name: singleEvents
+        description: Free-text search across event fields.
+      - name: single_events
         param: singleEvents
         default: "true"
-        description: >
-          Whether to expand recurring events into individual instances.
-          true means each occurrence is its own row.
-      - name: orderBy
+        description: Expand recurring events into individual instances.
+      - name: order_by
         param: orderBy
         default: "startTime"
         description: Sort order - startTime or updated.
-      - name: maxResults
+      - name: max_results
         param: maxResults
         default: "250"
-        description: Maximum events returned per page, between 1 and 2500.
+        description: Maximum events returned per page.
     columns:
       - name: id
         type: Utf8
@@ -138,12 +141,15 @@ tables:
         description: Event description or notes.
       - name: location
         type: Utf8
-        description: Location string, address or meet link.
+        description: Location string.
       - name: status
         type: Utf8
         description: confirmed, tentative, or cancelled.
-      - name: htmlLink
+      - name: html_link
         type: Utf8
+        expr:
+          kind: path
+          path: htmlLink
         description: Direct URL to open this event in Google Calendar.
       - name: created
         type: Utf8
@@ -151,41 +157,77 @@ tables:
       - name: updated
         type: Utf8
         description: RFC3339 timestamp when the event was last modified.
-      - name: start__dateTime
+      - name: start__date_time
         type: Utf8
-        description: RFC3339 start timestamp for timed events. Null for all-day events.
+        expr:
+          kind: path
+          path: start.dateTime
+        description: RFC3339 start timestamp for timed events.
       - name: start__date
         type: Utf8
-        description: Date-only start for all-day events. Null for timed events.
-      - name: start__timeZone
+        expr:
+          kind: path
+          path: start.date
+        description: Date-only start for all-day events.
+      - name: start__time_zone
         type: Utf8
+        expr:
+          kind: path
+          path: start.timeZone
         description: Timezone for the start time.
-      - name: end__dateTime
+      - name: end__date_time
         type: Utf8
+        expr:
+          kind: path
+          path: end.dateTime
         description: RFC3339 end timestamp for timed events.
       - name: end__date
         type: Utf8
+        expr:
+          kind: path
+          path: end.date
         description: Date-only end for all-day events.
-      - name: end__timeZone
+      - name: end__time_zone
         type: Utf8
+        expr:
+          kind: path
+          path: end.timeZone
         description: Timezone for the end time.
       - name: organizer__email
         type: Utf8
+        expr:
+          kind: path
+          path: organizer.email
         description: Email of whoever organized the event.
-      - name: organizer__displayName
+      - name: organizer__display_name
         type: Utf8
+        expr:
+          kind: path
+          path: organizer.displayName
         description: Display name of the organizer.
       - name: organizer__self
         type: Boolean
+        expr:
+          kind: path
+          path: organizer.self
         description: True if you are the organizer.
       - name: creator__email
         type: Utf8
-        description: Email of the person who created the event entry.
-      - name: creator__displayName
+        expr:
+          kind: path
+          path: creator.email
+        description: Email of the person who created the event.
+      - name: creator__display_name
         type: Utf8
+        expr:
+          kind: path
+          path: creator.displayName
         description: Display name of the creator.
-      - name: colorId
+      - name: color_id
         type: Utf8
+        expr:
+          kind: path
+          path: colorId
         description: Color assigned to this event.
       - name: transparency
         type: Utf8
@@ -193,18 +235,21 @@ tables:
       - name: visibility
         type: Utf8
         description: default, public, private, or confidential.
-      - name: iCalUID
+      - name: i_cal_uid
         type: Utf8
-        description: Globally unique iCalendar UID. Stable across calendar moves.
+        expr:
+          kind: path
+          path: iCalUID
+        description: Globally unique iCalendar UID.
       - name: sequence
         type: Int64
         description: Version counter, increments on each modification.
-      - name: recurringEventId
+      - name: recurring_event_id
         type: Utf8
+        expr:
+          kind: path
+          path: recurringEventId
         description: ID of the parent recurring event if this is an instance.
-      - name: etag
-        type: Utf8
-        description: ETag for cache validation.
 
   - name: settings
     request:
@@ -222,9 +267,7 @@ tables:
     columns:
       - name: id
         type: Utf8
-        description: >
-          Setting name. Key ones are timezone, dateFieldOrder,
-          timeMode, weekStart, locale, country.
+        description: Setting name e.g. timezone, dateFieldOrder, timeMode.
       - name: value
         type: Utf8
         description: The current value of this setting.
