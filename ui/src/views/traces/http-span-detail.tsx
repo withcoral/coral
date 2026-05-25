@@ -11,13 +11,17 @@ import {
   formatDuration,
   formatDurationFromNanos,
   parseJsonObject,
-  spanOperation,
+  spanRequestEndpoint,
+  spanRequestLine,
+  spanRequestOperation,
   spanUrl,
 } from './trace-utils'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
+type BodyKind = 'request' | 'response'
 type HttpDetailTab = 'params' | 'request' | 'response'
 type CopyKind = 'formatted' | 'raw'
+type CopyState = CopyKind | 'failed' | 'idle'
 
 const REQUEST_BODY_ATTR = 'coral.http.request.body'
 const RESPONSE_BODY_ATTR = 'coral.http.response.body'
@@ -28,6 +32,18 @@ const RESPONSE_BODY_PRESENT_ATTR = 'http.response.body.present'
 const REQUEST_BODY_SIZE_ATTR = 'http.request.body.size'
 const RESPONSE_BODY_SIZE_ATTR = 'http.response.body.size'
 const BODY_ATTRIBUTE_KEYS = new Set([REQUEST_BODY_ATTR, RESPONSE_BODY_ATTR])
+const BODY_DETAILS = {
+  request: {
+    label: 'Request body',
+    presentAttr: REQUEST_BODY_PRESENT_ATTR,
+    sizeAttr: REQUEST_BODY_SIZE_ATTR,
+  },
+  response: {
+    label: 'Response body',
+    presentAttr: RESPONSE_BODY_PRESENT_ATTR,
+    sizeAttr: RESPONSE_BODY_SIZE_ATTR,
+  },
+} satisfies Record<BodyKind, { label: string; presentAttr: string; sizeAttr: string }>
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -41,7 +57,8 @@ function looksLikeJson(value: string) {
   )
 }
 
-function parseMaybeJson(value: unknown): JsonValue {
+function parseMaybeJson(value: unknown): JsonValue | undefined {
+  if (value === undefined || value === null) return undefined
   if (typeof value !== 'string') return value as JsonValue
   try {
     const parsed = JSON.parse(value) as JsonValue
@@ -79,6 +96,7 @@ function formatDetailValue(value: JsonValue | undefined): string {
   if (value === undefined || value === null || value === '') return ''
   if (typeof value === 'string') {
     const parsedValue = parseMaybeJson(value)
+    if (parsedValue === undefined) return ''
     return typeof parsedValue === 'string' ? value : formatJsonValue(parsedValue)
   }
   return formatJsonValue(value)
@@ -89,7 +107,9 @@ function formatRawValue(value: unknown, formatted: string): string {
   return typeof value === 'string' ? value : formatted
 }
 
-type BodyKind = 'request' | 'response'
+function hasBodyValue(value: JsonValue | undefined): boolean {
+  return value !== undefined && value !== null && value !== ''
+}
 
 interface GraphqlBodyPreview {
   bodyKind: BodyKind
@@ -143,6 +163,7 @@ function bodyPreview(kind: BodyKind, value: unknown, rawValue: unknown): BodyPre
 
   if (typeof value === 'string') {
     const parsedValue = parseMaybeJson(value)
+    if (parsedValue === undefined) return undefined
     if (typeof parsedValue === 'string') {
       return {
         formattedText: value,
@@ -176,6 +197,10 @@ function BodySection({ children, label }: { children: React.ReactNode; label: st
   )
 }
 
+function presenceCountLabel(value: JsonValue) {
+  return Array.isArray(value) ? `${value.length}` : 'present'
+}
+
 function BodyViewer({
   emptyText,
   kind,
@@ -185,7 +210,7 @@ function BodyViewer({
   emptyText: string
   kind: BodyKind
   rawValue: unknown
-  value: unknown
+  value: JsonValue | undefined
 }) {
   const preview = bodyPreview(kind, value, rawValue)
 
@@ -220,20 +245,14 @@ function BodyViewer({
     <div className={s.bodyViewer}>
       <div className={s.bodyViewerHeader}>
         <Typography.BodySmallStrong as="span">
-          {bodyKind === 'request' ? 'GraphQL request' : 'GraphQL response'}
+          {graphqlBodyTitle(bodyKind)}
         </Typography.BodySmallStrong>
         <div className={s.bodyMetaRow}>
           {operationName && metaChip('Operation', operationName)}
           {operationType && metaChip('Type', operationType)}
-          {variables !== undefined &&
-            metaChip('Variables', Array.isArray(variables) ? `${variables.length}` : 'present')}
-          {Array.isArray(errors)
-            ? metaChip('Errors', `${errors.length}`)
-            : errors !== undefined
-              ? metaChip('Errors', 'present')
-              : null}
-          {data !== undefined &&
-            metaChip('Data', Array.isArray(data) ? `${data.length}` : 'present')}
+          {variables !== undefined && metaChip('Variables', presenceCountLabel(variables))}
+          {errors !== undefined && metaChip('Errors', presenceCountLabel(errors))}
+          {data !== undefined && metaChip('Data', presenceCountLabel(data))}
         </div>
       </div>
       {query !== undefined && (
@@ -261,6 +280,15 @@ function BodyViewer({
   )
 }
 
+function graphqlBodyTitle(kind: BodyKind) {
+  switch (kind) {
+    case 'request':
+      return 'GraphQL request'
+    case 'response':
+      return 'GraphQL response'
+  }
+}
+
 interface ActiveBodyState {
   emptyText: string
   kind: BodyKind
@@ -272,10 +300,10 @@ function activeBodyState(
   activeTab: HttpDetailTab,
   attrs: Record<string, unknown>,
   paramsValue: Record<string, string | string[]> | undefined,
-  requestBody: JsonValue,
+  requestBody: JsonValue | undefined,
   rawRequestBody: unknown,
   requestBodyTruncated: boolean,
-  responseBody: JsonValue,
+  responseBody: JsonValue | undefined,
   rawResponseBody: unknown,
   responseBodyTruncated: boolean,
 ): ActiveBodyState {
@@ -323,25 +351,39 @@ function formatBytes(value: unknown): string | undefined {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function bodyEmptyText(
-  kind: 'request' | 'response',
-  attrs: Record<string, unknown>,
-  truncated: boolean,
-) {
-  const label = kind === 'request' ? 'Request body' : 'Response body'
-  const size = formatBytes(
-    attrs[kind === 'request' ? REQUEST_BODY_SIZE_ATTR : RESPONSE_BODY_SIZE_ATTR],
-  )
-  const present =
-    kind === 'request'
-      ? attrBool(attrs[REQUEST_BODY_PRESENT_ATTR])
-      : attrBool(attrs[RESPONSE_BODY_PRESENT_ATTR]) || Boolean(size)
+function bodyEmptyText(kind: BodyKind, attrs: Record<string, unknown>, truncated: boolean) {
+  const bodyDetails = BODY_DETAILS[kind]
+  const size = formatBytes(attrs[bodyDetails.sizeAttr])
+  const present = attrBool(attrs[bodyDetails.presentAttr]) || (kind === 'response' && Boolean(size))
 
   if (truncated)
-    return `${label} was truncated${size ? ` (${size})` : ''}, but no preview was recorded.`
+    return `${bodyDetails.label} was truncated${size ? ` (${size})` : ''}, but no preview was recorded.`
   if (present)
-    return `${label} was present${size ? ` (${size})` : ''}, but content was not captured.`
+    return `${bodyDetails.label} was present${size ? ` (${size})` : ''}, but content was not captured.`
   return `No ${kind} body was recorded for this request.`
+}
+
+function preferredHttpDetailTab(
+  responseBody: JsonValue | undefined,
+  requestBody: JsonValue | undefined,
+  paramsValue: Record<string, string | string[]> | undefined,
+): HttpDetailTab {
+  if (hasBodyValue(responseBody)) return 'response'
+  if (hasBodyValue(requestBody)) return 'request'
+  if (paramsValue) return 'params'
+  return 'response'
+}
+
+function formattedCopyLabel(copyState: CopyState) {
+  switch (copyState) {
+    case 'formatted':
+      return 'Copied'
+    case 'failed':
+      return 'Copy failed'
+    case 'idle':
+    case 'raw':
+      return 'Copy formatted'
+  }
 }
 
 function metaChip(label: string, value: React.ReactNode) {
@@ -373,7 +415,7 @@ export function HttpSpanDetail({
   traceStart: bigint
 }) {
   const [activeTab, setActiveTab] = useState<HttpDetailTab>('response')
-  const [copyState, setCopyState] = useState<CopyKind | 'failed' | 'idle'>('idle')
+  const [copyState, setCopyState] = useState<CopyState>('idle')
   const attrs = parseJsonObject(span.attributesJson)
   const url = spanUrl(span)
   const params = requestParams(url)
@@ -384,13 +426,7 @@ export function HttpSpanDetail({
   const requestBodyTruncated = attrBool(attrs[REQUEST_BODY_TRUNCATED_ATTR])
   const responseBodyTruncated = attrBool(attrs[RESPONSE_BODY_TRUNCATED_ATTR])
   const paramsValue = Object.keys(params).length ? params : undefined
-  const preferredTab: HttpDetailTab = responseBody
-    ? 'response'
-    : requestBody
-      ? 'request'
-      : paramsValue
-        ? 'params'
-        : 'response'
+  const preferredTab = preferredHttpDetailTab(responseBody, requestBody, paramsValue)
   const tabs: Array<{ id: HttpDetailTab; label: string }> = [
     { id: 'params', label: 'Params' },
     { id: 'request', label: `Request body${requestBodyTruncated ? ' (truncated)' : ''}` },
@@ -422,6 +458,9 @@ export function HttpSpanDetail({
   const attempt = attrText(attrs['coral.http.attempt'])
   const source = attrText(attrs['coral.source'])
   const table = attrText(attrs['coral.table'])
+  const requestLine = spanRequestLine(span)
+  const requestOperation = spanRequestOperation(span)
+  const requestEndpoint = spanRequestEndpoint(span)
 
   useEffect(() => setActiveTab(preferredTab), [preferredTab, span.spanId])
   useEffect(() => setCopyState('idle'), [activeTab, span.spanId])
@@ -449,10 +488,30 @@ export function HttpSpanDetail({
     >
       <div className={s.waterfallHttpDetailHeader}>
         <div className={s.waterfallHttpDetailTitle}>
-          <Typography.BodySmallStrong as="span">Span details</Typography.BodySmallStrong>
-          <Typography.BodySmall as="span" variant="tertiary" truncate>
-            {spanOperation(span)}
-          </Typography.BodySmall>
+          {requestOperation || requestEndpoint ? (
+            <span className={s.requestLine}>
+              {requestOperation && (
+                <Typography.CodeSmallInlineStrong as="span" className={s.methodBadge}>
+                  {requestOperation}
+                </Typography.CodeSmallInlineStrong>
+              )}
+              {requestEndpoint && (
+                <Typography.BodySmall
+                  as="span"
+                  className={s.requestEndpoint}
+                  data-request-endpoint="true"
+                  variant="tertiary"
+                  truncate
+                >
+                  {requestEndpoint}
+                </Typography.BodySmall>
+              )}
+            </span>
+          ) : (
+            <Typography.CodeSmallInlineStrong as="span" className={s.requestLine} truncate>
+              {requestLine || 'No URL recorded'}
+            </Typography.CodeSmallInlineStrong>
+          )}
         </div>
         <div className={s.waterfallHttpDetailHeaderActions}>
           <Button.IconButton
@@ -487,18 +546,10 @@ export function HttpSpanDetail({
         height="100%"
       >
         <div className={s.waterfallHttpDetailContent}>
-          <div className={s.requestUrlRow}>
-            <Typography.CodeSmallInline as="span" className={s.methodBadge}>
-              {spanOperation(span)}
-            </Typography.CodeSmallInline>
-            <Typography.Body as="span" variant="tertiary" className={s.requestUrl}>
-              {url || 'No URL recorded'}
-            </Typography.Body>
-          </div>
           <div className={s.httpMetaRow}>
             {statusCode && metaChip('Status', statusCode)}
             {metaChip('Duration', formatDurationFromNanos(span.durationNanos))}
-            {metaChip('Start', `+${formatDuration(offsetMs)}`)}
+            {metaChip('Start', `${formatDuration(offsetMs)}`)}
             {requestId && metaChip('Request', `#${requestId}`)}
             {attempt && metaChip('Attempt', attempt)}
             {source && metaChip('Source', table ? `${source}.${table}` : source)}
@@ -539,11 +590,7 @@ export function HttpSpanDetail({
                 size="22"
                 variant="secondary"
               >
-                {copyState === 'formatted'
-                  ? 'Copied'
-                  : copyState === 'failed'
-                    ? 'Copy failed'
-                    : 'Copy formatted'}
+                {formattedCopyLabel(copyState)}
               </Button.TextButton>
             </div>
           </div>
