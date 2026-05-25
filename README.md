@@ -167,6 +167,24 @@ coral source add --interactive github
 ```
 
 Coral prompts for any required variables or secrets. For scripted setup, omit
+### Common GitHub Authentication Issue
+
+If you see:
+
+```text
+Source authentication failed (401)
+```
+
+Make sure:
+- your GitHub PAT token is valid
+- correct permissions are enabled
+- rerun:
+
+```bash
+coral source add --interactive github
+```
+
+If authentication still fails, generate a new PAT token and reconnect the source.
 `--interactive` and provide each input as an environment variable of the same
 name, such as `GITHUB_TOKEN=ghp_... coral source add github`. Once connected,
 the source's data is available as SQL tables. To update a source's credentials
