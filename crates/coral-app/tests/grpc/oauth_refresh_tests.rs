@@ -12,8 +12,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, SourceSecret, SourceVariable, ValidateSourceRequest,
-    import_source_response,
+    ExecuteSqlRequest, ImportSourceRequest, SourceSecret, SourceVariable, import_source_response,
 };
 use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
 use serde_json::json;
@@ -22,10 +21,10 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::Notify;
 use tonic::{Code, Request};
 
-use crate::harness::{GrpcHarness, source_dir};
+use crate::harness::{GrpcHarness, fixture_manifest_yaml, source_dir};
 
 #[tokio::test]
-async fn query_refreshes_expired_oauth_access_token_before_runtime_registration() {
+async fn query_refreshes_expired_oauth_access_token_at_request_time() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
     harness
@@ -79,6 +78,55 @@ async fn query_refreshes_expired_oauth_access_token_before_runtime_registration(
     assert!(
         material.contains("__coral_oauth.QVBJX1RPS0VO.refresh_token=rotated-refresh-token"),
         "{material}"
+    );
+}
+
+#[tokio::test]
+async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+    harness
+        .import_source(
+            fixture_manifest_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
+    seed_expired_api_token_material(
+        &secret_path,
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
+
+    let rows = harness
+        .execute_sql_rows("SELECT text FROM local_messages.messages ORDER BY text")
+        .await;
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["text"], "hello");
+    assert_eq!(rows[1]["text"], "world");
+    assert!(
+        fixture.token_forms().is_empty(),
+        "unrelated OAuth source should not refresh during another source's query"
+    );
+    assert!(
+        fixture.message_authorizations().is_empty(),
+        "unrelated OAuth source should not issue provider requests"
     );
 }
 
@@ -447,14 +495,20 @@ SECOND_TOKEN=expired-secondary-token
     )
     .expect("seed expired oauth material");
 
-    harness
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
+    let status = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
-            name: "multi_oauth_messages".to_string(),
+            sql: "SELECT id FROM multi_oauth_messages.messages".to_string(),
         }))
         .await
-        .expect_err("second OAuth refresh should fail validation");
+        .expect_err("second OAuth refresh should fail query");
+
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert!(
+        status.message().contains("OAuth token refresh failed"),
+        "{status:?}"
+    );
 
     let forms = fixture.token_forms();
     assert!(
@@ -570,6 +624,7 @@ fn two_oauth_inputs_manifest_yaml(base_url: &str, token_url: &str) -> String {
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
+        "test_queries": ["SELECT id FROM multi_oauth_messages.messages"],
         "inputs": {
             "API_BASE": { "kind": "variable" },
             "API_TOKEN": oauth_input(token_url),

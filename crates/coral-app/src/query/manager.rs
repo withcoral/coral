@@ -16,7 +16,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
-use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
+use crate::query::extensions::{
+    CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
+};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
@@ -32,12 +34,6 @@ pub(crate) enum QueryManagerError {
 pub(crate) struct ValidatedSource {
     pub(crate) source: InstalledSource,
     pub(crate) report: SourceValidationReport,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CredentialLoadPolicy {
-    StoredOnly,
-    RefreshProvider,
 }
 
 #[derive(Clone)]
@@ -73,10 +69,9 @@ impl QueryManager {
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let sources = self
-            .load_query_sources(workspace_name, CredentialLoadPolicy::StoredOnly)
-            .await
+            .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
+        let runtime = self.runtime_config(workspace_name, &sources);
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -88,10 +83,9 @@ impl QueryManager {
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
         let sources = self
-            .load_query_sources(workspace_name, CredentialLoadPolicy::StoredOnly)
-            .await
+            .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
+        let runtime = self.runtime_config(workspace_name, &sources);
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -108,10 +102,9 @@ impl QueryManager {
             sql,
             async {
                 let sources = self
-                    .load_query_sources(workspace_name, CredentialLoadPolicy::RefreshProvider)
-                    .await
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(&sources);
+                let runtime = self.runtime_config(workspace_name, &sources);
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -132,10 +125,9 @@ impl QueryManager {
             sql,
             async {
                 let sources = self
-                    .load_query_sources(workspace_name, CredentialLoadPolicy::RefreshProvider)
-                    .await
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(&sources);
+                let runtime = self.runtime_config(workspace_name, &sources);
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -155,14 +147,9 @@ impl QueryManager {
             .get_source(workspace_name, source_name)
             .map_err(QueryManagerError::App)?;
         let (query_source, version) = self
-            .load_query_source(
-                workspace_name,
-                &source,
-                CredentialLoadPolicy::RefreshProvider,
-            )
-            .await
+            .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(std::slice::from_ref(&query_source));
+        let runtime = self.runtime_config(workspace_name, std::slice::from_ref(&query_source));
         let report = CoralQuery::validate_source(
             &query_source,
             runtime,
@@ -176,28 +163,19 @@ impl QueryManager {
         Ok(ValidatedSource { source, report })
     }
 
-    async fn load_query_sources(
+    fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
-        credential_load_policy: CredentialLoadPolicy,
     ) -> Result<Vec<QuerySource>, AppError> {
         let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
         for source in catalog.workspace_sources(workspace_name) {
-            match self
-                .load_query_source(workspace_name, &source, credential_load_policy)
-                .await
-            {
+            match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
                     return Err(error);
                 }
                 Err(error) => {
-                    if credential_load_policy == CredentialLoadPolicy::RefreshProvider
-                        && matches!(error, AppError::CredentialRefresh(_))
-                    {
-                        return Err(error);
-                    }
                     tracing::warn!(
                         source = %source.name,
                         detail = %error,
@@ -209,11 +187,10 @@ impl QueryManager {
         Ok(query_sources)
     }
 
-    async fn load_query_source(
+    fn load_query_source(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
-        credential_load_policy: CredentialLoadPolicy,
     ) -> Result<(QuerySource, String), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
@@ -221,23 +198,11 @@ impl QueryManager {
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
                 let credential_set_id = CredentialSetId::for_source(&source.name);
-                match credential_load_policy {
-                    CredentialLoadPolicy::StoredOnly => self.credential_manager.read_material(
-                        workspace_name,
-                        &credential_set_id,
-                        credential_storage,
-                    )?,
-                    CredentialLoadPolicy::RefreshProvider => {
-                        self.credential_manager
-                            .read_material_for_inputs(
-                                workspace_name,
-                                &credential_set_id,
-                                credential_storage,
-                                source_spec.declared_inputs(),
-                            )
-                            .await?
-                    }
-                }
+                self.credential_manager.read_material(
+                    workspace_name,
+                    &credential_set_id,
+                    credential_storage,
+                )?
             } else {
                 BTreeMap::new()
             };
@@ -269,9 +234,17 @@ impl QueryManager {
         ))
     }
 
-    fn runtime_config(&self, selected_sources: &[QuerySource]) -> QueryRuntimeConfig {
-        let extensions =
+    fn runtime_config(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+    ) -> QueryRuntimeConfig {
+        let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+        extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
+            workspace_name.clone(),
+            self.credential_manager.clone(),
+        )));
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
@@ -481,7 +454,9 @@ mod tests {
             Vec::new(),
         );
 
-        let runtime = fixture.manager.runtime_config(&[]);
+        let runtime = fixture
+            .manager
+            .runtime_config(&WorkspaceName::default(), &[]);
 
         let config = runtime
             .context

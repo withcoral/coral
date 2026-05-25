@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::sync::Arc;
 
-use crate::{QueryRuntimeContext, RequestAuthenticator};
+use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
@@ -127,10 +127,12 @@ fn hex_encode(value: &str) -> String {
 }
 
 pub(crate) struct BackendCompileRequest<'a> {
+    pub(crate) source: &'a QuerySource,
     pub(crate) runtime_context: &'a QueryRuntimeContext,
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
 #[async_trait]

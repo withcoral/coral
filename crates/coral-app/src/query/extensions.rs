@@ -1,9 +1,19 @@
 //! App-owned selection of optional engine extensions for query runtime builds.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
 use coral_auth_aws::AwsSigV4Authenticator;
-use coral_engine::{EngineExtensions, QuerySource, RequestAuthenticator};
+use coral_engine::{
+    EngineExtensions, QuerySource, RequestAuthenticator, SourceInputResolver,
+    SourceInputResolverError,
+};
+
+use crate::bootstrap::AppError;
+use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::sources::SourceName;
+use crate::workspaces::WorkspaceName;
 
 /// App-layer provider that selects engine extensions for one runtime build.
 pub trait EngineExtensionsProvider: Send + Sync {
@@ -40,6 +50,75 @@ impl EngineExtensionsProvider for AwsEngineExtensionsProvider {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct CredentialRefreshingInputResolver {
+    workspace_name: WorkspaceName,
+    credential_manager: CredentialManager,
+}
+
+impl CredentialRefreshingInputResolver {
+    pub(crate) fn new(
+        workspace_name: WorkspaceName,
+        credential_manager: CredentialManager,
+    ) -> Self {
+        Self {
+            workspace_name,
+            credential_manager,
+        }
+    }
+}
+
+impl fmt::Debug for CredentialRefreshingInputResolver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CredentialRefreshingInputResolver")
+            .field("workspace_name", &self.workspace_name)
+            .finish_non_exhaustive()
+    }
+}
+
+#[tonic::async_trait]
+impl SourceInputResolver for CredentialRefreshingInputResolver {
+    async fn resolve_inputs(
+        &self,
+        source: &QuerySource,
+    ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
+        let source_name = SourceName::parse(source.source_name())
+            .map_err(|error| SourceInputResolverError::invalid_input(error.to_string()))?;
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let material = self
+            .credential_manager
+            .read_material_for_inputs(
+                &self.workspace_name,
+                &credential_set_id,
+                source.source_spec().declared_inputs(),
+            )
+            .await
+            .map_err(source_input_error)?;
+        let missing_secrets: Vec<String> = source
+            .source_spec()
+            .required_secret_names()
+            .into_iter()
+            .filter(|name| !material.contains_key(name))
+            .collect();
+        if let Some((first, rest)) = missing_secrets.split_first() {
+            let detail = if rest.is_empty() {
+                format!("secret '{first}'")
+            } else {
+                format!("secret '{first}' and {} other(s)", rest.len())
+            };
+            return Err(SourceInputResolverError::failed_precondition(format!(
+                "source '{}' is missing {detail}",
+                source.source_name()
+            )));
+        }
+        Ok(coral_spec::resolve_inputs(
+            source.source_spec().declared_inputs(),
+            &material,
+            source.variables(),
+        ))
+    }
+}
+
 pub(crate) fn engine_extensions_for_providers(
     providers: &[Arc<dyn EngineExtensionsProvider>],
     selected_sources: &[QuerySource],
@@ -51,12 +130,31 @@ pub(crate) fn engine_extensions_for_providers(
             source_decorators,
             query_result_observers,
             request_authenticators,
+            source_input_resolver,
         } = extra;
         merged.source_decorators.extend(source_decorators);
         merged.query_result_observers.extend(query_result_observers);
         merged.request_authenticators.extend(request_authenticators);
+        if source_input_resolver.is_some() {
+            merged.source_input_resolver = source_input_resolver;
+        }
     }
     merged
+}
+
+fn source_input_error(error: AppError) -> SourceInputResolverError {
+    match error {
+        AppError::InvalidInput(detail) => SourceInputResolverError::invalid_input(detail),
+        AppError::FailedPrecondition(detail) | AppError::CredentialRefresh(detail) => {
+            SourceInputResolverError::failed_precondition(detail)
+        }
+        AppError::Credentials(CredentialsError::Parse(detail)) => {
+            SourceInputResolverError::failed_precondition(format!(
+                "credential material could not be parsed: {detail}"
+            ))
+        }
+        other => SourceInputResolverError::failed_precondition(other.to_string()),
+    }
 }
 
 #[cfg(test)]
