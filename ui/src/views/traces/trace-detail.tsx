@@ -4,6 +4,7 @@ import classNames from 'classnames'
 import * as Button from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+import * as ScrollArea from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import { getTrace } from '@/lib/coral-traces-client'
 import { TraceStatus, type GetTraceResponse, type TraceSpan } from '@/generated/coral/v1/traces_pb'
@@ -330,6 +331,7 @@ function WaterfallRow({
   onHover,
   reserveToggleSpace,
   row,
+  showMeta,
 }: {
   collapsed: boolean
   expanded: boolean
@@ -339,11 +341,12 @@ function WaterfallRow({
   onHover: (spanId: string | null) => void
   reserveToggleSpace: boolean
   row: TimelineRow
+  showMeta: boolean
 }) {
   const { childCount, depth, span } = row
   const tone = spanTone(span)
   const label = spanDisplayLabel(span)
-  const meta = spanDisplayMeta(span, label)
+  const meta = showMeta ? spanDisplayMeta(span, label) : ''
   const isNoisyInternalSpan =
     tone === 'span' &&
     span.kind === 'internal' &&
@@ -581,9 +584,9 @@ function TimelineWaterfall({
   return (
     <div className={s.waterfallRoot} ref={rootRef}>
       <div className={s.waterfallTimelinePane}>
-        <WaterfallTickRow durationMs={durationMs} />
-        <div className={s.waterfallRowsViewport} role="tree">
-          <div className={s.waterfallRowsGrid}>
+        <ScrollArea.Container className={s.waterfallRowsViewport} constrainWidth>
+          <div className={s.waterfallRowsGrid} role="tree">
+            <WaterfallTickRow durationMs={durationMs} />
             <div className={s.waterfallLabelsColumn}>
               {rows.map((row) => (
                 <WaterfallRow
@@ -598,6 +601,7 @@ function TimelineWaterfall({
                   }
                   reserveToggleSpace={proMode}
                   row={row}
+                  showMeta={proMode}
                 />
               ))}
             </div>
@@ -618,7 +622,7 @@ function TimelineWaterfall({
               ))}
             </div>
           </div>
-        </div>
+        </ScrollArea.Container>
       </div>
       {renderedHttpSpan && (
         <>
