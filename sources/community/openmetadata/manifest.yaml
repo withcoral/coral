@@ -42,7 +42,11 @@ tables:
     description: OpenMetadata table entities with ownership, tags, domains, and column metadata.
     guide: |
       Each row is one cataloged table. Use `fully_qualified_name` to join with
-      external naming conventions and `owners` to audit stewardship.
+      external naming conventions and `owners` to audit stewardship. OpenMetadata
+      returns non-deleted entities by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted entities.
+    filters:
+      - name: include
     request:
       method: GET
       path: /v1/tables
@@ -50,6 +54,9 @@ tables:
         - name: fields
           from: literal
           value: owners,tags,domains,columns
+        - name: include
+          from: filter
+          key: include
     response:
       rows_path: [data]
       row_strategy: direct
@@ -147,9 +154,23 @@ tables:
         type: Boolean
         nullable: true
         description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
 
   - name: dashboards
     description: OpenMetadata dashboard entities from BI tools such as Looker, Superset, or Tableau.
+    guide: |
+      Use this table to audit BI assets ingested into OpenMetadata. OpenMetadata
+      returns non-deleted entities by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted dashboards.
+    filters:
+      - name: include
     request:
       method: GET
       path: /v1/dashboards
@@ -157,6 +178,9 @@ tables:
         - name: fields
           from: literal
           value: owners,tags,domains,charts,usageSummary
+        - name: include
+          from: filter
+          key: include
     response:
       rows_path: [data]
       row_strategy: direct
@@ -214,6 +238,15 @@ tables:
           path: [tags]
           item_path: [tagFQN]
           separator: ","
+      - name: domains
+        type: Utf8
+        nullable: true
+        description: Comma-joined assigned domain names.
+        expr:
+          kind: join_array_path
+          path: [domains]
+          item_path: [name]
+          separator: ","
       - name: charts
         type: Json
         nullable: true
@@ -240,9 +273,23 @@ tables:
         type: Boolean
         nullable: true
         description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
 
   - name: pipelines
     description: OpenMetadata pipeline entities and orchestration metadata.
+    guide: |
+      Use this table to inventory pipeline metadata and ownership. OpenMetadata
+      returns non-deleted entities by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted pipelines.
+    filters:
+      - name: include
     request:
       method: GET
       path: /v1/pipelines
@@ -250,6 +297,9 @@ tables:
         - name: fields
           from: literal
           value: owners,tags,tasks,followers
+        - name: include
+          from: filter
+          key: include
     response:
       rows_path: [data]
       row_strategy: direct
@@ -311,6 +361,15 @@ tables:
         type: Json
         nullable: true
         description: Pipeline task metadata.
+      - name: followers
+        type: Utf8
+        nullable: true
+        description: Comma-joined follower names.
+        expr:
+          kind: join_array_path
+          path: [followers]
+          item_path: [name]
+          separator: ","
       - name: updated_at
         type: Timestamp
         nullable: true
@@ -328,9 +387,23 @@ tables:
         type: Boolean
         nullable: true
         description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
 
   - name: users
     description: OpenMetadata users.
+    guide: |
+      Use this table to audit OpenMetadata users, teams, and roles. OpenMetadata
+      returns non-deleted users by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted users.
+    filters:
+      - name: include
     request:
       method: GET
       path: /v1/users
@@ -338,6 +411,9 @@ tables:
         - name: fields
           from: literal
           value: teams,roles
+        - name: include
+          from: filter
+          key: include
     response:
       rows_path: [data]
       row_strategy: direct
@@ -407,9 +483,23 @@ tables:
         type: Boolean
         nullable: true
         description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
 
   - name: teams
     description: OpenMetadata teams.
+    guide: |
+      Use this table to inspect team hierarchy, users, and ownership. OpenMetadata
+      returns non-deleted teams by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted teams.
+    filters:
+      - name: include
     request:
       method: GET
       path: /v1/teams
@@ -417,6 +507,9 @@ tables:
         - name: fields
           from: literal
           value: users,parents,owns
+        - name: include
+          from: filter
+          key: include
     response:
       rows_path: [data]
       row_strategy: direct
@@ -490,12 +583,30 @@ tables:
         nullable: true
         description: User that last updated the entity.
         expr: {kind: path, path: [updatedBy]}
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
 
   - name: glossary_terms
     description: OpenMetadata glossary terms with ownership, tags, domains, and relationships.
+    guide: |
+      Use `glossary` or `parent` to narrow glossary terms by fully qualified
+      glossary or parent term name. OpenMetadata returns non-deleted terms by
+      default; use `include = 'all'` or `include = 'deleted'` when auditing
+      soft-deleted terms.
     filters:
       - name: glossary
       - name: parent
+      - name: include
     request:
       method: GET
       path: /v1/glossaryTerms
@@ -509,6 +620,9 @@ tables:
         - name: parent
           from: filter
           key: parent
+        - name: include
+          from: filter
+          key: include
     response:
       rows_path: [data]
       row_strategy: direct
@@ -566,6 +680,15 @@ tables:
           path: [tags]
           item_path: [tagFQN]
           separator: ","
+      - name: domains
+        type: Utf8
+        nullable: true
+        description: Comma-joined assigned domain names.
+        expr:
+          kind: join_array_path
+          path: [domains]
+          item_path: [name]
+          separator: ","
       - name: synonyms
         type: Json
         nullable: true
@@ -596,3 +719,27 @@ tables:
         type: Boolean
         nullable: true
         description: Whether this entity is soft-deleted.
+      - name: glossary
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional glossary fully qualified name filter.
+        expr:
+          kind: from_filter
+          key: glossary
+      - name: parent
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional parent glossary term fully qualified name filter.
+        expr:
+          kind: from_filter
+          key: parent
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include

@@ -49,13 +49,12 @@ coral source add --interactive --file sources/community/openmetadata/manifest.ya
 
 ## Example Queries
 
-Tables without owners:
+Catalog tables with ownership fields:
 
 ```sql
 SELECT fully_qualified_name, database_schema_name, owners
 FROM openmetadata.tables
-WHERE owners IS NULL OR owners = ''
-ORDER BY fully_qualified_name;
+LIMIT 25;
 ```
 
 Dashboards by owner:
@@ -72,16 +71,15 @@ Recently updated data assets:
 ```sql
 SELECT fully_qualified_name, service_name, owners, updated_at
 FROM openmetadata.tables
-ORDER BY updated_at DESC
 LIMIT 25;
 ```
 
-Glossary terms that have no owner:
+Glossary terms:
 
 ```sql
 SELECT fully_qualified_name, glossary_name, description
 FROM openmetadata.glossary_terms
-WHERE owners IS NULL OR owners = '';
+LIMIT 25;
 ```
 
 Users with admin access:
@@ -93,10 +91,24 @@ WHERE is_admin = true
 ORDER BY name;
 ```
 
+Catalog tables including soft-deleted entities:
+
+```sql
+SELECT fully_qualified_name, deleted, updated_at
+FROM openmetadata.tables
+WHERE include = 'all'
+LIMIT 25;
+```
+
 ## Limitations
 
 - List endpoints use OpenMetadata cursor pagination through the `paging.after`
   field.
+- OpenMetadata list APIs return non-deleted entities by default. Use
+  `include = 'all'` or `include = 'deleted'` when auditing soft-deleted
+  entities.
+- `openmetadata.glossary_terms` accepts `glossary` and `parent` filters for
+  narrowing terms by fully qualified glossary or parent term name.
 - The source requests commonly useful fields such as `owners`, `tags`,
   `domains`, `columns`, and `tasks`; availability depends on your OpenMetadata
   version and permissions.
@@ -113,7 +125,7 @@ YAML parse: passed for sources/community/openmetadata/manifest.yaml
 Coral manifest schema validation: passed for sources/community/openmetadata/manifest.yaml
 git diff --check: passed
 make lint-sources: passed
-Live API tests: not run; require real OpenMetadata credentials
+Live API tests: passed against the OpenMetadata sandbox with `coral source add` and `coral source test openmetadata`
 ```
 
-Testing note: live API tests require user-provided credentials and are intentionally not part of default CI. The manifest includes `test_queries`, and no credentials or customer data are committed.
+Testing note: the live API test used user-provided OpenMetadata credentials. The manifest includes `test_queries`, and no credentials or customer data are committed.
