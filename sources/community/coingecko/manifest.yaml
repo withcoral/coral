@@ -131,7 +131,7 @@ tables:
       page_start: 1
       page_size:
         default: 100
-        max: 100
+        max: 250
         query_param: per_page
     columns:
       - name: id
