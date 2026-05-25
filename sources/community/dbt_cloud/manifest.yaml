@@ -17,6 +17,7 @@ inputs:
     hint: |
       Create a service token in dbt Cloud under
       Account Settings -> Service Tokens with read access.
+      Use the Job viewer role (Enterprise) or Read-Only service token (Starter).
       See https://docs.getdbt.com/docs/dbt-apis/service-tokens
   DBT_CLOUD_BASE_URL:
     kind: variable
@@ -189,14 +190,21 @@ tables:
         type: Utf8
         nullable: true
         description: Human-readable status message.
-      - name: duration_seconds
-        type: Int64
+      - name: duration
+        type: Utf8
         nullable: true
-        description: Total run duration in seconds.
-        expr:
-          kind: path
-          path:
-            - duration
+        description: >-
+          Total run duration as a string returned by the dbt Cloud API
+          (for example, "00:01:23"). Use queued_duration and run_duration
+          from the raw column for finer-grained timing.
+      - name: queued_duration
+        type: Utf8
+        nullable: true
+        description: Time the run spent queued, as a string.
+      - name: run_duration
+        type: Utf8
+        nullable: true
+        description: Actual execution time of the run, as a string.
       - name: started_at
         type: Timestamp
         nullable: true
@@ -303,7 +311,15 @@ tables:
       - name: type
         type: Utf8
         nullable: true
-        description: Environment type, such as development or production.
+        description: >-
+          Environment type. The v2 API enum is development or deployment.
+          Production and staging classification is in deployment_type, not type.
+      - name: deployment_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Deployment classification for deployment environments, such as
+          production or staging. Null for development environments.
       - name: state
         type: Int64
         nullable: true

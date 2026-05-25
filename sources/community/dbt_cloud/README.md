@@ -9,7 +9,10 @@ Create a service token in dbt Cloud:
 
 - Open dbt Cloud and go to **Account Settings** > **Service Tokens**
 - Click **+ New Token** and give it a name
-- Add **Member** permission for your account
+- Add the least-privilege role needed for this source:
+  - **Job viewer** (Enterprise plan) — read-only access to job results and runs
+  - **Stakeholder / Read-Only** (Enterprise plan) — read-only access to jobs, runs, and environments
+  - **Read-Only** service token (Starter plan) — use when Enterprise roles are unavailable
 - Copy the generated token
 
 Find your account ID in dbt Cloud under **Account Settings** >
@@ -63,29 +66,29 @@ GROUP BY job_id
 ORDER BY failures DESC;
 ```
 
-Longest-running runs by duration:
+Longest-running runs:
 
 ```sql
-SELECT id, duration_seconds, status, started_at
+SELECT id, duration, run_duration, status, started_at
 FROM dbt_cloud.runs
-ORDER BY duration_seconds DESC
+ORDER BY started_at DESC
 LIMIT 20;
 ```
 
 Runs for a specific job:
 
 ```sql
-SELECT id, status, duration_seconds, started_at, finished_at
+SELECT id, status, duration, started_at, finished_at
 FROM dbt_cloud.runs
 WHERE job_id = 123
 ORDER BY started_at DESC
 LIMIT 50;
 ```
 
-List all environments:
+List all environments with deployment type:
 
 ```sql
-SELECT id, name, type, dbt_version, project_id
+SELECT id, name, type, deployment_type, dbt_version, project_id
 FROM dbt_cloud.environments
 ORDER BY name;
 ```
@@ -120,9 +123,10 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name FROM coral.columns
 - [dbt Cloud API v2 overview](https://docs.getdbt.com/dbt-cloud/api-v2)
 - [List Jobs endpoint](https://docs.getdbt.com/dbt-cloud/api-v2#/operations/List%20Jobs)
 - [List Runs endpoint](https://docs.getdbt.com/dbt-cloud/api-v2#/operations/List%20Runs)
-- [Service tokens](https://docs.getdbt.com/docs/dbt-apis/service-tokens)
-- [Access URLs by region](https://docs.getdbt.com/docs/platform/about-platform/access-regions-ip-addresses#api-access-urls)
 - [List Environments endpoint](https://docs.getdbt.com/dbt-cloud/api-v2#/operations/List%20Environments)
+- [Service tokens](https://docs.getdbt.com/docs/dbt-apis/service-tokens)
+- [Enterprise permissions](https://docs.getdbt.com/docs/platform/manage-access/enterprise-permissions)
+- [Access URLs by region](https://docs.getdbt.com/docs/platform/about-platform/access-regions-ip-addresses#api-access-urls)
 
 ## Notes
 
@@ -130,6 +134,10 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name FROM coral.columns
   Maximum page size is 100 records per request.
 - Set `DBT_CLOUD_BASE_URL` to your account access URL from Account Settings.
   See [Access URLs by region](https://docs.getdbt.com/docs/platform/about-platform/access-regions-ip-addresses#api-access-urls).
+- Run duration fields (`duration`, `queued_duration`, `run_duration`) are
+  returned as strings by the dbt Cloud API (for example, `"00:01:23"`).
+- The `environments.type` field is `development` or `deployment`. The
+  production/staging classification is in `deployment_type`, not `type`.
 - Run status codes: 1 = Queued, 2 = Starting, 3 = Running, 10 = Success,
   20 = Error, 30 = Cancelled.
 - Nested fields are preserved as JSON in the `raw` column for each table.
