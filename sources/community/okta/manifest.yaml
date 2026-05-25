@@ -36,6 +36,496 @@ request_headers:
 test_queries:
   - SELECT id, login, email, status FROM okta.current_user LIMIT 1
 
+functions:
+  - name: search_users
+    kind: search
+    description: Provider-native search for Okta users using the q parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: filter
+        bind:
+          arg: filter
+    request:
+      method: GET
+      path: /api/v1/users
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: filter
+          from: arg
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+      page_size:
+        default: 10
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Okta user ID.
+        expr: {kind: path, path: [id]}
+      - name: login
+        type: Utf8
+        nullable: true
+        description: User login.
+        expr: {kind: path, path: [profile, login]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email.
+        expr: {kind: path, path: [profile, email]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: User lifecycle status.
+        expr: {kind: path, path: [status]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw users search result.
+        expr:
+          kind: current_row
+  - name: search_users_by_expression
+    kind: search
+    description: Provider-native search for Okta users using the search parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: search
+        required: true
+        bind:
+          arg: search
+      - name: filter
+        bind:
+          arg: filter
+    request:
+      method: GET
+      path: /api/v1/users
+      query:
+        - name: search
+          from: arg
+          key: search
+        - name: filter
+          from: arg
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Okta user ID.
+        expr: {kind: path, path: [id]}
+      - name: login
+        type: Utf8
+        nullable: true
+        description: User login.
+        expr: {kind: path, path: [profile, login]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email.
+        expr: {kind: path, path: [profile, email]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: User lifecycle status.
+        expr: {kind: path, path: [status]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw users search result.
+        expr:
+          kind: current_row
+  - name: search_groups
+    kind: search
+    description: Provider-native search for Okta groups using the q parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: filter
+        bind:
+          arg: filter
+    request:
+      method: GET
+      path: /api/v1/groups
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: filter
+          from: arg
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Group ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Group profile name.
+        expr: {kind: path, path: [profile, name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Group profile description.
+        expr: {kind: path, path: [profile, description]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Group type.
+        expr: {kind: path, path: [type]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Group creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw groups search result.
+        expr:
+          kind: current_row
+  - name: search_groups_by_expression
+    kind: search
+    description: Provider-native search for Okta groups using the search parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: search
+        required: true
+        bind:
+          arg: search
+      - name: filter
+        bind:
+          arg: filter
+    request:
+      method: GET
+      path: /api/v1/groups
+      query:
+        - name: search
+          from: arg
+          key: search
+        - name: filter
+          from: arg
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Group ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Group profile name.
+        expr: {kind: path, path: [profile, name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Group profile description.
+        expr: {kind: path, path: [profile, description]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Group type.
+        expr: {kind: path, path: [type]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Group creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw groups search result.
+        expr:
+          kind: current_row
+  - name: search_apps
+    kind: search
+    description: Provider-native search for Okta apps using the q parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: filter
+        bind:
+          arg: filter
+    request:
+      method: GET
+      path: /api/v1/apps
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: filter
+          from: arg
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Application ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Application integration key.
+        expr: {kind: path, path: [name]}
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Application label.
+        expr: {kind: path, path: [label]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Application status.
+        expr: {kind: path, path: [status]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Application creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw apps search result.
+        expr:
+          kind: current_row
+  - name: search_app_users
+    kind: search
+    description: Provider-native search for Okta app users using the q parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: app_id
+        required: true
+        bind:
+          arg: app_id
+    request:
+      method: GET
+      path: /api/v1/apps/{{arg.app_id}}/users
+      query:
+        - name: q
+          from: arg
+          key: q
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: App user assignment ID.
+        expr: {kind: path, path: [id]}
+      - name: app_id
+        type: Utf8
+        nullable: false
+        description: Application ID used for the request.
+        expr: {kind: from_arg, key: app_id}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Assignment status.
+        expr: {kind: path, path: [status]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Assignment creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw app users search result.
+        expr:
+          kind: current_row
+  - name: search_system_log
+    kind: search
+    description: Provider-native search for Okta system log using the q parameter.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: since
+        bind:
+          arg: since
+      - name: until
+        bind:
+          arg: until
+      - name: filter
+        bind:
+          arg: filter
+    request:
+      method: GET
+      path: /api/v1/logs
+      query:
+        - name: since
+          from: arg
+          key: since
+        - name: until
+          from: arg
+          key: until
+        - name: filter
+          from: arg
+          key: filter
+        - name: q
+          from: arg
+          key: q
+    response:
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      max_pages: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: System Log event UUID.
+        expr: {kind: path, path: [uuid]}
+      - name: display_message
+        type: Utf8
+        nullable: true
+        description: Human-readable event message.
+        expr: {kind: path, path: [displayMessage]}
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Event severity.
+        expr: {kind: path, path: [severity]}
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: Okta event type.
+        expr: {kind: path, path: [eventType]}
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Event publication time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [published]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw system log search result.
+        expr:
+          kind: current_row
 tables:
   - name: current_user
     description: Current Okta user associated with the API token.

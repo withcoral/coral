@@ -18,7 +18,13 @@ const reviewMode = process.env.PW_UI_SCREENCAST === '1'
 const reviewPauseMs = Number(process.env.PW_UI_REVIEW_PAUSE_MS ?? 900)
 
 function safeArtifactName(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'test'
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 80) || 'test'
+  )
 }
 
 export const test = base.extend<NetworkFixtures>({

@@ -218,8 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn search_filter_also_accepts_equality() {
-        let filters = vec![filter("q", false, FilterMode::Search)];
+    fn contains_filter_also_accepts_equality() {
+        let filters = vec![filter("q", false, FilterMode::Contains)];
 
         let expr = equality_expr("q", "deploy");
         let values = extract_filter_values(&[expr], &filters);
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn strips_wildcards_from_like_pattern() {
-        let filters = vec![filter("q", false, FilterMode::Search)];
+        let filters = vec![filter("q", false, FilterMode::Contains)];
 
         let values = extract_filter_values(&[like_expr("q", "%deploy")], &filters);
         assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
@@ -253,7 +253,17 @@ mod tests {
     }
 
     #[test]
-    fn extracts_like_value_for_search_mode_filter() {
+    fn extracts_like_value_for_contains_mode_filter() {
+        let filters = vec![filter("q", false, FilterMode::Contains)];
+
+        let expr = like_expr("q", "%deploy%");
+        let values = extract_filter_values(&[expr], &filters);
+
+        assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
+    }
+
+    #[test]
+    fn extracts_like_value_for_legacy_search_mode_filter() {
         let filters = vec![filter("q", false, FilterMode::Search)];
 
         let expr = like_expr("q", "%deploy%");

@@ -86,6 +86,10 @@ mod template;
 mod validate;
 
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
+pub use backends::mcp::{
+    McpEnvSpec, McpLimitBinding, McpServerSpec, McpSourceManifest, McpTableFilterBinding,
+    McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
+};
 pub(crate) use common::validate_test_queries;
 pub use common::{
     BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,
@@ -101,7 +105,8 @@ pub use inputs::{
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
     ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
-    ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec, ManifestOAuthScopesSpec, resolve_inputs,
+    ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+    ManifestOAuthScopeSpec, ManifestOAuthScopesSpec, resolve_inputs,
 };
 pub use loader::load_manifest_path;
 pub use parser::{

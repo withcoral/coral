@@ -29,7 +29,7 @@ jobs:
       - name: Detect UI package
         id: detect-ui
         run: |
-          if [ -f ui/package-lock.json ]; then
+          if [ -f ui/package.json ]; then
             echo "has-ui=true" >> "$GITHUB_OUTPUT"
           else
             echo "has-ui=false" >> "$GITHUB_OUTPUT"
@@ -38,7 +38,7 @@ jobs:
         if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: 22
+          node-version-file: ui/.node-version
           package-manager-cache: false
       - name: Install UI dependencies
         if: steps.detect-ui.outputs.has-ui == 'true'
@@ -46,6 +46,9 @@ jobs:
       - name: Build UI
         if: steps.detect-ui.outputs.has-ui == 'true'
         run: npm run build --prefix ui
+      - name: Verify UI entrypoint
+        if: steps.detect-ui.outputs.has-ui == 'true'
+        run: test -s ui/dist/index.html
       - name: Upload UI artifact
         if: steps.detect-ui.outputs.has-ui == 'true'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -67,6 +70,8 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     env:
       TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
@@ -93,7 +98,9 @@ jobs:
           set -euo pipefail
           cargo install cargo-binstall --locked
           cargo binstall --no-confirm --force --disable-strategies compile cross@0.2.5
-      - name: Build
+      - name: Build Unix
+        if: runner.os != 'Windows'
+        shell: bash
         env:
           CROSS: ${{ matrix.cross }}
           HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
@@ -109,7 +116,34 @@ jobs:
           else
             cargo build --locked --release --target "$TARGET" "${feature_args[@]}"
           fi
-      - name: Package
+
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $featureArgs = @()
+          if ($env:HAS_UI -eq "true") {
+            $featureArgs += @("--features", "embedded-ui")
+          }
+
+          cargo build --locked --release --target $env:TARGET @featureArgs
+
+      - name: Smoke Windows release binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $coral = "target\$env:TARGET\release\coral.exe"
+          & $coral --version
+          & $coral source discover
+
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -117,11 +151,27 @@ jobs:
           cd "target/${TARGET}/release"
           tar czf "../../../${archive}" coral
           cd ../../../
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $staging = "package-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "target\$env:TARGET\release\coral.exe" "$staging\coral.exe"
+          Push-Location $staging
+          Compress-Archive -Path coral.exe -DestinationPath "..\coral-$env:TARGET.zip" -Force
+          Pop-Location
+
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-${{ matrix.target }}
-          path: coral-${{ matrix.target }}.tar.gz
+          path: |
+            coral-${{ matrix.target }}.tar.gz
+            coral-${{ matrix.target }}.zip
 
   checksums:
     needs: build
@@ -137,6 +187,8 @@ jobs:
         run: |
           cd artifacts
           sha256sum coral-*.tar.gz > checksums.sha256
+          sha256sum coral-*.zip >> checksums.sha256
+          test -s checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -175,11 +227,43 @@ jobs:
           GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          artifacts=(artifacts/coral-*.tar.gz artifacts/coral-*.zip artifacts/checksums.sha256)
+          if [ "${#artifacts[@]}" -lt 2 ]; then
+            echo "No Coral release archives found" >&2
+            exit 1
+          fi
           gh release upload "$TAG_NAME" \
-            artifacts/coral-*.tar.gz \
-            artifacts/checksums.sha256 \
+            "${artifacts[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
+
+      - name: Promote GitHub release
+        id: promote-release
+        env:
+          GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
+          release_id="$(printf '%s' "$release_json" | jq -r '.id')"
+          was_prerelease="$(printf '%s' "$release_json" | jq -r '.prerelease')"
+
+          if [ "$was_prerelease" = "true" ]; then
+            release_json="$(gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F prerelease=false)"
+          fi
+
+          {
+            echo "was_prerelease=${was_prerelease}"
+            echo "tag_name=$(printf '%s' "$release_json" | jq -r '.tag_name')"
+            echo "release_name=$(printf '%s' "$release_json" | jq -r '.name // ""')"
+            echo "release_url=$(printf '%s' "$release_json" | jq -r '.html_url')"
+            echo "body<<__RELEASE_BODY__"
+            printf '%s' "$release_json" | jq -r '.body // ""'
+            echo "__RELEASE_BODY__"
+          } >> "$GITHUB_OUTPUT"
 
       # Dispatch the tap workflow after publishing the release:
       # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event
@@ -197,3 +281,38 @@ jobs:
               event_type: "coral-release",
               client_payload: { version },
             });
+
+      - name: Post promoted release to Discord
+        if: steps.promote-release.outputs.was_prerelease == 'true'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+          TAG_NAME: ${{ steps.promote-release.outputs.tag_name }}
+          RELEASE_NAME: ${{ steps.promote-release.outputs.release_name }}
+          RELEASE_BODY: ${{ steps.promote-release.outputs.body }}
+          RELEASE_URL: ${{ steps.promote-release.outputs.release_url }}
+        run: |
+          MAX_LEN=3500
+          BODY="$RELEASE_BODY"
+          if [ ${#BODY} -gt $MAX_LEN ]; then
+            BODY="${BODY:0:$MAX_LEN}..."
+          fi
+
+          TITLE_MAX_LEN=256
+          TITLE="🪸 ${RELEASE_NAME:-$TAG_NAME}"
+          if [ ${#TITLE} -gt $TITLE_MAX_LEN ]; then
+            TITLE="${TITLE:0:$((TITLE_MAX_LEN - 3))}..."
+          fi
+
+          jq -n \
+            --arg title "$TITLE" \
+            --arg desc "$BODY" \
+            --arg url "$RELEASE_URL" \
+            '{
+              embeds: [{
+                title: $title,
+                description: $desc,
+                url: $url,
+                color: 16744272,
+                footer: { text: "Fresh from the reef" }
+              }]
+            }' | curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"

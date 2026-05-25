@@ -7,7 +7,13 @@ import { Typography } from '@/wax/components/typography'
 import type { TraceSpan } from '@/generated/coral/v1/traces_pb'
 
 import * as s from '../traces-page.css'
-import { formatDuration, formatDurationFromNanos, parseJsonObject, spanOperation, spanUrl } from './trace-utils'
+import {
+  formatDuration,
+  formatDurationFromNanos,
+  parseJsonObject,
+  spanOperation,
+  spanUrl,
+} from './trace-utils'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 type HttpDetailTab = 'params' | 'request' | 'response'
@@ -21,10 +27,7 @@ const REQUEST_BODY_PRESENT_ATTR = 'http.request.body.present'
 const RESPONSE_BODY_PRESENT_ATTR = 'http.response.body.present'
 const REQUEST_BODY_SIZE_ATTR = 'http.request.body.size'
 const RESPONSE_BODY_SIZE_ATTR = 'http.response.body.size'
-const BODY_ATTRIBUTE_KEYS = new Set([
-  REQUEST_BODY_ATTR,
-  RESPONSE_BODY_ATTR,
-])
+const BODY_ATTRIBUTE_KEYS = new Set([REQUEST_BODY_ATTR, RESPONSE_BODY_ATTR])
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -32,7 +35,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function looksLikeJson(value: string) {
   const trimmed = value.trim()
-  return (trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  return (
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  )
 }
 
 function parseMaybeJson(value: unknown): JsonValue {
@@ -162,7 +168,9 @@ function bodyPreview(kind: BodyKind, value: unknown, rawValue: unknown): BodyPre
 function BodySection({ children, label }: { children: React.ReactNode; label: string }) {
   return (
     <section className={s.bodyViewerSection}>
-      <Typography.BodySmallStrong as="span" className={s.bodyViewerSectionLabel}>{label}</Typography.BodySmallStrong>
+      <Typography.BodySmallStrong as="span" className={s.bodyViewerSectionLabel}>
+        {label}
+      </Typography.BodySmallStrong>
       {children}
     </section>
   )
@@ -185,12 +193,17 @@ function BodyViewer({
     return <Typography.BodySmall variant="tertiary">{emptyText}</Typography.BodySmall>
   }
 
-  const rawBodyDetails = preview.rawText !== preview.formattedText ? (
-    <details className={s.bodyViewerRawDetails}>
-      <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Raw body</Typography.Body></summary>
-      <pre className={s.detailsPre}>{preview.rawText}</pre>
-    </details>
-  ) : null
+  const rawBodyDetails =
+    preview.rawText !== preview.formattedText ? (
+      <details className={s.bodyViewerRawDetails}>
+        <summary className={s.detailsSummary}>
+          <Typography.Body as="span" variant="tertiary">
+            Raw body
+          </Typography.Body>
+        </summary>
+        <pre className={s.detailsPre}>{preview.rawText}</pre>
+      </details>
+    ) : null
 
   if (!preview.graphql) {
     return (
@@ -206,19 +219,43 @@ function BodyViewer({
   return (
     <div className={s.bodyViewer}>
       <div className={s.bodyViewerHeader}>
-        <Typography.BodySmallStrong as="span">{bodyKind === 'request' ? 'GraphQL request' : 'GraphQL response'}</Typography.BodySmallStrong>
+        <Typography.BodySmallStrong as="span">
+          {bodyKind === 'request' ? 'GraphQL request' : 'GraphQL response'}
+        </Typography.BodySmallStrong>
         <div className={s.bodyMetaRow}>
           {operationName && metaChip('Operation', operationName)}
           {operationType && metaChip('Type', operationType)}
-          {variables !== undefined && metaChip('Variables', Array.isArray(variables) ? `${variables.length}` : 'present')}
-          {Array.isArray(errors) ? metaChip('Errors', `${errors.length}`) : errors !== undefined ? metaChip('Errors', 'present') : null}
-          {data !== undefined && metaChip('Data', Array.isArray(data) ? `${data.length}` : 'present')}
+          {variables !== undefined &&
+            metaChip('Variables', Array.isArray(variables) ? `${variables.length}` : 'present')}
+          {Array.isArray(errors)
+            ? metaChip('Errors', `${errors.length}`)
+            : errors !== undefined
+              ? metaChip('Errors', 'present')
+              : null}
+          {data !== undefined &&
+            metaChip('Data', Array.isArray(data) ? `${data.length}` : 'present')}
         </div>
       </div>
-      {query !== undefined && <BodySection label="Query"><pre className={s.detailsPre}>{query}</pre></BodySection>}
-      {variables !== undefined && <BodySection label="Variables"><pre className={s.detailsPre}>{formatDetailValue(variables)}</pre></BodySection>}
-      {data !== undefined && <BodySection label="Data"><pre className={s.detailsPre}>{formatDetailValue(data)}</pre></BodySection>}
-      {errors !== undefined && <BodySection label="Errors"><pre className={s.detailsPre}>{formatDetailValue(errors)}</pre></BodySection>}
+      {query !== undefined && (
+        <BodySection label="Query">
+          <pre className={s.detailsPre}>{query}</pre>
+        </BodySection>
+      )}
+      {variables !== undefined && (
+        <BodySection label="Variables">
+          <pre className={s.detailsPre}>{formatDetailValue(variables)}</pre>
+        </BodySection>
+      )}
+      {data !== undefined && (
+        <BodySection label="Data">
+          <pre className={s.detailsPre}>{formatDetailValue(data)}</pre>
+        </BodySection>
+      )}
+      {errors !== undefined && (
+        <BodySection label="Errors">
+          <pre className={s.detailsPre}>{formatDetailValue(errors)}</pre>
+        </BodySection>
+      )}
       {rawBodyDetails}
     </div>
   )
@@ -286,22 +323,33 @@ function formatBytes(value: unknown): string | undefined {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function bodyEmptyText(kind: 'request' | 'response', attrs: Record<string, unknown>, truncated: boolean) {
+function bodyEmptyText(
+  kind: 'request' | 'response',
+  attrs: Record<string, unknown>,
+  truncated: boolean,
+) {
   const label = kind === 'request' ? 'Request body' : 'Response body'
-  const size = formatBytes(attrs[kind === 'request' ? REQUEST_BODY_SIZE_ATTR : RESPONSE_BODY_SIZE_ATTR])
-  const present = kind === 'request'
-    ? attrBool(attrs[REQUEST_BODY_PRESENT_ATTR])
-    : attrBool(attrs[RESPONSE_BODY_PRESENT_ATTR]) || Boolean(size)
+  const size = formatBytes(
+    attrs[kind === 'request' ? REQUEST_BODY_SIZE_ATTR : RESPONSE_BODY_SIZE_ATTR],
+  )
+  const present =
+    kind === 'request'
+      ? attrBool(attrs[REQUEST_BODY_PRESENT_ATTR])
+      : attrBool(attrs[RESPONSE_BODY_PRESENT_ATTR]) || Boolean(size)
 
-  if (truncated) return `${label} was truncated${size ? ` (${size})` : ''}, but no preview was recorded.`
-  if (present) return `${label} was present${size ? ` (${size})` : ''}, but content was not captured.`
+  if (truncated)
+    return `${label} was truncated${size ? ` (${size})` : ''}, but no preview was recorded.`
+  if (present)
+    return `${label} was present${size ? ` (${size})` : ''}, but content was not captured.`
   return `No ${kind} body was recorded for this request.`
 }
 
 function metaChip(label: string, value: React.ReactNode) {
   return (
     <span className={s.httpMetaChip} key={label}>
-      <Typography.BodySmall as="span" variant="tertiary">{label}</Typography.BodySmall>
+      <Typography.BodySmall as="span" variant="tertiary">
+        {label}
+      </Typography.BodySmall>
       <Typography.BodySmallStrong as="span">{value}</Typography.BodySmallStrong>
     </span>
   )
@@ -336,7 +384,13 @@ export function HttpSpanDetail({
   const requestBodyTruncated = attrBool(attrs[REQUEST_BODY_TRUNCATED_ATTR])
   const responseBodyTruncated = attrBool(attrs[RESPONSE_BODY_TRUNCATED_ATTR])
   const paramsValue = Object.keys(params).length ? params : undefined
-  const preferredTab: HttpDetailTab = responseBody ? 'response' : requestBody ? 'request' : paramsValue ? 'params' : 'response'
+  const preferredTab: HttpDetailTab = responseBody
+    ? 'response'
+    : requestBody
+      ? 'request'
+      : paramsValue
+        ? 'params'
+        : 'response'
   const tabs: Array<{ id: HttpDetailTab; label: string }> = [
     { id: 'params', label: 'Params' },
     { id: 'request', label: `Request body${requestBodyTruncated ? ' (truncated)' : ''}` },
@@ -356,8 +410,13 @@ export function HttpSpanDetail({
   const copyValue = formatDetailValue(activeBody.value)
   const rawCopyValue = formatRawValue(activeBody.rawValue, copyValue)
   const hasSeparateRawCopy = Boolean(rawCopyValue && rawCopyValue !== copyValue)
-  const visibleAttrs = Object.fromEntries(Object.entries(attrs).filter(([key]) => !BODY_ATTRIBUTE_KEYS.has(key)))
-  const offsetMs = Math.max(0, Number((BigInt(span.startTimeUnixNanos || 0) - traceStart) / 1_000_000n))
+  const visibleAttrs = Object.fromEntries(
+    Object.entries(attrs).filter(([key]) => !BODY_ATTRIBUTE_KEYS.has(key)),
+  )
+  const offsetMs = Math.max(
+    0,
+    Number((BigInt(span.startTimeUnixNanos || 0) - traceStart) / 1_000_000n),
+  )
   const statusCode = attrText(attrs['http.response.status_code'])
   const requestId = attrText(attrs['coral.http.request_id'])
   const attempt = attrText(attrs['coral.http.attempt'])
@@ -383,11 +442,17 @@ export function HttpSpanDetail({
   }
 
   return (
-    <div className={s.waterfallHttpDetail} data-span-inspector="true" onClick={(event) => event.stopPropagation()}>
+    <div
+      className={s.waterfallHttpDetail}
+      data-span-inspector="true"
+      onClick={(event) => event.stopPropagation()}
+    >
       <div className={s.waterfallHttpDetailHeader}>
         <div className={s.waterfallHttpDetailTitle}>
           <Typography.BodySmallStrong as="span">Span details</Typography.BodySmallStrong>
-          <Typography.BodySmall as="span" variant="tertiary" truncate>{spanOperation(span)}</Typography.BodySmall>
+          <Typography.BodySmall as="span" variant="tertiary" truncate>
+            {spanOperation(span)}
+          </Typography.BodySmall>
         </div>
         <div className={s.waterfallHttpDetailHeaderActions}>
           <Button.IconButton
@@ -415,11 +480,20 @@ export function HttpSpanDetail({
           />
         </div>
       </div>
-      <ScrollArea.Container className={s.waterfallHttpDetailScroll} constrainWidth fade="bottom" height="100%">
+      <ScrollArea.Container
+        className={s.waterfallHttpDetailScroll}
+        constrainWidth
+        fade="bottom"
+        height="100%"
+      >
         <div className={s.waterfallHttpDetailContent}>
           <div className={s.requestUrlRow}>
-            <Typography.CodeSmallInline as="span" className={s.methodBadge}>{spanOperation(span)}</Typography.CodeSmallInline>
-            <Typography.Body as="span" variant="tertiary" className={s.requestUrl}>{url || 'No URL recorded'}</Typography.Body>
+            <Typography.CodeSmallInline as="span" className={s.methodBadge}>
+              {spanOperation(span)}
+            </Typography.CodeSmallInline>
+            <Typography.Body as="span" variant="tertiary" className={s.requestUrl}>
+              {url || 'No URL recorded'}
+            </Typography.Body>
           </div>
           <div className={s.httpMetaRow}>
             {statusCode && metaChip('Status', statusCode)}
@@ -435,7 +509,9 @@ export function HttpSpanDetail({
                 <button
                   aria-controls={`http-detail-${span.spanId}-${tab.id}`}
                   aria-selected={activeTab === tab.id}
-                  className={classNames(s.tabTrigger, { [s.tabTriggerActive]: activeTab === tab.id })}
+                  className={classNames(s.tabTrigger, {
+                    [s.tabTriggerActive]: activeTab === tab.id,
+                  })}
                   id={`http-detail-tab-${span.spanId}-${tab.id}`}
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
@@ -448,12 +524,26 @@ export function HttpSpanDetail({
             </div>
             <div className={s.copyButtonGroup}>
               {hasSeparateRawCopy && (
-                <Button.TextButton disabled={!rawCopyValue} onClick={() => copyValueToClipboard(rawCopyValue, 'raw')} size="22" variant="secondary">
+                <Button.TextButton
+                  disabled={!rawCopyValue}
+                  onClick={() => copyValueToClipboard(rawCopyValue, 'raw')}
+                  size="22"
+                  variant="secondary"
+                >
                   {copyState === 'raw' ? 'Raw copied' : 'Copy raw'}
                 </Button.TextButton>
               )}
-              <Button.TextButton disabled={!copyValue} onClick={() => copyValueToClipboard(copyValue, 'formatted')} size="22" variant="secondary">
-                {copyState === 'formatted' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy formatted'}
+              <Button.TextButton
+                disabled={!copyValue}
+                onClick={() => copyValueToClipboard(copyValue, 'formatted')}
+                size="22"
+                variant="secondary"
+              >
+                {copyState === 'formatted'
+                  ? 'Copied'
+                  : copyState === 'failed'
+                    ? 'Copy failed'
+                    : 'Copy formatted'}
               </Button.TextButton>
             </div>
           </div>
@@ -463,10 +553,19 @@ export function HttpSpanDetail({
             id={`http-detail-${span.spanId}-${activeTab}`}
             role="tabpanel"
           >
-            <BodyViewer emptyText={activeBody.emptyText} kind={activeBody.kind} rawValue={activeBody.rawValue} value={activeBody.value} />
+            <BodyViewer
+              emptyText={activeBody.emptyText}
+              kind={activeBody.kind}
+              rawValue={activeBody.rawValue}
+              value={activeBody.value}
+            />
           </section>
           <details>
-            <summary className={s.detailsSummary}><Typography.Body as="span" variant="tertiary">Span attributes</Typography.Body></summary>
+            <summary className={s.detailsSummary}>
+              <Typography.Body as="span" variant="tertiary">
+                Span attributes
+              </Typography.Body>
+            </summary>
             <pre className={s.detailsPre}>{JSON.stringify(visibleAttrs, null, 2)}</pre>
           </details>
         </div>

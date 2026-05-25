@@ -32,8 +32,9 @@ AGENTS.md @withcoral/core-maintainers
 /crates/coral-mcp/ @withcoral/mcp
 /crates/coral-spec/ @withcoral/sources
 
-# Bundled sources.
+# Sources
 /sources/ @withcoral/sources
+/sources/community/ @jsummerfield
 
 # UI
 /ui/ @withcoral/ui
