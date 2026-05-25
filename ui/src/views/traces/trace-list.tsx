@@ -15,9 +15,23 @@ import {
   timeAgo,
 } from './trace-utils'
 
-function TraceRow({ onSelect, trace }: { onSelect: () => void; trace: TraceSummary }) {
+function TraceRow({
+  active,
+  onSelect,
+  trace,
+}: {
+  active: boolean
+  onSelect: () => void
+  trace: TraceSummary
+}) {
   return (
-    <button className={s.fullRow} onClick={onSelect} type="button">
+    <button
+      className={s.fullRow}
+      data-active={active || undefined}
+      data-trace-row-id={trace.traceId}
+      onClick={onSelect}
+      type="button"
+    >
       <span className={s.statusDot} data-tone={statusTone(trace.status)} />
       <div className={classNames(s.cell, s.cellTimestamp)}>
         <Tooltip content={formatTimestamp(startMs(trace))} side="right">
@@ -43,16 +57,23 @@ function TraceRow({ onSelect, trace }: { onSelect: () => void; trace: TraceSumma
 }
 
 export function TraceList({
+  activeTraceId,
   traces,
   onSelect,
 }: {
+  activeTraceId?: string | null
   traces: TraceSummary[]
   onSelect: (traceId: string) => void
 }) {
   return (
     <div className={s.traceList}>
       {traces.map((trace) => (
-        <TraceRow key={trace.traceId} onSelect={() => onSelect(trace.traceId)} trace={trace} />
+        <TraceRow
+          active={trace.traceId === activeTraceId}
+          key={trace.traceId}
+          onSelect={() => onSelect(trace.traceId)}
+          trace={trace}
+        />
       ))}
     </div>
   )
