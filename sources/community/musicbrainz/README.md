@@ -204,7 +204,7 @@ MusicBrainz enforces a rate limit of **1 request per second** per client applica
 
 ## Pagination
 
-All search tables use offset pagination with `limit` (1-100, default 25) and `offset` request parameters. Coral automatically pages through results when a query omits `LIMIT` or requests more rows than a single page.
+All search tables use offset pagination with `limit` (1–100, default 25) and `offset` request parameters. Because MusicBrainz rate limits each client to 1 request per second, Coral limits each query to a single request (page). Use explicit `LIMIT` and `OFFSET` clauses to paginate through larger result sets manually.
 
 ## Notes
 
