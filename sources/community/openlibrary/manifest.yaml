@@ -1,0 +1,85 @@
+name: openlibrary
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Search books, authors, and subjects from the Open Library API.
+base_url: https://openlibrary.org
+test_queries:
+  - SELECT * FROM openlibrary.search WHERE q = 'lord of the rings' LIMIT 5
+  - SELECT * FROM openlibrary.subjects WHERE subject = 'love' LIMIT 5
+tables:
+  - name: search
+    description: Search for books by title, author, or keyword.
+    filters:
+      - name: q
+        required: true
+    request:
+      method: GET
+      path: /search.json
+      query:
+        - name: q
+          from: filter
+          key: q
+    response:
+      rows_path:
+        - docs
+    pagination:
+      mode: none
+    columns:
+      - name: q
+        type: Utf8
+        expr: {kind: from_filter, key: q}
+      - name: key
+        type: Utf8
+        expr: {kind: path, path: [key]}
+      - name: title
+        type: Utf8
+        expr: {kind: path, path: [title]}
+      - name: first_publish_year
+        type: Int64
+        expr: {kind: path, path: [first_publish_year]}
+      - name: author_name
+        type: Json
+        expr: {kind: path, path: [author_name]}
+      - name: author_key
+        type: Json
+        expr: {kind: path, path: [author_key]}
+      - name: language
+        type: Json
+        expr: {kind: path, path: [language]}
+      - name: isbn
+        type: Json
+        expr: {kind: path, path: [isbn]}
+      - name: publisher
+        type: Json
+        expr: {kind: path, path: [publisher]}
+
+  - name: subjects
+    description: Fetch books belonging to a specific subject or genre.
+    filters:
+      - name: subject
+        required: true
+    request:
+      method: GET
+      path: /subjects/{{filter.subject}}.json
+    response:
+      rows_path:
+        - works
+    pagination:
+      mode: none
+    columns:
+      - name: subject
+        type: Utf8
+        expr: {kind: from_filter, key: subject}
+      - name: key
+        type: Utf8
+        expr: {kind: path, path: [key]}
+      - name: title
+        type: Utf8
+        expr: {kind: path, path: [title]}
+      - name: first_publish_year
+        type: Int64
+        expr: {kind: path, path: [first_publish_year]}
+      - name: authors
+        type: Json
+        expr: {kind: path, path: [authors]}
