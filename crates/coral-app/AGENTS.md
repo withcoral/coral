@@ -11,6 +11,7 @@ root.
 - app-owned persisted state under `CORAL_CONFIG_DIR`
 - workspace identity and validation
 - source lifecycle and install/remove persistence
+- credential-set identity and credential material persistence
 - bundled-source manifest description and install-time manifest mapping through
   `coral-spec`
 - query-time selection of installed sources before calling `coral-engine`
@@ -28,14 +29,14 @@ root.
 
 ## Invariants
 
-- Keep service handlers thin; real behavior belongs in managers or state
-  helpers.
+- Keep service handlers thin; real behavior belongs in managers, state helpers,
+  or credential helpers.
 - Keep process environment access in `src/bootstrap/env.rs` or other clearly
   app-owned bootstrap seams. Do not read ambient process environment from
-  managers, services, or state helpers.
-- Keep `state/`, `workspaces/`, `sources/`, `query/`, and `catalog/` as the
-  main internal boundaries. Do not create new sub-boundaries unless they own
-  durable, independent behavior.
+  managers, services, state helpers, or credential helpers.
+- Keep `state/`, `credentials/`, `workspaces/`, `sources/`, `query/`, and
+  `catalog/` as the main internal boundaries. Do not create new sub-boundaries
+  unless they own durable, independent behavior.
 - Persist imported manifests as files under app-owned state; do not inline
   them into `config.toml`.
 - Bundled installs persist source identity plus configured variables and
@@ -56,8 +57,8 @@ root.
   tonic requests, normalize workspace and path identifiers, call managers, and
   map app/core results into protobufs.
 - `manager.rs` files own app-level orchestration. They coordinate installed
-  state, secrets, manifests, rollback, runtime setup, and engine calls. They
-  should not know about tonic request or response types.
+  state, credential material, manifests, rollback, runtime setup, and engine
+  calls. They should not know about tonic request or response types.
 - `catalog/discovery.rs` owns provider-independent discovery semantics that
   adapters need to share. CLI, MCP, and UI code should render catalog results,
   not reimplement table matching, column filtering, pagination, or
@@ -71,8 +72,8 @@ root.
   types. Parse `WorkspaceName` and `SourceName` at persistence and service
   boundaries so managers and state/layout code stay transport-free and do not
   pass raw identifier strings around internally.
-- `state/config.rs`, `state/secrets.rs`, and `storage/fs.rs` own persistence
-  and filesystem details. Managers may coordinate them, but services should not
-  reach into them directly.
+- `state/config.rs`, `credentials/store.rs`, and `storage/fs.rs` own
+  persistence and filesystem details. Managers may coordinate them, but
+  services should not reach into them directly.
 - Keep app-owned domain models transport-free. Proto mapping belongs at the
   service edge unless there is a strong reason to centralize it.

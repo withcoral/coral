@@ -2,18 +2,24 @@ use std::collections::BTreeMap;
 use std::io::{IsTerminal, stdin, stdout};
 use std::path::Path;
 
+use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
-    ImportSourceRequest, ListSourcesRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInfo, SourceInputKind, SourceInputSpec, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, query_test_result,
+    CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
+    GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
+    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
+    SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse, create_bundled_source_with_o_auth_response, import_source_response,
+    query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::{AppClient, default_workspace};
+use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
-    ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest, parse_source_manifest_yaml,
+    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
+    ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
+    parse_source_manifest_yaml,
 };
 use dialoguer::console::style;
-use dialoguer::{Input, Password, theme::ColorfulTheme};
+use dialoguer::{Input, Password, Select, theme::ColorfulTheme};
 use tonic::Request;
 
 const MAX_TABLES_PER_SCHEMA: usize = 9;
@@ -101,19 +107,188 @@ pub(crate) async fn import_source(
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
 ) -> Result<Source, anyhow::Error> {
-    let response = app
+    let mut responses = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
             manifest_yaml,
             variables,
             secrets,
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await?
         .into_inner();
-    response
-        .source
-        .ok_or_else(|| anyhow::anyhow!("import source response missing source"))
+    while let Some(response) = responses.message().await? {
+        if let Some(import_source_response::Event::Source(source)) = response.event {
+            return Ok(source);
+        }
+    }
+    Err(anyhow::anyhow!("import source stream ended without source"))
+}
+
+pub(crate) struct CollectedSourceInputs {
+    pub(crate) variables: Vec<SourceVariable>,
+    pub(crate) secrets: Vec<SourceSecret>,
+    oauth_credential_retrievals: Vec<OAuthCredentialRetrieval>,
+    oauth_labels: BTreeMap<String, String>,
+}
+
+impl CollectedSourceInputs {
+    fn new() -> Self {
+        Self {
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+            oauth_labels: BTreeMap::new(),
+        }
+    }
+}
+
+pub(crate) async fn add_bundled_source_with_credentials(
+    app: &AppClient,
+    name: &str,
+    inputs: CollectedSourceInputs,
+) -> Result<Source, anyhow::Error> {
+    if inputs.oauth_credential_retrievals.is_empty() {
+        return add_bundled_source(app, name, inputs.variables, inputs.secrets).await;
+    }
+    let response = app
+        .source_client()
+        .create_bundled_source_with_o_auth(Request::new(CreateBundledSourceWithOAuthRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+            variables: inputs.variables,
+            secrets: inputs.secrets,
+            oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+        }))
+        .await?;
+    source_from_bundled_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+}
+
+pub(crate) async fn import_source_with_credentials(
+    app: &AppClient,
+    manifest_yaml: String,
+    inputs: CollectedSourceInputs,
+) -> Result<Source, anyhow::Error> {
+    if inputs.oauth_credential_retrievals.is_empty() {
+        return import_source(app, manifest_yaml, inputs.variables, inputs.secrets).await;
+    }
+    let response = app
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: inputs.variables,
+            secrets: inputs.secrets,
+            oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+        }))
+        .await?;
+    source_from_import_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+}
+
+async fn source_from_bundled_credential_stream(
+    mut stream: tonic::Streaming<CreateBundledSourceWithOAuthResponse>,
+    oauth_labels: &BTreeMap<String, String>,
+) -> Result<Source, anyhow::Error> {
+    while let Some(response) = stream
+        .message()
+        .await
+        .map_err(|error| oauth_error("retrieve", &error))?
+    {
+        let event = response.event.map(CredentialStreamEvent::from);
+        if let Some(source) = handle_credential_stream_event(event, oauth_labels) {
+            return Ok(source);
+        }
+    }
+    Err(anyhow::anyhow!(
+        "source credential retrieval stream ended before source installation completed"
+    ))
+}
+
+async fn source_from_import_credential_stream(
+    mut stream: tonic::Streaming<ImportSourceResponse>,
+    oauth_labels: &BTreeMap<String, String>,
+) -> Result<Source, anyhow::Error> {
+    while let Some(response) = stream
+        .message()
+        .await
+        .map_err(|error| oauth_error("retrieve", &error))?
+    {
+        let event = response.event.map(CredentialStreamEvent::from);
+        if let Some(source) = handle_credential_stream_event(event, oauth_labels) {
+            return Ok(source);
+        }
+    }
+    Err(anyhow::anyhow!(
+        "source credential retrieval stream ended before source import completed"
+    ))
+}
+
+enum CredentialStreamEvent {
+    Source(Source),
+    OAuthAuthorization {
+        input_key: String,
+        authorization_url: String,
+    },
+    OAuthCompleted,
+}
+
+impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStreamEvent {
+    fn from(event: create_bundled_source_with_o_auth_response::Event) -> Self {
+        match event {
+            create_bundled_source_with_o_auth_response::Event::Source(source) => {
+                Self::Source(source)
+            }
+            create_bundled_source_with_o_auth_response::Event::OauthAuthorization(
+                authorization,
+            ) => Self::OAuthAuthorization {
+                input_key: authorization.input_key,
+                authorization_url: authorization.authorization_url,
+            },
+            create_bundled_source_with_o_auth_response::Event::OauthCompleted(_) => {
+                Self::OAuthCompleted
+            }
+        }
+    }
+}
+
+impl From<import_source_response::Event> for CredentialStreamEvent {
+    fn from(event: import_source_response::Event) -> Self {
+        match event {
+            import_source_response::Event::Source(source) => Self::Source(source),
+            import_source_response::Event::OauthAuthorization(authorization) => {
+                Self::OAuthAuthorization {
+                    input_key: authorization.input_key,
+                    authorization_url: authorization.authorization_url,
+                }
+            }
+            import_source_response::Event::OauthCompleted(_) => Self::OAuthCompleted,
+        }
+    }
+}
+
+fn handle_credential_stream_event(
+    event: Option<CredentialStreamEvent>,
+    oauth_labels: &BTreeMap<String, String>,
+) -> Option<Source> {
+    match event {
+        Some(CredentialStreamEvent::OAuthAuthorization {
+            input_key,
+            authorization_url,
+        }) => {
+            let label = oauth_labels
+                .get(&input_key)
+                .map_or(input_key.as_str(), String::as_str);
+            println!("Open this URL to connect {label}:");
+            println!("{authorization_url}");
+            if let Err(err) = crate::browser::open_url(&authorization_url) {
+                println!("{}", style(format!("Could not open browser: {err}")).dim());
+            }
+            None
+        }
+        Some(CredentialStreamEvent::Source(source)) => Some(source),
+        Some(CredentialStreamEvent::OAuthCompleted) | None => None,
+    }
 }
 
 pub(crate) async fn validate_source(
@@ -187,10 +362,12 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     println!();
     println!("  {}", style("Inputs").bold());
     for input in &source.inputs {
-        let kind_label = match SourceInputKind::try_from(input.kind) {
-            Ok(SourceInputKind::Variable) => "variable",
-            Ok(SourceInputKind::Secret) => "secret",
-            Ok(SourceInputKind::Unspecified) | Err(_) => "unknown",
+        let (kind_label, default_value) = match input.input.as_ref() {
+            Some(ProtoSourceInput::Variable(variable)) => {
+                ("variable", variable.default_value.as_str())
+            }
+            Some(ProtoSourceInput::Secret(_)) => ("secret", ""),
+            None => ("unknown", ""),
         };
         let requirement = if input.required {
             "required"
@@ -202,8 +379,8 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             style(&input.key).bold(),
             style(format!("({kind_label}, {requirement})")).dim()
         );
-        if !input.default_value.is_empty() {
-            println!("      default: {}", input.default_value);
+        if !default_value.is_empty() {
+            println!("      default: {default_value}");
         }
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());
@@ -271,10 +448,69 @@ pub(crate) fn prompt_for_inputs(
     Ok((variables, secrets))
 }
 
+pub(crate) fn prompt_for_inputs_with_credential_methods(
+    inputs: &[ManifestInputSpec],
+) -> Result<CollectedSourceInputs, anyhow::Error> {
+    let mut collected = CollectedSourceInputs::new();
+
+    for input in inputs {
+        let env_value = read_source_input_env(&input.key).unwrap_or_default();
+        if !env_value.is_empty() {
+            match input.kind {
+                ManifestInputKind::Variable => collected.variables.push(SourceVariable {
+                    key: input.key.clone(),
+                    value: env_value,
+                }),
+                ManifestInputKind::Secret => collected.secrets.push(SourceSecret {
+                    key: input.key.clone(),
+                    value: env_value,
+                }),
+            }
+            continue;
+        }
+
+        match input.kind {
+            ManifestInputKind::Variable => {
+                if let Some(variable) = prompt_variable(input)? {
+                    collected.variables.push(variable);
+                }
+            }
+            ManifestInputKind::Secret => match prompt_secret_with_methods(input)? {
+                SecretInputOutcome::SourceConfig(secret) => {
+                    if let Some(secret) = secret {
+                        collected.secrets.push(secret);
+                    }
+                }
+                SecretInputOutcome::OAuth { credential, label } => {
+                    collected.oauth_labels.insert(input.key.clone(), label);
+                    collected.oauth_credential_retrievals.push(credential);
+                }
+            },
+        }
+    }
+
+    Ok(collected)
+}
+
 pub(crate) fn collect_inputs_from_env(
     inputs: &[ManifestInputSpec],
+    interactive_command: String,
 ) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
-    collect_inputs_with(inputs, |key| read_source_input_env(key).unwrap_or_default())
+    collect_inputs_with_hint(
+        inputs,
+        |key| read_source_input_env(key).unwrap_or_default(),
+        Some(interactive_command),
+    )
+}
+
+pub(crate) fn shell_quote_arg(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':' | '='))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[expect(
@@ -285,9 +521,10 @@ fn read_source_input_env(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
-fn collect_inputs_with(
+fn collect_inputs_with_hint(
     inputs: &[ManifestInputSpec],
     mut lookup: impl FnMut(&str) -> String,
+    interactive_command: Option<String>,
 ) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
     let mut variables = Vec::new();
     let mut secrets = Vec::new();
@@ -319,8 +556,12 @@ fn collect_inputs_with(
     }
 
     if !missing.is_empty() {
+        let interactive_hint = interactive_command.map_or_else(
+            || "--interactive".to_string(),
+            |command| format!("`{command}`"),
+        );
         return Err(anyhow::anyhow!(
-            "missing required environment variable{}: {}. Set the variable{} or run with --interactive.",
+            "missing required environment variable{}: {}. Set the variable{} or run {interactive_hint}.",
             if missing.len() == 1 { "" } else { "s" },
             missing.join(", "),
             if missing.len() == 1 { "" } else { "s" },
@@ -328,25 +569,6 @@ fn collect_inputs_with(
     }
 
     Ok((variables, secrets))
-}
-
-pub(crate) fn manifest_input_from_proto(
-    input: &SourceInputSpec,
-) -> Result<ManifestInputSpec, anyhow::Error> {
-    let kind = match SourceInputKind::try_from(input.kind) {
-        Ok(SourceInputKind::Variable) => ManifestInputKind::Variable,
-        Ok(SourceInputKind::Secret) => ManifestInputKind::Secret,
-        Ok(SourceInputKind::Unspecified) | Err(_) => {
-            return Err(anyhow::anyhow!("unknown input kind for '{}'", input.key));
-        }
-    };
-    Ok(ManifestInputSpec {
-        key: input.key.clone(),
-        kind,
-        required: input.required,
-        default_value: input.default_value.clone(),
-        hint: (!input.hint.is_empty()).then(|| input.hint.clone()),
-    })
 }
 
 pub(crate) fn source_origin_label(origin: i32) -> &'static str {
@@ -397,11 +619,12 @@ pub(crate) async fn test_and_print(
     let normalized = source_name_arg(Some(source_name))?;
     let response = match validate_source_request(app, normalized.clone()).await {
         Ok(response) => response,
-        Err(status) if status.code() == tonic::Code::NotFound => {
+        Err(status) if is_source_missing_status(&status) => {
             return source_test_not_found_error(app, &normalized, status).await;
         }
         Err(status) => return Err(anyhow::Error::from(status).into()),
     };
+
     print_validation_pretty(&response, limit)?;
     match validation_follow_up(&response, severity_mode) {
         ValidationFollowUp::None => Ok(()),
@@ -434,6 +657,45 @@ async fn source_test_not_found_error(
     Err(crate::CliError::SourceNotFound {
         source_name: source_name.to_string(),
     })
+}
+
+pub(crate) async fn remove_and_print(
+    app: &AppClient,
+    source_name: &str,
+) -> Result<(), crate::CliError> {
+    let normalized = source_name_arg(Some(source_name))?;
+    match delete_source(app, &normalized).await {
+        Ok(()) => {
+            println!("Removed source {normalized}");
+            Ok(())
+        }
+        Err(err) => {
+            if err
+                .downcast_ref::<tonic::Status>()
+                .is_some_and(is_source_missing_status)
+            {
+                Err(crate::CliError::SourceRemoveNotFound {
+                    source_name: normalized,
+                })
+            } else {
+                Err(err.into())
+            }
+        }
+    }
+}
+
+/// Returns `true` only when the gRPC status carries the server's
+/// `SOURCE_NOT_FOUND` AIP-193 reason. Other `Code::NotFound` causes
+/// (e.g. a missing manifest file mapped from `io::ErrorKind::NotFound`)
+/// have no Coral `ErrorInfo` attached, so they remain diagnosable instead
+/// of being rewritten into the friendly "source not found" message.
+fn is_source_missing_status(status: &tonic::Status) -> bool {
+    match decode_status_error(status) {
+        DecodedStatusError::Structured(error) => {
+            error.reason == CORAL_ERROR_REASON_SOURCE_NOT_FOUND
+        }
+        DecodedStatusError::Plain(_) => false,
+    }
 }
 
 pub(crate) fn print_validation_pretty(
@@ -623,6 +885,147 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
     }))
 }
 
+enum SecretInputOutcome {
+    SourceConfig(Option<SourceSecret>),
+    OAuth {
+        credential: OAuthCredentialRetrieval,
+        label: String,
+    },
+}
+
+fn prompt_secret_with_methods(
+    input: &ManifestInputSpec,
+) -> Result<SecretInputOutcome, anyhow::Error> {
+    let Some(credential) = input.credential.as_ref() else {
+        return Ok(SecretInputOutcome::SourceConfig(prompt_secret(input)?));
+    };
+    let selected = select_credential_method(input, credential)?;
+    let method = credential
+        .methods
+        .get(selected)
+        .ok_or_else(|| anyhow::anyhow!("credential method index {selected} is out of range"))?;
+    match method.kind {
+        ManifestCredentialMethodKind::SourceConfig => {
+            Ok(SecretInputOutcome::SourceConfig(prompt_secret(input)?))
+        }
+        ManifestCredentialMethodKind::OAuth => Ok(SecretInputOutcome::OAuth {
+            credential: collect_oauth_credential_method(input, selected, method)?,
+            label: credential_method_label(method),
+        }),
+    }
+}
+
+fn select_credential_method(
+    input: &ManifestInputSpec,
+    credential: &ManifestCredentialSpec,
+) -> Result<usize, anyhow::Error> {
+    if credential.methods.len() == 1 {
+        return Ok(0);
+    }
+    let theme = ColorfulTheme::default();
+    let items = credential
+        .methods
+        .iter()
+        .map(credential_method_label)
+        .collect::<Vec<_>>();
+    let selected = Select::with_theme(&theme)
+        .with_prompt(format!("{} credential", input.key))
+        .items(&items)
+        .default(0)
+        .interact()?;
+    Ok(selected)
+}
+
+fn credential_method_label(method: &ManifestCredentialMethod) -> String {
+    method.label.clone().unwrap_or_else(|| match method.kind {
+        ManifestCredentialMethodKind::SourceConfig => "Paste token".to_string(),
+        ManifestCredentialMethodKind::OAuth => "Connect with OAuth".to_string(),
+    })
+}
+
+fn collect_oauth_credential_method(
+    input: &ManifestInputSpec,
+    method_index: usize,
+    method: &ManifestCredentialMethod,
+) -> Result<OAuthCredentialRetrieval, anyhow::Error> {
+    let oauth = method
+        .oauth
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("oauth credential method is missing OAuth config"))?;
+    Ok(OAuthCredentialRetrieval {
+        input_key: input.key.clone(),
+        method_index: Some(u32::try_from(method_index)?),
+        credential_inputs: prompt_oauth_credential_inputs(oauth)?,
+    })
+}
+
+fn oauth_error(action: &str, error: &tonic::Status) -> anyhow::Error {
+    anyhow::anyhow!(
+        "OAuth credential retrieval failed during {action}: {error}. Rerun `coral source add` to try again."
+    )
+}
+
+fn prompt_oauth_credential_inputs(
+    oauth: &ManifestOAuthCredentialSpec,
+) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
+    let mut values = Vec::new();
+    if let Some(input_key) = oauth.client.id.input.as_deref()
+        && let Some(value) = prompt_oauth_client_id(input_key, oauth.client.id.default.as_deref())?
+    {
+        values.push(OAuthCredentialInput {
+            key: input_key.to_string(),
+            value,
+        });
+    }
+    if let Some(secret) = oauth.client.secret.as_ref() {
+        let value = prompt_oauth_client_secret(&secret.input)?;
+        values.push(OAuthCredentialInput {
+            key: secret.input.clone(),
+            value,
+        });
+    }
+    Ok(values)
+}
+
+fn prompt_oauth_client_id(
+    input_key: &str,
+    default: Option<&str>,
+) -> Result<Option<String>, anyhow::Error> {
+    let theme = ColorfulTheme::default();
+    let prompt = if default.is_some_and(|value| !value.is_empty()) {
+        format!("{input_key} [source default]")
+    } else {
+        input_key.to_string()
+    };
+    let value = Input::<String>::with_theme(&theme)
+        .with_prompt(prompt)
+        .allow_empty(true)
+        .interact_text()?;
+    if !value.is_empty() {
+        return Ok(Some(value));
+    }
+    if default.is_some_and(|value| !value.is_empty()) {
+        return Ok(None);
+    }
+    Err(anyhow::anyhow!(
+        "missing required OAuth client ID '{input_key}'"
+    ))
+}
+
+fn prompt_oauth_client_secret(input_key: &str) -> Result<String, anyhow::Error> {
+    let theme = ColorfulTheme::default();
+    let value = Password::with_theme(&theme)
+        .with_prompt(input_key)
+        .allow_empty_password(false)
+        .interact()?;
+    if value.is_empty() {
+        return Err(anyhow::anyhow!(
+            "missing required OAuth client secret '{input_key}'"
+        ));
+    }
+    Ok(value)
+}
+
 fn print_input_hint(input: &ManifestInputSpec) {
     if let Some(hint) = input.hint.as_deref()
         && !hint.is_empty()
@@ -661,8 +1064,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        ValidationFollowUp, ValidationSeverityMode, collect_inputs_with, finalize_input_value,
-        source_name_arg, validation_follow_up,
+        ValidationFollowUp, ValidationSeverityMode, collect_inputs_with_hint, finalize_input_value,
+        shell_quote_arg, source_name_arg, validation_follow_up,
     };
 
     #[test]
@@ -674,6 +1077,7 @@ mod tests {
                 required: false,
                 default_value: "https://api.linear.app".to_string(),
                 hint: None,
+                credential: None,
             },
             ManifestInputSpec {
                 key: "LINEAR_API_KEY".to_string(),
@@ -681,12 +1085,15 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
         ];
         let env: HashMap<&str, &str> = [("LINEAR_API_KEY", "lin_token")].into_iter().collect();
-        let (variables, secrets) = collect_inputs_with(&inputs, |key| {
-            env.get(key).map(|v| (*v).to_string()).unwrap_or_default()
-        })
+        let (variables, secrets) = collect_inputs_with_hint(
+            &inputs,
+            |key| env.get(key).map(|v| (*v).to_string()).unwrap_or_default(),
+            None,
+        )
         .expect("should succeed");
         assert_eq!(variables.len(), 1);
         assert_eq!(variables[0].key, "LINEAR_API_BASE");
@@ -704,9 +1111,11 @@ mod tests {
             required: false,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         }];
-        let (variables, _) = collect_inputs_with(&inputs, |_| "https://override.test".to_string())
-            .expect("env should override default");
+        let (variables, _) =
+            collect_inputs_with_hint(&inputs, |_| "https://override.test".to_string(), None)
+                .expect("env should override default");
         assert_eq!(variables.len(), 1);
         assert_eq!(variables[0].value, "https://override.test");
     }
@@ -719,8 +1128,9 @@ mod tests {
             required: true,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         }];
-        let (variables, secrets) = collect_inputs_with(&inputs, |_| String::new())
+        let (variables, secrets) = collect_inputs_with_hint(&inputs, |_| String::new(), None)
             .expect("default should satisfy required");
         assert_eq!(secrets.len(), 0);
         assert_eq!(variables.len(), 1);
@@ -736,6 +1146,7 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
             ManifestInputSpec {
                 key: "OTHER_KEY".to_string(),
@@ -743,9 +1154,10 @@ mod tests {
                 required: true,
                 default_value: String::new(),
                 hint: None,
+                credential: None,
             },
         ];
-        let error = collect_inputs_with(&inputs, |_| String::new())
+        let error = collect_inputs_with_hint(&inputs, |_| String::new(), None)
             .expect_err("missing required inputs should fail");
         let message = error.to_string();
         assert!(message.contains("LINEAR_API_KEY"));
@@ -770,9 +1182,10 @@ mod tests {
             required: false,
             default_value: String::new(),
             hint: None,
+            credential: None,
         }];
-        let (variables, secrets) =
-            collect_inputs_with(&inputs, |_| String::new()).expect("optional should be omitted");
+        let (variables, secrets) = collect_inputs_with_hint(&inputs, |_| String::new(), None)
+            .expect("optional should be omitted");
         assert!(variables.is_empty());
         assert!(secrets.is_empty());
     }
@@ -785,6 +1198,7 @@ mod tests {
             required: false,
             default_value: "https://example.com".to_string(),
             hint: None,
+            credential: None,
         };
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
@@ -801,10 +1215,21 @@ mod tests {
             required: true,
             default_value: String::new(),
             hint: None,
+            credential: None,
         };
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
         assert!(error.to_string().contains("missing required source secret"));
+    }
+
+    #[test]
+    fn shell_quote_arg_quotes_copyable_commands() {
+        assert_eq!(shell_quote_arg("sources/demo.yaml"), "sources/demo.yaml");
+        assert_eq!(
+            shell_quote_arg("fixtures/my source.yaml"),
+            "'fixtures/my source.yaml'"
+        );
+        assert_eq!(shell_quote_arg("it'demo.yaml"), "'it'\\''demo.yaml'");
     }
 
     #[test]

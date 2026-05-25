@@ -968,7 +968,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -980,10 +980,11 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "axum",
+ "base64",
  "chrono",
  "coral-api",
  "coral-auth-aws",
@@ -1002,6 +1003,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1015,12 +1017,13 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1033,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1061,11 +1064,12 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "coral-api",
  "coral-app",
+ "coral-spec",
  "http-body 1.0.1",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -1080,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1098,6 +1102,7 @@ dependencies = [
  "opentelemetry",
  "parquet",
  "reqwest",
+ "rmcp",
  "serde",
  "serde_json",
  "strsim",
@@ -1106,13 +1111,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-opentelemetry",
+ "url",
  "urlencoding",
  "wiremock",
 ]
 
 [[package]]
 name = "coral-mcp"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "coral-api",
  "coral-app",
@@ -1134,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "coral-spec"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "jsonschema",
  "serde",
@@ -4192,9 +4198,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "1.5.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67d69668de0b0ccd9cc435f700f3b39a7861863cf37a15e1f304ea78688a4826"
+checksum = "e12ca9067b5ebfbd5b3fcdc4acfceb81aa7d5ab2a879dff7cb75d22434276aad"
 dependencies = [
  "async-trait",
  "base64",
@@ -4216,9 +4222,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "1.5.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48fdc01c81097b0aed18633e676e269fefa3a78ec1df56b4fe597c1241b92025"
+checksum = "7caa6743cc0888e433105fe1bc551a7f607940b126a37bc97b478e86064627eb"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -5978,14 +5984,16 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
  "coral-spec",
  "insta",
  "pulldown-cmark",
+ "serde",
  "serde_json",
+ "serde_yaml",
  "walkdir",
 ]
 

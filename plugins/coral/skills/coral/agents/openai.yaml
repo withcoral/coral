@@ -1,0 +1,4 @@
+interface:
+  display_name: "Coral"
+  short_description: "Query connected sources through Coral MCP"
+  default_prompt: "Use $coral to query live connected data through Coral MCP."

@@ -1,11 +1,12 @@
 import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 
+import { breakpoints } from '@/styles/theme'
 import { utils } from '@/styles/utils'
+import { fontFamily } from '@/wax/theme/font.css'
 import { lightTheme } from '@/wax/theme/theme-light.css'
 import { theme } from '@/wax/theme/theme.css'
 
 const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
-const codeFontFamily = '"Gustan Mono", "Roboto Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace'
 export const root = style({ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 })
 
 export const header = style({
@@ -30,16 +31,64 @@ export const headerTitle = style({
   paddingInlineEnd: 24,
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      selectors: {
+        [`${header}[data-searching="true"] &`]: { display: 'none' },
+      },
+    },
+  },
 })
 
-export const headerActions = style({ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 4 })
+export const headerActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexShrink: 0,
+  gap: 4,
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      selectors: {
+        [`${header}[data-searching="true"] &`]: { flex: 1 },
+      },
+    },
+  },
+})
 export const inlineSearch = style({
   alignItems: 'center',
   display: 'flex',
-  gap: 6,
-  width: 360,
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      selectors: {
+        '&[data-searching="true"]': { flex: 1 },
+      },
+    },
+  },
 })
-export const inlineSearchField = style({ flex: 1, minWidth: 0 })
+
+export const searchTrigger = style({
+  display: 'none',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      display: 'inline-flex',
+      selectors: {
+        [`${inlineSearch}[data-searching="true"] &`]: { display: 'none' },
+      },
+    },
+  },
+})
+
+export const searchField = style({
+  display: 'block',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      display: 'none',
+      selectors: {
+        [`${inlineSearch}[data-searching="true"] &`]: { display: 'block', flex: 1 },
+      },
+    },
+  },
+})
+
 export const disconnectedBanner = style({
   backgroundColor: theme.pill.red.background,
   borderBlockEnd: `1px solid ${theme.pill.red.stroke}`,
@@ -75,7 +124,7 @@ export const cellTimestamp = style({ minWidth: 80 })
 export const sqlPreview = style({
   color: utils.opacify(theme.content.primary, 85),
   flex: 1,
-  fontFamily: codeFontFamily,
+  fontFamily: fontFamily.dmMono,
   fontSize: 14,
   lineHeight: 1.65,
   margin: 0,
@@ -169,11 +218,11 @@ export const waterfallTimelinePane = style({
 export const waterfallTickRow = style({
   display: 'grid',
   flexShrink: 0,
-  gridTemplateColumns: '220px minmax(0, 1fr)',
+  gridTemplateColumns: '320px minmax(0, 1fr)',
 })
-export const waterfallLabel = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, paddingBlockEnd: 4 })
+export const waterfallLabel = style({ height: 24, minWidth: 0, paddingBlockEnd: 4 })
 export const waterfallTimeline = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, height: 24, minWidth: 0, overflow: 'hidden', paddingBlockEnd: 4, position: 'relative' })
-export const waterfallTick = style({ color: theme.content.tertiary, fontFamily: codeFontFamily, fontSize: 12, lineHeight: '16px', position: 'absolute', whiteSpace: 'nowrap' })
+export const waterfallTick = style({ color: theme.content.tertiary, fontFamily: fontFamily.dmMono, fontSize: 12, lineHeight: '16px', position: 'absolute', whiteSpace: 'nowrap' })
 export const waterfallResizeHandle = style({
   alignSelf: 'stretch',
   backgroundColor: theme.stroke.primary,
@@ -214,7 +263,7 @@ export const waterfallRowsViewport = style({
 export const waterfallRowsGrid = style({
   alignItems: 'start',
   display: 'grid',
-  gridTemplateColumns: '220px minmax(0, 1fr)',
+  gridTemplateColumns: '320px minmax(0, 1fr)',
   minWidth: 0,
 })
 export const waterfallLabelsColumn = style({ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 })
@@ -226,12 +275,14 @@ export const waterfallTimelineBody = style({
   minHeight: 0,
   minWidth: 0,
 })
-export const waterfallRowShell = style({ borderRadius: 8, minWidth: 0, overflow: 'hidden', position: 'relative' })
+export const waterfallRowShell = style({ borderRadius: 8, borderBottomRightRadius: 0, borderTopRightRadius: 0, minWidth: 0, overflow: 'hidden', position: 'relative' })
 export const waterfallRowButton = style({
   alignItems: 'center',
   background: 'none',
   border: 'none',
   borderRadius: 4,
+  borderBottomRightRadius: 0,
+  borderTopRightRadius: 0,
   color: theme.content.primary,
   display: 'flex',
   minHeight: 38,
@@ -244,6 +295,7 @@ export const waterfallRowButton = style({
   },
 })
 export const waterfallRowHover = style({ backgroundColor: theme.surface.onMainContentSubtle })
+export const waterfallRowActive = style({ backgroundColor: theme.pill.blue.background, color: theme.content.primary })
 export const waterfallSpanLabel = style({
   alignItems: 'center',
   alignSelf: 'stretch',
@@ -252,11 +304,9 @@ export const waterfallSpanLabel = style({
   minHeight: 38,
   minWidth: 0,
   overflow: 'hidden',
-  paddingInlineEnd: 10,
+  paddingInline: 10,
 })
 export const waterfallSpanLabelActive = style({
-  backgroundColor: theme.pill.blue.background,
-  boxShadow: `inset 3px 0 0 ${theme.pill.blue.color}`,
   color: theme.content.primary,
 })
 export const waterfallTreeGuide = style({ borderBlockEnd: `1px solid ${theme.stroke.primary}`, borderInlineStart: `1px solid ${theme.stroke.primary}`, flexShrink: 0, height: 18, marginInlineEnd: 6, width: 10 })
@@ -283,7 +333,7 @@ export const waterfallChildCountChip = style({
   borderRadius: 999,
   color: theme.pill.gray.color,
   display: 'inline-flex',
-  fontFamily: codeFontFamily,
+  fontFamily: fontFamily.dmMono,
   fontSize: 10,
   height: 14,
   justifyContent: 'center',
@@ -302,6 +352,8 @@ export const waterfallLabelText = style({ display: 'flex', flexDirection: 'colum
 export const waterfallBarSlot = style({
   alignItems: 'center',
   borderRadius: 4,
+  borderBottomLeftRadius: 0,
+  borderTopLeftRadius: 0,
   display: 'flex',
   flexShrink: 0,
   minHeight: 38,
@@ -311,7 +363,8 @@ export const waterfallBarSlot = style({
   },
 })
 export const waterfallBarSlotActive = style({
-  boxShadow: `inset 0 0 0 1px ${theme.pill.blue.stroke}`,
+  backgroundColor: theme.pill.blue.background,
+  color: theme.content.primary,
 })
 export const waterfallBarArea = style({ height: 24, minWidth: 0, overflow: 'hidden', position: 'relative', width: '100%' })
 export const waterfallBar = style({ alignItems: 'center', borderRadius: 6, display: 'flex', height: 20, insetBlockStart: 2, minWidth: 2, overflow: 'hidden', paddingInline: 8, position: 'absolute', whiteSpace: 'nowrap', selectors: {
@@ -320,10 +373,10 @@ export const waterfallBar = style({ alignItems: 'center', borderRadius: 6, displ
   '&[data-tone="span"]': { backgroundColor: theme.pill.green.background, border: `1px solid ${theme.pill.green.stroke}`, color: theme.pill.green.color },
   '&[data-tone="error"]': { backgroundColor: theme.pill.red.background, border: `1px solid ${theme.pill.red.stroke}`, color: theme.pill.red.color },
 }})
-export const waterfallBarLabel = style({ fontFamily: codeFontFamily, fontSize: 12, lineHeight: '16px' })
+export const waterfallBarLabel = style({ fontFamily: fontFamily.dmMono, fontSize: 12, lineHeight: '16px' })
 export const waterfallBarLabelOutside = style({
   color: theme.content.secondary,
-  fontFamily: codeFontFamily,
+  fontFamily: fontFamily.dmMono,
   fontSize: 12,
   lineHeight: '16px',
   maxWidth: '100%',
@@ -388,6 +441,12 @@ export const httpMetaChip = style({
 })
 export const copyButtonGroup = style({ alignItems: 'center', display: 'flex', flexShrink: 0, gap: 6 })
 export const waterfallHttpDetailSection = style({ display: 'flex', flex: 1, flexDirection: 'column', gap: 4, minHeight: 0, minWidth: 0 })
+export const bodyViewer = style({ display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0, minWidth: 0 })
+export const bodyViewerHeader = style({ display: 'flex', flexDirection: 'column', gap: 6 })
+export const bodyMetaRow = style({ display: 'flex', flexWrap: 'wrap', gap: 6 })
+export const bodyViewerSection = style({ display: 'flex', flexDirection: 'column', gap: 4, minHeight: 0, minWidth: 0 })
+export const bodyViewerSectionLabel = style({ color: theme.content.tertiary })
+export const bodyViewerRawDetails = style({ display: 'flex', flexDirection: 'column', gap: 4 })
 
 export const statusBadge = style({ borderRadius: 999, display: 'inline-flex', fontSize: 12, paddingBlock: 2, paddingInline: 8, selectors: {
   '&[data-tone="ok"]': { backgroundColor: theme.pill.green.background, color: theme.pill.green.color },
@@ -411,7 +470,7 @@ export const detailsPre = style({
   backgroundColor: theme.surface.main,
   borderRadius: 6,
   flex: 1,
-  fontFamily: codeFontFamily,
+  fontFamily: fontFamily.dmMono,
   fontSize: 12,
   lineHeight: '18px',
   margin: 0,
@@ -435,4 +494,4 @@ globalStyle('.sql-comment', { color: '#6A9955', fontStyle: 'italic' })
 globalStyle(`body.${lightTheme} .sql-comment`, { color: '#008000' })
 globalStyle('.sql-identifier', { color: '#9CDCFE' })
 globalStyle(`body.${lightTheme} .sql-identifier`, { color: '#001080' })
-globalStyle(`${sqlBlock} pre`, { color: theme.content.primary, fontFamily: codeFontFamily, fontSize: 14, lineHeight: 1.65, margin: 0, overflowX: 'auto', padding: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' })
+globalStyle(`${sqlBlock} pre`, { color: theme.content.primary, fontFamily: fontFamily.dmMono, fontSize: 14, lineHeight: 1.65, margin: 0, overflowX: 'auto', padding: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' })

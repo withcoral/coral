@@ -144,6 +144,10 @@ Or on Linux:
 curl -fsSL https://withcoral.com/install.sh | sh
 ```
 
+Or on Windows 10/11 x86_64, download
+`coral-x86_64-pc-windows-msvc.zip` from the latest GitHub release and put
+`coral.exe` on your `PATH`.
+
 See [all install options](https://withcoral.com/docs/getting-started/installation).
 
 ### 2. Discover bundled sources
@@ -199,9 +203,9 @@ coral sql "
 
 ## Use Coral with an agent
 
-Coral ships with a built-in MCP server so your agent can run SQL queries and
-discover schemas across your installed sources. Once you've added at least one
-source, wire Coral into your agent:
+Coral ships with a built-in MCP server that presents Coral to your agent as a
+read-only SQL database. Once you've added at least one source, wire Coral into
+your agent:
 
 ```bash
 claude mcp add --scope user coral -- coral mcp-stdio   # Claude Code
@@ -220,9 +224,10 @@ npx skills add withcoral/skills
 ```
 
 Once connected, ask your agent to "list the tables available in Coral" or to
-run a small query — it'll call `list_catalog`, `search_catalog`, or the
-`coral.tables` / `coral.table_functions` metadata tables and see your installed
-sources.
+run a small query. It should use `list_catalog`, `search_catalog`, or the
+`coral.tables` / `coral.table_functions` metadata tables as database catalog
+discovery, then answer with SQL over your visible schemas, tables, and table
+functions.
 
 ## Local state
 
@@ -245,6 +250,18 @@ them from the current binary when you validate or query a bundled source, so
 upgrades pick up newer bundled manifests without re-adding the source.
 
 ## Development
+
+Install the local test runner once with Homebrew:
+
+```bash
+brew install cargo-nextest
+```
+
+Or install it with Cargo:
+
+```bash
+cargo install cargo-nextest --locked
+```
 
 Run the workspace validation gate from the repository root:
 

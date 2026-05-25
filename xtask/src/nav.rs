@@ -1,17 +1,18 @@
 //! Maintain the generator-owned entries in the Mintlify `docs.json`
 //! navigation.
 //!
-//! The generator owns two nav entries, each in a different group:
+//! The generator owns nav entries in the Reference and Project groups:
 //!
-//! - `reference/bundled-sources` — last entry of the `Reference` group.
-//!   Stale `reference/sources/*` entries from an earlier per-source-page
-//!   design are also stripped here.
+//! - `reference/bundled-sources` and `reference/community-sources` in the
+//!   `Reference` group. Stale `reference/sources/*` entries from an earlier
+//!   per-source-page design are also stripped here.
 //! - `project/changelog` — last entry of the `Project` group,
 //!   generated alongside the changelog mdx page.
 //!
 //! Every other navigation entry is hand-authored and left in place.
-//! Each owned entry is appended (not inserted) so it sits at the bottom
-//! of its group.
+//! Reference source catalog entries are inserted before
+//! `reference/source-spec-reference` when missing, keeping source catalogs
+//! together while preserving other authored entries.
 //!
 //! Reconciliation is idempotent: calling [`update_docs_json`] on its own
 //! output must produce the same output, since both entries are added
@@ -21,13 +22,15 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 const BUNDLED_SOURCES_ENTRY: &str = "reference/bundled-sources";
+const COMMUNITY_SOURCES_ENTRY: &str = "reference/community-sources";
 const CHANGELOG_ENTRY: &str = "project/changelog";
+const SOURCE_SPEC_REFERENCE_ENTRY: &str = "reference/source-spec-reference";
 
 /// Returns an updated `docs.json` body with the generator-owned
 /// navigation entries reconciled:
 ///
 /// - `Reference` group: stale `reference/sources/*` entries are stripped,
-///   and `reference/bundled-sources` is appended when absent.
+///   and source catalog entries are restored when absent.
 /// - `Project` group: `project/changelog` is appended when absent.
 ///
 /// All other navigation entries are preserved in their authored order.
@@ -59,16 +62,19 @@ fn reconcile_reference_group(groups: &mut [Value]) -> Result<()> {
         None => true,
     });
 
-    // Without this restoration, a hand edit that drops the entry would
-    // silently pass `docs-check` while leaving the generated page
-    // orphaned from nav.
-    if !pages
-        .iter()
-        .any(|e| e.as_str() == Some(BUNDLED_SOURCES_ENTRY))
-    {
-        pages.push(Value::String(BUNDLED_SOURCES_ENTRY.to_string()));
-    }
+    restore_reference_entry(pages, BUNDLED_SOURCES_ENTRY);
+    restore_reference_entry(pages, COMMUNITY_SOURCES_ENTRY);
     Ok(())
+}
+
+fn restore_reference_entry(pages: &mut Vec<Value>, entry: &str) {
+    pages.retain(|e| e.as_str() != Some(entry));
+
+    let insert_at = pages
+        .iter()
+        .position(|e| e.as_str() == Some(SOURCE_SPEC_REFERENCE_ENTRY))
+        .unwrap_or(pages.len());
+    pages.insert(insert_at, Value::String(entry.to_string()));
 }
 
 fn reconcile_project_group(groups: &mut [Value]) -> Result<()> {
@@ -172,6 +178,71 @@ mod tests {
         assert!(
             updated.contains("\"reference/bundled-sources\""),
             "expected bundled-sources to be restored: {updated}",
+        );
+    }
+
+    #[test]
+    fn update_docs_json_restores_missing_community_sources_entry() {
+        let updated =
+            update_docs_json(FIXTURE_WITHOUT_BUNDLED_SOURCES).expect("restore community-sources");
+        assert!(
+            updated.contains("\"reference/community-sources\""),
+            "expected community-sources to be restored: {updated}",
+        );
+    }
+
+    #[test]
+    fn update_docs_json_normalizes_duplicate_or_misordered_source_catalog_entries() {
+        let input = r#"{
+  "name": "Coral Docs",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/community-sources",
+          "reference/cli-reference",
+          "reference/source-spec-reference",
+          "reference/bundled-sources",
+          "reference/community-sources"
+        ]
+      },
+      {
+        "group": "Project",
+        "pages": []
+      }
+    ]
+  }
+}
+"#;
+
+        let updated = update_docs_json(input).expect("normalize source catalog entries");
+        let root: serde_json::Value = serde_json::from_str(&updated).expect("updated docs json");
+        let groups = root
+            .get("navigation")
+            .and_then(|navigation| navigation.get("groups"))
+            .and_then(serde_json::Value::as_array)
+            .expect("navigation groups");
+        let reference_pages = groups
+            .iter()
+            .find(|group| {
+                group.get("group").and_then(serde_json::Value::as_str) == Some("Reference")
+            })
+            .and_then(|group| group.get("pages"))
+            .and_then(serde_json::Value::as_array)
+            .expect("reference pages")
+            .iter()
+            .map(|page| page.as_str().expect("page string"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            reference_pages,
+            vec![
+                "reference/cli-reference",
+                "reference/bundled-sources",
+                "reference/community-sources",
+                "reference/source-spec-reference",
+            ]
         );
     }
 

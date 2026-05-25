@@ -4,6 +4,7 @@
 //!
 //! - [`http`] for HTTP-backed sources
 //! - [`mod@file`] for file-backed sources such as `parquet` and `jsonl`
+//! - [`mcp`] for Model Context Protocol-backed sources
 //!
 //! Parsing entry points remain crate-private. Callers should normally use
 //! [`crate::parse_source_manifest_yaml`] or [`crate::parse_source_manifest_value`]
@@ -11,3 +12,4 @@
 
 pub mod file;
 pub mod http;
+pub mod mcp;

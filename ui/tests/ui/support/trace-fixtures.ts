@@ -29,7 +29,13 @@ interface SpanFixture {
   method: 'GET' | 'POST'
   path: string
   requestBody?: unknown
-  responseBody: unknown
+  requestBodyPresent?: boolean
+  requestBodySize?: number
+  requestBodyTruncated?: boolean
+  responseBody?: unknown
+  responseBodyPresent?: boolean
+  responseBodySize?: number
+  responseBodyTruncated?: boolean
   source: SourceName
   statusCode?: number
   table: string
@@ -109,6 +115,15 @@ const detailSpans: SpanFixture[] = [
     durationMs: 84,
     requestBody: {
       operationName: 'IssuesSearch',
+      query: `query IssuesSearch($teamKey: String!, $query: String!, $first: Int!) {
+  issues(teamKey: $teamKey, query: $query, first: $first) {
+    nodes {
+      identifier
+      title
+      priorityLabel
+    }
+  }
+}`,
       variables: { teamKey: 'CORAL', query: 'playwright', first: 10 },
     },
     responseBody: {
@@ -128,8 +143,22 @@ const detailSpans: SpanFixture[] = [
     method: 'POST',
     path: '/graphql',
     durationMs: 57,
-    requestBody: { operationName: 'TeamsByKey', variables: { key: 'CORAL' } },
-    responseBody: { data: { teams: { nodes: [{ key: 'CORAL', name: 'Coral' }] } } },
+    requestBody: {
+      operationName: 'TeamsByKey',
+      query: `query TeamsByKey($key: String!) {
+  teams(key: $key) {
+    nodes {
+      key
+      name
+    }
+  }
+}`,
+      variables: { key: 'CORAL' },
+    },
+    responseBody: {
+      data: { teams: { nodes: [{ key: 'CORAL', name: 'Coral' }] } },
+      errors: [{ message: 'Partial GraphQL error for test coverage', path: ['teams'] }],
+    },
   },
   {
     source: 'github',
@@ -186,7 +215,17 @@ const detailSpans: SpanFixture[] = [
     method: 'POST',
     path: '/graphql',
     durationMs: 49,
-    requestBody: { operationName: 'UsersForAssignees', variables: { first: 25 } },
+    requestBody: {
+      operationName: 'UsersForAssignees',
+      query: `query UsersForAssignees($first: Int!) {
+  users(first: $first) {
+    nodes {
+      name
+    }
+  }
+}`,
+      variables: { first: 25 },
+    },
     responseBody: { data: { users: { nodes: [{ name: 'Avery Chen' }, { name: 'Mina Park' }] } } },
   },
   {
@@ -217,8 +256,73 @@ const detailSpans: SpanFixture[] = [
     method: 'POST',
     path: '/graphql',
     durationMs: 61,
-    requestBody: { operationName: 'OpenProjects', variables: { includeArchived: false } },
+    requestBody: {
+      operationName: 'OpenProjects',
+      query: `query OpenProjects($includeArchived: Boolean!) {
+  projects(includeArchived: $includeArchived) {
+    nodes {
+      name
+    }
+  }
+}`,
+      variables: { includeArchived: false },
+    },
     responseBody: { data: { projects: { nodes: [{ name: 'Coral UI' }, { name: 'Source Runtime' }] } } },
+  },
+  {
+    source: 'github',
+    table: 'issue_previews',
+    method: 'GET',
+    path: '/repos/oxide/coral/issues?labels=bug&per_page=15&preview=malformed',
+    durationMs: 74,
+    responseBody: '{"oops":',
+  },
+  {
+    source: 'github',
+    table: 'repository_search',
+    method: 'POST',
+    path: '/api/v1/search',
+    durationMs: 66,
+    requestBody: {
+      operationName: 'RepositorySearch',
+      query: `query RepositorySearch($name: String!) {
+  repository(name: $name) {
+    id
+    name
+    isPrivate
+  }
+}`,
+      variables: { name: 'coral' },
+    },
+    responseBody: {
+      data: {
+        repository: {
+          id: 'R_kgDOExample',
+          name: 'coral',
+          isPrivate: false,
+        },
+      },
+      errors: [{ message: 'GraphQL warnings should still be visible', path: ['repository'] }],
+    },
+  },
+  {
+    source: 'github',
+    table: 'pull_request_archive',
+    method: 'GET',
+    path: '/repos/oxide/coral/pulls?state=closed&per_page=20',
+    durationMs: 88,
+    responseBodyTruncated: true,
+    responseBodySize: 4096,
+  },
+  {
+    source: 'linear',
+    table: 'issue_request_preview',
+    method: 'POST',
+    path: '/graphql',
+    durationMs: 52,
+    requestBodyPresent: true,
+    requestBodySize: 2048,
+    responseBody: { data: { issues: { nodes: [{ identifier: 'CORAL-201', title: 'Request body present fallback', priorityLabel: 'Low' }] } } },
   },
 ]
 
@@ -266,12 +370,31 @@ function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSp
     'url.full': `https://${sourceHost(fixture.source)}${fixture.path}`,
     'coral.source': fixture.source,
     'coral.table': fixture.table,
-    'coral.http.response.body': JSON.stringify(fixture.responseBody),
   }
 
   if (fixture.requestBody) {
     attrs['http.request.body.present'] = true
     attrs['coral.http.request.body'] = JSON.stringify(fixture.requestBody)
+  } else if (fixture.requestBodyPresent !== undefined) {
+    attrs['http.request.body.present'] = fixture.requestBodyPresent
+  }
+  if (fixture.requestBodySize !== undefined) {
+    attrs['http.request.body.size'] = `${fixture.requestBodySize}`
+  }
+  if (fixture.requestBodyTruncated) {
+    attrs['coral.http.request.body.truncated'] = true
+  }
+  if (fixture.responseBody !== undefined) {
+    attrs['coral.http.response.body'] = JSON.stringify(fixture.responseBody)
+  }
+  if (fixture.responseBodyPresent !== undefined) {
+    attrs['http.response.body.present'] = fixture.responseBodyPresent
+  }
+  if (fixture.responseBodySize !== undefined) {
+    attrs['http.response.body.size'] = `${fixture.responseBodySize}`
+  }
+  if (fixture.responseBodyTruncated) {
+    attrs['coral.http.response.body.truncated'] = true
   }
 
   return create(TraceSpanSchema, {

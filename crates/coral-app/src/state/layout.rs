@@ -114,34 +114,46 @@ mod tests {
     use super::AppStateLayout;
     use crate::sources::SourceName;
     use crate::workspaces::WorkspaceName;
+    use tempfile::tempdir;
 
     #[test]
     fn derives_top_level_config_and_source_artifact_paths() {
-        let layout = AppStateLayout::discover(Some("/tmp/coral-config".into())).expect("layout");
+        let temp = tempdir().expect("tempdir");
+        let config_dir = temp.path().join("coral-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
 
-        assert_eq!(
-            layout.config_file(),
-            std::path::Path::new("/tmp/coral-config/config.toml")
-        );
+        assert_eq!(layout.config_file(), config_dir.join("config.toml"));
         assert_eq!(
             layout.manifest_file(&workspace_name, &source_name),
-            std::path::Path::new(
-                "/tmp/coral-config/workspaces/default/sources/github/manifest.yaml"
-            )
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("sources")
+                .join("github")
+                .join("manifest.yaml")
         );
         assert_eq!(
             layout.secret_file(&workspace_name, &source_name),
-            std::path::Path::new("/tmp/coral-config/workspaces/default/sources/github/secrets.env")
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("sources")
+                .join("github")
+                .join("secrets.env")
         );
         assert_eq!(
             layout.feedback_reports_file(&workspace_name),
-            std::path::Path::new("/tmp/coral-config/workspaces/default/feedback/reports.jsonl")
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("feedback")
+                .join("reports.jsonl")
         );
         assert_eq!(
             layout.local_trace_store_dir(),
-            std::path::Path::new("/tmp/coral-config/telemetry/traces")
+            config_dir.join("telemetry").join("traces")
         );
     }
 }

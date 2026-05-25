@@ -53,6 +53,16 @@ Additional hint guidance:
 - Preserve provider semantics when filter behavior matters.
 - Add `test_queries` once you know which simple query or queries should confirm the source basically works.
 
+## Search and Retrieval
+
+- Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
+- Use `functions` with `kind: search` for provider-native search endpoints that accept query text and return provider-ranked candidates.
+- Add `search_limits` to every `kind: search` function.
+- Keep search function arguments close to the provider API, and use `bind.arg` when the SQL argument name should differ from the request argument name.
+- Search result columns should include stable identifiers and useful candidate metadata such as title, URL, score, rank, or timestamps when the provider returns them.
+- Do not model provider-native search as a table filter. Use `mode: contains` only for ordinary substring filters on normal list/detail tables. Provider-ranked retrieval belongs in a `kind: search` function.
+- If a search result is not a complete entity, make sure the returned identifier can be used with ordinary detail tables or required filters.
+
 ## Response Extraction
 
 - Set `rows_path` to the array Coral should read as rows.
@@ -90,7 +100,9 @@ coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
 coral source test my_source
 coral sql "SELECT table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY table_name LIMIT 50 OFFSET 0"
-coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
+coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
+coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
+coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 ```
 
 If the source is named or lives in the Coral repo, add representative `test_queries` for a basic smoke/connection check and run:

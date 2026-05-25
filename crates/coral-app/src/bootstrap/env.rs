@@ -42,6 +42,7 @@ fn coral_config_dir_override() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{AppEnvironment, CORAL_CONFIG_DIR, coral_config_dir_override};
+    use std::path::PathBuf;
 
     #[test]
     #[expect(
@@ -50,21 +51,26 @@ mod tests {
     )]
     fn coral_config_dir_override_reads_env_once_through_app_accessor() {
         if std::env::var_os("CORAL_RUN_CORAL_CONFIG_DIR_TEST").is_some() {
+            let expected = std::env::var_os(CORAL_CONFIG_DIR)
+                .map(PathBuf::from)
+                .expect("CORAL_CONFIG_DIR should be set in subprocess");
             assert_eq!(
                 coral_config_dir_override().as_deref(),
-                Some(std::path::Path::new("/tmp/coral-config-dir-override"))
+                Some(expected.as_path())
             );
             let env = AppEnvironment::discover();
             assert_eq!(
                 env.coral_config_dir_override().as_deref(),
-                Some(std::path::Path::new("/tmp/coral-config-dir-override"))
+                Some(expected.as_path())
             );
             return;
         }
 
+        let override_dir =
+            std::env::temp_dir().join(format!("coral-config-dir-override-{}", std::process::id()));
         let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
             .env("CORAL_RUN_CORAL_CONFIG_DIR_TEST", "1")
-            .env(CORAL_CONFIG_DIR, "/tmp/coral-config-dir-override")
+            .env(CORAL_CONFIG_DIR, override_dir)
             .arg("--exact")
             .arg(
                 "bootstrap::env::tests::coral_config_dir_override_reads_env_once_through_app_accessor",
