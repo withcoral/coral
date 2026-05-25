@@ -45,6 +45,15 @@ function clampDetailPanelRatio(ratio: number) {
   return Math.max(DETAIL_PANEL_MIN_RATIO, Math.min(DETAIL_PANEL_MAX_RATIO, ratio))
 }
 
+function focusSpanRow(spanId: string) {
+  const escapedSpanId = spanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  const row = document.querySelector<HTMLElement>(`[data-span-row-id="${escapedSpanId}"]`)
+  if (!row) return
+  row.scrollIntoView({ block: 'nearest' })
+  const focusTarget = row.querySelector<HTMLElement>('[role="button"]')
+  focusTarget?.focus({ preventScroll: true })
+}
+
 export interface ExtraDetailTab {
   id: string
   label: string
@@ -514,12 +523,7 @@ function TimelineWaterfall({
       const nextSpanId = navigableSpanIds[renderedHttpSpanIndex + direction]
       if (!nextSpanId) return
       onExpandedHttpSpanIdChange(nextSpanId)
-      window.requestAnimationFrame(() => {
-        const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-        document
-          .querySelector(`[data-span-row-id="${escapedSpanId}"]`)
-          ?.scrollIntoView({ block: 'nearest' })
-      })
+      window.requestAnimationFrame(() => focusSpanRow(nextSpanId))
     },
     [renderedHttpSpanIndex, navigableSpanIds, onExpandedHttpSpanIdChange],
   )
@@ -727,12 +731,7 @@ export function TraceDetail({
       const nextSpanId = currentIndex >= 0 ? navigableSpanIds[currentIndex + direction] : null
       if (!nextSpanId) return
       setExpandedHttpSpanId(nextSpanId)
-      window.requestAnimationFrame(() => {
-        const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-        document
-          .querySelector(`[data-span-row-id="${escapedSpanId}"]`)
-          ?.scrollIntoView({ block: 'nearest' })
-      })
+      window.requestAnimationFrame(() => focusSpanRow(nextSpanId))
     },
     [expandedHttpSpanId, navigableSpanIds],
   )

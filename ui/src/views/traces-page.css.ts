@@ -455,6 +455,8 @@ export const waterfallRowButton = style({
   width: '100%',
   selectors: {
     '&[role="button"]': { cursor: 'pointer' },
+    '&:focus': { outline: 'none' },
+    '&:focus-visible': { outline: 'none' },
   },
 })
 export const waterfallRowHover = style({
