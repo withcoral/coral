@@ -318,12 +318,6 @@ tables:
         nullable: true
         description: JWT configuration including lifetime and algorithm.
         expr: {kind: path, path: [jwt_configuration]}
-      - name: raw
-        type: Json
-        nullable: false
-        description: Full raw client object.
-        expr:
-          kind: current_row
 
   # ──────────────────────────────────────────────────────────────────────
   # connections — list all identity provider connections
@@ -397,17 +391,6 @@ tables:
         nullable: true
         description: Connection metadata key-value pairs.
         expr: {kind: path, path: [metadata]}
-      - name: options
-        type: Json
-        nullable: true
-        description: Connection-specific configuration options.
-        expr: {kind: path, path: [options]}
-      - name: raw
-        type: Json
-        nullable: false
-        description: Full raw connection object.
-        expr:
-          kind: current_row
 
   # ──────────────────────────────────────────────────────────────────────
   # roles — list all RBAC roles
@@ -788,12 +771,6 @@ tables:
         nullable: true
         description: Array of scopes (permissions) defined on this API.
         expr: {kind: path, path: [scopes]}
-      - name: raw
-        type: Json
-        nullable: false
-        description: Full raw resource server object.
-        expr:
-          kind: current_row
 
   # ──────────────────────────────────────────────────────────────────────
   # client_grants — list all client grants
@@ -850,12 +827,6 @@ tables:
         nullable: true
         description: Array of scopes granted to the client for this API.
         expr: {kind: path, path: [scope]}
-      - name: raw
-        type: Json
-        nullable: false
-        description: Full raw client grant object.
-        expr:
-          kind: current_row
 
   # ──────────────────────────────────────────────────────────────────────
   # actions — list all actions
@@ -908,11 +879,6 @@ tables:
         description: >-
           Action status (e.g. pending, built, packaged, installed).
         expr: {kind: path, path: [status]}
-      - name: code
-        type: Utf8
-        nullable: true
-        description: Action source code.
-        expr: {kind: path, path: [code]}
       - name: runtime
         type: Utf8
         nullable: true
@@ -933,11 +899,6 @@ tables:
         nullable: true
         description: NPM dependencies used by the action.
         expr: {kind: path, path: [dependencies]}
-      - name: secrets
-        type: Json
-        nullable: true
-        description: Secrets available to the action at runtime.
-        expr: {kind: path, path: [secrets]}
       - name: deployed_version
         type: Json
         nullable: true
@@ -959,12 +920,6 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr: {kind: path, path: [updated_at]}
-      - name: raw
-        type: Json
-        nullable: false
-        description: Full raw action object.
-        expr:
-          kind: current_row
 
   # ──────────────────────────────────────────────────────────────────────
   # logs — list tenant log events
