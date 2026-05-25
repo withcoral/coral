@@ -87,7 +87,9 @@ export function attr(span: TraceSpan, name: string): string | undefined {
 
 export function spanSource(span: TraceSpan): string {
   const attrs = parseJsonObject(span.attributesJson)
-  return attrFrom(attrs, 'coral.source') ?? attrFrom(attrs, 'db.system') ?? span.scopeName ?? 'coral'
+  return (
+    attrFrom(attrs, 'coral.source') ?? attrFrom(attrs, 'db.system') ?? span.scopeName ?? 'coral'
+  )
 }
 
 function endpointPath(url: string): string {
@@ -144,7 +146,10 @@ export function spanUrl(span: TraceSpan): string {
 }
 
 export function spanStatusCode(span: TraceSpan): string {
-  return attrFrom(parseJsonObject(span.attributesJson), 'http.response.status_code') ?? statusLabel(span.status)
+  return (
+    attrFrom(parseJsonObject(span.attributesJson), 'http.response.status_code') ??
+    statusLabel(span.status)
+  )
 }
 
 export function isHttpSpan(span: TraceSpan): boolean {
@@ -153,7 +158,7 @@ export function isHttpSpan(span: TraceSpan): boolean {
 }
 
 export function sortedSpans(spans: TraceSpan[]): TraceSpan[] {
-  return [...spans].sort((a, b) => {
+  return [...spans].toSorted((a, b) => {
     const aStart = BigInt(a.startTimeUnixNanos || 0)
     const bStart = BigInt(b.startTimeUnixNanos || 0)
     if (aStart < bStart) return -1

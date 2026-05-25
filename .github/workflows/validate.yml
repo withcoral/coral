@@ -229,6 +229,9 @@ jobs:
       - name: Install UI dependencies
         run: npm ci --prefix ui
 
+      - name: Lint and format check
+        run: npm run check --prefix ui
+
       - name: Build UI
         run: npm run build --prefix ui
 

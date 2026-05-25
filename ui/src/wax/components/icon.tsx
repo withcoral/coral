@@ -4,8 +4,29 @@ import { Activity, Loader } from 'lucide-react'
 import { customIcons, isCustomIcon } from '@/wax/components/icon/custom-icons/custom-icons'
 import { iconContainer } from '@/wax/components/icon.css'
 
-export type IconColor = 'disabled' | 'error' | 'info' | 'inherit' | 'orange' | 'placeholder' | 'primary' | 'secondary' | 'success' | 'tertiary' | 'warning'
-export type IconName = 'Activity' | 'ArrowDown' | 'ArrowUp' | 'ChevronDown' | 'ChevronRight' | 'CircleAlert' | 'Coral' | 'Loader' | 'Search' | 'X'
+export type IconColor =
+  | 'disabled'
+  | 'error'
+  | 'info'
+  | 'inherit'
+  | 'orange'
+  | 'placeholder'
+  | 'primary'
+  | 'secondary'
+  | 'success'
+  | 'tertiary'
+  | 'warning'
+export type IconName =
+  | 'Activity'
+  | 'ArrowDown'
+  | 'ArrowUp'
+  | 'ChevronDown'
+  | 'ChevronRight'
+  | 'CircleAlert'
+  | 'Coral'
+  | 'Loader'
+  | 'Search'
+  | 'X'
 export interface IconProps {
   className?: string
   color?: IconColor

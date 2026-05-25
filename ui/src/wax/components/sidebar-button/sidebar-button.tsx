@@ -4,7 +4,13 @@ import React, { ElementType, MouseEvent } from 'react'
 import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
 
-import { activeClass, disabledClass, iconStyles, sidebarButton, textStyles } from './sidebar-button.css'
+import {
+  activeClass,
+  disabledClass,
+  iconStyles,
+  sidebarButton,
+  textStyles,
+} from './sidebar-button.css'
 
 function handleDisabledClick(event: MouseEvent<HTMLElement>) {
   event.preventDefault()
@@ -24,9 +30,15 @@ export interface SidebarButtonProps<T extends ElementType = 'button'> {
 
 export type SidebarButtonVariant = 'accent' | 'default'
 
-type PolymorphicProps<T extends ElementType> = Omit<React.ComponentPropsWithoutRef<T>, keyof SidebarButtonProps<T>> & SidebarButtonProps<T>
+type PolymorphicProps<T extends ElementType> = Omit<
+  React.ComponentPropsWithoutRef<T>,
+  keyof SidebarButtonProps<T>
+> &
+  SidebarButtonProps<T>
 
-export function SidebarButton<T extends ElementType = 'button'>(props: PolymorphicProps<T> & { ref?: React.Ref<HTMLElement> }) {
+export function SidebarButton<T extends ElementType = 'button'>(
+  props: PolymorphicProps<T> & { ref?: React.Ref<HTMLElement> },
+) {
   const {
     as,
     children,
@@ -48,7 +60,7 @@ export function SidebarButton<T extends ElementType = 'button'>(props: Polymorph
     className: classNames(
       sidebarButton({ disabled, isActive, isMinimized, variant }),
       { [activeClass]: isActive, [disabledClass]: disabled },
-      className
+      className,
     ),
     ref,
     ...rest,
