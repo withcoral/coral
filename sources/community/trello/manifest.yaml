@@ -34,7 +34,14 @@ tables:
       Lists all boards the authenticated user belongs to.
     request:
       method: GET
-      path: /members/me/boards?key={{input.TRELLO_API_KEY}}&token={{input.TRELLO_API_TOKEN}}
+      path: /members/me/boards
+      query:
+        - name: key
+          from: input
+          key: TRELLO_API_KEY
+        - name: token
+          from: input
+          key: TRELLO_API_TOKEN
     columns:
       - name: id
         type: Utf8
@@ -80,7 +87,14 @@ tables:
         required: true
     request:
       method: GET
-      path: /boards/{{filter.board_id}}/lists?key={{input.TRELLO_API_KEY}}&token={{input.TRELLO_API_TOKEN}}
+      path: /boards/{{filter.board_id}}/lists
+      query:
+        - name: key
+          from: input
+          key: TRELLO_API_KEY
+        - name: token
+          from: input
+          key: TRELLO_API_TOKEN
     columns:
       - name: id
         type: Utf8
@@ -126,7 +140,14 @@ tables:
         required: true
     request:
       method: GET
-      path: /boards/{{filter.board_id}}/cards?key={{input.TRELLO_API_KEY}}&token={{input.TRELLO_API_TOKEN}}
+      path: /boards/{{filter.board_id}}/cards
+      query:
+        - name: key
+          from: input
+          key: TRELLO_API_KEY
+        - name: token
+          from: input
+          key: TRELLO_API_TOKEN
     columns:
       - name: id
         type: Utf8
@@ -200,7 +221,14 @@ tables:
         required: true
     request:
       method: GET
-      path: /boards/{{filter.board_id}}/members?key={{input.TRELLO_API_KEY}}&token={{input.TRELLO_API_TOKEN}}
+      path: /boards/{{filter.board_id}}/members
+      query:
+        - name: key
+          from: input
+          key: TRELLO_API_KEY
+        - name: token
+          from: input
+          key: TRELLO_API_TOKEN
     columns:
       - name: id
         type: Utf8

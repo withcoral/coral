@@ -59,3 +59,29 @@ WHERE c.board_id = 'your_board_id_here'
 
 - **Pagination:** Trello's board-level endpoints generally return all lists/cards for a board in a single response, bounded by API limits. For exceptionally large boards (thousands of cards), the API might truncate the response. This source does not currently support `before`/`since` offset pagination.
 - **Read-Only:** This source provides read-only visibility into Trello and does not support creating, updating, or archiving cards.
+
+## Live Testing Results
+
+### Testing boards query
+```console
+$ coral sql "SELECT id, name, closed FROM trello.boards LIMIT 5;"
++--------------------------+------+--------+
+| id                       | name | closed |
++--------------------------+------+--------+
+| 6a1410bae00948891ddabc14 | test | false  |
++--------------------------+------+--------+
+```
+
+### Testing cards query
+```console
+$ coral sql "SELECT id, name FROM trello.cards WHERE board_id = '6a1410bae00948891ddabc14' LIMIT 5;"
++--------------------------+-----------+
+| id                       | name      |
++--------------------------+-----------+
+| 6a1410bae00948891ddabc48 | Product   |
+| 6a1410bae00948891ddabc4e | Marketing |
+| 6a1410bae00948891ddabc51 | Sales     |
+| 6a1410bae00948891ddabc54 | Support   |
+| 6a1410bae00948891ddabc57 | People    |
++--------------------------+-----------+
+```
