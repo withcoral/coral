@@ -783,10 +783,7 @@ export function TraceDetail({
       const target = event.target
       if (target instanceof HTMLElement) {
         if (target.closest('[data-span-inspector="true"]')) return
-        if (
-          target.isContentEditable ||
-          target.matches('input, textarea, select, [role="textbox"]')
-        )
+        if (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))
           return
       }
       if (!expandedHttpSpanId) {

@@ -163,15 +163,11 @@ export function TracesPage() {
       if (event.key === 'ArrowDown') {
         if (filtered.length === 0) return
         event.preventDefault()
-        setActiveIndex((index) =>
-          index === null ? 0 : Math.min(filtered.length - 1, index + 1),
-        )
+        setActiveIndex((index) => (index === null ? 0 : Math.min(filtered.length - 1, index + 1)))
       } else if (event.key === 'ArrowUp') {
         if (filtered.length === 0) return
         event.preventDefault()
-        setActiveIndex((index) =>
-          index === null ? filtered.length - 1 : Math.max(0, index - 1),
-        )
+        setActiveIndex((index) => (index === null ? filtered.length - 1 : Math.max(0, index - 1)))
       } else if (event.key === 'Enter') {
         if (activeIndex === null || !filtered[activeIndex]) return
         if (
@@ -192,9 +188,7 @@ export function TracesPage() {
     const trace = filtered[activeIndex]
     if (!trace) return
     const escaped = trace.traceId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    document
-      .querySelector(`[data-trace-row-id="${escaped}"]`)
-      ?.scrollIntoView({ block: 'nearest' })
+    document.querySelector(`[data-trace-row-id="${escaped}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex, filtered])
 
   if (selectedTraceId) {
