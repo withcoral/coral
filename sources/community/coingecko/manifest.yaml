@@ -27,7 +27,10 @@ tables:
     response:
       row_strategy: direct
     pagination:
-      mode: none
+      mode: page
+      page_param: page
+      page_size_param: per_page
+      max_page_size: 250
     columns:
       - name: vs_currency
         type: Utf8
@@ -69,5 +72,5 @@ tables:
         type: Float64
         expr: {kind: path, path: [total_supply]}
       - name: last_updated
-        type: Utf8
+        type: Timestamp
         expr: {kind: path, path: [last_updated]}
