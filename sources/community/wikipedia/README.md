@@ -116,6 +116,102 @@ coral sql "
 
 Same columns as `page`.
 
+## Validation
+
+```bash
+coral source lint sources/community/wikipedia/manifest.yaml
+# Manifest is valid
+
+coral source add --file sources/community/wikipedia/manifest.yaml
+```
+
+Output:
+```text
+Added source wikipedia
+
+  ✓ wikipedia connected successfully
+
+    wikipedia (3 tables)
+    ├─ page
+    ├─ random
+    └─ search
+    Query tests
+    3 declared · 3 passed · 0 failed
+
+    ✓ SELECT title, snippet FROM wikipedia.search WHERE query = 'Rust' LIMIT 1
+      1 row
+
+    ✓ SELECT title, description, extract FROM wikipedia.page WHERE title = 'Rust' LIMIT 1
+      1 row
+
+    ✓ SELECT title, description, extract FROM wikipedia.random LIMIT 1
+      1 row
+```
+
+```bash
+coral source test wikipedia
+```
+
+Output:
+```text
+  ✓ wikipedia connected successfully
+
+    wikipedia (3 tables)
+    ├─ page
+    ├─ random
+    └─ search
+    Query tests
+    3 declared · 3 passed · 0 failed
+
+    ✓ SELECT title, snippet FROM wikipedia.search WHERE query = 'Rust' LIMIT 1
+      1 row
+
+    ✓ SELECT title, description, extract FROM wikipedia.page WHERE title = 'Rust' LIMIT 1
+      1 row
+
+    ✓ SELECT title, description, extract FROM wikipedia.random LIMIT 1
+      1 row
+```
+
+```bash
+coral sql "SELECT title, snippet FROM wikipedia.search WHERE query = 'Rust' LIMIT 1"
+```
+
+Output:
+```text
++-------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| title | snippet                                                                                                                                                                                  |
++-------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Rust  | <span class="searchmatch">Rust</span> is an iron oxide, a usually reddish-brown oxide formed by the reaction of iron and oxygen in the catalytic presence of water or air moisture. Rust |
++-------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+```
+
+```bash
+coral sql "SELECT title, description, extract FROM wikipedia.page WHERE title = 'Rust' LIMIT 1"
+```
+
+Output:
+```text
++-------+--------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| title | description        | extract                                                                                                                                                                                                                                                              |
++-------+--------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Rust  | Type of iron oxide | Rust is an iron oxide, a usually reddish-brown oxide formed by the reaction of iron and oxygen in the catalytic presence of water or air moisture. Rust consists of hydrous iron(III) oxides (Fe2O3·nH2O) and iron(III) oxide-hydroxide (FeO(OH), Fe(OH)3), and is typically associated with the corrosion of refined iron. |
++-------+--------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+```
+
+```bash
+coral sql "SELECT title, description, extract FROM wikipedia.random LIMIT 1"
+```
+
+Output:
+```text
++-------------------+--------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| title             | description        | extract                                                                                                                                                                                                                               |
++-------------------+--------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Pseudocaeciliidae | Family of booklice | Pseudocaeciliidae is a family of Psocodea belonging to the suborder Psocomorpha. The name stems from a superficial resemblance to the distantly related family Caeciliusidae. The family is closely related to the family Philotarsidae, both within the infraorder Philotarsetae. |
++-------------------+--------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+```
+
 ## Notes
 
 - The `search` table uses the MediaWiki search API. Results are ranked by relevance. The `snippet` column contains HTML highlighting; use `extract` from the `page` table for clean text.
