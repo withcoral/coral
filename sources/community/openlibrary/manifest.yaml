@@ -5,30 +5,44 @@ backend: http
 description: Search books, authors, and subjects from the Open Library API.
 base_url: https://openlibrary.org
 test_queries:
-  - SELECT * FROM openlibrary.search WHERE q = 'lord of the rings' LIMIT 5
+  - SELECT * FROM openlibrary.search(q => 'lord of the rings') LIMIT 5
   - SELECT * FROM openlibrary.subjects WHERE subject = 'love' LIMIT 5
-tables:
+functions:
   - name: search
+    kind: search
     description: Search for books by title, author, or keyword.
-    filters:
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
       - name: q
         required: true
+        bind:
+          arg: q
     request:
       method: GET
       path: /search.json
       query:
         - name: q
-          from: filter
+          from: arg
           key: q
     response:
       rows_path:
         - docs
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
     columns:
       - name: q
         type: Utf8
-        expr: {kind: from_filter, key: q}
+        expr: {kind: from_arg, key: q}
       - name: key
         type: Utf8
         expr: {kind: path, path: [key]}
@@ -53,7 +67,7 @@ tables:
       - name: publisher
         type: Json
         expr: {kind: path, path: [publisher]}
-
+tables:
   - name: subjects
     description: Fetch books belonging to a specific subject or genre.
     filters:
@@ -66,7 +80,13 @@ tables:
       rows_path:
         - works
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
     columns:
       - name: subject
         type: Utf8
