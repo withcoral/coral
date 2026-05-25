@@ -6,7 +6,11 @@ description: Fetch weather forecasts from the free Open-Meteo API.
 base_url: https://api.open-meteo.com/v1
 
 test_queries:
-  - SELECT latitude, longitude, timezone, current_temperature_2m FROM open_meteo.forecast WHERE latitude = 52.52 AND longitude = 13.41 AND current = 'temperature_2m,wind_speed_10m' LIMIT 1
+  - >
+    SELECT latitude, longitude, timezone, current_temperature_2m 
+    FROM open_meteo.forecast 
+    WHERE latitude = 52.52 AND longitude = 13.41 AND current = 'temperature_2m,wind_speed_10m' 
+    LIMIT 1
 
 tables:
   - name: forecast

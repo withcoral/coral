@@ -2,6 +2,28 @@
 
 [Open-Meteo](https://open-meteo.com) is an open-source weather API with free access for non-commercial use.
 
+## Setup
+
+### 1. Add the source
+
+Open-Meteo requires no authentication, so you can add it immediately:
+
+```bash
+coral source add --file sources/community/open-meteo/manifest.yaml
+```
+
+### 2. Verify
+
+```bash
+coral source test open_meteo
+```
+
+## Tables
+
+| Table | Description | Required filters | Pagination |
+|---|---|---|---|
+| `open_meteo.forecast` | Current weather, hourly, and daily forecasts for a coordinate | `latitude`, `longitude` | none |
+
 ## Authentication
 
 Open-Meteo is completely free for non-commercial use and requires **no authentication**. You can start querying immediately.
