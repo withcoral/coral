@@ -1,0 +1,913 @@
+name: discord
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Discord API data — guilds (servers), channels, messages, guild members,
+  roles, and invites — via the Discord REST API (v10) with Bot token authentication.
+base_url: https://discord.com/api/v10
+
+inputs:
+  DISCORD_BOT_TOKEN:
+    kind: secret
+    hint: >-
+      Discord Bot Token. Create one at https://discord.com/developers/applications
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bot {{input.DISCORD_BOT_TOKEN}}"
+
+rate_limit:
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+
+test_queries:
+  - SELECT id, name, owner FROM discord.guilds LIMIT 1
+  # The following test queries require filters in actual usage but are syntactically valid
+  # - SELECT id, name, type FROM discord.channels WHERE guild_id = '123' LIMIT 1
+  # - SELECT id, content, author__username FROM discord.messages WHERE channel_id = '123' LIMIT 1
+
+tables:
+  - name: guilds
+    description: >
+      Lists all guilds (servers) the current bot is a member of. Each row
+      includes guild configuration, owner information, and feature flags.
+    guide: >
+      Start with `SELECT id, name, owner, approximate_member_count FROM discord.guilds LIMIT 10`.
+      The `features` column contains an array of enabled guild features.
+    request:
+      method: GET
+      path: /users/@me/guilds
+      query:
+        - name: limit
+          from: literal
+          value: 200
+    response:
+      rows_path: []
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - id
+      cursor_param: after
+      page_size:
+        default: 100
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique guild identifier (snowflake).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Guild name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: icon
+        type: Utf8
+        nullable: true
+        description: Icon hash.
+        expr:
+          kind: path
+          path:
+            - icon
+      - name: owner
+        type: Boolean
+        nullable: true
+        description: True if the user is the owner of the guild.
+        expr:
+          kind: path
+          path:
+            - owner
+      - name: permissions
+        type: Utf8
+        nullable: true
+        description: Total permissions for the bot in the guild (excludes overwrites).
+        expr:
+          kind: path
+          path:
+            - permissions
+      - name: features
+        type: Json
+        nullable: true
+        description: Array of enabled guild features.
+        expr:
+          kind: path
+          path:
+            - features
+      - name: approximate_member_count
+        type: Int64
+        nullable: true
+        description: Approximate number of members in this guild.
+        expr:
+          kind: path
+          path:
+            - approximate_member_count
+      - name: approximate_presence_count
+        type: Int64
+        nullable: true
+        description: Approximate number of non-offline members in this guild.
+        expr:
+          kind: path
+          path:
+            - approximate_presence_count
+
+  - name: channels
+    description: >
+      Lists all channels within a specific guild. Requires a guild_id filter.
+      Each row includes channel type, name, topic, and positioning.
+    guide: >
+      Always filter by guild_id: `SELECT id, name, type, topic FROM discord.channels WHERE guild_id = '123'`.
+      The `type` column indicates text, voice, category, etc.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/channels
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique channel identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Int64
+        nullable: false
+        description: The type of channel (e.g., 0 for text, 2 for voice, 4 for category).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: guild_id
+        type: Utf8
+        nullable: true
+        description: The ID of the guild (may be missing for some channel objects).
+        expr:
+          kind: path
+          path:
+            - guild_id
+      - name: position
+        type: Int64
+        nullable: true
+        description: Sorting position of the channel.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: name
+        type: Utf8
+        nullable: true
+        description: The name of the channel (1-100 characters).
+        expr:
+          kind: path
+          path:
+            - name
+      - name: topic
+        type: Utf8
+        nullable: true
+        description: The channel topic (0-4096 characters for text channels).
+        expr:
+          kind: path
+          path:
+            - topic
+      - name: nsfw
+        type: Boolean
+        nullable: true
+        description: Whether the channel is nsfw.
+        expr:
+          kind: path
+          path:
+            - nsfw
+      - name: last_message_id
+        type: Utf8
+        nullable: true
+        description: The id of the last message sent in this channel.
+        expr:
+          kind: path
+          path:
+            - last_message_id
+      - name: bitrate
+        type: Int64
+        nullable: true
+        description: The bitrate (in bits) of the voice channel.
+        expr:
+          kind: path
+          path:
+            - bitrate
+      - name: user_limit
+        type: Int64
+        nullable: true
+        description: The user limit of the voice channel.
+        expr:
+          kind: path
+          path:
+            - user_limit
+      - name: rate_limit_per_user
+        type: Int64
+        nullable: true
+        description: Amount of seconds a user has to wait before sending another message (0-21600).
+        expr:
+          kind: path
+          path:
+            - rate_limit_per_user
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: For category channels, id of the parent category.
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: rtc_region
+        type: Utf8
+        nullable: true
+        description: Voice region id for the voice channel.
+        expr:
+          kind: path
+          path:
+            - rtc_region
+      - name: guild_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the guild_id filter.
+        expr:
+          kind: from_filter
+          key: guild_id
+
+  - name: messages
+    description: >
+      Lists messages for a specific channel. Requires a channel_id filter.
+      Each row includes the author, content, timestamp, and attachments.
+    guide: >
+      Filter by channel_id: `SELECT id, content, author__username, timestamp FROM discord.messages WHERE channel_id = '123' LIMIT 50`.
+      Attachments, embeds, and reactions are nested JSON columns.
+    filters:
+      - name: channel_id
+        required: true
+    request:
+      method: GET
+      path: /channels/{{filter.channel_id}}/messages
+    response:
+      rows_path: []
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - id
+      cursor_param: before
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique message identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: channel_id
+        type: Utf8
+        nullable: false
+        description: The ID of the channel the message was sent in.
+        expr:
+          kind: path
+          path:
+            - channel_id
+      - name: author__id
+        type: Utf8
+        nullable: true
+        description: Author's user ID.
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author__username
+        type: Utf8
+        nullable: true
+        description: Author's username.
+        expr:
+          kind: path
+          path:
+            - author
+            - username
+      - name: author__global_name
+        type: Utf8
+        nullable: true
+        description: Author's global display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - global_name
+      - name: author__bot
+        type: Boolean
+        nullable: true
+        description: Whether the author is a bot.
+        expr:
+          kind: path
+          path:
+            - author
+            - bot
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Message contents (up to 2000 characters).
+        expr:
+          kind: path
+          path:
+            - content
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: When this message was sent.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - timestamp
+      - name: edited_timestamp
+        type: Timestamp
+        nullable: true
+        description: When this message was edited (or null if never).
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - edited_timestamp
+      - name: tts
+        type: Boolean
+        nullable: true
+        description: Whether this was a TTS message.
+        expr:
+          kind: path
+          path:
+            - tts
+      - name: mention_everyone
+        type: Boolean
+        nullable: true
+        description: Whether this message mentions everyone.
+        expr:
+          kind: path
+          path:
+            - mention_everyone
+      - name: mentions
+        type: Json
+        nullable: true
+        description: Array of user objects mentioned in the message.
+        expr:
+          kind: path
+          path:
+            - mentions
+      - name: mention_roles
+        type: Json
+        nullable: true
+        description: Array of role object ids mentioned in the message.
+        expr:
+          kind: path
+          path:
+            - mention_roles
+      - name: attachments
+        type: Json
+        nullable: true
+        description: Array of attached files.
+        expr:
+          kind: path
+          path:
+            - attachments
+      - name: embeds
+        type: Json
+        nullable: true
+        description: Array of embedded content.
+        expr:
+          kind: path
+          path:
+            - embeds
+      - name: reactions
+        type: Json
+        nullable: true
+        description: Array of reactions to the message.
+        expr:
+          kind: path
+          path:
+            - reactions
+      - name: nonce
+        type: Utf8
+        nullable: true
+        description: Used for validating a message was sent.
+        expr:
+          kind: path
+          path:
+            - nonce
+      - name: pinned
+        type: Boolean
+        nullable: true
+        description: Whether this message is pinned.
+        expr:
+          kind: path
+          path:
+            - pinned
+      - name: webhook_id
+        type: Utf8
+        nullable: true
+        description: If the message is generated by a webhook, this is the webhook's id.
+        expr:
+          kind: path
+          path:
+            - webhook_id
+      - name: type
+        type: Int64
+        nullable: true
+        description: Type of message.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: flags
+        type: Int64
+        nullable: true
+        description: Message flags combined as a bitfield.
+        expr:
+          kind: path
+          path:
+            - flags
+      - name: position
+        type: Int64
+        nullable: true
+        description: A generally increasing integer (there may be gaps or duplicates).
+        expr:
+          kind: path
+          path:
+            - position
+      - name: channel_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the channel_id filter.
+        expr:
+          kind: from_filter
+          key: channel_id
+
+  - name: guild_members
+    description: >
+      Lists members within a specific guild. Requires a guild_id filter.
+      Each row includes the user information, nicknames, roles, and join dates.
+    guide: >
+      Filter by guild_id: `SELECT user__username, nick, joined_at FROM discord.guild_members WHERE guild_id = '123' LIMIT 50`.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/members
+    response:
+      rows_path: []
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - user
+        - id
+      cursor_param: after
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: user__id
+        type: Utf8
+        nullable: true
+        description: The user's ID.
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user__username
+        type: Utf8
+        nullable: true
+        description: The user's username, not unique across the platform.
+        expr:
+          kind: path
+          path:
+            - user
+            - username
+      - name: user__global_name
+        type: Utf8
+        nullable: true
+        description: The user's global display name.
+        expr:
+          kind: path
+          path:
+            - user
+            - global_name
+      - name: user__bot
+        type: Boolean
+        nullable: true
+        description: Whether the user belongs to an OAuth2 application.
+        expr:
+          kind: path
+          path:
+            - user
+            - bot
+      - name: nick
+        type: Utf8
+        nullable: true
+        description: This user's guild nickname.
+        expr:
+          kind: path
+          path:
+            - nick
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: The member's guild avatar hash.
+        expr:
+          kind: path
+          path:
+            - avatar
+      - name: roles
+        type: Json
+        nullable: true
+        description: Array of role object ids.
+        expr:
+          kind: path
+          path:
+            - roles
+      - name: joined_at
+        type: Timestamp
+        nullable: true
+        description: When the user joined the guild.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - joined_at
+      - name: premium_since
+        type: Timestamp
+        nullable: true
+        description: When the user started boosting the guild.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - premium_since
+      - name: deaf
+        type: Boolean
+        nullable: true
+        description: Whether the user is deafened in voice channels.
+        expr:
+          kind: path
+          path:
+            - deaf
+      - name: mute
+        type: Boolean
+        nullable: true
+        description: Whether the user is muted in voice channels.
+        expr:
+          kind: path
+          path:
+            - mute
+      - name: flags
+        type: Int64
+        nullable: true
+        description: Guild member flags represented as a bit set.
+        expr:
+          kind: path
+          path:
+            - flags
+      - name: pending
+        type: Boolean
+        nullable: true
+        description: Whether the user has not yet passed the guild's Membership Screening requirements.
+        expr:
+          kind: path
+          path:
+            - pending
+      - name: communication_disabled_until
+        type: Timestamp
+        nullable: true
+        description: When the user's timeout will expire.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - communication_disabled_until
+      - name: guild_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the guild_id filter.
+        expr:
+          kind: from_filter
+          key: guild_id
+
+  - name: roles
+    description: >
+      Lists roles within a specific guild. Requires a guild_id filter.
+      Each row includes the role's color, permissions, position, and managed status.
+    guide: >
+      Filter by guild_id: `SELECT id, name, permissions, position FROM discord.roles WHERE guild_id = '123'`.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/roles
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Role ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Role name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: color
+        type: Int64
+        nullable: true
+        description: Integer representation of hexadecimal color code.
+        expr:
+          kind: path
+          path:
+            - color
+      - name: hoist
+        type: Boolean
+        nullable: true
+        description: If this role is pinned in the user listing.
+        expr:
+          kind: path
+          path:
+            - hoist
+      - name: icon
+        type: Utf8
+        nullable: true
+        description: Role icon hash.
+        expr:
+          kind: path
+          path:
+            - icon
+      - name: unicode_emoji
+        type: Utf8
+        nullable: true
+        description: Role unicode emoji.
+        expr:
+          kind: path
+          path:
+            - unicode_emoji
+      - name: position
+        type: Int64
+        nullable: true
+        description: Position of this role.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: permissions
+        type: Utf8
+        nullable: true
+        description: Permission bit set.
+        expr:
+          kind: path
+          path:
+            - permissions
+      - name: managed
+        type: Boolean
+        nullable: true
+        description: Whether this role is managed by an integration.
+        expr:
+          kind: path
+          path:
+            - managed
+      - name: mentionable
+        type: Boolean
+        nullable: true
+        description: Whether this role is mentionable.
+        expr:
+          kind: path
+          path:
+            - mentionable
+      - name: flags
+        type: Int64
+        nullable: true
+        description: Role flags combined as a bitfield.
+        expr:
+          kind: path
+          path:
+            - flags
+      - name: guild_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the guild_id filter.
+        expr:
+          kind: from_filter
+          key: guild_id
+
+  - name: invites
+    description: >
+      Lists active invites within a specific guild. Requires a guild_id filter.
+      Requires MANAGE_GUILD permissions for the bot.
+    guide: >
+      Filter by guild_id: `SELECT code, inviter__username, uses, max_uses FROM discord.invites WHERE guild_id = '123'`.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/invites
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: code
+        type: Utf8
+        nullable: false
+        description: The invite code (unique ID).
+        expr:
+          kind: path
+          path:
+            - code
+      - name: guild__id
+        type: Utf8
+        nullable: true
+        description: The guild ID this invite is for.
+        expr:
+          kind: path
+          path:
+            - guild
+            - id
+      - name: channel__id
+        type: Utf8
+        nullable: true
+        description: The channel ID this invite is for.
+        expr:
+          kind: path
+          path:
+            - channel
+            - id
+      - name: channel__name
+        type: Utf8
+        nullable: true
+        description: The channel name this invite is for.
+        expr:
+          kind: path
+          path:
+            - channel
+            - name
+      - name: inviter__id
+        type: Utf8
+        nullable: true
+        description: The user ID who created the invite.
+        expr:
+          kind: path
+          path:
+            - inviter
+            - id
+      - name: inviter__username
+        type: Utf8
+        nullable: true
+        description: The user who created the invite.
+        expr:
+          kind: path
+          path:
+            - inviter
+            - username
+      - name: target_type
+        type: Int64
+        nullable: true
+        description: The type of target for this voice channel invite.
+        expr:
+          kind: path
+          path:
+            - target_type
+      - name: target_user__id
+        type: Utf8
+        nullable: true
+        description: The user whose stream to display for this voice channel stream invite.
+        expr:
+          kind: path
+          path:
+            - target_user
+            - id
+      - name: approximate_presence_count
+        type: Int64
+        nullable: true
+        description: Approximate count of online members.
+        expr:
+          kind: path
+          path:
+            - approximate_presence_count
+      - name: approximate_member_count
+        type: Int64
+        nullable: true
+        description: Approximate count of total members.
+        expr:
+          kind: path
+          path:
+            - approximate_member_count
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: The expiration date of this invite.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - expires_at
+      - name: uses
+        type: Int64
+        nullable: true
+        description: Number of times this invite has been used.
+        expr:
+          kind: path
+          path:
+            - uses
+      - name: max_uses
+        type: Int64
+        nullable: true
+        description: Max number of times this invite can be used.
+        expr:
+          kind: path
+          path:
+            - max_uses
+      - name: max_age
+        type: Int64
+        nullable: true
+        description: Duration (in seconds) after which the invite expires.
+        expr:
+          kind: path
+          path:
+            - max_age
+      - name: temporary
+        type: Boolean
+        nullable: true
+        description: Whether this invite only grants temporary membership.
+        expr:
+          kind: path
+          path:
+            - temporary
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When this invite was created.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: guild_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the guild_id filter.
+        expr:
+          kind: from_filter
+          key: guild_id

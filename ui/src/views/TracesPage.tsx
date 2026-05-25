@@ -140,6 +140,7 @@ export function TracesPage() {
   const { error, loading, traces } = useTraceList(selectedTraceId === null)
   const [searchText, setSearchText] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const searchVisible = searchOpen || searchText.trim().length > 0
 
   const filtered = traces.filter((trace) => {
@@ -147,6 +148,48 @@ export function TracesPage() {
     if (!needle) return true
     return `${trace.query} ${trace.name} ${trace.traceId}`.toLowerCase().includes(needle)
   })
+
+  useEffect(() => setActiveIndex(null), [searchText])
+
+  useEffect(() => {
+    if (selectedTraceId !== null) return
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target
+      const inEditable =
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.matches('textarea, [role="textbox"]'))
+      if (inEditable) return
+
+      if (event.key === 'ArrowDown') {
+        if (filtered.length === 0) return
+        event.preventDefault()
+        setActiveIndex((index) => (index === null ? 0 : Math.min(filtered.length - 1, index + 1)))
+      } else if (event.key === 'ArrowUp') {
+        if (filtered.length === 0) return
+        event.preventDefault()
+        setActiveIndex((index) => (index === null ? filtered.length - 1 : Math.max(0, index - 1)))
+      } else if (event.key === 'Enter') {
+        if (activeIndex === null || !filtered[activeIndex]) return
+        if (
+          target instanceof HTMLElement &&
+          target.matches('button, a, [role="button"], [role="link"]')
+        )
+          return
+        event.preventDefault()
+        setSelectedTraceId(filtered[activeIndex].traceId)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [activeIndex, filtered, selectedTraceId])
+
+  useEffect(() => {
+    if (activeIndex === null) return
+    const trace = filtered[activeIndex]
+    if (!trace) return
+    const escaped = trace.traceId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+    document.querySelector(`[data-trace-row-id="${escaped}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex, filtered])
 
   if (selectedTraceId) {
     const selectedIndex = filtered.findIndex((trace) => trace.traceId === selectedTraceId)
@@ -196,7 +239,11 @@ export function TracesPage() {
         )
       ) : (
         <div className={s.queryScroll}>
-          <TraceList traces={filtered} onSelect={setSelectedTraceId} />
+          <TraceList
+            activeTraceId={activeIndex !== null ? filtered[activeIndex]?.traceId : null}
+            traces={filtered}
+            onSelect={setSelectedTraceId}
+          />
         </div>
       )}
       <StatusBar connected={connected} count={filtered.length} totalCount={traces.length} />
