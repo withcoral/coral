@@ -14,6 +14,7 @@ request_headers:
 test_queries:
   - SELECT id, name, email FROM jsonplaceholder.users LIMIT 1
   - SELECT id, title, completed FROM jsonplaceholder.todos WHERE user_id_filter = 1 LIMIT 1
+  - SELECT id, name, email FROM jsonplaceholder.comments WHERE post_id_filter = 1 LIMIT 1
 
 tables:
   # ─────────────────────────────────────────────────────────────
@@ -57,6 +58,7 @@ tables:
           key: user_id_filter
     pagination:
       mode: page
+      page_start: 1
       page_param: _page
       page_size:
         default: 10
@@ -84,6 +86,52 @@ tables:
           key: user_id_filter
 
   # ─────────────────────────────────────────────────────────────
+  # comments
+  # ─────────────────────────────────────────────────────────────
+  - name: comments
+    description: Get fake comments. Use post_id_filter to filter by post.
+    fetch_limit_default: 10
+    filters:
+      - name: post_id_filter
+    request:
+      method: GET
+      path: /comments
+      query:
+        - name: postId
+          from: filter
+          key: post_id_filter
+    pagination:
+      mode: page
+      page_start: 1
+      page_param: _page
+      page_size:
+        default: 10
+        max: 100
+        query_param: _limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: post_id
+        type: Int64
+        expr:
+          kind: path
+          path: [postId]
+      - name: name
+        type: Utf8
+      - name: email
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: post_id_filter
+        type: Int64
+        virtual: true
+        description: Echoes the post_id filter value.
+        expr:
+          kind: from_filter
+          key: post_id_filter
+
+  # ─────────────────────────────────────────────────────────────
   # todos
   # ─────────────────────────────────────────────────────────────
   - name: todos
@@ -100,6 +148,7 @@ tables:
           key: user_id_filter
     pagination:
       mode: page
+      page_start: 1
       page_param: _page
       page_size:
         default: 10
