@@ -1,0 +1,632 @@
+name: google_chat
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query spaces, memberships, and messages from Google Chat (Google Chat API).
+inputs:
+  GOOGLE_CHAT_API_BASE:
+    kind: variable
+    default: https://chat.googleapis.com
+    hint: |
+      Base URL for the Google Chat API. Keep the default unless you are
+      testing against a mock Google Chat API.
+  GOOGLE_CHAT_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Use a read-only OAuth 2.0 access token for the Google Chat API.
+      The guided OAuth flow requests scopes for spaces, memberships, and messages.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Chat
+          description: Use Google OAuth to retrieve a Chat access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_CHAT_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_CHAT_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/chat.spaces.readonly
+                  - https://www.googleapis.com/auth/chat.memberships.readonly
+                  - https://www.googleapis.com/auth/chat.messages.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Chat OAuth access token.
+base_url: "{{input.GOOGLE_CHAT_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_CHAT_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM google_chat.spaces LIMIT 1
+tables:
+  - name: spaces
+    description: Google Chat spaces that the authenticated user is a member of
+    guide: |
+      Lists named spaces, group chats, and direct messages.
+    filters:
+      - name: filter
+        required: false
+        description: |
+          Filter query (e.g. `spaceType = "SPACE"` or `spaceType = "GROUP_CHAT"`).
+    request:
+      method: GET
+      path: /v1/spaces
+      query:
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path:
+        - spaces
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Space ID (extracted from name)
+        expr:
+          kind: replace
+          expr:
+            kind: path
+            path:
+              - name
+          from: spaces/
+          to: ""
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique resource name of the space (e.g. spaces/abc123_xyz)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: The user-visible display name for the space
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Deprecated. Use space_type instead.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: space_type
+        type: Utf8
+        nullable: true
+        description: The type of space (e.g., SPACE, GROUP_CHAT, DIRECT_MESSAGE)
+        expr:
+          kind: path
+          path:
+            - spaceType
+      - name: single_user_bot_dm
+        type: Boolean
+        nullable: true
+        description: Whether the space is a 1:1 direct message between a human and the calling bot
+        expr:
+          kind: path
+          path:
+            - singleUserBotDm
+      - name: threaded
+        type: Boolean
+        nullable: true
+        description: Whether messages in this space are threaded
+        expr:
+          kind: path
+          path:
+            - threaded
+      - name: external_user_allowed
+        type: Boolean
+        nullable: true
+        description: Whether the space allows users from outside the Google Workspace domain
+        expr:
+          kind: path
+          path:
+            - externalUserAllowed
+      - name: space_threading_state
+        type: Utf8
+        nullable: true
+        description: The threading state of the space
+        expr:
+          kind: path
+          path:
+            - spaceThreadingState
+      - name: space_history_state
+        type: Utf8
+        nullable: true
+        description: The history state of the space
+        expr:
+          kind: path
+          path:
+            - spaceHistoryState
+      - name: space_uri
+        type: Utf8
+        nullable: true
+        description: URI for a user to access the space in the browser
+        expr:
+          kind: path
+          path:
+            - spaceUri
+      - name: create_time
+        type: Timestamp
+        nullable: true
+        description: Time when the space was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createTime
+      - name: last_active_time
+        type: Timestamp
+        nullable: true
+        description: Time of the last activity in the space
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastActiveTime
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the space
+        expr:
+          kind: path
+          path:
+            - spaceDetails
+            - description
+      - name: guidelines
+        type: Utf8
+        nullable: true
+        description: Guidelines for the space
+        expr:
+          kind: path
+          path:
+            - spaceDetails
+            - guidelines
+      - name: user_count
+        type: Int64
+        nullable: true
+        description: The number of users in the space
+        expr:
+          kind: path
+          path:
+            - membershipCount
+            - userCount
+      - name: joined_user_count
+        type: Int64
+        nullable: true
+        description: The number of joined users in the space
+        expr:
+          kind: path
+          path:
+            - membershipCount
+            - joinedUserCount
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter string used to filter the spaces list
+        expr:
+          kind: from_filter
+          key: filter
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw space object from Google Chat API
+        expr:
+          kind: current_row
+
+  - name: members
+    description: Members of a specific Google Chat space
+    guide: |
+      Lists space memberships. Requires `space_id` filter.
+    filters:
+      - name: space_id
+        required: true
+      - name: filter
+        required: false
+        description: |
+          Filter query (e.g. `role = "ROLE_MEMBER"` or `member.type = "HUMAN"`).
+      - name: show_groups
+        required: false
+        description: |
+          Whether to include Google Groups memberships.
+      - name: use_admin_access
+        required: false
+        description: |
+          Whether to use Google Workspace administrator privileges.
+    request:
+      method: GET
+      path: /v1/spaces/{{filter.space_id}}/members
+      query:
+        - name: filter
+          from: filter
+          key: filter
+        - name: showGroups
+          from: filter
+          key: show_groups
+        - name: useAdminAccess
+          from: filter
+          key: use_admin_access
+    response:
+      rows_path:
+        - memberships
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique resource name of the membership (e.g. spaces/abc/members/xyz)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: state
+        type: Utf8
+        nullable: true
+        description: The state of the membership (e.g. JOINED, INVITED)
+        expr:
+          kind: path
+          path:
+            - state
+      - name: role
+        type: Utf8
+        nullable: true
+        description: The member's role in the space (e.g. ROLE_MEMBER, ROLE_MANAGER)
+        expr:
+          kind: path
+          path:
+            - role
+      - name: member_id
+        type: Utf8
+        nullable: false
+        description: Unique user/app identifier (extracted from member.name)
+        expr:
+          kind: replace
+          expr:
+            kind: path
+            path:
+              - member
+              - name
+          from: users/
+          to: ""
+      - name: member_name
+        type: Utf8
+        nullable: true
+        description: Resource name of the member (e.g. users/xyz)
+        expr:
+          kind: path
+          path:
+            - member
+            - name
+      - name: member_display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the member
+        expr:
+          kind: path
+          path:
+            - member
+            - displayName
+      - name: member_type
+        type: Utf8
+        nullable: true
+        description: Type of the member (e.g. HUMAN, BOT)
+        expr:
+          kind: path
+          path:
+            - member
+            - type
+      - name: member_domain_id
+        type: Utf8
+        nullable: true
+        description: Domain ID of the member
+        expr:
+          kind: path
+          path:
+            - member
+            - domainId
+      - name: member_is_anonymous
+        type: Boolean
+        nullable: true
+        description: Whether the member profile is anonymous/deleted
+        expr:
+          kind: path
+          path:
+            - member
+            - isAnonymous
+      - name: create_time
+        type: Timestamp
+        nullable: true
+        description: Time when the membership was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createTime
+      - name: delete_time
+        type: Timestamp
+        nullable: true
+        description: Time when the membership was deleted
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deleteTime
+      - name: space_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Required space ID filter
+        expr:
+          kind: from_filter
+          key: space_id
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional filter query
+        expr:
+          kind: from_filter
+          key: filter
+      - name: show_groups
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional showGroups flag
+        expr:
+          kind: from_filter
+          key: show_groups
+      - name: use_admin_access
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional useAdminAccess flag
+        expr:
+          kind: from_filter
+          key: use_admin_access
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw membership object from Google Chat API
+        expr:
+          kind: current_row
+
+  - name: messages
+    description: Messages in a specific Google Chat space
+    guide: |
+      Lists space messages. Requires `space_id` filter. Bounding create_time (using `filter`) is recommended to avoid rate limits.
+    filters:
+      - name: space_id
+        required: true
+      - name: filter
+        required: false
+        description: |
+          Filter query (e.g. `createTime > "2026-05-01T00:00:00Z"` or `thread.name = "spaces/abc/threads/xyz"`).
+      - name: order_by
+        required: false
+        description: |
+          Order of returned messages (e.g. `ASC` or `DESC`).
+    request:
+      method: GET
+      path: /v1/spaces/{{filter.space_id}}/messages
+      query:
+        - name: filter
+          from: filter
+          key: filter
+        - name: orderBy
+          from: filter
+          key: order_by
+    response:
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Message resource name (unique identifier)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Complete resource name of the message (e.g. spaces/abc/messages/xyz)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Plain text content of the message. Note that bot-generated cards do not populate this field.
+        expr:
+          kind: path
+          path:
+            - text
+      - name: sender_id
+        type: Utf8
+        nullable: true
+        description: Sender identifier (extracted from sender.name)
+        expr:
+          kind: replace
+          expr:
+            kind: path
+            path:
+              - sender
+              - name
+          from: users/
+          to: ""
+      - name: sender_display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the message sender
+        expr:
+          kind: path
+          path:
+            - sender
+            - displayName
+      - name: sender_type
+        type: Utf8
+        nullable: true
+        description: Type of the sender (e.g. HUMAN, BOT)
+        expr:
+          kind: path
+          path:
+            - sender
+            - type
+      - name: sender_domain_id
+        type: Utf8
+        nullable: true
+        description: Domain ID of the message sender
+        expr:
+          kind: path
+          path:
+            - sender
+            - domainId
+      - name: thread_name
+        type: Utf8
+        nullable: true
+        description: Resource name of the thread
+        expr:
+          kind: path
+          path:
+            - thread
+            - name
+      - name: thread_key
+        type: Utf8
+        nullable: true
+        description: Thread key identifier
+        expr:
+          kind: path
+          path:
+            - thread
+            - threadKey
+      - name: create_time
+        type: Timestamp
+        nullable: true
+        description: Time when the message was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createTime
+      - name: last_update_time
+        type: Timestamp
+        nullable: true
+        description: Time when the message was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastUpdateTime
+      - name: client_assigned_message_id
+        type: Utf8
+        nullable: true
+        description: Client assigned ID of the message
+        expr:
+          kind: path
+          path:
+            - clientAssignedMessageId
+      - name: annotations
+        type: Json
+        nullable: true
+        description: Raw JSON array of annotations (mentions, links, etc.)
+        expr:
+          kind: path
+          path:
+            - annotations
+      - name: space_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Required space ID filter
+        expr:
+          kind: from_filter
+          key: space_id
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional filter query
+        expr:
+          kind: from_filter
+          key: filter
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional orderBy value
+        expr:
+          kind: from_filter
+          key: order_by
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw message object from Google Chat API
+        expr:
+          kind: current_row
