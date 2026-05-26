@@ -1,0 +1,799 @@
+name: google_calendar
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Google Calendar calendars, events, user settings, and color palettes.
+inputs:
+  GOOGLE_CALENDAR_API_BASE:
+    kind: variable
+    default: https://www.googleapis.com/calendar/v3
+    hint: |
+      Base URL for the Google Calendar API. Keep the default unless you are
+      testing against a mock Calendar-compatible API.
+  GOOGLE_CALENDAR_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Use a read-only OAuth 2.0 access token for the Google Calendar API.
+      For the guided OAuth flow, enable the Google Calendar API in a Google
+      Cloud project and create an OAuth 2.0 client of type "Desktop app".
+      The guided OAuth credential method uses that client ID and client secret,
+      then requests the https://www.googleapis.com/auth/calendar.readonly scope.
+      See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
+
+      To paste a token manually, use a token issued with that same scope.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Calendar
+          description: Use Google OAuth to retrieve a Calendar access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_CALENDAR_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/calendar.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Calendar OAuth access token.
+base_url: "{{input.GOOGLE_CALENDAR_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_CALENDAR_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM google_calendar.calendars LIMIT 1
+tables:
+  - name: calendars
+    description: Calendars on the authenticated user's calendar list
+    guide: |
+      Start here to discover calendar IDs. Use `events_calendar_id` values
+      with the `google_calendar.events` table, or omit `calendar_id` there
+      to query the authenticated user's primary calendar.
+    filters:
+      - name: min_access_role
+        required: false
+      - name: show_deleted
+        required: false
+      - name: show_hidden
+        required: false
+    request:
+      method: GET
+      path: /users/me/calendarList
+      query:
+        - name: minAccessRole
+          from: filter
+          key: min_access_role
+        - name: showDeleted
+          from: filter_bool
+          key: show_deleted
+        - name: showHidden
+          from: filter_bool
+          key: show_hidden
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 250
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Calendar identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: events_calendar_id
+        type: Utf8
+        nullable: false
+        description: Calendar ID value safe to pass to the events table
+        expr:
+          kind: replace
+          expr:
+            kind: path
+            path:
+              - id
+          from: "#"
+          to: "%23"
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Calendar title
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Calendar description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Calendar geographic location
+        expr:
+          kind: path
+          path:
+            - location
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: Calendar time zone
+        expr:
+          kind: path
+          path:
+            - timeZone
+      - name: summary_override
+        type: Utf8
+        nullable: true
+        description: Authenticated user's override for the calendar title
+        expr:
+          kind: path
+          path:
+            - summaryOverride
+      - name: color_id
+        type: Utf8
+        nullable: true
+        description: Calendar color ID
+        expr:
+          kind: path
+          path:
+            - colorId
+      - name: background_color
+        type: Utf8
+        nullable: true
+        description: Calendar background color
+        expr:
+          kind: path
+          path:
+            - backgroundColor
+      - name: foreground_color
+        type: Utf8
+        nullable: true
+        description: Calendar foreground color
+        expr:
+          kind: path
+          path:
+            - foregroundColor
+      - name: access_role
+        type: Utf8
+        nullable: true
+        description: Authenticated user's access role for the calendar
+        expr:
+          kind: path
+          path:
+            - accessRole
+      - name: selected
+        type: Boolean
+        nullable: true
+        description: Whether this calendar appears in the Google Calendar UI
+        expr:
+          kind: path
+          path:
+            - selected
+      - name: hidden
+        type: Boolean
+        nullable: true
+        description: Whether this calendar is hidden from the calendar list
+        expr:
+          kind: path
+          path:
+            - hidden
+      - name: primary
+        type: Boolean
+        nullable: true
+        description: Whether this is the authenticated user's primary calendar
+        expr:
+          kind: path
+          path:
+            - primary
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this calendar list entry has been deleted
+        expr:
+          kind: path
+          path:
+            - deleted
+      - name: default_reminders
+        type: Json
+        nullable: true
+        description: Default reminders configured for this calendar
+        expr:
+          kind: path
+          path:
+            - defaultReminders
+      - name: notification_settings
+        type: Json
+        nullable: true
+        description: Calendar notification settings for the authenticated user
+        expr:
+          kind: path
+          path:
+            - notificationSettings
+      - name: conference_solution_types
+        type: Utf8
+        nullable: true
+        description: Allowed conference solution types for this calendar
+        expr:
+          kind: join_array
+          path:
+            - conferenceProperties
+            - allowedConferenceSolutionTypes
+          separator: ","
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw calendar list entry
+        expr:
+          kind: current_row
+  - name: events
+    description: Events on a Google Calendar
+    guide: |
+      Omit `calendar_id` to query the primary calendar, or pass
+      `events_calendar_id` from `google_calendar.calendars`. Use `time_min`
+      and `time_max` as RFC3339 timestamps with timezone offsets. When using
+      `order_by = 'startTime'`, also set `single_events = true`.
+    filters:
+      - name: calendar_id
+        description: URL-safe calendar ID, such as calendars.events_calendar_id
+        required: false
+      - name: time_min
+        required: false
+      - name: time_max
+        required: false
+      - name: updated_min
+        required: false
+      - name: q
+        required: false
+        mode: search
+      - name: i_cal_uid
+        required: false
+      - name: event_type
+        required: false
+      - name: order_by
+        required: false
+      - name: time_zone
+        required: false
+      - name: show_deleted
+        required: false
+      - name: show_hidden_invitations
+        required: false
+      - name: single_events
+        required: false
+    request:
+      method: GET
+      path: /calendars/{{filter.calendar_id|primary}}/events
+      query:
+        - name: timeMin
+          from: filter
+          key: time_min
+        - name: timeMax
+          from: filter
+          key: time_max
+        - name: updatedMin
+          from: filter
+          key: updated_min
+        - name: q
+          from: filter
+          key: q
+        - name: iCalUID
+          from: filter
+          key: i_cal_uid
+        - name: eventTypes
+          from: filter
+          key: event_type
+        - name: orderBy
+          from: filter
+          key: order_by
+        - name: timeZone
+          from: filter
+          key: time_zone
+        - name: showDeleted
+          from: filter_bool
+          key: show_deleted
+        - name: showHiddenInvitations
+          from: filter_bool
+          key: show_hidden_invitations
+        - name: singleEvents
+          from: filter_bool
+          key: single_events
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 250
+        max: 2500
+        query_param: maxResults
+    columns:
+      - name: calendar_id
+        type: Utf8
+        nullable: false
+        description: Calendar ID path value, or primary when omitted
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: from_filter
+              key: calendar_id
+            - kind: literal
+              value: primary
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Google Calendar event ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Event status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: html_link
+        type: Utf8
+        nullable: true
+        description: Web link to the event in Google Calendar
+        expr:
+          kind: path
+          path:
+            - htmlLink
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: Event creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Last event update time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Event title
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Event description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Event location
+        expr:
+          kind: path
+          path:
+            - location
+      - name: color_id
+        type: Utf8
+        nullable: true
+        description: Event color ID
+        expr:
+          kind: path
+          path:
+            - colorId
+      - name: creator__email
+        type: Utf8
+        nullable: true
+        description: Event creator email
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
+      - name: creator__display_name
+        type: Utf8
+        nullable: true
+        description: Event creator display name
+        expr:
+          kind: path
+          path:
+            - creator
+            - displayName
+      - name: organizer__email
+        type: Utf8
+        nullable: true
+        description: Event organizer email
+        expr:
+          kind: path
+          path:
+            - organizer
+            - email
+      - name: organizer__display_name
+        type: Utf8
+        nullable: true
+        description: Event organizer display name
+        expr:
+          kind: path
+          path:
+            - organizer
+            - displayName
+      - name: start_date_time
+        type: Timestamp
+        nullable: true
+        description: Timed event start timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start
+              - dateTime
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: All-day event start date
+        expr:
+          kind: path
+          path:
+            - start
+            - date
+      - name: start_time_zone
+        type: Utf8
+        nullable: true
+        description: Start time zone
+        expr:
+          kind: path
+          path:
+            - start
+            - timeZone
+      - name: end_date_time
+        type: Timestamp
+        nullable: true
+        description: Timed event end timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end
+              - dateTime
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: All-day event end date
+        expr:
+          kind: path
+          path:
+            - end
+            - date
+      - name: end_time_zone
+        type: Utf8
+        nullable: true
+        description: End time zone
+        expr:
+          kind: path
+          path:
+            - end
+            - timeZone
+      - name: recurring_event_id
+        type: Utf8
+        nullable: true
+        description: Parent recurring event ID for event instances
+        expr:
+          kind: path
+          path:
+            - recurringEventId
+      - name: original_start_date_time
+        type: Timestamp
+        nullable: true
+        description: Original start timestamp for recurring event instances
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - originalStartTime
+              - dateTime
+      - name: original_start_date
+        type: Utf8
+        nullable: true
+        description: Original all-day start date for recurring event instances
+        expr:
+          kind: path
+          path:
+            - originalStartTime
+            - date
+      - name: i_cal_uid
+        type: Utf8
+        nullable: true
+        description: Event iCalendar UID
+        expr:
+          kind: path
+          path:
+            - iCalUID
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: Event type
+        expr:
+          kind: path
+          path:
+            - eventType
+      - name: transparency
+        type: Utf8
+        nullable: true
+        description: Whether the event blocks calendar time
+        expr:
+          kind: path
+          path:
+            - transparency
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Event visibility
+        expr:
+          kind: path
+          path:
+            - visibility
+      - name: hangout_link
+        type: Utf8
+        nullable: true
+        description: Google Meet or Hangouts link
+        expr:
+          kind: path
+          path:
+            - hangoutLink
+      - name: attendees_emails
+        type: Utf8
+        nullable: true
+        description: Comma-separated attendee emails
+        expr:
+          kind: join_array_path
+          path:
+            - attendees
+          item_path:
+            - email
+          separator: ","
+      - name: attendees
+        type: Json
+        nullable: true
+        description: Raw attendee objects
+        expr:
+          kind: path
+          path:
+            - attendees
+      - name: recurrence
+        type: Json
+        nullable: true
+        description: Event recurrence rules
+        expr:
+          kind: path
+          path:
+            - recurrence
+      - name: reminders
+        type: Json
+        nullable: true
+        description: Event reminder configuration
+        expr:
+          kind: path
+          path:
+            - reminders
+      - name: conference_data
+        type: Json
+        nullable: true
+        description: Event conference data
+        expr:
+          kind: path
+          path:
+            - conferenceData
+      - name: source__title
+        type: Utf8
+        nullable: true
+        description: Source title for events created from external systems
+        expr:
+          kind: path
+          path:
+            - source
+            - title
+      - name: source__url
+        type: Utf8
+        nullable: true
+        description: Source URL for events created from external systems
+        expr:
+          kind: path
+          path:
+            - source
+            - url
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw event object
+        expr:
+          kind: current_row
+  - name: settings
+    description: Google Calendar settings for the authenticated user
+    guide: |
+      Use this table to inspect user-level Calendar settings such as
+      timezone, date format, and default event length.
+    request:
+      method: GET
+      path: /users/me/settings
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 250
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Setting identifier
+        expr:
+          kind: path
+          path:
+            - id
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Setting value
+        expr:
+          kind: path
+          path:
+            - value
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw setting object
+        expr:
+          kind: current_row
+  - name: calendar_colors
+    description: Calendar color palette entries
+    guide: |
+      Join this table to `google_calendar.calendars.color_id` to resolve
+      calendar palette colors.
+    request:
+      method: GET
+      path: /colors
+    response:
+      rows_path:
+        - calendar
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Calendar color ID
+        expr:
+          kind: path
+          path:
+            - _key
+      - name: background
+        type: Utf8
+        nullable: true
+        description: Background color hex value
+        expr:
+          kind: path
+          path:
+            - background
+      - name: foreground
+        type: Utf8
+        nullable: true
+        description: Foreground color hex value
+        expr:
+          kind: path
+          path:
+            - foreground
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw color definition
+        expr:
+          kind: current_row
+  - name: event_colors
+    description: Event color palette entries
+    guide: |
+      Join this table to `google_calendar.events.color_id` to resolve event
+      palette colors.
+    request:
+      method: GET
+      path: /colors
+    response:
+      rows_path:
+        - event
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Event color ID
+        expr:
+          kind: path
+          path:
+            - _key
+      - name: background
+        type: Utf8
+        nullable: true
+        description: Background color hex value
+        expr:
+          kind: path
+          path:
+            - background
+      - name: foreground
+        type: Utf8
+        nullable: true
+        description: Foreground color hex value
+        expr:
+          kind: path
+          path:
+            - foreground
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw color definition
+        expr:
+          kind: current_row
