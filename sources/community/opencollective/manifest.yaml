@@ -7,8 +7,8 @@ dsl_version: 3
 name: opencollective
 version: "1.0.0"
 description: >
-  Open Collective funding data — query total amounts raised, contributor counts,
-  and backer details for any open source project using public GraphQL API.
+  Open Collective funding data — query total amounts raised and contributor counts
+  for any open source project using the public GraphQL API.
 backend: http
 base_url: https://api.opencollective.com/graphql/v2
 
@@ -71,7 +71,7 @@ tables:
         expr:
           kind: path
           path: ["stats", "contributorsCount"]
-      - name: github_url
+      - name: github_handle
         type: Utf8
         expr:
           kind: path
