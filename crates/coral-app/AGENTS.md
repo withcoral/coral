@@ -41,6 +41,12 @@ root.
   them into `config.toml`.
 - Bundled installs persist source identity plus configured variables and
   secrets, then resolve their manifest from the current binary at runtime.
+- Credential backend selection stays inside `credentials/`. Managers pass
+  explicit source credential-storage routes; CLI, MCP, source-spec, and engine
+  code must not know backend implementation details.
+- An installed source's persisted credential-storage route is authoritative.
+  A missing route is legacy file storage, not an instruction to re-run global
+  backend selection.
 - Source `name` is the canonical installed identifier and SQL schema name.
 - `coral-client::local` intentionally depends on `coral-app::ServerBuilder` for
   the explicit local bootstrap seam.
