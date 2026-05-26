@@ -782,11 +782,11 @@ export function TraceDetail({
   const handleSpanArrowShortcut = useCallback(
     (direction: -1 | 1) => (event: KeyboardEvent) => {
       const target = event.target
-      if (target instanceof HTMLElement) {
-        if (target.closest('[data-span-inspector="true"]')) return
-        if (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))
-          return
-      }
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))
+      )
+        return
       if (!expandedHttpSpanId) {
         if (!focusFirstSpan(direction)) return
         event.preventDefault()
