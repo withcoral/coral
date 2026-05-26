@@ -39,12 +39,12 @@ ORDER BY CASE WHEN score = -1 THEN 999 ELSE score END ASC
 ```
 
 ```sql
--- Only the failing checks (score < 5)
+-- Only the failing checks (score < 5, excluding N/A)
 SELECT check_name, score, reason
 FROM scorecard.checks
 WHERE owner = 'django'
   AND repo  = 'django'
-  AND score < 5
+  AND score >= 0 AND score < 5
 ORDER BY score ASC
 ```
 
