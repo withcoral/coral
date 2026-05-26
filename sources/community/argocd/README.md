@@ -53,13 +53,14 @@ Per-table breakdown:
 
 Project automation tokens inherit only the policies explicitly added to
 their role — nothing is granted automatically. Add each permission you
-need via `argocd proj role add-policy`:
+need via `argocd proj role add-policy` (note: `-r` sets the resource
+type; `-o` is the object pattern within the project, not the resource):
 
 ```bash
-argocd proj role add-policy <project> <role> -a get -o applications    --permission allow
-argocd proj role add-policy <project> <role> -a get -o projects        --permission allow
-argocd proj role add-policy <project> <role> -a get -o clusters        --permission allow
-argocd proj role add-policy <project> <role> -a get -o repositories    --permission allow
+argocd proj role add-policy <project> <role> -a get -p allow -r applications  -o '*'
+argocd proj role add-policy <project> <role> -a get -p allow -r clusters       -o '*'
+argocd proj role add-policy <project> <role> -a get -p allow -r repositories   -o '*'
+argocd proj role add-policy <project> <role> -a get -p allow -r projects       -o '<project>'
 ```
 
 See the [ArgoCD RBAC docs](https://argo-cd.readthedocs.io/en/stable/operator-manual/rbac/)

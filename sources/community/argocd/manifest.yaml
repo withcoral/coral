@@ -1,6 +1,6 @@
 dsl_version: 3
 name: argocd
-version: 1.0.0
+version: 1.1.0
 description: >-
   Query ArgoCD applications, projects, clusters, and repositories to
   understand GitOps deployment state across your fleet.
@@ -44,6 +44,7 @@ request_headers:
     value: application/json
 test_queries:
   - SELECT * FROM argocd.applications LIMIT 1
+  - SELECT * FROM argocd.applications WHERE project = 'default' LIMIT 1
 tables:
   - name: applications
     description: ArgoCD applications with sync status, health, source or sources, and destination
@@ -90,6 +91,13 @@ tables:
     pagination:
       mode: none
     columns:
+      - name: project
+        type: Utf8
+        nullable: true
+        description: Project filter — when set, only applications in this project are returned (pushed to the API)
+        expr:
+          kind: from_filter
+          key: project
       - name: name
         type: Utf8
         nullable: false
@@ -425,6 +433,7 @@ tables:
         expr:
           kind: path
           path:
+            - info
             - serverVersion
       - name: connection_status
         type: Utf8
