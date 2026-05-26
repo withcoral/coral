@@ -365,15 +365,6 @@ tables:
           kind: path
           path: newRating
 
-      - name: rating_change
-        type: Int64
-        description: >
-          Difference between new and old rating.
-          Positive = rating went up, negative = rating went down.
-        expr:
-          kind: path
-          path: newRating
-
       - name: rated_at
         type: Int64
         description: Unix timestamp of when the contest was rated
