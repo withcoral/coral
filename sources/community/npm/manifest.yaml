@@ -1,0 +1,42 @@
+dsl_version: 3
+name: npm
+version: "1.0.0"
+description: npm package download statistics.
+backend: http
+base_url: https://api.npmjs.org
+
+tables:
+  - name: packages
+    description: npm package download stats.
+    filters:
+      - name: name
+        required: true
+    request:
+      method: GET
+      path: /downloads/point/last-month/{{filter.name}}
+    columns:
+      - name: name
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: name
+      - name: version
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: name
+      - name: weekly_downloads
+        type: Int64
+        expr:
+          kind: path
+          path: ["downloads"]
+      - name: monthly_downloads
+        type: Int64
+        expr:
+          kind: path
+          path: ["downloads"]
+      - name: description
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: name
