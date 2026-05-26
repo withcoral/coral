@@ -12,7 +12,7 @@ Adzuna is a global job aggregator indexing millions of active vacancies across 1
 Install the source via the CLI:
 
 ```bash
-coral source add withcoral/coral/sources/community/adzuna
+coral source add --file sources/community/adzuna/manifest.yaml
 ```
 
 ## Credentials

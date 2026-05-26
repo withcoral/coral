@@ -7,6 +7,10 @@ description: >-
   Provides keyword, location, and salary filtering, plus salary distribution histograms
   and category enumeration.
 base_url: "https://api.adzuna.com/v1/api"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
 inputs:
   ADZUNA_APP_ID:
     kind: secret
