@@ -5,7 +5,7 @@
 **Tables:** 4
 **Base URL:** `https://dev.to/api`
 
-Query articles, users, and tags from [DEV.to](https://dev.to) and other Forem communities via the public [Forem API](https://developers.forem.com/api/v1). No authentication required.
+Query articles, users, and tags from [DEV.to](https://dev.to) via the public [Forem API](https://developers.forem.com/api/v1). No authentication required.
 
 ```bash
 coral source add --file sources/community/devto/manifest.yaml
@@ -54,6 +54,7 @@ Fetch a list of published articles. Supports filtering by tag, author, state, an
 | `created_at` | Timestamp | Creation timestamp |
 | `last_comment_at` | Timestamp | Timestamp of the last comment |
 | `edited_at` | Timestamp | Timestamp of last edit |
+| `author_user_id` | Int64 | User ID of the author (from nested `user` object) |
 | `author_username` | Utf8 | Username of the author (from nested `user` object) |
 | `author_name` | Utf8 | Display name of the author (from nested `user` object) |
 | `organization_name` | Utf8 | Organization name if posted under one |
@@ -158,11 +159,11 @@ coral sql "
   LIMIT 10
 "
 
-# Find fresh articles from a specific user
+# Find articles from a specific user
 coral sql "
   SELECT title, url, published_at
   FROM devto.articles
-  WHERE username = 'ben' AND state = 'fresh'
+  WHERE username = 'ben'
   LIMIT 5
 "
 

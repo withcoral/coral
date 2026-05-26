@@ -3,7 +3,7 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query articles, users, and tags from DEV.to and other Forem communities.
+  Query articles, users, and tags from DEV.to.
   No authentication required for public endpoints.
 base_url: https://dev.to/api
 request_headers:
@@ -167,6 +167,15 @@ tables:
             kind: path
             path:
               - last_comment_at
+      - name: author_user_id
+        type: Int64
+        nullable: true
+        description: User ID of the author.
+        expr:
+          kind: path
+          path:
+            - user
+            - user_id
       - name: author_username
         type: Utf8
         nullable: true
