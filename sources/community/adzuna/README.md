@@ -56,7 +56,7 @@ Combine Adzuna jobs with other data sources in Coral. For example, joining again
 SELECT g.title AS issue, g.html_url, a.company, a.redirect_url
 FROM github.issues g
 JOIN adzuna.search_jobs(what => 'python') a ON true
-WHERE g.repo = 'tiangolo/fastapi' AND g.assignee IS NULL
+WHERE g.owner = 'tiangolo' AND g.repo = 'fastapi' AND g.assignee IS NULL
 LIMIT 7;
 ```
 
@@ -87,8 +87,8 @@ Provider-native search for active job listings with keyword, location, category,
 | `country` | Utf8 | Argument/Virtual column to override country (default: gb) |
 | `what` | Utf8 | Argument/Virtual column from keyword search filter |
 | `location_filter` | Utf8 | Argument/Virtual column from location search filter |
-| `full_time` | Utf8 | Argument (1/0) |
-| `permanent` | Utf8 | Argument (1/0) |
+| `full_time` | Utf8 | Pass `1` to require full-time jobs; omit otherwise |
+| `permanent` | Utf8 | Pass `1` to require permanent jobs; omit otherwise |
 
 ## Tables
 

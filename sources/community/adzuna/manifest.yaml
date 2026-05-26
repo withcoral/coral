@@ -53,9 +53,11 @@ functions:
         bind:
           arg: salary_max
       - name: full_time
+        values: ["1"]
         bind:
           arg: full_time
       - name: permanent
+        values: ["1"]
         bind:
           arg: permanent
     request:
