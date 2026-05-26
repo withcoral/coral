@@ -3,37 +3,42 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query OpenSSF Scorecard security health checks for any public GitHub repository.
-  Returns up to 18 security dimensions (code review, branch protection, signed
-  releases, pinned dependencies, SAST, fuzzing, and more) with a score 0–10
-  and a plain-English reason for each. No authentication required. Scores are
-  updated weekly by the OpenSSF Scorecard project.
+  Query OpenSSF Scorecard security health checks for public GitHub repositories
+  tracked by OpenSSF Scorecard. Returns up to 18 security dimensions (code
+  review, branch protection, signed releases, pinned dependencies, SAST,
+  fuzzing, and more) with a score 0–10 and a plain-English reason for each.
+  No authentication required. Scores are precomputed and updated weekly.
+  Repositories not yet indexed by OpenSSF return a 404 (no score available).
 base_url: https://api.securityscorecards.dev
 
 test_queries:
   - SELECT check_name, score, reason FROM scorecard.checks WHERE owner = 'expressjs' AND repo = 'express' LIMIT 5
+  - SELECT date, aggregate_score, repo_commit, scorecard_version FROM scorecard.project WHERE owner = 'expressjs' AND repo = 'express'
 
 tables:
   - name: checks
     description: >-
-      OpenSSF Scorecard security checks for a GitHub repository. Each row is one
-      security dimension (e.g. Code-Review, Branch-Protection, Signed-Releases)
-      with a score from 0 (worst) to 10 (best) and a plain-English reason.
-      Score -1 means the check is not applicable for this repo (e.g. no releases
-      to sign). Works for any public GitHub repository tracked by OpenSSF.
+      OpenSSF Scorecard security checks for a GitHub repository tracked by
+      OpenSSF. Each row is one security dimension (e.g. Code-Review,
+      Branch-Protection, Signed-Releases) with a score from 0 (worst) to 10
+      (best) and a plain-English reason. Score -1 means the check is not
+      applicable for this repo (e.g. no releases to sign). Only repositories
+      indexed by OpenSSF Scorecard return results; others return a 404.
     guide: >-
       Each row is one OpenSSF Scorecard security check for the given GitHub repository.
       Always include BOTH filters:
         WHERE owner = '<github-owner>' AND repo = '<github-repo>'
 
-      Known checks: Binary-Artifacts, Branch-Protection, CII-Best-Practices,
-      Code-Review, Dangerous-Workflow, Fuzzing, License, Maintained,
-      Packaging, Pinned-Dependencies, SAST, Security-Policy,
-      Signed-Releases, Token-Permissions, Vulnerabilities.
+      Known checks (non-exhaustive — set varies by repository):
+      Binary-Artifacts, Branch-Protection, CII-Best-Practices, CI-Tests,
+      Code-Review, Contributors, Dangerous-Workflow, Dependency-Update-Tool,
+      Fuzzing, License, Maintained, Packaging, Pinned-Dependencies, SAST,
+      Security-Policy, Signed-Releases, Token-Permissions, Vulnerabilities.
 
       Scores: 10 = excellent, 0 = critical gap, -1 = not applicable.
       Sort by score ASC to surface which checks need the most improvement.
-      Filter WHERE score < 5 to find critical security gaps.
+      Filter WHERE score >= 0 AND score < 5 to find critical security gaps
+      (exclude -1 N/A values).
     fetch_limit_default: 30
     filters:
       - name: owner
@@ -89,6 +94,100 @@ tables:
           path:
             - documentation
             - url
+
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Echoes the owner filter used to produce this row.
+        expr:
+          kind: from_filter
+          key: owner
+
+      - name: repo
+        type: Utf8
+        nullable: true
+        description: Echoes the repo filter used to produce this row.
+        expr:
+          kind: from_filter
+          key: repo
+
+  - name: project
+    description: >-
+      Top-level Scorecard result metadata for a GitHub repository. Returns one
+      row with the aggregate score, the date the score was produced, the commit
+      SHA that was evaluated, and the Scorecard tool version. Use this table
+      to check data freshness and to identify which commit was scored.
+      Only repositories indexed by OpenSSF Scorecard return results.
+    guide: >-
+      Returns one row per repository with aggregate metadata.
+      Always include BOTH filters:
+        WHERE owner = '<github-owner>' AND repo = '<github-repo>'
+
+      Use scorecard.project to check when the score was last computed and
+      which commit was evaluated. Join with scorecard.checks for per-check detail.
+    fetch_limit_default: 1
+    filters:
+      - name: owner
+        required: true
+      - name: repo
+        required: true
+    request:
+      method: GET
+      path: /projects/github.com/{{filter.owner}}/{{filter.repo}}
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: date
+        type: Utf8
+        nullable: true
+        description: ISO 8601 date when this Scorecard result was produced (weekly cadence).
+        expr:
+          kind: path
+          path:
+            - date
+
+      - name: aggregate_score
+        type: Float64
+        nullable: true
+        description: >-
+          Overall Scorecard score for the repository, from 0 (worst) to 10
+          (best). Weighted average across all applicable checks.
+        expr:
+          kind: path
+          path:
+            - score
+
+      - name: repo_commit
+        type: Utf8
+        nullable: true
+        description: Git commit SHA of the repository state that was evaluated.
+        expr:
+          kind: path
+          path:
+            - repo
+            - commit
+
+      - name: scorecard_version
+        type: Utf8
+        nullable: true
+        description: Version of the OpenSSF Scorecard tool that produced this result.
+        expr:
+          kind: path
+          path:
+            - scorecard
+            - version
+
+      - name: scorecard_commit
+        type: Utf8
+        nullable: true
+        description: Commit SHA of the Scorecard tool itself used for this evaluation.
+        expr:
+          kind: path
+          path:
+            - scorecard
+            - commit
 
       - name: owner
         type: Utf8

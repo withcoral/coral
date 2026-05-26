@@ -1,11 +1,11 @@
 # OpenSSF Scorecard Source for Coral
 
-Adds `scorecard.checks` as a queryable SQL table, powered by the [OpenSSF Scorecard API](https://api.securityscorecards.dev). Returns up to 18 security health checks for any public GitHub repository — no authentication required.
+Adds `scorecard.checks` and `scorecard.project` as queryable SQL tables, powered by the [OpenSSF Scorecard API](https://api.securityscorecards.dev). Returns security health checks for public GitHub repositories tracked by OpenSSF Scorecard — no authentication required.
 
 ## Install
 
 ```bash
-coral source add --file sources/scorecard/manifest.yaml
+coral source add --file sources/community/scorecard/manifest.yaml
 ```
 
 ## What is OpenSSF Scorecard?
@@ -21,11 +21,14 @@ The [Open Source Security Foundation (OpenSSF) Scorecard](https://github.com/oss
 
 Each check produces a score from **0** (critical gap) to **10** (excellent). Score **-1** means the check is not applicable (e.g. no releases to sign).
 
+> **Note:** The Scorecard API serves precomputed results for repositories already indexed by OpenSSF. Repositories not yet tracked return a 404. See the [Scorecard REST API docs](https://github.com/ossf/scorecard#scorecard-rest-api) for details on coverage.
+
 ## Tables
 
 | Table | Required filters | Purpose |
 |---|---|---|
-| `scorecard.checks` | `owner`, `repo` | Security checks for a GitHub repo, each scored 0–10 |
+| `scorecard.checks` | `owner`, `repo` | Per-check scores (0–10) with plain-English reasons |
+| `scorecard.project` | `owner`, `repo` | Aggregate score, scored date, commit SHA, tool version |
 
 ## Usage
 
@@ -69,6 +72,14 @@ WHERE owner = 'django'
 ORDER BY score ASC
 ```
 
+```sql
+-- Check data freshness and which commit was scored
+SELECT date, aggregate_score, repo_commit, scorecard_version
+FROM scorecard.project
+WHERE owner = 'expressjs'
+  AND repo  = 'express'
+```
+
 ## Score reference
 
 | Score | Meaning |
@@ -82,7 +93,7 @@ ORDER BY score ASC
 
 ## Rate limits
 
-The OpenSSF Scorecard API is free and publicly accessible. No API key is required. Scores are computed weekly — data is cached and requests are lightweight.
+The OpenSSF Scorecard API is free and publicly accessible. No API key is required. Scores are precomputed weekly — data is cached and requests are lightweight.
 
 ## DSL features used
 
@@ -90,38 +101,31 @@ The OpenSSF Scorecard API is free and publicly accessible. No API key is require
 |---|---|
 | `{{filter.owner}}` path template | `owner` filter injected into URL path: `/projects/github.com/{owner}/{repo}` |
 | `{{filter.repo}}` path template | `repo` filter injected into URL path |
-| `rows_path: [checks]` | Response is an object; `checks` is the array of security check rows |
+| `rows_path: [checks]` | `checks` table — navigates to the nested `checks` array |
+| `rows_path: []` | `project` table — root object treated as single row |
 | Nested path (`documentation.url`) | `documentation_url` column — nested field access |
-| `from_filter` | `owner` and `repo` echo columns |
-| `pagination: mode: none` | Single API call returns all checks (no pagination needed) |
+| Nested path (`repo.commit`, `scorecard.version`) | `project` table metadata columns |
+| `from_filter` | `owner` and `repo` echo columns in both tables |
+| `pagination: mode: none` | Single API call returns all data (no pagination needed) |
 
 ## Limitations
 
-- Only covers **public** GitHub repositories tracked by OpenSSF Scorecard.
+- Only covers public GitHub repositories **already indexed by OpenSSF Scorecard**. Repositories not in the index return a 404 rather than an empty result.
 - Scores are updated **weekly** — they reflect the state of the repo at last scan time.
-- A 404 error means the repo has not been scored (usually repos with no CI/CD history).
 - `Branch-Protection` may return -1 due to GitHub token limitations in the Scorecard service.
+- The set of checks varies by repository — not all 18 checks apply to every project.
 
 ## Validation
 
 ```
-YAML parse:                     passed for sources/scorecard/manifest.yaml
-Coral manifest schema:          passed (dsl_version: 3, backend: http, 1 table)
+YAML parse:                     passed for sources/community/scorecard/manifest.yaml
+Coral manifest schema:          passed (dsl_version: 3, backend: http, 2 tables)
 test_queries:                   passed — SELECT check_name, score, reason FROM scorecard.checks WHERE owner = 'expressjs' AND repo = 'express' LIMIT 5
-Live API test (no key):         passed — 18 checks, <1s response time
+Live API test (checks):         passed — 18 checks, <1s response time
+Live API test (project):        passed — 1 row: date, aggregate_score, repo_commit, scorecard_version
 Path template ({{filter.*}}):   passed — /projects/github.com/expressjs/express resolved correctly
 rows_path: [checks]:            passed — nested array correctly iterated as rows
-Integration test (RepoSense):   passed — reposense --repo expressjs/express scorecard returns 18 rows
-```
-
-## Used by RepoSense
-
-The `scorecard` command uses this source to surface security posture for any repo:
-
-```bash
-reposense --repo expressjs/express scorecard    # → 18 security checks, color-coded
-reposense --repo django/django scorecard        # → Django's OpenSSF posture
-reposense --repo rust-lang/rust scorecard       # → Rust project security health
+rows_path: []:                  passed — root object returned as single project row
 ```
 
 ## Why this source is unique
@@ -132,4 +136,4 @@ Most security tools focus on **vulnerabilities in dependencies** (CVEs, Dependab
 - Are CI tokens least-privilege? (`Token-Permissions`)
 - Are dependencies reproducible? (`Pinned-Dependencies`)
 
-This is the only coral source that queries the OpenSSF Scorecard API, and it requires no configuration — just `owner` and `repo`, which RepoSense already knows.
+The `project` table adds a data freshness dimension — users can see exactly when the score was produced and which commit was evaluated, which is important when interpreting precomputed weekly results.
