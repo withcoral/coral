@@ -1,0 +1,49 @@
+name: medium
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+description: Medium article discovery and metadata source.
+
+base_url: https://medium.com
+
+test_queries:
+  - SELECT * FROM medium.articles LIMIT 1
+
+tables:
+  - name: articles
+    description: |
+      Fetch Medium article metadata including title, author,
+      publication, and article URL.
+
+    fetch_limit_default: 25
+
+    request:
+      method: GET
+      path: /
+
+    response: {}
+
+    pagination:
+      mode: none
+
+    columns:
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Medium article title.
+
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Author of the Medium article.
+
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL of the Medium article.
+
+      - name: publication
+        type: Utf8
+        nullable: true
+        description: Medium publication name.
