@@ -13,7 +13,7 @@ request_headers:
 
 test_queries:
   - SELECT title, url FROM devto.articles WHERE tag = 'rust' LIMIT 1
-  - SELECT username, name, summary FROM devto.users WHERE username = 'ben' LIMIT 1
+  - SELECT username, name, summary FROM devto.users_by_username WHERE username = 'ben' LIMIT 1
   - SELECT name, bg_color_hex FROM devto.tags LIMIT 1
 
 tables:
@@ -235,26 +235,81 @@ tables:
         description: Type of the resource (always article).
 
   # ──────────────────────────────────────────────────────────────────────
-  # users — lookup a user by ID or username
+  # users_by_id — lookup a user by ID
   # ──────────────────────────────────────────────────────────────────────
-  - name: users
-    description: |
-      Lookup a specific DEV.to user. You must provide either `id` or `username`.
+  - name: users_by_id
+    description: Lookup a specific DEV.to user by ID.
     filters:
       - name: id
-      - name: username
+        required: true
     request:
       method: GET
       path: /users/{{filter.id}}
-    requests:
-      - when_filters:
-          - username
-        method: GET
-        path: /users/by_username
-        query:
-          - name: url
-            from: filter
-            key: username
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: User ID.
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Username.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name.
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: User profile summary/bio.
+      - name: location
+        type: Utf8
+        nullable: true
+        description: User location.
+      - name: website_url
+        type: Utf8
+        nullable: true
+        description: User website URL.
+      - name: joined_at
+        type: Utf8
+        nullable: true
+        description: Date the user joined DEV.to (e.g. Dec 27, 2015).
+      - name: twitter_username
+        type: Utf8
+        nullable: true
+        description: Twitter handle.
+      - name: github_username
+        type: Utf8
+        nullable: true
+        description: GitHub handle.
+      - name: profile_image
+        type: Utf8
+        nullable: true
+        description: URL of the user profile image.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Public email address, if set.
+
+  # ──────────────────────────────────────────────────────────────────────
+  # users_by_username — lookup a user by username
+  # ──────────────────────────────────────────────────────────────────────
+  - name: users_by_username
+    description: Lookup a specific DEV.to user by username.
+    filters:
+      - name: username
+        required: true
+    request:
+      method: GET
+      path: /users/by_username
+      query:
+        - name: url
+          from: filter
+          key: username
     response:
       row_strategy: direct
     pagination:

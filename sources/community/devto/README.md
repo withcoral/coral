@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0
 **Backend:** HTTP
-**Tables:** 3
+**Tables:** 4
 **Base URL:** `https://dev.to/api`
 
 Query articles, users, and tags from [DEV.to](https://dev.to) and other Forem communities via the public [Forem API](https://developers.forem.com/api/v1). No authentication required.
@@ -16,7 +16,8 @@ coral source add --file sources/community/devto/manifest.yaml
 | Table | Description | Filters |
 |---|---|---|
 | `articles` | Published articles on DEV.to | `tag`, `username`, `state`, `top` |
-| `users` | User profile lookup | `id` (required) or `username` (required) |
+| `users_by_id` | User profile lookup by ID | `id` (required) |
+| `users_by_username` | User profile lookup by username | `username` (required) |
 | `tags` | Active tags on the platform | — |
 
 ---
@@ -70,16 +71,43 @@ Fetch a list of published articles. Supports filtering by tag, author, state, an
 
 ---
 
-### `users`
+### `users_by_id`
 
-Lookup a specific DEV.to user profile. You must provide either an `id` or a `username`.
+Lookup a specific DEV.to user profile by their ID.
 
 #### Filters
 
 | Filter | Type | Required | Description |
 |---|---|---|---|
-| `id` | Int64 | Yes (or `username`) | The numerical user ID |
-| `username` | string | Yes (or `id`) | The DEV.to handle (e.g. `ben`) |
+| `id` | Int64 | Yes | The numerical user ID |
+
+#### Columns
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | Int64 | User ID |
+| `username` | Utf8 | Username |
+| `name` | Utf8 | Display name |
+| `summary` | Utf8 | User profile summary/bio |
+| `location` | Utf8 | User location |
+| `website_url` | Utf8 | User website URL |
+| `joined_at` | Utf8 | Date the user joined DEV.to (e.g. `Dec 27, 2015`) |
+| `twitter_username` | Utf8 | Twitter handle |
+| `github_username` | Utf8 | GitHub handle |
+| `profile_image` | Utf8 | URL of the user profile image |
+| `email` | Utf8 | Public email address, if set |
+
+---
+
+### `users_by_username`
+
+Lookup a specific DEV.to user profile by their username.
+
+#### Filters
+
+| Filter | Type | Required | Description |
+|---|---|---|---|
+| `username` | string | Yes | The DEV.to handle (e.g. `ben`) |
 
 #### Columns
 
@@ -141,14 +169,14 @@ coral sql "
 # Lookup a user profile
 coral sql "
   SELECT name, summary, location, github_username, profile_image
-  FROM devto.users
+  FROM devto.users_by_username
   WHERE username = 'ben'
 "
 
 # Lookup a user by ID
 coral sql "
   SELECT username, name, joined_at, email
-  FROM devto.users
+  FROM devto.users_by_id
   WHERE id = 1
 "
 
@@ -162,9 +190,8 @@ coral sql "
 
 ## Notes
 
-- The `users` table functions as a **lookup table** — you must provide either an `id` or `username` filter. The Forem API does not support listing all users without admin authentication.
-- The API uses different endpoints depending on the filter: `id` routes to `/users/{id}`, while `username` routes to `/users/by_username?url={username}`. The manifest handles this via `when_filters` request routing.
-- `joined_at` in `users` returns a human-readable date string (e.g. `Dec 27, 2015`), not an ISO 8601 timestamp.
+- The `users_by_id` and `users_by_username` tables function as **lookup tables** — you must provide the required `id` or `username` filter respectively. The Forem API does not support listing all users without admin authentication.
+- `joined_at` in user tables returns a human-readable date string (e.g. `Dec 27, 2015`), not an ISO 8601 timestamp.
 - `tags` in `articles` is a comma-separated string (e.g. `javascript, node, rust`). Filter by a single tag using the `tag` filter.
 - No authentication or API key is required for any of the implemented endpoints.
 - The Forem API enforces a rate limit of **30 requests per 30 seconds** for unauthenticated access. Keep this in mind when running large paginated queries.
