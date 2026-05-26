@@ -504,10 +504,11 @@ async fn validate_source_skipped_registration_returns_unary_failed_precondition(
         "name": "missing_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "messages",
             "description": "Missing messages",
+            "format": "jsonl",
             "source": {
                 "location": format!("file://{}/", missing_dir.display()),
                 "glob": "**/*.jsonl",

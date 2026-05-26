@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use crate::{QueryRuntimeContext, RequestAuthenticator};
 use async_trait::async_trait;
-use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
     SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
@@ -358,25 +357,4 @@ pub(crate) fn schema_from_columns(
         ));
     }
     Ok(Arc::new(Schema::new(fields)))
-}
-
-pub(crate) fn partition_columns_to_arrow(
-    partitions: &[PartitionColumnSpec],
-) -> datafusion::error::Result<Vec<(String, DataType)>> {
-    partitions
-        .iter()
-        .map(|partition: &PartitionColumnSpec| {
-            partition
-                .manifest_data_type()
-                .map(|data_type| {
-                    (
-                        partition.name.clone(),
-                        manifest_data_type_to_arrow(data_type),
-                    )
-                })
-                .map_err(|error: coral_spec::ManifestError| {
-                    DataFusionError::Execution(error.to_string())
-                })
-        })
-        .collect()
 }
