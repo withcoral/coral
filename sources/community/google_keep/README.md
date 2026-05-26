@@ -42,7 +42,7 @@ Discover all active (non-trashed) notes and checklists:
 ```sql
 SELECT id, title, body_text, list_items_text
 FROM google_keep.notes
-WHERE trashed = false
+WHERE filter = 'trashed = false'
 LIMIT 20;
 ```
 
@@ -59,7 +59,7 @@ Find all trashed notes:
 ```sql
 SELECT id, title, trash_time
 FROM google_keep.notes
-WHERE trashed = true;
+WHERE filter = 'trashed = true';
 ```
 
 Query raw checklist structures to inspect sub-items:

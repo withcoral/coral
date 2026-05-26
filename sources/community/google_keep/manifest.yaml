@@ -57,6 +57,7 @@ request_headers:
     value: application/json
 test_queries:
   - SELECT * FROM google_keep.notes LIMIT 1
+  - SELECT * FROM google_keep.notes WHERE filter = 'trashed = true' LIMIT 1
 tables:
   - name: notes
     description: Notes and checklists owned by the authenticated user
