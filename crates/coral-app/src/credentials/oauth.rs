@@ -1284,7 +1284,8 @@ fn oauth_refresh_config(
             ))
         })?
         .with_timezone(&Utc);
-    if expires_at > Utc::now() + chrono::Duration::seconds(REFRESH_EXPIRY_SKEW_SECONDS) {
+    let now = Utc::now();
+    if expires_at > now + chrono::Duration::seconds(REFRESH_EXPIRY_SKEW_SECONDS) {
         return Ok(None);
     }
     let Some(refresh_token) = material
@@ -1292,8 +1293,11 @@ fn oauth_refresh_config(
         .filter(|value| !value.is_empty())
         .cloned()
     else {
+        if expires_at > now {
+            return Ok(None);
+        }
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired or is about to expire and cannot be refreshed because no refresh token is stored; reconnect the source"
+            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because no refresh token is stored; reconnect the source"
         )));
     };
     let client_id = material
@@ -1562,7 +1566,7 @@ mod tests {
     async fn unexpired_oauth_material_does_not_refresh_access_token() {
         let oauth = oauth_spec(
             "http://127.0.0.1:9/token",
-            free_loopback_port(),
+            53682,
             ManifestOAuthPkceMode::Disabled,
             ManifestOAuthClientSpec {
                 id: ManifestOAuthClientIdSpec {
@@ -1599,6 +1603,46 @@ mod tests {
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),
             Some("fresh-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn near_expiry_oauth_material_without_refresh_token_remains_usable() {
+        let oauth = oauth_spec(
+            "http://127.0.0.1:9/token",
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+            },
+        );
+        let prefix = oauth_metadata_prefix("API_TOKEN");
+        let mut material = BTreeMap::from([
+            ("API_TOKEN".to_string(), "near-expiry-token".to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc3339(),
+            ),
+        ]);
+        let service = OAuthCredentialService::new();
+
+        let refreshed = service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
+                &mut material,
+            )
+            .await
+            .expect("near-expiry token without refresh token should still be usable");
+
+        assert!(!refreshed);
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("near-expiry-token")
         );
     }
 
