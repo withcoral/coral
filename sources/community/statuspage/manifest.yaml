@@ -4,9 +4,9 @@ dsl_version: 3
 backend: http
 description: >-
   Query status, components, incidents, and scheduled maintenances from
-  Atlassian Statuspage. Works with any public Statuspage instance including
-  Stripe, GitHub, Atlassian, PagerDuty, Twilio, Cloudflare, and most major
-  SaaS vendors. No authentication required.
+  Atlassian Statuspage public Status API pages that expose the
+  /api/v2/*.json feed endpoints. No authentication is required for public,
+  paid Statuspage pages.
 base_url: "{{input.STATUSPAGE_BASE_URL}}"
 
 inputs:
@@ -16,17 +16,26 @@ inputs:
     hint: >-
       Base URL of the Atlassian Statuspage instance to monitor.
       Examples: https://www.githubstatus.com, https://status.atlassian.com,
-      https://status.pagerduty.com, https://status.twilio.com.
-      Do not include a trailing slash. Any service running Atlassian
-      Statuspage works.
+      https://status.twilio.com, https://status.openai.com.
+      Do not include a trailing slash. The page must expose public
+      Atlassian Statuspage /api/v2/*.json endpoints.
+
+test_queries:
+  - SELECT indicator, description FROM statuspage.status LIMIT 1
+  - SELECT id, name, status FROM statuspage.components LIMIT 5
+  - SELECT id, name, impact, status FROM statuspage.incidents LIMIT 5
+  - SELECT id, name, status FROM statuspage.active_incidents LIMIT 5
+  - SELECT id, name, status FROM statuspage.scheduled_maintenances LIMIT 5
+  - SELECT id, name, status FROM statuspage.active_maintenances LIMIT 5
+  - SELECT id, name, status FROM statuspage.upcoming_maintenances LIMIT 5
 
 tables:
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   # status
   # Overall page-level health indicator.
   # GET /api/v2/status.json
   # Response: {"page": {...}, "status": {...}}
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   - name: status
     description: >-
       Overall health indicator for the monitored service.
@@ -35,8 +44,8 @@ tables:
       Use this as a fast yes/no check before drilling into components
       or incidents.
     guide: |
-      No filters required. Query: `SELECT indicator, description FROM {source}.status`.
-      `indicator` values: none (all operational), minor, major, critical, maintenance.
+      Query: `SELECT indicator, description FROM {source}.status`.
+      Indicator values: none, minor, major, critical, maintenance.
     request:
       method: GET
       path: /api/v2/status.json
@@ -65,12 +74,12 @@ tables:
           path:
             - description
 
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   # components
   # Individual service components and their current health status.
   # GET /api/v2/components.json
   # Response: {"page": {...}, "components": [...]}
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   - name: components
     description: >-
       Health status of every individual service component on the status page.
@@ -79,11 +88,12 @@ tables:
       partial_outage | major_outage | under_maintenance.
       Filter WHERE status != 'operational' to surface degraded components.
     guide: |
-      No filters required. Query: `SELECT id, name, status FROM {source}.components WHERE status != 'operational'`.
-      Statuspage public incident rows do not expose affected component IDs in this source,
-      so do not join components to incidents on `id`. Use components to find degraded
-      service areas, then inspect `{source}.active_incidents` or `{source}.incidents`
-      for vendor-provided incident context.
+      Query degraded components:
+      `SELECT id, name, status FROM {source}.components
+      WHERE status != 'operational'`.
+      Public incident rows do not expose affected component IDs here.
+      Do not join components to incidents on `id`. Use this table for
+      degraded service areas, then inspect incidents for vendor context.
     request:
       method: GET
       path: /api/v2/components.json
@@ -138,7 +148,8 @@ tables:
       - name: group
         type: Boolean
         nullable: true
-        description: True if this component is a group container for sub-components.
+        description: >-
+          True if this component is a group container for sub-components.
         expr:
           kind: path
           path:
@@ -204,12 +215,12 @@ tables:
           path:
             - start_date
 
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   # incidents
   # All incidents — resolved and unresolved — in reverse chronological order.
   # GET /api/v2/incidents.json
   # Response: {"page": {...}, "incidents": [...]}
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   - name: incidents
     description: >-
       All incidents recorded on the status page, including resolved ones,
@@ -218,7 +229,9 @@ tables:
       Impact values: none | minor | major | critical.
       Use active_incidents to query only currently open incidents.
     guide: |
-      Query: `SELECT id, name, impact, status, created_at FROM {source}.incidents ORDER BY created_at DESC LIMIT 10`.
+      Query recent incidents:
+      `SELECT id, name, impact, status, created_at
+      FROM {source}.incidents ORDER BY created_at DESC LIMIT 10`.
       Filter active incidents: `WHERE resolved_at IS NULL`.
     request:
       method: GET
@@ -228,15 +241,6 @@ tables:
         - incidents
       row_strategy: direct
       allow_404_empty: false
-    pagination:
-      mode: page
-      page_param: page
-      page_start: 1
-      page_step: 1
-      page_size:
-        default: 25
-        max: 100
-        query_param: limit
     columns:
       - name: id
         type: Utf8
@@ -342,7 +346,9 @@ tables:
       - name: scheduled_until
         type: Utf8
         nullable: true
-        description: Planned end time for scheduled maintenance. NULL for unplanned incidents.
+        description: >-
+          Planned end time for scheduled maintenance.
+          NULL for unplanned incidents.
         expr:
           kind: path
           path:
@@ -356,12 +362,12 @@ tables:
           path:
             - started_at
 
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   # active_incidents
   # Only currently unresolved incidents.
   # GET /api/v2/incidents/unresolved.json
   # Response: {"page": {...}, "incidents": [...]}
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   - name: active_incidents
     description: >-
       Currently unresolved incidents only. This is the table to use in
@@ -370,7 +376,9 @@ tables:
       is internal. Each row is one open incident with its current status,
       impact level, and a shortlink for follow-up with the vendor.
     guide: |
-      Query: `SELECT id, name, impact, status, created_at, shortlink FROM {source}.active_incidents`.
+      Query:
+      `SELECT id, name, impact, status, created_at, shortlink
+      FROM {source}.active_incidents`.
       If empty, the vendor has no active outages.
     request:
       method: GET
@@ -450,7 +458,9 @@ tables:
       - name: monitoring_at
         type: Utf8
         nullable: true
-        description: Timestamp when the incident moved to monitoring state, if applicable.
+        description: >-
+          Timestamp when the incident moved to monitoring state,
+          if applicable.
         expr:
           kind: path
           path:
@@ -458,27 +468,29 @@ tables:
       - name: resolved_at
         type: Utf8
         nullable: true
-        description: Always NULL in this table — rows are unresolved incidents only.
+        description: >-
+          Always NULL in this table; rows are unresolved incidents only.
         expr:
           kind: path
           path:
             - resolved_at
 
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   # scheduled_maintenances
-  # All scheduled maintenance windows — active and upcoming.
+  # 50 most recent scheduled maintenance windows.
   # GET /api/v2/scheduled-maintenances.json
   # Response: {"page": {...}, "scheduled_maintenances": [...]}
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   - name: scheduled_maintenances
     description: >-
-      All scheduled maintenance windows, both active (in_progress) and
-      upcoming. Use this to rule out planned downtime as a root cause
-      before escalating an incident. Status values: scheduled | in_progress
-      | verifying | completed.
+      The 50 most recent scheduled maintenance windows from the public
+      Status API feed. This includes scheduled, in_progress, verifying,
+      and completed windows.
     guide: |
-      Query: `SELECT id, name, status, scheduled_for, scheduled_until FROM {source}.scheduled_maintenances`.
-      Filter active: `WHERE status = 'in_progress'`.
+      Query:
+      `SELECT id, name, status, scheduled_for, scheduled_until
+      FROM {source}.scheduled_maintenances`.
+      Active maintenance can be in_progress or verifying.
     request:
       method: GET
       path: /api/v2/scheduled-maintenances.json
@@ -487,15 +499,6 @@ tables:
         - scheduled_maintenances
       row_strategy: direct
       allow_404_empty: false
-    pagination:
-      mode: page
-      page_param: page
-      page_start: 1
-      page_step: 1
-      page_size:
-        default: 50
-        max: 50
-        query_param: limit
     columns:
       - name: id
         type: Utf8
@@ -526,7 +529,7 @@ tables:
         nullable: false
         description: >-
           One of: scheduled, in_progress, verifying, completed.
-          Filter WHERE status = 'in_progress' to find currently active windows.
+          The all-maintenance feed includes recent completed windows.
         expr:
           kind: path
           path:
@@ -580,21 +583,24 @@ tables:
           path:
             - updated_at
 
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   # active_maintenances
-  # Only maintenance windows that are currently in progress.
+  # Maintenance windows that are currently active.
   # GET /api/v2/scheduled-maintenances/active.json
   # Response: {"page": {...}, "scheduled_maintenances": [...]}
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   - name: active_maintenances
     description: >-
-      Maintenance windows that are currently in progress right now.
+      Maintenance windows that are currently active.
       If this returns rows and your service is degraded, the root cause
       may be a vendor maintenance window rather than a code regression.
-      Zero rows means no active maintenance — look elsewhere for root cause.
+      Rows can be in_progress or verifying. Zero rows means no active
+      maintenance is reported by the vendor.
     guide: |
-      Query: `SELECT id, name, impact, scheduled_for, scheduled_until FROM {source}.active_maintenances`.
-      Use to check if vendor maintenance is affecting your service.
+      Query:
+      `SELECT id, name, status, impact, scheduled_for, scheduled_until
+      FROM {source}.active_maintenances`.
+      Treat both in_progress and verifying as active maintenance states.
     request:
       method: GET
       path: /api/v2/scheduled-maintenances/active.json
@@ -631,7 +637,8 @@ tables:
       - name: status
         type: Utf8
         nullable: false
-        description: Always in_progress in this table.
+        description: >-
+          Active maintenance status. Usually in_progress or verifying.
         expr:
           kind: path
           path:
@@ -685,19 +692,21 @@ tables:
           path:
             - updated_at
 
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   # upcoming_maintenances
   # Maintenance windows scheduled in the future.
   # GET /api/v2/scheduled-maintenances/upcoming.json
   # Response: {"page": {...}, "scheduled_maintenances": [...]}
-  # ──────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   - name: upcoming_maintenances
     description: >-
       Maintenance windows that are scheduled but not yet started.
       Use this to warn on-call engineers about planned downtime windows
       that overlap with your incident timeline.
     guide: |
-      Query: `SELECT id, name, scheduled_for, scheduled_until FROM {source}.upcoming_maintenances ORDER BY scheduled_for ASC`.
+      Query:
+      `SELECT id, name, scheduled_for, scheduled_until
+      FROM {source}.upcoming_maintenances ORDER BY scheduled_for ASC`.
       Use to plan around upcoming vendor maintenance.
     request:
       method: GET

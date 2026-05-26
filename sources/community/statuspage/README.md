@@ -1,48 +1,61 @@
 # Statuspage
 
-Query public Atlassian Statuspage instances through Coral SQL.
+Query public Atlassian Statuspage Status API feeds through Coral SQL.
 
-This source exposes current status, components, incidents, and scheduled maintenance windows from any vendor that serves the public Statuspage `/api/v2/*.json` endpoints. It works without authentication.
+This source is for pages that expose the public `/api/v2/*.json`
+Statuspage endpoints documented on each Statuspage-powered site, such as:
 
-Examples of compatible vendors include GitHub, Stripe, Atlassian, PagerDuty, Twilio, Cloudflare, Datadog, Slack, OpenAI, Vercel, Discord, and Zoom.
+- `https://www.githubstatus.com`
+- `https://status.atlassian.com`
+- `https://status.twilio.com`
+- `https://www.cloudflarestatus.com`
+- `https://status.datadoghq.com`
+- `https://status.openai.com`
+- `https://www.vercel-status.com`
+- `https://discordstatus.com`
+- `https://status.zoom.us`
 
-## What This Source Provides
+Always verify a vendor before adding it. Some vendor status sites are not
+Atlassian Statuspage Status API sites. For example, Stripe and PagerDuty do
+not expose this `/api/v2/status.json` shape, and Slack uses its own
+`https://slack-status.com/api/v2.0.0/...` API.
 
-| Table | Description |
-|-------|-------------|
-| `{source}.status` | One-row page-level health summary |
-| `{source}.components` | Current health of each service component |
-| `{source}.incidents` | Recent incidents, including resolved and unresolved incidents |
-| `{source}.active_incidents` | Currently unresolved incidents |
-| `{source}.scheduled_maintenances` | Scheduled maintenance windows |
-| `{source}.active_maintenances` | Maintenance windows currently in progress |
-| `{source}.upcoming_maintenances` | Future scheduled maintenance windows |
+## API Scope
 
-The `{source}` prefix is the Coral schema name. For the default `manifest.yaml`, the schema is `statuspage` because the manifest starts with:
+This manifest models the public page-level Status API feeds:
 
-```yaml
-name: statuspage
-```
+| Table | What it returns |
+|-------|-----------------|
+| `status` | One-row page health rollup |
+| `components` | Current component status |
+| `incidents` | Recent incident feed |
+| `active_incidents` | Unresolved incidents |
+| `scheduled_maintenances` | 50 most recent maintenance windows |
+| `active_maintenances` | In-progress or verifying maintenance |
+| `upcoming_maintenances` | Future scheduled maintenance |
 
-If you copy the manifest and change `name: vercel_status`, the schema becomes `vercel_status`.
+Endpoint paths are the matching `/api/v2/*.json` Status API feeds.
+
+The Status API feed endpoints are not paginated. The all-maintenance feed is
+documented as the 50 most recent scheduled maintenances.
 
 ## Requirements
 
 - Coral CLI installed and available as `coral`
-- A public Statuspage URL, without a trailing slash
-- No API token or credentials
+- A public paid Statuspage page URL, without a trailing slash
+- No authentication for public paid pages
 
-Quick CLI check:
+Private Statuspage pages and public trial pages require an `Authorization`
+header with a full Statuspage API key. This manifest intentionally does not
+model that authenticated flow because Statuspage does not provide a separate
+read-only API key for those pages.
 
-```bash
-coral source add --help
-```
-
-The current Coral CLI registers file-based sources using the top-level `name:` from the YAML file. It does not support `coral source add --file ./manifest.yaml --name some_name`.
+Atlassian documents the public Status API as not rate limited.
 
 ## Verify A Vendor URL
 
-Before adding a vendor, confirm that the URL exposes the public Statuspage API:
+Before adding a vendor, confirm that the URL exposes the public Statuspage
+API shape:
 
 ```bash
 curl -fsSL "https://status.openai.com/api/v2/status.json"
@@ -50,149 +63,53 @@ curl -fsSL "https://status.openai.com/api/v2/status.json"
 
 A compatible response includes top-level `page` and `status` fields.
 
-Use the base URL without `/api/v2/...` and without a trailing slash when registering the source:
+Use the base URL when registering the source:
 
 ```text
 https://status.openai.com
 ```
 
-Do not use:
+Do not use a trailing slash or a full endpoint URL:
 
 ```text
 https://status.openai.com/
 https://status.openai.com/api/v2/status.json
 ```
 
-## Add One Vendor
+## Add The Source
 
-Use this flow when you only need one Statuspage vendor, or when using the default schema name `statuspage` is acceptable.
-
-From the directory that contains `manifest.yaml`:
-
-```bash
-coral source add --file ./manifest.yaml --interactive
-```
-
-When prompted for `STATUSPAGE_BASE_URL`, enter a compatible Statuspage base URL:
-
-```text
-https://status.openai.com
-```
-
-Coral registers the source as `statuspage`, because the manifest contains `name: statuspage`.
-
-Check that it was added:
-
-```bash
-coral source list
-```
-
-Test the source:
-
-```bash
-coral source test statuspage
-```
-
-Query it:
-
-```bash
-coral sql "SELECT indicator, description FROM statuspage.status"
-```
-
-## Add One Vendor Non-Interactively
-
-Coral reads manifest inputs from environment variables when `--interactive` is not used:
+From this directory:
 
 ```bash
 STATUSPAGE_BASE_URL="https://status.openai.com" \
   coral source add --file ./manifest.yaml
 ```
 
-This still registers the source as `statuspage`.
-
-## Add Multiple Vendors
-
-To register multiple vendors at the same time, each vendor needs its own manifest file with a unique top-level `name:`.
-
-This is required because `coral source add --file` takes the schema name from the YAML file. The schema name is not prompted as an input.
-
-### Example: GitHub And OpenAI
-
-Create one manifest copy per vendor:
+Or use the interactive prompt:
 
 ```bash
-cp manifest.yaml github_status.yaml
-cp manifest.yaml openai_status.yaml
+coral source add --file ./manifest.yaml --interactive
 ```
 
-Edit only the first line in each copied file:
+The schema name is the top-level `name:` in `manifest.yaml`, which defaults
+to `statuspage`. Query the default source as `statuspage.status`,
+`statuspage.components`, and so on.
 
-```yaml
-# github_status.yaml
-name: github_status
-```
+## Validate The Source
 
-```yaml
-# openai_status.yaml
-name: openai_status
-```
+The manifest includes representative `test_queries`. During
+`coral source add`, Coral runs those queries against the newly registered
+source and reports how many passed.
 
-Register each vendor with its own URL:
+You can also run individual checks after registration:
 
 ```bash
-STATUSPAGE_BASE_URL="https://www.githubstatus.com" \
-  coral source add --file ./github_status.yaml
-
-STATUSPAGE_BASE_URL="https://status.openai.com" \
-  coral source add --file ./openai_status.yaml
-```
-
-Confirm the schemas:
-
-```bash
-coral sql "SELECT DISTINCT schema_name FROM coral.tables"
-```
-
-Query both vendors:
-
-```sql
-SELECT 'GitHub' AS vendor, indicator, description
-FROM github_status.status
-UNION ALL
-SELECT 'OpenAI' AS vendor, indicator, description
-FROM openai_status.status;
-```
-
-## Add Another Vendor Later
-
-To add Vercel later, first create a manifest file for it:
-
-```bash
-cp manifest.yaml vercel_status.yaml
-```
-
-Change the top-level `name:` in `vercel_status.yaml`:
-
-```yaml
-name: vercel_status
-```
-
-Then register it:
-
-```bash
-STATUSPAGE_BASE_URL="https://www.vercel-status.com" \
-  coral source add --file ./vercel_status.yaml
-```
-
-Query it:
-
-```bash
-coral sql "SELECT indicator, description FROM vercel_status.status"
+coral sql "SELECT indicator, description FROM statuspage.status"
+coral sql "SELECT id, name, status FROM statuspage.components LIMIT 5"
+coral sql "SELECT id, name, status FROM statuspage.active_maintenances"
 ```
 
 ## Query Examples
-
-Replace `statuspage` with your schema name if you registered a copied manifest such as `github_status`, `openai_status`, or `vercel_status`.
 
 ### Current Overall Status
 
@@ -201,7 +118,8 @@ SELECT indicator, description
 FROM statuspage.status;
 ```
 
-Common `indicator` values are `none`, `minor`, `major`, `critical`, and `maintenance`.
+`indicator` values include `none`, `minor`, `major`, `critical`, and
+`maintenance`.
 
 ### Degraded Components
 
@@ -212,7 +130,8 @@ WHERE status != 'operational'
 ORDER BY updated_at DESC;
 ```
 
-Component statuses can include `operational`, `degraded_performance`, `partial_outage`, `major_outage`, and `under_maintenance`.
+Component statuses include `operational`, `degraded_performance`,
+`partial_outage`, `major_outage`, and `under_maintenance`.
 
 ### Active Incidents
 
@@ -222,9 +141,9 @@ FROM statuspage.active_incidents
 ORDER BY created_at DESC;
 ```
 
-This table returns only unresolved incidents. If it returns zero rows, the vendor has no active incident in Statuspage.
+This table returns unresolved incidents only.
 
-### Recent Incident History
+### Recent Incident Feed
 
 ```sql
 SELECT name, impact, status, created_at, resolved_at, shortlink
@@ -241,6 +160,8 @@ FROM statuspage.active_maintenances
 ORDER BY scheduled_for ASC;
 ```
 
+Treat both `in_progress` and `verifying` as active maintenance states.
+
 ### Upcoming Maintenance
 
 ```sql
@@ -249,129 +170,91 @@ FROM statuspage.upcoming_maintenances
 ORDER BY scheduled_for ASC;
 ```
 
-### Multi-Vendor Status Dashboard
+### Recent Scheduled Maintenance Feed
+
+```sql
+SELECT name, status, scheduled_for, scheduled_until, updated_at
+FROM statuspage.scheduled_maintenances
+ORDER BY updated_at DESC
+LIMIT 20;
+```
+
+## Multiple Vendors
+
+`coral source add --file` uses the literal top-level `name:` from the YAML
+file. It does not support `--name` with `--file`, and `name:` is not prompted
+as an input.
+
+To register multiple Statuspage vendors, create one manifest copy per vendor
+and change the top-level `name:`.
+
+```bash
+cp manifest.yaml github_status.yaml
+cp manifest.yaml openai_status.yaml
+```
+
+Edit the first line in each copy:
+
+```yaml
+# github_status.yaml
+name: github_status
+```
+
+```yaml
+# openai_status.yaml
+name: openai_status
+```
+
+Register both:
+
+```bash
+STATUSPAGE_BASE_URL="https://www.githubstatus.com" \
+  coral source add --file ./github_status.yaml
+
+STATUSPAGE_BASE_URL="https://status.openai.com" \
+  coral source add --file ./openai_status.yaml
+```
+
+Query across both schemas:
 
 ```sql
 SELECT 'GitHub' AS vendor, indicator, description
 FROM github_status.status
 UNION ALL
 SELECT 'OpenAI' AS vendor, indicator, description
-FROM openai_status.status
-UNION ALL
-SELECT 'Vercel' AS vendor, indicator, description
-FROM vercel_status.status;
+FROM openai_status.status;
 ```
 
-### Multi-Vendor Active Outages
-
-```sql
-SELECT 'GitHub' AS vendor, name, impact, status, created_at, shortlink
-FROM github_status.active_incidents
-UNION ALL
-SELECT 'OpenAI' AS vendor, name, impact, status, created_at, shortlink
-FROM openai_status.active_incidents
-UNION ALL
-SELECT 'Vercel' AS vendor, name, impact, status, created_at, shortlink
-FROM vercel_status.active_incidents;
-```
-
-## Compatible Vendor URLs
-
-These vendors expose Statuspage-style `/api/v2/*.json` endpoints:
-
-| Vendor | Base URL |
-|--------|----------|
-| GitHub | `https://www.githubstatus.com` |
-| Stripe | `https://status.stripe.com` |
-| Atlassian | `https://status.atlassian.com` |
-| PagerDuty | `https://status.pagerduty.com` |
-| Twilio | `https://status.twilio.com` |
-| Cloudflare | `https://www.cloudflarestatus.com` |
-| Datadog | `https://status.datadoghq.com` |
-| Slack | `https://status.slack.com` |
-| OpenAI | `https://status.openai.com` |
-| Vercel | `https://www.vercel-status.com` |
-| Discord | `https://discordstatus.com` |
-| Zoom | `https://status.zoom.us` |
-
-AWS Health and Google Cloud Service Health use different APIs, so they are not drop-in `STATUSPAGE_BASE_URL` values for this manifest.
-
-## Validate The Manifest
-
-Run:
-
-```bash
-coral source lint ./manifest.yaml
-```
-
-Expected result:
-
-```text
-Manifest is valid
-```
+If you copy the manifest and rename the source, also update the copied
+manifest's `test_queries` from `statuspage.*` to the new schema name before
+using `coral source test`.
 
 ## Troubleshooting
 
 ### `unexpected argument '--name' found`
 
-`--name` is not supported together with `--file` in this Coral CLI:
+This Coral CLI does not accept `--name` with `--file`:
 
 ```bash
 coral source add --file ./manifest.yaml --name openai_status
 ```
 
-Use a copied manifest with a different top-level `name:` instead:
-
-```bash
-cp manifest.yaml openai_status.yaml
-```
-
-Edit `openai_status.yaml`:
-
-```yaml
-name: openai_status
-```
-
-Then add it:
-
-```bash
-STATUSPAGE_BASE_URL="https://status.openai.com" \
-  coral source add --file ./openai_status.yaml
-```
+Create a manifest copy and change the top-level `name:` instead.
 
 ### `No such file or directory`
 
-The file passed to `--file` must already exist.
-
-This fails if `vercel_status.yaml` has not been created:
-
-```bash
-coral source add --file ./vercel_status.yaml
-```
-
-Create it first:
+The file passed to `--file` must already exist. Create copied manifests before
+adding them:
 
 ```bash
 cp manifest.yaml vercel_status.yaml
 ```
 
-Then edit the top-level `name:` and run `coral source add`.
+Then edit `name:` and run `coral source add`.
 
 ### `Table ... not found`
 
-The schema in your SQL must match the top-level `name:` in the manifest that was registered.
-
-If you added the default `manifest.yaml`, query:
-
-```bash
-coral sql "SELECT indicator, description FROM statuspage.status"
-```
-
-If you added a copied manifest with `name: vercel_status`, query:
-
-```bash
-coral sql "SELECT indicator, description FROM vercel_status.status"
-```
+The schema in your SQL must match the manifest `name:` that was registered.
 
 List registered schemas:
 
@@ -379,24 +262,10 @@ List registered schemas:
 coral sql "SELECT DISTINCT schema_name FROM coral.tables"
 ```
 
-### `coral query` Is Not A Command
-
-Use `coral sql`:
-
-```bash
-coral sql "SELECT DISTINCT schema_name FROM coral.tables"
-```
-
 ### Empty Results
 
-Empty arrays are normal for active incidents and maintenance tables when the vendor has no current outage or scheduled maintenance.
-
-For example, this can legitimately return zero rows:
-
-```sql
-SELECT *
-FROM statuspage.active_incidents;
-```
+Empty arrays are normal when the vendor has no unresolved incident, active
+maintenance, or upcoming maintenance.
 
 ### Incompatible URL
 
@@ -406,32 +275,14 @@ Verify the URL directly:
 curl -fsSL "https://status.example.com/api/v2/status.json"
 ```
 
-If the response does not include `page` and `status`, the vendor probably does not use Atlassian Statuspage at that URL.
+If the response does not include `page` and `status`, the URL is not compatible
+with this manifest. Slack, Stripe, PagerDuty, AWS Health, and Google Cloud
+Service Health require different APIs.
 
-### Trailing Slash In URL
+## References
 
-Use:
+- [Atlassian Status API page](https://status.atlassian.com/api)
+- [Statuspage API types][statuspage-api-types]
+- [Slack Status API](https://docs.slack.dev/reference/slack-status-api/)
 
-```text
-https://status.openai.com
-```
-
-Avoid:
-
-```text
-https://status.openai.com/
-```
-
-The manifest appends endpoint paths such as `/api/v2/status.json`.
-
-## Data Notes
-
-- Incidents are recent historical incidents. The exact retention window depends on the vendor.
-- Components represent current state only, not historical component status.
-- Maintenance endpoints include upcoming, active, and recently completed maintenance windows depending on the vendor.
-- Public Statuspage APIs are usually generous with rate limits, but high-frequency polling should still include reasonable delays.
-
-## API Documentation
-
-- [Atlassian Statuspage API Docs](https://developer.statuspage.io/)
-- All endpoints used by this source are public read-only endpoints and require no authentication.
+[statuspage-api-types]: https://support.atlassian.com/statuspage/docs/what-are-the-different-apis-under-statuspage/
