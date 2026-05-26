@@ -20,10 +20,20 @@ use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
+mod fetch;
 pub(crate) mod function;
+mod pagination;
 pub(crate) mod provider;
 mod rate_limit;
+mod registration_checks;
+mod request;
+mod response;
 pub(crate) mod target;
+#[cfg(test)]
+mod test_support;
+mod trace;
+mod transport;
+mod url;
 
 pub(crate) use client::HttpSourceClient;
 pub(crate) use error::ProviderQueryError;
@@ -35,6 +45,7 @@ struct HttpCompiledSource {
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    body_capture_max_bytes: Option<usize>,
 }
 
 pub(crate) fn compile_source(
@@ -42,12 +53,14 @@ pub(crate) fn compile_source(
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    body_capture_max_bytes: Option<usize>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
         source_secrets,
         source_variables,
         request_authenticators,
+        body_capture_max_bytes,
     })
 }
 
@@ -60,6 +73,7 @@ pub(crate) fn compile_manifest(
         request.source_secrets.clone(),
         request.source_variables.clone(),
         request.request_authenticators.clone(),
+        request.runtime_context.http_body_capture_max_bytes,
     )
 }
 
@@ -79,6 +93,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             &self.source_secrets,
             &self.source_variables,
             &self.request_authenticators,
+            self.body_capture_max_bytes,
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());

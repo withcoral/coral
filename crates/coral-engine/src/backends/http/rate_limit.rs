@@ -179,6 +179,10 @@ mod tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
 
+    use serde_json::json;
+
+    use crate::backends::http::test_support::parse_http_manifest;
+
     #[test]
     fn classify_rate_limit_covers_every_branch() {
         let spec = RateLimitSpec {
@@ -314,5 +318,36 @@ mod tests {
             ),
             RateLimitDecision::Fail(_),
         ));
+    }
+
+    #[test]
+    fn parse_manifest_accepts_source_rate_limit_policy() {
+        let manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "rate_limit": {
+                "extra_statuses": [403],
+                "remaining_header": "X-RateLimit-Remaining",
+                "reset_header": "X-RateLimit-Reset"
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": { "path": "/items" },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+
+        assert_eq!(manifest.rate_limit.extra_statuses, vec![403]);
+        assert_eq!(
+            manifest.rate_limit.remaining_header.as_deref(),
+            Some("X-RateLimit-Remaining")
+        );
     }
 }
