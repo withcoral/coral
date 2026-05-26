@@ -5,7 +5,6 @@ pub(crate) mod oauth;
 mod store;
 
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::fmt;
 
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -296,7 +295,6 @@ impl CredentialManager {
             else {
                 continue;
             };
-            let before_refresh = material.clone();
             if self
                 .oauth_credential_service
                 .refresh_if_needed(
@@ -310,7 +308,6 @@ impl CredentialManager {
                     credential_set_id,
                     storage,
                     &input.key,
-                    &before_refresh,
                     material,
                 )?;
             }
@@ -324,7 +321,6 @@ impl CredentialManager {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
         input_key: &str,
-        before_refresh: &BTreeMap<String, String>,
         refreshed_material: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, String>, AppError> {
         self.store.update_material(
@@ -332,18 +328,11 @@ impl CredentialManager {
             credential_set_id,
             storage,
             |mut current_material| {
-                if provider_input_material_matches(&current_material, before_refresh, input_key) {
-                    replace_provider_input_material(
-                        &mut current_material,
-                        refreshed_material,
-                        input_key,
-                    );
-                } else {
-                    tracing::debug!(
-                        source_secret = input_key,
-                        "skipping OAuth refresh persistence because credential material changed"
-                    );
-                }
+                replace_provider_input_material(
+                    &mut current_material,
+                    refreshed_material,
+                    input_key,
+                );
                 let next_material = current_material;
                 Ok((next_material.clone(), next_material))
             },
@@ -380,16 +369,6 @@ fn has_oauth_credential_inputs(inputs: &[ManifestInputSpec]) -> bool {
     })
 }
 
-fn provider_input_material_matches(
-    current: &BTreeMap<String, String>,
-    expected: &BTreeMap<String, String>,
-    input_key: &str,
-) -> bool {
-    provider_input_material_keys(current, expected, input_key)
-        .into_iter()
-        .all(|key| current.get(&key) == expected.get(&key))
-}
-
 fn replace_provider_input_material(
     current: &mut BTreeMap<String, String>,
     refreshed: &BTreeMap<String, String>,
@@ -402,18 +381,6 @@ fn replace_provider_input_material(
             .filter(|(key, _)| provider_input_material_key(key, input_key))
             .map(|(key, value)| (key.clone(), value.clone())),
     );
-}
-
-fn provider_input_material_keys(
-    left: &BTreeMap<String, String>,
-    right: &BTreeMap<String, String>,
-    input_key: &str,
-) -> BTreeSet<String> {
-    left.keys()
-        .chain(right.keys())
-        .filter(|key| provider_input_material_key(key, input_key))
-        .cloned()
-        .collect()
 }
 
 fn provider_input_material_key(key: &str, input_key: &str) -> bool {
