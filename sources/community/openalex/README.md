@@ -47,6 +47,18 @@ FROM openalex.authors
 WHERE search = 'Yann LeCun'
 LIMIT 5;
 
+/*
++--------------+-------------+----------------+
+| display_name | works_count | cited_by_count |
++--------------+-------------+----------------+
+| Yann LeCun   | 480         | 249194         |
+| Yann Lecun   | 45          | 1932           |
+| Yann LeCun   | 1           | 0              |
+| Yann LeCun   | 2           | 0              |
+| Yann LeCun   | 1           | 0              |
++--------------+-------------+----------------+
+*/
+
 -- List open-access journals with the most works
 SELECT display_name, works_count, cited_by_count, apc_usd
 FROM openalex.sources
