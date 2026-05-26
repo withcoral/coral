@@ -139,5 +139,3 @@ coral query "SELECT form_id, title, description FROM google_forms.form WHERE for
 coral query "SELECT item_id, question_id, title, required FROM google_forms.questions WHERE form_id = 'your-real-form-id' LIMIT 5"
 coral query "SELECT response_id, create_time FROM google_forms.responses WHERE form_id = 'your-real-form-id' LIMIT 3"
 ```
-
-> Replace `your-real-form-id` with a real form ID and paste actual terminal output here.
