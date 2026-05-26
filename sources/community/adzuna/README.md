@@ -80,7 +80,7 @@ Provider-native search for active job listings with keyword, location, category,
 | `salary_is_predicted` | Utf8 | Raw 0/1 string indicating if salary is predicted |
 | `contract_type` | Utf8 | Type of contract (e.g. permanent, contract) |
 | `contract_time` | Utf8 | Hours of the job (e.g. full_time, part_time) |
-| `created_at` | Utf8 | ISO 8601 timestamp string of job creation |
+| `created_at` | Timestamp | Timestamp of job creation |
 | `redirect_url` | Utf8 | Link to apply to the job |
 | `latitude` | Float64 | Latitude of the workspace (nullable) |
 | `longitude` | Float64 | Longitude of the workspace (nullable) |

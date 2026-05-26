@@ -12,10 +12,6 @@ inputs:
     kind: secret
   ADZUNA_APP_KEY:
     kind: secret
-  country:
-    kind: variable
-    default: gb
-    hint: Two-letter ISO country code (e.g. gb, us, au, in, ca, de, fr, etc.)
 
 test_queries:
   - SELECT id, title, company FROM adzuna.search_jobs(what => 'developer', location_filter => 'London') LIMIT 1
@@ -60,7 +56,7 @@ functions:
           arg: permanent
     request:
       method: GET
-      path: /jobs/{{arg.country|gb}}/search/{{state.page}}
+      path: /jobs/{{arg.country|gb}}/search/1
       query:
         - name: app_id
           from: input
@@ -92,18 +88,7 @@ functions:
     response:
       rows_path:
         - results
-    pagination:
-      mode: page
-      # Adzuna natively uses the path (/search/{page}) for pagination and strictly rejects unknown query parameters.
-      # To satisfy Coral's page mode requirement without causing a 400 Bad Request, we use a benign
-      # parameter (content-type) that Adzuna accepts.
-      page_param: content-type
-      page_start: 1
-      page_step: 1
-      page_size:
-        default: 20
-        max: 50
-        query_param: results_per_page
+
 
     columns:
       - name: id
@@ -159,9 +144,15 @@ functions:
         nullable: true
         expr: {kind: path, path: [contract_time]}
       - name: created_at
-        type: Utf8
+        type: Timestamp
         nullable: true
-        expr: {kind: path, path: [created]}
+        description: Date and time when the job listing was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
       - name: redirect_url
         type: Utf8
         nullable: true
@@ -262,3 +253,7 @@ tables:
         type: Utf8
         nullable: true
         expr: {kind: from_filter, key: what}
+      - name: category
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: category}
