@@ -54,7 +54,7 @@ inputs:
               token_url: https://github.com/login/oauth/access_token
             client:
               id:
-                default: Ov23li16CvrZJuSjQ5F7
+                default: Iv23liJHis6Bs8NO1DAI
                 input: GITHUB_OAUTH_CLIENT_ID
             scopes:
               scope:
@@ -78,7 +78,7 @@ inputs:
               token_url: https://github.com/login/oauth/access_token
             client:
               id:
-                default: Ov23li16CvrZJuSjQ5F7
+                default: Iv23liJHis6Bs8NO1DAI
                 input: GITHUB_OAUTH_CLIENT_ID
               secret:
                 input: GITHUB_OAUTH_CLIENT_SECRET
