@@ -1,0 +1,42 @@
+dsl_version: 3
+name: pypi
+version: "1.0.0"
+description: PyPI package download statistics from pypistats.org.
+backend: http
+base_url: https://pypistats.org/api
+
+tables:
+  - name: packages
+    description: PyPI package download stats.
+    filters:
+      - name: name
+        required: true
+    request:
+      method: GET
+      path: /packages/{{filter.name}}/recent
+    columns:
+      - name: name
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: name
+      - name: version
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: name
+      - name: last_month_downloads
+        type: Int64
+        expr:
+          kind: path
+          path: ["data", "last_month"]
+      - name: last_week_downloads
+        type: Int64
+        expr:
+          kind: path
+          path: ["data", "last_week"]
+      - name: summary
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: name
