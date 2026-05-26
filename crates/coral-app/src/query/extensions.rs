@@ -9,6 +9,7 @@ use coral_engine::{
     EngineExtensions, QuerySource, RequestAuthenticator, SourceInputResolver,
     SourceInputResolverError,
 };
+use coral_spec::ManifestInputKind;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
@@ -98,14 +99,18 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
             )
             .await
             .map_err(source_input_error)?;
+        let mut resolved = resolve_from_material(source, &material);
         if let Some(delegate) = &self.delegate {
-            return delegate.resolve_inputs(source).await;
+            let delegated_source = source_with_refreshed_secrets(source, &material);
+            for (key, value) in delegate.resolve_inputs(&delegated_source).await? {
+                resolved.entry(key).or_insert(value);
+            }
         }
         let missing_secrets: Vec<String> = source
             .source_spec()
             .required_secret_names()
             .into_iter()
-            .filter(|name| !material.contains_key(name))
+            .filter(|name| !resolved.contains_key(name))
             .collect();
         if let Some((first, rest)) = missing_secrets.split_first() {
             let detail = if rest.is_empty() {
@@ -118,12 +123,42 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
                 source.source_name()
             )));
         }
-        Ok(coral_spec::resolve_inputs(
-            source.source_spec().declared_inputs(),
-            &material,
-            source.variables(),
-        ))
+        Ok(resolved)
     }
+}
+
+fn resolve_from_material(
+    source: &QuerySource,
+    material: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    coral_spec::resolve_inputs(
+        source.source_spec().declared_inputs(),
+        material,
+        source.variables(),
+    )
+}
+
+fn source_with_refreshed_secrets(
+    source: &QuerySource,
+    material: &BTreeMap<String, String>,
+) -> QuerySource {
+    let refreshed_secrets = source
+        .source_spec()
+        .declared_inputs()
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Secret)
+        .filter_map(|input| {
+            material
+                .get(&input.key)
+                .cloned()
+                .map(|value| (input.key.clone(), value))
+        })
+        .collect();
+    QuerySource::new(
+        source.source_spec().clone(),
+        source.variables().clone(),
+        refreshed_secrets,
+    )
 }
 
 pub(crate) fn engine_extensions_for_providers(

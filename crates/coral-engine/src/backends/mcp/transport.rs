@@ -4,7 +4,6 @@
 //! server as a child process for each tool call. A future HTTP-streaming
 //! transport would slot in alongside it as another `McpToolCaller` impl.
 
-use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -17,6 +16,7 @@ use rmcp::{ClientHandler, ServiceExt};
 use serde_json::Value;
 use tokio::process::Command;
 
+use super::McpSourceInputs;
 use super::client::McpToolCaller;
 use super::error::McpProviderQueryError;
 use super::response::normalize_tool_result;
@@ -26,7 +26,25 @@ use crate::backends::shared::template::{RenderContext, resolve_value_source};
 pub(super) struct StdioMcpToolCaller {
     pub(super) source_name: String,
     pub(super) server: McpServerSpec,
-    pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
+    pub(super) source_inputs: Arc<McpSourceInputs>,
+}
+
+impl StdioMcpToolCaller {
+    pub(super) async fn resolved_server_env(&self) -> Result<Vec<(String, String)>> {
+        if self.server.env.is_empty() {
+            return Ok(Vec::new());
+        }
+        let resolved_inputs = self.source_inputs.resolve_for_request().await?;
+        let render_context = RenderContext::source_scoped(&resolved_inputs);
+        let mut env = Vec::with_capacity(self.server.env.len());
+        for spec in &self.server.env {
+            let Some(value) = resolve_value_source(&spec.value, &render_context)? else {
+                continue;
+            };
+            env.push((spec.name.clone(), value_to_env_string(value)));
+        }
+        Ok(env)
+    }
 }
 
 #[async_trait]
@@ -44,12 +62,8 @@ impl McpToolCaller for StdioMcpToolCaller {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
-        let render_context = RenderContext::source_scoped(&self.resolved_inputs);
-        for env in &self.server.env {
-            let Some(value) = resolve_value_source(&env.value, &render_context)? else {
-                continue;
-            };
-            command.env(&env.name, value_to_env_string(value));
+        for (name, value) in self.resolved_server_env().await? {
+            command.env(name, value);
         }
 
         let transport = rmcp::transport::TokioChildProcess::new(command.configure(|cmd| {

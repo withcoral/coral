@@ -418,6 +418,7 @@ fn validate_required_variables(
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{EngineExtensions, SourceInputResolver, SourceInputResolverError};
@@ -610,24 +611,28 @@ tables:
     #[derive(Debug)]
     struct DelegatingInputResolver {
         calls: Arc<AtomicUsize>,
+        observed_token: Arc<Mutex<Option<String>>>,
     }
 
     #[tonic::async_trait]
     impl SourceInputResolver for DelegatingInputResolver {
         async fn resolve_inputs(
             &self,
-            _source: &QuerySource,
+            source: &QuerySource,
         ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(BTreeMap::from([(
-                "API_TOKEN".to_string(),
-                "delegated-token".to_string(),
-            )]))
+            *self.observed_token.lock().expect("observed token lock") =
+                source.secrets().get("API_TOKEN").cloned();
+            Ok(BTreeMap::from([
+                ("API_TOKEN".to_string(), "delegated-token".to_string()),
+                ("DELEGATED_ONLY".to_string(), "provider-token".to_string()),
+            ]))
         }
     }
 
     struct DelegatingInputResolverProvider {
         calls: Arc<AtomicUsize>,
+        observed_token: Arc<Mutex<Option<String>>>,
     }
 
     impl EngineExtensionsProvider for DelegatingInputResolverProvider {
@@ -635,6 +640,7 @@ tables:
             EngineExtensions {
                 source_input_resolver: Some(Arc::new(DelegatingInputResolver {
                     calls: Arc::clone(&self.calls),
+                    observed_token: Arc::clone(&self.observed_token),
                 })),
                 ..Default::default()
             }
@@ -642,24 +648,41 @@ tables:
     }
 
     #[tokio::test]
-    async fn runtime_config_delegates_provider_input_resolver() {
+    async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let observed_token = Arc::new(Mutex::new(None));
         let fixture = query_manager_with(
             QueryRuntimeContext::default(),
             vec![Arc::new(DelegatingInputResolverProvider {
                 calls: Arc::clone(&calls),
+                observed_token: Arc::clone(&observed_token),
             })],
         );
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        fixture
+            .manager
+            .credential_manager
+            .material_transaction(&WorkspaceName::default(), &credential_set_id)
+            .expect("credential material transaction")
+            .replace_material(&BTreeMap::from([(
+                "API_TOKEN".to_string(),
+                "stored-token".to_string(),
+            )]))
+            .expect("write credential material");
         let source_spec = parse_source_manifest_yaml(
-            r"
+            r#"
 name: secured_messages
 version: 0.1.0
 dsl_version: 3
 backend: http
 inputs:
+  API_BASE:
+    kind: variable
+    default: https://example.com
   API_TOKEN:
     kind: secret
-base_url: https://example.com
+base_url: "{{input.API_BASE}}"
 tables:
   - name: messages
     description: Secured messages
@@ -670,7 +693,7 @@ tables:
     columns:
       - name: id
         type: Utf8
-",
+"#,
         )
         .expect("parse source manifest");
         let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
@@ -690,7 +713,22 @@ tables:
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             resolved_inputs.get("API_TOKEN").map(String::as_str),
-            Some("delegated-token")
+            Some("stored-token")
+        );
+        assert_eq!(
+            resolved_inputs.get("API_BASE").map(String::as_str),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            resolved_inputs.get("DELEGATED_ONLY").map(String::as_str),
+            Some("provider-token")
+        );
+        assert_eq!(
+            observed_token
+                .lock()
+                .expect("observed token lock")
+                .as_deref(),
+            Some("stored-token")
         );
     }
 }
