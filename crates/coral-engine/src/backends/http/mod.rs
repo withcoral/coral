@@ -20,10 +20,20 @@ use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
+mod fetch;
 pub(crate) mod function;
+mod pagination;
 pub(crate) mod provider;
 mod rate_limit;
+mod registration_checks;
+mod request;
+mod response;
 pub(crate) mod target;
+#[cfg(test)]
+mod test_support;
+mod trace;
+mod transport;
+mod url;
 
 pub(crate) use client::HttpSourceClient;
 pub(crate) use error::ProviderQueryError;

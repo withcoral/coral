@@ -397,3 +397,241 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use serde_json::json;
+
+    use super::{EMPTY_MAP, RenderContext, resolve_value_source};
+    use coral_spec::ValueSourceSpec;
+
+    fn test_render_context<'a>(
+        filters: &'a HashMap<String, String>,
+        args: &'a HashMap<String, String>,
+        resolved_inputs: &'a BTreeMap<String, String>,
+    ) -> RenderContext<'a> {
+        RenderContext::new(filters, args, &EMPTY_MAP, resolved_inputs)
+    }
+
+    #[test]
+    fn resolve_value_source_uses_provider_scoped_credentials() {
+        let resolved_inputs = BTreeMap::from([("API_KEY".to_string(), "alpha-secret".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::Input {
+                key: "API_KEY".to_string(),
+            },
+            &test_render_context(&HashMap::new(), &HashMap::new(), &resolved_inputs),
+        )
+        .expect("input lookup should succeed");
+
+        assert_eq!(value, Some(json!("alpha-secret")));
+    }
+
+    #[test]
+    fn resolve_value_source_uses_declared_store_without_fallback() {
+        let resolved_inputs = BTreeMap::new();
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::Input {
+                key: "API_KEY".to_string(),
+            },
+            &test_render_context(&HashMap::new(), &HashMap::new(), &resolved_inputs),
+        )
+        .expect("input lookup should succeed");
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_ints_as_numbers() {
+        let filters = HashMap::from([("start_time".to_string(), "1700000000000000".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterInt {
+                key: "start_time".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("integer filter should resolve");
+
+        assert_eq!(value, Some(json!(1_700_000_000_000_000_i64)));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_filter_ints() {
+        let filters = HashMap::from([("start_time".to_string(), "not-a-number".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterInt {
+                key: "start_time".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("invalid integer filter should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_splits_filter_parts() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE-496".to_string())]);
+
+        let team = resolve_value_source(
+            &ValueSourceSpec::FilterSplit {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("split filter should resolve");
+        let number = resolve_value_source(
+            &ValueSourceSpec::FilterSplitInt {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("split integer filter should resolve");
+
+        assert_eq!(team, Some(json!("SOURCE")));
+        assert_eq!(number, Some(json!(496)));
+    }
+
+    #[test]
+    fn resolve_value_source_splits_function_argument_parts() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE-496".to_string())]);
+
+        let team = resolve_value_source(
+            &ValueSourceSpec::ArgSplit {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("split function argument should resolve");
+        let number = resolve_value_source(
+            &ValueSourceSpec::ArgSplitInt {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("split integer function argument should resolve");
+
+        assert_eq!(team, Some(json!("SOURCE")));
+        assert_eq!(number, Some(json!(496)));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_filter_split_part() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterSplit {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("missing split part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_function_argument_split_part() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::ArgSplit {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect_err("missing split function argument part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "function argument 'issue' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_filter_split_int_part() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterSplitInt {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("missing split integer part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_function_argument_split_int_part() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE-abc".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::ArgSplitInt {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect_err("invalid split function argument int should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("function argument 'issue' split part 1 value 'abc' is not a valid i64")
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_bools_as_bools() {
+        let filters = HashMap::from([("descending".to_string(), "false".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterBool {
+                key: "descending".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("bool filter should resolve");
+
+        assert_eq!(value, Some(json!(false)));
+    }
+}

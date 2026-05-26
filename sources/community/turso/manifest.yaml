@@ -1,0 +1,474 @@
+name: turso
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query organizations, databases, groups, members, and available locations
+  from the Turso Platform API. Covers database inventory, group topology,
+  team membership, and edge region metadata.
+base_url: https://api.turso.tech/v1
+
+inputs:
+  TURSO_API_TOKEN:
+    kind: secret
+    hint: |
+      Your Turso Platform API token. Generate one in the Turso dashboard
+      under Settings → API Tokens, or via `turso auth token` in the CLI.
+      See https://docs.turso.tech/api-reference/authentication
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.TURSO_API_TOKEN}}
+
+test_queries:
+  - SELECT * FROM turso.organizations LIMIT 5
+  - SELECT * FROM turso.databases WHERE organization_slug = 'my-org-slug' LIMIT 10
+  - SELECT * FROM turso.groups WHERE organization_slug = 'my-org-slug' LIMIT 10
+  - SELECT * FROM turso.members WHERE organization_slug = 'my-org-slug' LIMIT 10
+  - SELECT * FROM turso.locations
+
+tables:
+  # ------------------------------------------------------------------
+  # turso.organizations — all organizations accessible to the API token
+  # GET /v1/organizations
+  # Pagination: none. Response is a root JSON array (no wrapper key).
+  # No filters required — perfect entry point.
+  # ------------------------------------------------------------------
+  - name: organizations
+    description: >-
+      All Turso organizations the API token has access to. Each row is one
+      organization — either a personal account or a team. Use `slug` as the
+      `organization_slug` filter on the `databases`, `groups`, and `members`
+      tables.
+    guide: |
+      Entry-point table — no filter required. Returns all organizations
+      visible to the API token. `slug` (e.g. `"my-team"`) is the value to
+      pass as `organization_slug` when querying `databases`, `groups`, or
+      `members`. `type` is `personal` for individual accounts and `team`
+      for shared workspaces.
+    request:
+      method: GET
+      path: /organizations
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable organization name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: >-
+          URL-safe organization slug. Pass this as the `organization_slug`
+          filter when querying `databases`, `groups`, or `members`.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Organization type — `personal` for individual accounts, `team` for shared workspaces.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: overages
+        type: Boolean
+        nullable: true
+        description: Whether usage overages are enabled for this organization.
+        expr:
+          kind: path
+          path:
+            - overages
+      - name: require_mfa
+        type: Boolean
+        nullable: true
+        description: Whether all members are required to have multi-factor authentication enabled.
+        expr:
+          kind: path
+          path:
+            - require_mfa
+      - name: blocked_reads
+        type: Boolean
+        nullable: true
+        description: Whether read operations are currently blocked for this organization.
+        expr:
+          kind: path
+          path:
+            - blocked_reads
+      - name: blocked_writes
+        type: Boolean
+        nullable: true
+        description: Whether write operations are currently blocked for this organization.
+        expr:
+          kind: path
+          path:
+            - blocked_writes
+      - name: plan_id
+        type: Utf8
+        nullable: true
+        description: Pricing plan identifier (e.g. `developer`, `starter`, `scaler`).
+        expr:
+          kind: path
+          path:
+            - plan_id
+      - name: plan_timeline
+        type: Utf8
+        nullable: true
+        description: Billing cycle for the current plan — `monthly` or `yearly`.
+        expr:
+          kind: path
+          path:
+            - plan_timeline
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: >-
+          External platform managing this organization (e.g. `vercel`).
+          Empty string for Turso-managed organizations.
+        expr:
+          kind: path
+          path:
+            - platform
+
+  # ------------------------------------------------------------------
+  # turso.databases — databases in an organization
+  # GET /v1/organizations/{organizationSlug}/databases
+  # Pagination: none. Response wrapped under "databases" key.
+  # Required filter: organization_slug (PATH param).
+  # Optional filters: group, schema, parent (query params).
+  # ⚠️  API field names are mixed-case: Name, DbId, Hostname, primaryRegion.
+  # ------------------------------------------------------------------
+  - name: databases
+    description: >-
+      Turso databases belonging to an organization. Requires `organization_slug`
+      (from `turso.organizations.slug`). Optionally filter by `group` name,
+      `schema` parent, or `parent` database ID for branched databases.
+    guide: |
+      Requires `organization_slug` — obtain it from `turso.organizations`.
+      `name` is the database name used in connection strings and CLI commands.
+      `hostname` is the libSQL endpoint (e.g. `mydb-myorg.turso.io`).
+      `regions` is a JSON array of location codes where replicas exist.
+      `parent` is a JSON object present only for branched databases; it
+      contains `id`, `name`, and `branched_at` (ISO 8601 timestamp).
+      Optional `group` filter narrows results to one group name.
+    filters:
+      - name: organization_slug
+        required: true
+      - name: group
+        required: false
+      - name: schema
+        required: false
+      - name: parent
+        required: false
+    request:
+      method: GET
+      path: /organizations/{{filter.organization_slug}}/databases
+      query:
+        - name: group
+          from: filter
+          key: group
+        - name: schema
+          from: filter
+          key: schema
+        - name: parent
+          from: filter
+          key: parent
+    response:
+      rows_path:
+        - databases
+    pagination:
+      mode: none
+    columns:
+      - name: organization_slug
+        type: Utf8
+        nullable: false
+        description: Organization slug this database belongs to (echoes the filter).
+        expr:
+          kind: from_filter
+          key: organization_slug
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Database name. API field is `Name` (PascalCase).
+        expr:
+          kind: path
+          path:
+            - Name
+      - name: db_id
+        type: Utf8
+        nullable: false
+        description: Database UUID. API field is `DbId` (PascalCase).
+        expr:
+          kind: path
+          path:
+            - DbId
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: >-
+          libSQL endpoint hostname (e.g. `mydb-myorg.turso.io`).
+          API field is `Hostname` (PascalCase).
+        expr:
+          kind: path
+          path:
+            - Hostname
+      - name: group
+        type: Utf8
+        nullable: true
+        description: Group this database belongs to (e.g. `default`).
+        expr:
+          kind: path
+          path:
+            - group
+      - name: primary_region
+        type: Utf8
+        nullable: true
+        description: Location code of the primary replica (e.g. `aws-us-east-1`). API field is `primaryRegion`.
+        expr:
+          kind: path
+          path:
+            - primaryRegion
+      - name: regions
+        type: Json
+        nullable: true
+        description: JSON array of location codes where replicas exist (e.g. `["aws-us-east-1"]`).
+        expr:
+          kind: path
+          path:
+            - regions
+      - name: block_reads
+        type: Boolean
+        nullable: true
+        description: Whether read operations are blocked for this database.
+        expr:
+          kind: path
+          path:
+            - block_reads
+      - name: block_writes
+        type: Boolean
+        nullable: true
+        description: Whether write operations are blocked for this database.
+        expr:
+          kind: path
+          path:
+            - block_writes
+      - name: delete_protection
+        type: Boolean
+        nullable: true
+        description: Whether delete protection is enabled for this database.
+        expr:
+          kind: path
+          path:
+            - delete_protection
+      - name: parent
+        type: Json
+        nullable: true
+        description: >-
+          Present only for branched databases. JSON object containing `id`,
+          `name`, and `branched_at` (ISO 8601 timestamp of the branch point).
+          NULL for non-branched databases.
+        expr:
+          kind: path
+          path:
+            - parent
+
+  # ------------------------------------------------------------------
+  # turso.groups — database groups in an organization
+  # GET /v1/organizations/{organizationSlug}/groups
+  # Pagination: none. Response wrapped under "groups" key.
+  # Required filter: organization_slug (PATH param).
+  # ------------------------------------------------------------------
+  - name: groups
+    description: >-
+      Turso database groups belonging to an organization. Groups define the
+      primary region and replica locations for all databases within them.
+      Requires `organization_slug` (from `turso.organizations.slug`).
+    guide: |
+      Requires `organization_slug` — obtain it from `turso.organizations`.
+      `name` (e.g. `default`) is the group identifier used in the `group`
+      column of `turso.databases`. `primary` is the primary location code.
+      `locations` is a JSON array of all location codes where databases in
+      this group are replicated.
+    filters:
+      - name: organization_slug
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.organization_slug}}/groups
+    response:
+      rows_path:
+        - groups
+    pagination:
+      mode: none
+    columns:
+      - name: organization_slug
+        type: Utf8
+        nullable: false
+        description: Organization slug this group belongs to (echoes the filter).
+        expr:
+          kind: from_filter
+          key: organization_slug
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Group name (e.g. `default`).
+        expr:
+          kind: path
+          path:
+            - name
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Group UUID.
+        expr:
+          kind: path
+          path:
+            - uuid
+      - name: version
+        type: Utf8
+        nullable: true
+        description: sqld server version running in this group (e.g. `v0.23.7`).
+        expr:
+          kind: path
+          path:
+            - version
+      - name: primary
+        type: Utf8
+        nullable: true
+        description: Location code of the primary region for this group (e.g. `aws-us-east-1`).
+        expr:
+          kind: path
+          path:
+            - primary
+      - name: locations
+        type: Json
+        nullable: true
+        description: JSON array of location codes where databases in this group are replicated.
+        expr:
+          kind: path
+          path:
+            - locations
+      - name: delete_protection
+        type: Boolean
+        nullable: true
+        description: Whether delete protection is enabled for this group.
+        expr:
+          kind: path
+          path:
+            - delete_protection
+
+  # ------------------------------------------------------------------
+  # turso.members — members of an organization
+  # GET /v1/organizations/{organizationSlug}/members
+  # Pagination: none. Response wrapped under "members" key.
+  # Required filter: organization_slug (PATH param).
+  # ------------------------------------------------------------------
+  - name: members
+    description: >-
+      Members of a Turso organization. Requires `organization_slug`
+      (from `turso.organizations.slug`). Returns username, email, and role
+      for each member.
+    guide: |
+      Requires `organization_slug` — obtain it from `turso.organizations`.
+      `role` values include `owner`, `admin`, and `member`. There is always
+      exactly one `owner` per organization.
+    filters:
+      - name: organization_slug
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.organization_slug}}/members
+    response:
+      rows_path:
+        - members
+    pagination:
+      mode: none
+    columns:
+      - name: organization_slug
+        type: Utf8
+        nullable: false
+        description: Organization slug this member belongs to (echoes the filter).
+        expr:
+          kind: from_filter
+          key: organization_slug
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Turso username of the member.
+        expr:
+          kind: path
+          path:
+            - username
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address of the member.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: role
+        type: Utf8
+        nullable: false
+        description: Member role in the organization — `owner`, `admin`, or `member`.
+        expr:
+          kind: path
+          path:
+            - role
+
+  # ------------------------------------------------------------------
+  # turso.locations — available Turso edge regions
+  # GET /v1/locations
+  # Pagination: none.
+  # Response: { "locations": { "<code>": "<human-name>", ... } } — a JSON map.
+  # row_strategy: dict_entries converts map keys into rows.
+  # No filters required.
+  # ------------------------------------------------------------------
+  - name: locations
+    description: >-
+      All available Turso edge regions where databases can be created or
+      replicated. Each row is one location — `code` is the region identifier
+      (e.g. `aws-us-east-1`) and `name` is the human-readable label
+      (e.g. `AWS US East (Virginia)`).
+    guide: |
+      No filter required. Use `code` values when specifying regions in CLI
+      commands or when interpreting `primary_region` and `locations` columns
+      in `turso.databases` and `turso.groups`.
+    request:
+      method: GET
+      path: /locations
+    response:
+      rows_path:
+        - locations
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: code
+        type: Utf8
+        nullable: false
+        description: Location code (e.g. `aws-us-east-1`, `aws-eu-west-1`). This is the map key.
+        expr:
+          kind: path
+          path:
+            - _key
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable location name (e.g. `AWS US East (Virginia)`).
+        expr:
+          kind: path
+          path:
+            - _value

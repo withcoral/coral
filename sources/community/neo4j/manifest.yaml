@@ -1,0 +1,354 @@
+name: neo4j
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query nodes, relationships, indexes, and constraints from Neo4j graph
+  databases via the HTTP transactional API (self-hosted or Aura).
+
+inputs:
+  NEO4J_URL:
+    kind: variable
+    default: http://localhost:7474
+    hint: |
+      Base URL of your Neo4j HTTP interface, including scheme and port.
+      Default is `http://localhost:7474` for a local instance.
+      For Neo4j Aura use `https://<instance>.databases.neo4j.io`.
+      Do not include a trailing slash.
+  NEO4J_USERNAME:
+    kind: variable
+    default: neo4j
+    hint: |
+      Neo4j username. Defaults to `neo4j`. The user needs read access
+      to the target database.
+  NEO4J_PASSWORD:
+    kind: secret
+    hint: |
+      Password for the Neo4j user. Set via `NEO4J_AUTH=neo4j/<password>`
+      when running with Docker, for example `NEO4J_AUTH=neo4j/password`.
+  NEO4J_DATABASE:
+    kind: variable
+    default: neo4j
+    hint: |
+      Name of the Neo4j database to query. Defaults to `neo4j`, which is
+      the default database for self-hosted instances and Aura. Change this
+      if you use a named database (e.g. `mydb`).
+
+base_url: "{{input.NEO4J_URL}}"
+
+auth:
+  type: BasicAuth
+  username: "{{input.NEO4J_USERNAME}}"
+  password: "{{input.NEO4J_PASSWORD}}"
+
+test_queries:
+  - SELECT * FROM neo4j.node_labels LIMIT 5
+  - SELECT * FROM neo4j.relationship_types LIMIT 5
+
+tables:
+  - name: node_labels
+    description: Node labels defined in the Neo4j database.
+    guide: >
+      Returns one row per node label. Use label values from this table
+      to understand the graph schema before querying the nodes table
+      with a label filter. No filter required.
+    request:
+      method: POST
+      path: /db/{{input.NEO4J_DATABASE}}/tx/commit
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+        - name: Accept
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: literal
+          value: |-
+            {"statements":[{"statement":"CALL db.labels() YIELD label ORDER BY label RETURN {rows:collect({label:label})} AS x"}]}
+    response:
+      rows_path: [results, "0", data, "0", row, "0", rows]
+    pagination:
+      mode: none
+    columns:
+      - name: label
+        type: Utf8
+        nullable: false
+        description: Node label name.
+        expr: {kind: path, path: [label]}
+
+  - name: relationship_types
+    description: Relationship types defined in the Neo4j database.
+    guide: >
+      Returns one row per relationship type. Use these values to understand
+      the graph topology before querying the relationships table.
+      No filter required.
+    request:
+      method: POST
+      path: /db/{{input.NEO4J_DATABASE}}/tx/commit
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+        - name: Accept
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: literal
+          value: |-
+            {"statements":[{"statement":"CALL db.relationshipTypes() YIELD relationshipType AS t ORDER BY t RETURN {rows:collect({t:t})} AS x"}]}
+    response:
+      rows_path: [results, "0", data, "0", row, "0", rows]
+    pagination:
+      mode: none
+    columns:
+      - name: relationship_type
+        type: Utf8
+        nullable: false
+        description: Relationship type name.
+        expr: {kind: path, path: [t]}
+
+  - name: nodes
+    description: Nodes in the Neo4j graph, filtered by label.
+    guide: >
+      Requires a label filter (e.g. WHERE label = 'Person'). Returns one row
+      per node with its element ID, all labels as a JSON array, and all
+      properties as a JSON object. Use node_labels to discover available
+      labels first. All matching nodes are fetched from Neo4j before SQL
+      filtering applies — for very large node sets consider scoping with
+      a more selective label.
+    request:
+      method: POST
+      path: /db/{{input.NEO4J_DATABASE}}/tx/commit
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+        - name: Accept
+          from: literal
+          value: application/json
+      body:
+        format: json
+        fields:
+          - path: [statements, "0", statement]
+            from: literal
+            value: >-
+              MATCH (n)
+              WHERE any(l IN labels(n) WHERE l = $label)
+              RETURN {rows:collect({eid:elementId(n),labels:labels(n),props:properties(n)})} AS x
+          - path: [statements, "0", parameters, label]
+            from: filter
+            key: label
+    response:
+      rows_path: [results, "0", data, "0", row, "0", rows]
+    pagination:
+      mode: none
+    columns:
+      - name: element_id
+        type: Utf8
+        nullable: false
+        description: >-
+          Neo4j element ID of the node (e.g.
+          4:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:0). Not guaranteed stable
+          across restores or imports — use a business key for persistence.
+        expr: {kind: path, path: [eid]}
+      - name: labels
+        type: Json
+        nullable: true
+        description: All labels on this node as a JSON array.
+        expr: {kind: path, path: [labels]}
+      - name: properties
+        type: Json
+        nullable: true
+        description: All properties of this node as a JSON object.
+        expr: {kind: path, path: [props]}
+    filters:
+      - name: label
+        required: true
+
+  - name: relationships
+    description: Relationships in the Neo4j graph with source and target node info.
+    guide: >
+      Returns relationships with element IDs, labels, rel type, and
+      properties. Optionally filter by rel_type in SQL using
+      WHERE rel_type = 'KNOWS'. from_element_id and to_element_id are
+      Neo4j element IDs (session-scoped; use business keys for persistent
+      references). All relationships are fetched from Neo4j before SQL
+      filtering applies — on very large graphs this can be expensive.
+    request:
+      method: POST
+      path: /db/{{input.NEO4J_DATABASE}}/tx/commit
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+        - name: Accept
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: literal
+          value: >-
+            {"statements":[{"statement":"MATCH (a)-[r]->(b) RETURN {rows:collect({feid:elementId(a),fl:head(labels(a)),
+            rt:type(r),rprops:properties(r),teid:elementId(b),tl:head(labels(b))})} AS x"}]}
+    response:
+      rows_path: [results, "0", data, "0", row, "0", rows]
+    pagination:
+      mode: none
+    columns:
+      - name: from_element_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Element ID of the source node. Not guaranteed stable across
+          restores or imports — use a business key for persistence.
+        expr: {kind: path, path: [feid]}
+      - name: from_label
+        type: Utf8
+        nullable: true
+        description: Primary label of the source node.
+        expr: {kind: path, path: [fl]}
+      - name: rel_type
+        type: Utf8
+        nullable: false
+        description: Relationship type (e.g. KNOWS, WORKS_AT, CONTAINS).
+        expr: {kind: path, path: [rt]}
+      - name: rel_properties
+        type: Json
+        nullable: true
+        description: Properties on the relationship as a JSON object.
+        expr: {kind: path, path: [rprops]}
+      - name: to_element_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Element ID of the target node. Not guaranteed stable across
+          restores or imports — use a business key for persistence.
+        expr: {kind: path, path: [teid]}
+      - name: to_label
+        type: Utf8
+        nullable: true
+        description: Primary label of the target node.
+        expr: {kind: path, path: [tl]}
+
+  - name: indexes
+    description: Indexes defined in the Neo4j database.
+    guide: >
+      Returns all indexes including LOOKUP, RANGE, TEXT, and POINT types.
+      The labels_or_types column contains the node label or relationship type
+      the index applies to. The properties column lists the indexed properties.
+      No filter required.
+    request:
+      method: POST
+      path: /db/{{input.NEO4J_DATABASE}}/tx/commit
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+        - name: Accept
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: literal
+          value: >-
+            {"statements":[{"statement":"SHOW INDEXES YIELD name,type,state,labelsOrTypes AS lt,properties AS pr,entityType AS et
+            RETURN {rows:collect({n:name,tp:type,s:state,lt:lt,pr:pr,et:et})}"}]}
+    response:
+      rows_path: [results, "0", data, "0", row, "0", rows]
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Index name.
+        expr: {kind: path, path: [n]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Index type (LOOKUP, RANGE, TEXT, POINT, FULLTEXT).
+        expr: {kind: path, path: [tp]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Index state (ONLINE, POPULATING, FAILED).
+        expr: {kind: path, path: [s]}
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: Entity type the index applies to (NODE or RELATIONSHIP).
+        expr: {kind: path, path: [et]}
+      - name: labels_or_types
+        type: Json
+        nullable: true
+        description: Node labels or relationship types covered by the index.
+        expr: {kind: path, path: [lt]}
+      - name: properties
+        type: Json
+        nullable: true
+        description: Properties covered by the index.
+        expr: {kind: path, path: [pr]}
+
+  - name: constraints
+    description: Constraints defined in the Neo4j database.
+    guide: >
+      Returns all constraints including uniqueness and existence constraints.
+      The labels_or_types column contains the node label or relationship type
+      the constraint applies to. The properties column lists the constrained
+      properties. No filter required.
+    request:
+      method: POST
+      path: /db/{{input.NEO4J_DATABASE}}/tx/commit
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+        - name: Accept
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: literal
+          value: >-
+            {"statements":[{"statement":"SHOW CONSTRAINTS YIELD name,type,entityType AS et,labelsOrTypes AS lt,properties AS pr
+            RETURN {rows:collect({n:name,tp:type,et:et,lt:lt,pr:pr})}"}]}
+    response:
+      rows_path: [results, "0", data, "0", row, "0", rows]
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Constraint name.
+        expr: {kind: path, path: [n]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Constraint type (e.g. NODE_PROPERTY_UNIQUENESS,
+          NODE_PROPERTY_EXISTENCE).
+        expr: {kind: path, path: [tp]}
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: Entity type the constraint applies to (NODE or RELATIONSHIP).
+        expr: {kind: path, path: [et]}
+      - name: labels_or_types
+        type: Json
+        nullable: true
+        description: Node labels or relationship types covered by the constraint.
+        expr: {kind: path, path: [lt]}
+      - name: properties
+        type: Json
+        nullable: true
+        description: Properties covered by the constraint.
+        expr: {kind: path, path: [pr]}
