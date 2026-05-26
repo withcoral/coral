@@ -21,17 +21,21 @@ inputs:
   GITHUB_TOKEN:
     kind: secret
     hint: |
-      For GitHub Cloud, choose "Connect with GitHub device code" during
-      interactive install to authorize through GitHub OAuth's device-code
-      flow, or choose "Connect with GitHub OAuth app" for the browser
-      authorization-code flow.
-      Coral uses its bundled GitHub OAuth app client ID by default;
-      enter GITHUB_OAUTH_CLIENT_ID only if you need to override it.
-      The browser flow uses a loopback callback URL; GitHub requires
-      GITHUB_OAUTH_CLIENT_SECRET for OAuth app authorization-code token
-      exchange. The device-code flow does not use a client secret.
+      For GitHub Cloud, choose "Connect with GitHub device code" for the
+      simplest setup. It signs in through GitHub and does not require you
+      to create an OAuth app or enter a client secret.
 
-      The OAuth method requests `repo`, `read:org`, `read:user`, and
+      If you want to use your own GitHub OAuth app, set
+      GITHUB_OAUTH_CLIENT_ID to the app's Client ID. To create an app,
+      follow GitHub's guide:
+      https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app.
+      Enable device flow on the app before using the device-code option.
+      For the browser "Connect with GitHub OAuth app" option, set the
+      app's Authorization callback URL to
+      `http://127.0.0.1:53682/oauth/callback` and set
+      GITHUB_OAUTH_CLIENT_SECRET to the app's Client secret.
+
+      The OAuth options request `repo`, `read:org`, `read:user`, and
       `user:email` scopes. Use the token method instead if you need a
       narrower or more elevated scope set, or if you are connecting
       to GitHub Enterprise Server.
@@ -45,7 +49,7 @@ inputs:
       methods:
         - type: oauth
           label: Connect with GitHub device code
-          description: Authorize GitHub through device code flow using a GitHub OAuth app.
+          description: Sign in to GitHub with a device code.
           oauth:
             flow:
               type: device_code
@@ -66,7 +70,7 @@ inputs:
                   - user:email
         - type: oauth
           label: Connect with GitHub OAuth app
-          description: Authorize GitHub through authorization code flow using a GitHub OAuth app.
+          description: Sign in through a GitHub OAuth app in your browser.
           oauth:
             flow:
               type: authorization_code
