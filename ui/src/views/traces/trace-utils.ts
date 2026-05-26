@@ -87,7 +87,9 @@ export function attr(span: TraceSpan, name: string): string | undefined {
 
 export function spanSource(span: TraceSpan): string {
   const attrs = parseJsonObject(span.attributesJson)
-  return attrFrom(attrs, 'coral.source') ?? attrFrom(attrs, 'db.system') ?? span.scopeName ?? 'coral'
+  return (
+    attrFrom(attrs, 'coral.source') ?? attrFrom(attrs, 'db.system') ?? span.scopeName ?? 'coral'
+  )
 }
 
 function endpointPath(url: string): string {
@@ -101,6 +103,23 @@ function endpointPath(url: string): string {
   }
 }
 
+function endpointLine(url: string): string {
+  if (!url) return ''
+  try {
+    const parsed = new URL(url, 'http://coral.local')
+    return `${parsed.pathname}${parsed.search}`
+  } catch {
+    return endpointPath(url)
+  }
+}
+
+function sourceTableLabel(attrs: JsonObject): string | undefined {
+  const source = attrFrom(attrs, 'coral.source')
+  const table = attrFrom(attrs, 'coral.table')
+  if (source && table) return `${source}.${table}`
+  return table
+}
+
 export function spanOperation(span: TraceSpan): string {
   const attrs = parseJsonObject(span.attributesJson)
   const method = attrFrom(attrs, 'http.request.method')
@@ -110,18 +129,38 @@ export function spanOperation(span: TraceSpan): string {
   return table ?? span.name
 }
 
+export function spanRequestOperation(span: TraceSpan): string {
+  const attrs = parseJsonObject(span.attributesJson)
+  const method = attrFrom(attrs, 'http.request.method')
+  const target = sourceTableLabel(attrs)
+
+  if (method && target) return `${method} ${target}`
+  return method ?? target ?? ''
+}
+
+export function spanRequestEndpoint(span: TraceSpan): string {
+  return endpointLine(spanUrl(span))
+}
+
+export function spanRequestLine(span: TraceSpan): string {
+  const operation = spanRequestOperation(span)
+  const endpoint = spanRequestEndpoint(span)
+
+  if (!operation && !endpoint) return spanDisplayLabel(span)
+  if (!operation) return endpoint
+  if (!endpoint) return operation
+  return `${operation} ${endpoint}`
+}
+
 export function spanDisplayLabel(span: TraceSpan): string {
   const attrs = parseJsonObject(span.attributesJson)
   const method = attrFrom(attrs, 'http.request.method')
-  const source = attrFrom(attrs, 'coral.source')
-  const table = attrFrom(attrs, 'coral.table')
+  const target = sourceTableLabel(attrs)
   const url = attrFrom(attrs, 'url.full') ?? attrFrom(attrs, 'http.url') ?? ''
 
-  if (method && source && table) return `${method} ${source}.${table}`
-  if (method && table) return `${method} ${table}`
+  if (method && target) return `${method} ${target}`
   if (method && url) return `${method} ${endpointPath(url)}`
-  if (source && table) return `${source}.${table}`
-  if (table) return table
+  if (target) return target
   if (span.name === 'coral.query') return 'Query'
   return span.name || span.scopeName || 'span'
 }
@@ -144,7 +183,10 @@ export function spanUrl(span: TraceSpan): string {
 }
 
 export function spanStatusCode(span: TraceSpan): string {
-  return attrFrom(parseJsonObject(span.attributesJson), 'http.response.status_code') ?? statusLabel(span.status)
+  return (
+    attrFrom(parseJsonObject(span.attributesJson), 'http.response.status_code') ??
+    statusLabel(span.status)
+  )
 }
 
 export function isHttpSpan(span: TraceSpan): boolean {
@@ -153,7 +195,7 @@ export function isHttpSpan(span: TraceSpan): boolean {
 }
 
 export function sortedSpans(spans: TraceSpan[]): TraceSpan[] {
-  return [...spans].sort((a, b) => {
+  return [...spans].toSorted((a, b) => {
     const aStart = BigInt(a.startTimeUnixNanos || 0)
     const bStart = BigInt(b.startTimeUnixNanos || 0)
     if (aStart < bStart) return -1
