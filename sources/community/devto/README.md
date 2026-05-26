@@ -32,7 +32,7 @@ Fetch a list of published articles. Supports filtering by tag, author, state, an
 |---|---|---|
 | `tag` | string | Filter articles by a specific tag (e.g. `rust`, `javascript`) |
 | `username` | string | Filter articles by a specific author's username |
-| `state` | string | Filter by state: `fresh` (recently published) or `rising` (trending) |
+| `state` | string | Filter by state: `rising`, `fresh`, or `all`. Note: `state` can only be combined with the `username` filter when set to `all`. |
 | `top` | integer | Return top articles over the past N days (e.g. `7` for the week) |
 
 #### Columns
@@ -192,6 +192,8 @@ coral sql "
 ## Notes
 
 - The `users_by_id` and `users_by_username` tables function as **lookup tables** — you must provide the required `id` or `username` filter respectively. The Forem API does not support listing all users without admin authentication.
+- **No SQL Joins on User Tables:** Standard SQL `JOIN` queries (e.g. joining `devto.articles` with `devto.users_by_id` on user IDs) are not supported because `users_by_id` and `users_by_username` are lookup-only tables requiring a constant filter (e.g. `WHERE id = <constant>`). Instead, you must use a two-step query workflow: query `articles` to retrieve the `author_user_id`, and then perform a separate lookup query on `users_by_id` with that ID.
+- **DEV.to Specific Table:** The `users_by_username` table utilizes the DEV.to-specific `/users/by_username` API endpoint. This endpoint is unique to DEV.to and is not part of the standard/published Forem API v1 contract. Other Forem instances might not support this lookup table.
 - `joined_at` in user tables returns a human-readable date string (e.g. `Dec 27, 2015`), not an ISO 8601 timestamp.
 - `tags` in `articles` is a comma-separated string (e.g. `javascript, node, rust`). Filter by a single tag using the `tag` filter.
 - No authentication or API key is required for any of the implemented endpoints.

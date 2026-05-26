@@ -23,7 +23,8 @@ tables:
   - name: articles
     description: |
       Fetch a list of articles from DEV.to.
-      Supports filtering by `tag`, `username`, `state` (fresh, rising), and `top` (number of days).
+      Supports filtering by `tag`, `username`, `state` (rising, fresh, all), and `top` (number of days).
+      Note: combining `username` with `state` is only contracted with `state = 'all'`.
     fetch_limit_default: 100
     filters:
       - name: tag
