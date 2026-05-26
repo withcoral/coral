@@ -232,6 +232,7 @@ mod tests {
             &source_secrets,
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing source-scoped credentials must fail");
 
@@ -272,6 +273,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request path inputs must fail");
 
@@ -316,6 +318,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request header inputs must fail");
 
@@ -360,6 +363,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request query inputs must fail");
 
@@ -405,6 +409,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing table request body inputs must fail");
 
@@ -450,6 +455,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("missing request route inputs must fail");
 
@@ -542,6 +548,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &HashMap::new(),
+                None,
             )
             .expect_err(&format!(
                 "missing function request {name} input should fail"
