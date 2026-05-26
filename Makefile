@@ -56,7 +56,7 @@ fix-sources:
 # Regenerates the source catalog pages and Mintlify navigation from
 # sources/core/*/manifest.y{a,}ml and sources/community/*/manifest.y{a,}ml
 # via the xtask binary. docs-check intentionally skips the community source
-# catalog so source-only community PRs do not fail on aggregate catalog drift.
+# catalog so PRs do not fail on aggregate community source catalog drift.
 #
 #   make docs-generate   # write/refresh the generated files in docs/
 #   make docs-check      # CI freshness check: non-zero exit if stale
