@@ -9,7 +9,7 @@ Query Wikipedia articles via the public MediaWiki and REST APIs. Search articles
 
 ## Authentication
 
-No authentication required. Wikipedia exposes public read-only APIs. Wikimedia requires all clients to identify themselves via an `Api-User-Agent` header; Coral sets this automatically on every request.
+No authentication required. Wikipedia exposes public read-only APIs. Wikimedia recommends that all clients identify themselves via a `User-Agent` header (or the browser-friendly `Api-User-Agent` alternative); Coral sets `Api-User-Agent` automatically on every request.
 
 ```bash
 coral source add --file sources/community/wikipedia/manifest.yaml

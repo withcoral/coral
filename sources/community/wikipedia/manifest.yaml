@@ -20,6 +20,7 @@ tables:
     description: |
       Search Wikipedia articles by keyword using the MediaWiki search API.
       Filter by `query` (required). Use SQL `LIMIT` to control result count.
+    fetch_limit_default: 50
     filters:
       - name: query
         required: true
