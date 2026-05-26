@@ -227,10 +227,9 @@ impl QueryManager {
     }
 
     fn runtime_config(&self, selected_sources: &[QuerySource]) -> QueryRuntimeConfig {
-        QueryRuntimeConfig::new(
-            self.runtime_context.clone(),
-            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources),
-        )
+        let extensions =
+            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+        QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
 
@@ -394,4 +393,53 @@ fn validate_required_variables(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::credentials::CredentialStore;
+
+    struct QueryManagerFixture {
+        _temp: TempDir,
+        manager: QueryManager,
+    }
+
+    fn query_manager_with(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> QueryManagerFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            runtime_context,
+            layout,
+            providers,
+        );
+        QueryManagerFixture {
+            _temp: temp,
+            manager,
+        }
+    }
+
+    #[test]
+    fn runtime_config_preserves_app_owned_http_body_capture_max_bytes() {
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default().with_http_body_capture_max_bytes(Some(42)),
+            Vec::new(),
+        );
+
+        let runtime = fixture.manager.runtime_config(&[]);
+
+        let config = runtime
+            .context
+            .http_body_capture_max_bytes
+            .expect("body capture config");
+        assert_eq!(config, 42);
+    }
 }

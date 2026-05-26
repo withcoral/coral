@@ -47,13 +47,14 @@ pub(crate) fn engine_extensions_for_providers(
     let mut merged = EngineExtensions::default();
     for provider in providers {
         let extra = provider.extensions_for(selected_sources);
-        merged.source_decorators.extend(extra.source_decorators);
-        merged
-            .query_result_observers
-            .extend(extra.query_result_observers);
-        merged
-            .request_authenticators
-            .extend(extra.request_authenticators);
+        let EngineExtensions {
+            source_decorators,
+            query_result_observers,
+            request_authenticators,
+        } = extra;
+        merged.source_decorators.extend(source_decorators);
+        merged.query_result_observers.extend(query_result_observers);
+        merged.request_authenticators.extend(request_authenticators);
     }
     merged
 }

@@ -39,6 +39,7 @@ static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
 static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
+const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body"];
 const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +63,7 @@ struct TracingInitState {
 struct TargetFilteringSpanExporter<E> {
     inner: E,
     targets: Targets,
+    denied_targets: &'static [&'static str],
     excluded_rpc_services: &'static [&'static str],
 }
 
@@ -70,8 +72,14 @@ impl<E> TargetFilteringSpanExporter<E> {
         Self {
             inner,
             targets,
+            denied_targets: &[],
             excluded_rpc_services: &[],
         }
+    }
+
+    fn denying_targets(mut self, targets: &'static [&'static str]) -> Self {
+        self.denied_targets = targets;
+        self
     }
 
     fn excluding_rpc_services(mut self, services: &'static [&'static str]) -> Self {
@@ -87,6 +95,7 @@ where
     async fn export(&self, mut batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
         batch.retain(|span| {
             span_matches_targets(span, &self.targets)
+                && !span_matches_denied_target(span, self.denied_targets)
                 && !span_matches_excluded_rpc_service(span, self.excluded_rpc_services)
         });
         if batch.is_empty() {
@@ -119,6 +128,15 @@ fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
         return false;
     };
     targets.would_enable(&target, &level)
+}
+
+fn span_matches_denied_target(span: &SpanData, denied_targets: &[&str]) -> bool {
+    let Some(target) = span_string_attribute(span, "target") else {
+        return false;
+    };
+    denied_targets
+        .iter()
+        .any(|denied_target| target == *denied_target)
 }
 
 fn span_matches_excluded_rpc_service(span: &SpanData, excluded_services: &[&str]) -> bool {
@@ -403,7 +421,8 @@ fn try_init_tracing(
                 .build()
                 .map_err(|e| AppError::InvalidInput(e.to_string()))?;
             let trace_exporter =
-                TargetFilteringSpanExporter::new(trace_exporter, otlp_trace_targets);
+                TargetFilteringSpanExporter::new(trace_exporter, otlp_trace_targets)
+                    .denying_targets(OTLP_TRACE_DENIED_TARGETS);
             builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(trace_exporter).build(),
             );
@@ -557,8 +576,9 @@ mod tests {
 
     use super::{
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
-        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, TargetFilteringSpanExporter, build_log_filter,
-        build_trace_targets, normalize_otlp_endpoint, parse_headers, trace_layer_filter,
+        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, OTLP_TRACE_DENIED_TARGETS, TargetFilteringSpanExporter,
+        build_log_filter, build_trace_targets, normalize_otlp_endpoint, parse_headers,
+        trace_layer_filter,
     };
 
     #[test]
@@ -610,10 +630,11 @@ mod tests {
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(!targets.would_enable("coral.http.body", &tracing::Level::TRACE));
     }
 
     #[test]
-    fn local_trace_filter_includes_datafusion() {
+    fn local_trace_filter_includes_datafusion_and_body_spans() {
         let (targets, error) =
             build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
 
@@ -622,6 +643,7 @@ mod tests {
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
     }
 
     #[test]
@@ -631,6 +653,7 @@ mod tests {
         assert!(error.is_none());
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
     }
 
     #[test]
@@ -671,6 +694,49 @@ mod tests {
             .map(|span| span.name.to_string())
             .collect::<Vec<_>>();
         span_names.sort();
+
+        assert_eq!(span_names, vec!["kept"]);
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn target_filtering_exporter_hard_denies_configured_targets() {
+        let memory = InMemorySpanExporter::default();
+        let (targets, error) = build_trace_targets(
+            "coral_app=trace,coral.http.body=trace",
+            DEFAULT_TRACE_FILTER,
+        );
+        assert!(error.is_none());
+        let exporter = TargetFilteringSpanExporter::new(memory.clone(), targets)
+            .denying_targets(OTLP_TRACE_DENIED_TARGETS);
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("filter-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let kept = tracing::trace_span!(target: "coral_app", "kept");
+            let _kept = kept.enter();
+
+            let dropped = tracing::trace_span!(
+                target: "coral.http.body",
+                "dropped_body",
+                coral.http.request.body = "secret",
+            );
+            let _dropped = dropped.enter();
+        });
+        provider.force_flush().expect("flush spans");
+
+        let span_names = memory
+            .get_finished_spans()
+            .expect("finished spans")
+            .into_iter()
+            .map(|span| span.name.to_string())
+            .collect::<Vec<_>>();
 
         assert_eq!(span_names, vec!["kept"]);
         provider.shutdown().expect("provider shutdown");

@@ -44,9 +44,10 @@
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.
-- Source-only changes under `sources/community/**` do not need to update the
-  aggregate community source catalog page; keep docs freshness strict for
-  generator changes, docs changes, and bundled sources under `sources/core/**`.
+- `make docs-check` intentionally skips the aggregate community source catalog.
+  Any PR may leave that generated page stale so unrelated changes do not fail
+  on aggregate community catalog drift; keep docs freshness strict for bundled
+  sources under `sources/core/**`, `docs/docs.json`, and the changelog.
 - Keep checked-in generated files marked in `.gitattributes` with
   `linguist-generated` so GitHub collapses them by default in PR diffs.
 - Source inputs that carry credentials must be `kind: secret`, never
