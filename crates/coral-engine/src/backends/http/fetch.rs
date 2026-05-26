@@ -161,6 +161,7 @@ pub(super) async fn fetch_rows(
                 response_format: target.response().format,
                 source_schema: &client.source_schema,
                 rate_limit: &client.rate_limit,
+                body_capture: client.body_capture,
                 render_context,
                 allow_404_empty: target.response().allow_404_empty,
                 link_header_require_results: pagination.link_header_require_results,
