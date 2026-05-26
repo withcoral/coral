@@ -99,7 +99,8 @@ tables:
         nullable: false
         description: >-
           Unique calendar identifier. Use this value as the calendar_id
-          filter on google_calendar.events.
+          filter on google_calendar.events. If the ID contains reserved
+          URL characters (such as #), you must URL-encode it first.
         expr:
           kind: path
           path:
@@ -158,11 +159,12 @@ tables:
         SELECT * FROM google_calendar.events WHERE calendar_id = 'primary'
 
       Push-down filters:
-        - calendar_id (required) — which calendar to query
-        - time_min               — RFC 3339 lower bound (inclusive)
-        - time_max               — RFC 3339 upper bound (exclusive)
-        - q                      — free-text search across fields
+        - calendar_id (required) — which calendar to query. Must be URL-encoded if it contains reserved characters (like #).
+        - time_min               — RFC 3339 exclusive lower bound for event end time
+        - time_max               — RFC 3339 exclusive upper bound for event start time
 
+      An event is returned if its duration overlaps the window (`event.end > time_min` AND `event.start < time_max`). Events that exactly touch the boundaries are excluded.
+      
       Example — events this week:
         SELECT summary, start_date_time, end_date_time
         FROM google_calendar.events
@@ -235,17 +237,20 @@ tables:
           path:
             - description
       - name: start_date_time
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: >-
           Event start as an ISO 8601 dateTime string with timezone offset
           (e.g. 2026-05-25T10:00:00-04:00). Null for all-day events;
           use start_date instead.
         expr:
-          kind: path
-          path:
-            - start
-            - dateTime
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start
+              - dateTime
       - name: start_date
         type: Utf8
         nullable: true
@@ -258,16 +263,19 @@ tables:
             - start
             - date
       - name: end_date_time
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: >-
           Event end as an ISO 8601 dateTime string with timezone offset.
           Null for all-day events; use end_date instead.
         expr:
-          kind: path
-          path:
-            - end
-            - dateTime
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end
+              - dateTime
       - name: end_date
         type: Utf8
         nullable: true
@@ -312,7 +320,8 @@ tables:
         nullable: true
         virtual: true
         description: >-
-          RFC 3339 lower bound (inclusive) used to filter events by start time.
+          RFC 3339 exclusive lower bound for an event's end time.
+          Events ending exactly at or before this time are excluded.
         expr:
           kind: from_filter
           key: time_min
@@ -321,7 +330,8 @@ tables:
         nullable: true
         virtual: true
         description: >-
-          RFC 3339 upper bound (exclusive) used to filter events by start time.
+          RFC 3339 exclusive upper bound for an event's start time.
+          Events starting exactly at or after this time are excluded.
         expr:
           kind: from_filter
           key: time_max
@@ -369,21 +379,27 @@ tables:
           path:
             - location
       - name: created
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: When the event was created (RFC 3339).
         expr:
-          kind: path
-          path:
-            - created
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
       - name: updated
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: When the event was last modified (RFC 3339).
         expr:
-          kind: path
-          path:
-            - updated
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
       - name: creator_email
         type: Utf8
         nullable: true
@@ -397,8 +413,8 @@ tables:
         type: Utf8
         nullable: true
         description: >-
-          Google Calendar event type: default, outOfOffice,
-          focusTime, workingLocation.
+          Google Calendar event type. Example event types include:
+          default, focusTime, outOfOffice, workingLocation, birthday, fromGmail.
         expr:
           kind: path
           path:
