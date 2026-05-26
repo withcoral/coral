@@ -188,10 +188,11 @@ tables:
 name: demo
 version: 1.0.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: messages
     description: Demo messages
+    format: parquet
     source:
       location: file:///tmp/messages.parquet
     search_limits:
