@@ -1,0 +1,226 @@
+name: argoworkflows
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Argo Workflows orchestrations, pipeline templates, cluster templates,
+  and cron schedules through the Argo Workflows REST API.
+base_url: "{{input.ARGOWORKFLOWS_BASE_URL}}/api/v1"
+
+inputs:
+  ARGOWORKFLOWS_BASE_URL:
+    kind: variable
+    hint: |
+      Argo Workflows instance base server instance URL with NO trailing slash and no /api suffix,
+      for example `https://argo.example.com`.
+  ARGOWORKFLOWS_AUTH_TOKEN:
+    kind: secret
+    hint: |
+      Authentication token (Bearer or ServiceAccount token credential string).
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.ARGOWORKFLOWS_AUTH_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT name, namespace FROM argoworkflows.workflows WHERE namespace = 'default' LIMIT 1
+
+tables:
+  - name: workflows
+    description: Executed or active workflow pipeline instances within a namespace.
+    filters:
+      - name: namespace
+        required: true
+      - name: label_selector
+        required: false
+    request:
+      method: GET
+      path: /workflows/{{filter.namespace}}
+      query:
+        - name: listOptions.labelSelector
+          from: filter
+          key: label_selector
+        - name: listOptions.limit
+          from: pagination
+          key: limit
+        - name: listOptions.continue
+          from: pagination
+          key: next_page_token
+    response:
+      row_strategy: direct
+      root_key: items
+    pagination:
+      mode: token
+      limit_key: limit
+      token_request_key: listOptions.continue
+      token_response_path: [metadata, continue]
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        description: Target namespace filter scope constraint boundary.
+        expr: {kind: from_filter, key: namespace}
+      - name: label_selector
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Server-side Kubernetes label selector filter matching key-value pairs.
+        expr: {kind: from_filter, key: label_selector}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the GitOps workflow execution block.
+        expr: {kind: path, path: [metadata, name]}
+      - name: phase
+        type: Utf8
+        nullable: true
+        description: Present phase runtime execution state (e.g., Running, Succeeded, Failed).
+        expr: {kind: path, path: [status, phase]}
+      - name: progress
+        type: Utf8
+        nullable: true
+        description: Total step progression breakdown sequence score fractional status string.
+        expr: {kind: path, path: [status, progress]}
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Text tracking feedback messages from conditions or daemon state steps.
+        expr: {kind: path, path: [status, message]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp detailing when the workflow pipeline iteration was initialized.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [metadata, creationTimestamp]}
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Execution tracking start time matrix timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [status, startedAt]}
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Target timestamp tracing completion execution termination steps.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [status, finishedAt]}
+
+  - name: cron_workflows
+    description: Scheduled pipeline orchestrations managed by the Cron engine loops.
+    filters:
+      - name: namespace
+        required: true
+    request:
+      method: GET
+      path: /cron-workflows/{{filter.namespace}}
+    response:
+      row_strategy: direct
+      root_key: items
+    pagination:
+      mode: none
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        description: Target namespace workspace filter scope definition string context.
+        expr: {kind: from_filter, key: namespace}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique CronWorkflow identification naming designation key resource.
+        expr: {kind: path, path: [metadata, name]}
+      - name: schedule
+        type: Utf8
+        nullable: false
+        description: "Unix crontab configuration timing string mapping trigger loops (e.g., */5 * * * *)."
+        expr: {kind: path, path: [spec, schedule]}
+      - name: suspend
+        type: Boolean
+        nullable: true
+        description: Status flag signaling if automated cron schedule evaluations are currently paused.
+        expr: {kind: path, path: [spec, suspend]}
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Configured geographic location timing frame zone tracking reference.
+        expr: {kind: path, path: [spec, timezone]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Cron base declaration instantiation registration timestamp metrics logs.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [metadata, creationTimestamp]}
+
+  - name: workflow_templates
+    description: Reusable namespace-scoped task matrix template definitions.
+    filters:
+      - name: namespace
+        required: true
+    request:
+      method: GET
+      path: /workflow-templates/{{filter.namespace}}
+    response:
+      row_strategy: direct
+      root_key: items
+    pagination:
+      mode: none
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        description: Target namespace parent constraint verification string parameter.
+        expr: {kind: from_filter, key: namespace}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique reusable identification label descriptor code name.
+        expr: {kind: path, path: [metadata, name]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Workspace asset template structural initialization profile tracking date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [metadata, creationTimestamp]}
+
+  - name: cluster_workflow_templates
+    description: Globally reusable cluster-scoped workflow orchestration component structures templates.
+    request:
+      method: GET
+      path: /cluster-workflow-templates
+    response:
+      row_strategy: direct
+      root_key: items
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique identity tracking control name for cluster resources templates.
+        expr: {kind: path, path: [metadata, name]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Cluster-wide structure asset registration baseline date telemetry tracking.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [metadata, creationTimestamp]}
