@@ -102,6 +102,7 @@ async fn source_test_exits_non_zero_when_query_tests_fail() {
             origin: SourceOrigin::Imported as i32,
         }),
         tables: Vec::new(),
+        table_functions: Vec::new(),
         query_tests: vec![QueryTestResult {
             sql: "SELECT * FROM local_messages.missing".to_string(),
             outcome: Some(query_test_result::Outcome::Failure(QueryTestFailure {
@@ -151,6 +152,7 @@ async fn source_test_succeeds_when_query_tests_pass() {
             origin: SourceOrigin::Imported as i32,
         }),
         tables: Vec::new(),
+        table_functions: Vec::new(),
         query_tests: vec![QueryTestResult {
             sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
             outcome: Some(query_test_result::Outcome::Success(QueryTestSuccess {

@@ -3,6 +3,7 @@
     reason = "Integration test crates share this harness, but each target only uses a subset of the helpers."
 )]
 
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use arrow::array::Int64Array;
@@ -15,23 +16,29 @@ use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    Column, ColumnSearchResult, CreateBundledSourceRequest, CreateBundledSourceResponse,
-    DeleteSourceRequest, DeleteSourceResponse, DescribeTableRequest, DescribeTableResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
-    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
-    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
+    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
+    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
+    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    ListTablesRequest, ListTablesResponse, PaginationRequest, PaginationResponse, QueryPlan,
-    SearchTablesRequest, SearchTablesResponse, Source, SourceInfo, SourceInputKind,
-    SourceInputSpec, SourceOrigin, Table, TableSearchResult, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace,
+    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
+    Source, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_o_auth_response, import_source_response,
+    source_input_spec::Input as ProtoSourceInput,
 };
+use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::Stream;
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
+use tonic_types::{ErrorDetail, StatusExt as _};
 
 fn workspace() -> Workspace {
     Workspace {
@@ -123,34 +130,6 @@ fn table_summary(table: &Table) -> TableSummary {
         description: table.description.clone(),
         required_filters: table.required_filters.clone(),
         guide: table.guide.clone(),
-    }
-}
-
-fn list_tables_response(request: &ListTablesRequest) -> ListTablesResponse {
-    let tables = mock_visible_tables()
-        .into_iter()
-        .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
-        .filter(|table| request.table_name.is_empty() || table.name == request.table_name)
-        .collect::<Vec<_>>();
-    let (mut tables, pagination) = paginate(
-        tables,
-        request.pagination.unwrap_or(PaginationRequest {
-            limit: 0,
-            offset: 0,
-        }),
-    );
-    let table_summaries = if request.omit_columns {
-        tables.iter().map(table_summary).collect()
-    } else {
-        Vec::new()
-    };
-    if request.omit_columns {
-        tables.clear();
-    }
-    ListTablesResponse {
-        tables,
-        table_summaries,
-        pagination: Some(pagination),
     }
 }
 
@@ -298,10 +277,11 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 version: "1.0.0".to_string(),
                 inputs: vec![SourceInputSpec {
                     key: "GITHUB_TOKEN".to_string(),
-                    kind: SourceInputKind::Secret as i32,
                     required: true,
-                    default_value: String::new(),
                     hint: "Create a token at github.com/settings/tokens".to_string(),
+                    input: Some(ProtoSourceInput::Secret(SourceSecretInput {
+                        credential: None,
+                    })),
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
@@ -325,6 +305,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "issues"),
             mock_table("github", "pull_requests"),
         ],
+        table_functions: Vec::new(),
         query_tests: Vec::new(),
     }
 }
@@ -337,10 +318,11 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             version: "1.0.0".to_string(),
             inputs: vec![SourceInputSpec {
                 key: "GITHUB_TOKEN".to_string(),
-                kind: SourceInputKind::Secret as i32,
                 required: true,
-                default_value: String::new(),
                 hint: "Create a token at github.com/settings/tokens".to_string(),
+                input: Some(ProtoSourceInput::Secret(SourceSecretInput {
+                    credential: None,
+                })),
             }],
             installed: true,
             origin: SourceOrigin::Bundled as i32,
@@ -369,6 +351,11 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
 struct MockError {
     code: Code,
     message: String,
+    /// When `Some`, the error carries an AIP-193 `ErrorInfo` matching what
+    /// the real server attaches via `app_status` for the
+    /// `AppError::SourceNotFound` variant. Set via
+    /// `MockError::source_not_found(qualified)`.
+    source_not_found_qualified: Option<String>,
 }
 
 impl MockError {
@@ -376,10 +363,31 @@ impl MockError {
         Self {
             code,
             message: message.into(),
+            source_not_found_qualified: None,
+        }
+    }
+
+    fn source_not_found(qualified: impl Into<String>) -> Self {
+        let qualified = qualified.into();
+        Self {
+            code: Code::NotFound,
+            message: format!("source '{qualified}' not found"),
+            source_not_found_qualified: Some(qualified),
         }
     }
 
     fn status(&self) -> Status {
+        if self.source_not_found_qualified.is_some() {
+            // Mirrors `coral_app::bootstrap::error::app_status`: the
+            // reason alone discriminates the error class — no unbounded
+            // identifier is echoed into structured metadata.
+            let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+                CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+                CORAL_ERROR_DOMAIN,
+                std::collections::HashMap::new(),
+            ))];
+            return Status::with_error_details_vec(self.code, self.message.clone(), details);
+        }
         Status::new(self.code, self.message.clone())
     }
 }
@@ -397,6 +405,10 @@ impl<T> MockResult<T> {
 
     fn err(code: Code, message: impl Into<String>) -> Self {
         Self::Err(MockError::new(code, message))
+    }
+
+    fn source_not_found(qualified: impl Into<String>) -> Self {
+        Self::Err(MockError::source_not_found(qualified))
     }
 
     fn into_tonic_result(self) -> Result<T, Status> {
@@ -484,13 +496,60 @@ impl MockServerConfig {
         self.validate_source = MockResult::ok(response);
         self
     }
+
+    /// Mirrors what the real server emits for `AppError::SourceNotFound`
+    /// from `validate_source` (a `Code::NotFound` Status carrying an
+    /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
+    pub(crate) fn with_validate_source_not_found(mut self, qualified: impl Into<String>) -> Self {
+        self.validate_source = MockResult::source_not_found(qualified);
+        self
+    }
+
+    pub(crate) fn with_delete_source_error(
+        mut self,
+        code: Code,
+        message: impl Into<String>,
+    ) -> Self {
+        self.delete_source = MockResult::err(code, message);
+        self
+    }
+
+    /// Mirrors what the real server emits for `AppError::SourceNotFound`
+    /// from `delete_source` (a `Code::NotFound` Status carrying an
+    /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
+    pub(crate) fn with_delete_source_not_found(mut self, qualified: impl Into<String>) -> Self {
+        self.delete_source = MockResult::source_not_found(qualified);
+        self
+    }
+}
+
+fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
+    let items = mock_visible_tables()
+        .into_iter()
+        .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
+        .filter(|_| request.kind == 0 || request.kind == 1)
+        .map(|table| CatalogItem {
+            item: Some(catalog_item::Item::Table(table_summary(&table))),
+        })
+        .collect::<Vec<_>>();
+    let (items, pagination) = paginate(
+        items,
+        request.pagination.unwrap_or(PaginationRequest {
+            limit: 0,
+            offset: 0,
+        }),
+    );
+    ListCatalogResponse {
+        items,
+        pagination: Some(pagination),
+    }
 }
 
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
-    list_tables: Mutex<Vec<ListTablesRequest>>,
-    search_tables: Mutex<Vec<SearchTablesRequest>>,
+    list_catalog: Mutex<Vec<ListCatalogRequest>>,
+    search_catalog: Mutex<Vec<SearchCatalogRequest>>,
     describe_table: Mutex<Vec<DescribeTableRequest>>,
     list_columns: Mutex<Vec<ListColumnsRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
@@ -498,6 +557,7 @@ struct Captured {
     get_source: Mutex<Vec<GetSourceRequest>>,
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
     create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
+    create_bundled_source_with_oauth: Mutex<Vec<CreateBundledSourceWithOAuthRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
@@ -574,54 +634,58 @@ struct MockCatalogService {
 
 #[tonic::async_trait]
 impl CatalogService for MockCatalogService {
-    async fn list_tables(
+    async fn list_catalog(
         &self,
-        request: Request<ListTablesRequest>,
-    ) -> Result<Response<ListTablesResponse>, Status> {
+        request: Request<ListCatalogRequest>,
+    ) -> Result<Response<ListCatalogResponse>, Status> {
         let request = request.into_inner();
         self.captured
-            .list_tables
+            .list_catalog
             .lock()
-            .expect("list_tables capture")
+            .expect("list_catalog capture")
             .push(request.clone());
-        Ok(Response::new(list_tables_response(&request)))
+        Ok(Response::new(list_catalog_response(&request)))
     }
 
-    async fn search_tables(
+    async fn search_catalog(
         &self,
-        request: Request<SearchTablesRequest>,
-    ) -> Result<Response<SearchTablesResponse>, Status> {
+        request: Request<SearchCatalogRequest>,
+    ) -> Result<Response<SearchCatalogResponse>, Status> {
         let request = request.into_inner();
         self.captured
-            .search_tables
+            .search_catalog
             .lock()
-            .expect("search_tables capture")
+            .expect("search_catalog capture")
             .push(request.clone());
         let pattern = regex::RegexBuilder::new(&request.pattern)
             .case_insensitive(request.ignore_case)
             .build()
             .map_err(|error| Status::invalid_argument(format!("invalid regex pattern: {error}")))?;
         let mut matches = Vec::new();
-        for table in mock_visible_tables().into_iter().filter(|table| {
-            request.schema_name.is_empty() || table.schema_name == request.schema_name
-        }) {
-            let matched_fields = table_matched_fields(&table, &pattern);
-            if !matched_fields.is_empty() {
-                matches.push(TableSearchResult {
-                    table: Some(table_summary(&table)),
-                    matched_fields,
-                });
+        if request.kind == 0 || request.kind == 1 {
+            for table in mock_visible_tables().into_iter().filter(|table| {
+                request.schema_name.is_empty() || table.schema_name == request.schema_name
+            }) {
+                let matched_fields = table_matched_fields(&table, &pattern);
+                if !matched_fields.is_empty() {
+                    matches.push(CatalogSearchResult {
+                        item: Some(CatalogItem {
+                            item: Some(catalog_item::Item::Table(table_summary(&table))),
+                        }),
+                        matched_fields,
+                    });
+                }
             }
         }
-        let (tables, pagination) = paginate(
+        let (items, pagination) = paginate(
             matches,
             request.pagination.unwrap_or(PaginationRequest {
                 limit: 20,
                 offset: 0,
             }),
         );
-        Ok(Response::new(SearchTablesResponse {
-            tables,
+        Ok(Response::new(SearchCatalogResponse {
+            items,
             pagination: Some(pagination),
         }))
     }
@@ -725,8 +789,37 @@ struct MockSourceService {
     captured: Arc<Captured>,
 }
 
+type MockBundledSourceStream =
+    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
+type MockImportSourceStream =
+    Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
+
+fn mock_bundled_source_stream() -> MockBundledSourceStream {
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithOAuthResponse, Status>>(1);
+    tx.try_send(Ok(CreateBundledSourceWithOAuthResponse {
+        event: Some(create_bundled_source_with_o_auth_response::Event::Source(
+            mock_source(),
+        )),
+    }))
+    .expect("send mock bundled source credential event");
+    Box::pin(ReceiverStream::new(rx))
+}
+
+fn mock_import_source_stream() -> MockImportSourceStream {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportSourceResponse, Status>>(1);
+    tx.try_send(Ok(ImportSourceResponse {
+        event: Some(import_source_response::Event::Source(mock_source())),
+    }))
+    .expect("send mock import source credential event");
+    Box::pin(ReceiverStream::new(rx))
+}
+
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
+    type CreateBundledSourceWithOAuthStream = MockBundledSourceStream;
+    type ImportSourceStream = MockImportSourceStream;
+
     async fn discover_sources(
         &self,
         request: Request<DiscoverSourcesRequest>,
@@ -798,18 +891,28 @@ impl SourceService for MockSourceService {
         }))
     }
 
+    async fn create_bundled_source_with_o_auth(
+        &self,
+        request: Request<CreateBundledSourceWithOAuthRequest>,
+    ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
+        self.captured
+            .create_bundled_source_with_oauth
+            .lock()
+            .expect("create_bundled_source_with_oauth capture")
+            .push(request.into_inner());
+        Ok(Response::new(mock_bundled_source_stream()))
+    }
+
     async fn import_source(
         &self,
         request: Request<ImportSourceRequest>,
-    ) -> Result<Response<ImportSourceResponse>, Status> {
+    ) -> Result<Response<Self::ImportSourceStream>, Status> {
         self.captured
             .import_source
             .lock()
             .expect("import_source capture")
             .push(request.into_inner());
-        Ok(Response::new(ImportSourceResponse {
-            source: Some(mock_source()),
-        }))
+        Ok(Response::new(mock_import_source_stream()))
     }
 
     async fn delete_source(
@@ -929,19 +1032,19 @@ impl MockServer {
             .clone()
     }
 
-    pub(crate) fn list_tables_requests(&self) -> Vec<ListTablesRequest> {
+    pub(crate) fn list_catalog_requests(&self) -> Vec<ListCatalogRequest> {
         self.captured
-            .list_tables
+            .list_catalog
             .lock()
-            .expect("list_tables capture")
+            .expect("list_catalog capture")
             .clone()
     }
 
-    pub(crate) fn search_tables_requests(&self) -> Vec<SearchTablesRequest> {
+    pub(crate) fn search_catalog_requests(&self) -> Vec<SearchCatalogRequest> {
         self.captured
-            .search_tables
+            .search_catalog
             .lock()
-            .expect("search_tables capture")
+            .expect("search_catalog capture")
             .clone()
     }
 

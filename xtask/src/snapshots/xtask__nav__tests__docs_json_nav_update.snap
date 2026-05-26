@@ -18,6 +18,7 @@ expression: updated
         "pages": [
           "reference/cli-reference",
           "reference/bundled-sources",
+          "reference/community-sources",
           "reference/source-spec-reference"
         ]
       },

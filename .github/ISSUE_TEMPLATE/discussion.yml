@@ -1,0 +1,30 @@
+name: Discussion
+description: Start an open-ended conversation — questions, ideas, feedback, "how would I…" topics.
+title: "discuss: <short description>"
+labels: ["discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for things that aren't quite a bug or a concrete proposal — questions about how to use Coral, ideas you're still shaping, feedback on direction, or anything you'd like to think through with the community.
+
+        Keeping these on GitHub (rather than only Discord) makes them searchable later for the next person with the same question.
+
+  - type: textarea
+    id: topic
+    attributes:
+      label: What would you like to discuss?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What you've already tried, read, or considered. Any links to relevant docs, issues, or Discord threads.
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What would a useful outcome look like?
+      description: A pointer to docs, a decision on direction, a follow-up issue, just a sanity check — anything goes.

@@ -7,7 +7,7 @@ import { theme } from '@/wax/theme/theme.css'
 globalStyle('body', {
   backgroundColor: theme.surface.main,
   color: theme.content.primary,
-  fontFamily: fontFamily.inter,
+  fontFamily: fontFamily.encodeSans,
   margin: 0,
   padding: 0,
 })

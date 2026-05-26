@@ -144,6 +144,10 @@ Or on Linux:
 curl -fsSL https://withcoral.com/install.sh | sh
 ```
 
+Or on Windows 10/11 x86_64, download
+`coral-x86_64-pc-windows-msvc.zip` from the latest GitHub release and put
+`coral.exe` on your `PATH`.
+
 See [all install options](https://withcoral.com/docs/getting-started/installation).
 
 ### 2. Discover bundled sources
@@ -170,10 +174,11 @@ later, run the same command again.
 
 ### 4. Query your data
 
-Use `coral.tables` to see all available tables:
+Use `coral.tables` and `coral.table_functions` to see available query surfaces:
 
 ```bash
 coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
+coral sql "SELECT schema_name, function_name FROM coral.table_functions ORDER BY 1, 2"
 ```
 
 Assuming you've connected GitHub, try listing open issues for a repo:
@@ -198,9 +203,9 @@ coral sql "
 
 ## Use Coral with an agent
 
-Coral ships with a built-in MCP server so your agent can run SQL queries and
-discover schemas across your installed sources. Once you've added at least one
-source, wire Coral into your agent:
+Coral ships with a built-in MCP server that presents Coral to your agent as a
+read-only SQL database. Once you've added at least one source, wire Coral into
+your agent:
 
 ```bash
 claude mcp add --scope user coral -- coral mcp-stdio   # Claude Code
@@ -211,15 +216,18 @@ For Cursor, VS Code, Claude Desktop, OpenCode, and manual config examples,
 see [Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp).
 
 Coral also publishes a set of skills that teach your agent the
-discovery-first SQL workflow (`coral.tables`, `coral.columns`, etc.):
+discovery-first SQL workflow (`list_catalog`, `coral.tables`,
+`coral.table_functions`, `coral.columns`, etc.):
 
 ```bash
 npx skills add withcoral/skills
 ```
 
 Once connected, ask your agent to "list the tables available in Coral" or to
-run a small query — it'll call `list_tables` or `coral.tables` and see your
-installed sources.
+run a small query. It should use `list_catalog`, `search_catalog`, or the
+`coral.tables` / `coral.table_functions` metadata tables as database catalog
+discovery, then answer with SQL over your visible schemas, tables, and table
+functions.
 
 ## Local state
 
@@ -242,6 +250,18 @@ them from the current binary when you validate or query a bundled source, so
 upgrades pick up newer bundled manifests without re-adding the source.
 
 ## Development
+
+Install the local test runner once with Homebrew:
+
+```bash
+brew install cargo-nextest
+```
+
+Or install it with Cargo:
+
+```bash
+cargo install cargo-nextest --locked
+```
 
 Run the workspace validation gate from the repository root:
 

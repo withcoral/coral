@@ -265,9 +265,9 @@ impl CompiledBackendSource for ParquetCompiledSource {
 fn registered_table(table: &FileTableSpec, inferred_schema: &SchemaRef) -> RegisteredTable {
     let required_filters = required_filter_names(table.filters());
     let columns = if table.columns().is_empty() {
-        registered_columns_from_schema(inferred_schema, &required_filters)
+        registered_columns_from_schema(inferred_schema, table.filters())
     } else {
-        registered_columns_from_specs(table.columns(), &required_filters)
+        registered_columns_from_specs(table.columns(), table.filters())
     };
 
     build_registered_table(&table.common, columns, required_filters)

@@ -2,22 +2,22 @@
 
 use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
 use coral_api::v1::{
-    DescribeTableRequest, DescribeTableResponse, ListColumnsRequest, ListColumnsResponse,
-    ListTablesRequest, ListTablesResponse, PaginationRequest, SearchTablesRequest,
-    SearchTablesResponse,
+    CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
+    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
+    PaginationRequest, SearchCatalogRequest, SearchCatalogResponse,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
-    CatalogDiscovery, CatalogTableRef, ListColumnsQuery, Pagination, column_pagination,
-    search_pagination,
+    CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
+    column_pagination, search_pagination,
 };
 use crate::query::manager::QueryManager;
 use crate::transport::{
-    column_search_result_to_proto, describe_table_response_to_proto, grpc_span, instrument_grpc,
-    pagination_to_proto, query_status, table_search_result_to_proto, table_summary_to_proto,
-    table_to_proto, workspace_name_from_proto,
+    catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
+    describe_table_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
+    query_status, workspace_name_from_proto,
 };
 
 #[derive(Clone)]
@@ -35,10 +35,10 @@ impl CatalogService {
 
 #[tonic::async_trait]
 impl CatalogServiceApi for CatalogService {
-    async fn list_tables(
+    async fn list_catalog(
         &self,
-        request: Request<ListTablesRequest>,
-    ) -> Result<Response<ListTablesResponse>, Status> {
+        request: Request<ListCatalogRequest>,
+    ) -> Result<Response<ListCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         instrument_grpc(span, async move {
@@ -46,15 +46,9 @@ impl CatalogServiceApi for CatalogService {
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = optional_trimmed(&request.schema_name);
-            let table_name = optional_trimmed(&request.table_name);
+            let kind = catalog_item_kind_from_proto(request.kind)?;
             let page = catalog
-                .list_tables(
-                    &workspace_name,
-                    schema_name,
-                    table_name,
-                    request.omit_columns,
-                    pagination,
-                )
+                .list_catalog(&workspace_name, schema_name, kind, pagination)
                 .await
                 .map_err(query_status)?;
             let pagination = pagination_to_proto(
@@ -64,49 +58,37 @@ impl CatalogServiceApi for CatalogService {
                 page.has_more,
                 page.next_offset,
             );
-            let (tables, table_summaries) = if request.omit_columns {
-                (
-                    Vec::new(),
-                    page.items
-                        .into_iter()
-                        .map(|table| table_summary_to_proto(&workspace_name, table))
-                        .collect(),
-                )
-            } else {
-                (
-                    page.items
-                        .into_iter()
-                        .map(|table| table_to_proto(&workspace_name, table))
-                        .collect(),
-                    Vec::new(),
-                )
-            };
-            Ok(Response::new(ListTablesResponse {
-                tables,
-                table_summaries,
+            Ok(Response::new(ListCatalogResponse {
+                items: page
+                    .items
+                    .into_iter()
+                    .map(|item| catalog_item_to_proto(&workspace_name, item))
+                    .collect(),
                 pagination: Some(pagination),
             }))
         })
         .await
     }
 
-    async fn search_tables(
+    async fn search_catalog(
         &self,
-        request: Request<SearchTablesRequest>,
-    ) -> Result<Response<SearchTablesResponse>, Status> {
+        request: Request<SearchCatalogRequest>,
+    ) -> Result<Response<SearchCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = optional_trimmed(&request.schema_name);
+            let kind = catalog_item_kind_from_proto(request.kind)?;
             let pagination = search_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
             let page = catalog
-                .search_tables(
+                .search_catalog(
                     &workspace_name,
                     &request.pattern,
                     schema_name,
+                    kind,
                     request.ignore_case,
                     pagination,
                 )
@@ -119,11 +101,11 @@ impl CatalogServiceApi for CatalogService {
                 page.has_more,
                 page.next_offset,
             );
-            Ok(Response::new(SearchTablesResponse {
-                tables: page
+            Ok(Response::new(SearchCatalogResponse {
+                items: page
                     .items
                     .into_iter()
-                    .map(|result| table_search_result_to_proto(&workspace_name, result))
+                    .map(|result| catalog_search_result_to_proto(&workspace_name, result))
                     .collect(),
                 pagination: Some(pagination),
             }))
@@ -210,6 +192,17 @@ fn pagination_from_proto(pagination: PaginationRequest) -> Pagination {
     Pagination {
         limit: pagination.limit,
         offset: pagination.offset,
+    }
+}
+
+fn catalog_item_kind_from_proto(kind: i32) -> Result<Option<CatalogItemKind>, Status> {
+    match ProtoCatalogItemKind::try_from(kind) {
+        Ok(ProtoCatalogItemKind::Unspecified) => Ok(None),
+        Ok(ProtoCatalogItemKind::Table) => Ok(Some(CatalogItemKind::Table)),
+        Ok(ProtoCatalogItemKind::TableFunction) => Ok(Some(CatalogItemKind::TableFunction)),
+        Err(_) => Err(app_status(crate::bootstrap::AppError::InvalidInput(
+            "unknown catalog item kind".to_string(),
+        ))),
     }
 }
 

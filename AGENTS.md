@@ -19,6 +19,13 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
+- UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
+- `make rust-checks` is the Rust-only local gate and should keep using
+  `--all-features`; the embedded UI feature is a normal CLI build surface.
+- The built UI artifact is produced by repo/CI orchestration (`make ui-build`
+  or the `UI build` workflow job), not by `crates/coral-cli/build.rs`. Local
+  Rust builds may compile without `ui/dist`, because UI development normally
+  serves assets from Vite while the CLI provides the loopback API server.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime
@@ -34,6 +41,14 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
+- Changes to `scripts/install.sh` must keep the `Validate` workflow's
+  install-script matrix in sync with every OS/architecture target that the
+  installer supports.
+- Source-only changes under `sources/community/**` do not need to update the
+  aggregate community source catalog page; keep docs freshness strict for
+  generator changes, docs changes, and bundled sources under `sources/core/**`.
+- Keep checked-in generated files marked in `.gitattributes` with
+  `linguist-generated` so GitHub collapses them by default in PR diffs.
 - Source inputs that carry credentials must be `kind: secret`, never
   `kind: variable`. This includes API keys, bearer tokens, access tokens,
   passwords, private keys, authorization header values, and admin/read keys,
@@ -44,6 +59,11 @@
   becoming a separate source of truth. Use
   `cargo run --locked -p xtask -- export-skills --dest <path>` for local
   export checks and distribution syncs.
+- Coral skills must include `agents/openai.yaml`. Keep
+  `interface.display_name` in the form `Coral` or `Coral <Title Case Suffix>`,
+  keep the top-level `SKILL.md` heading equal to that display name, and set
+  non-empty `short_description` and `default_prompt` values. The default prompt
+  should mention the skill token, such as `$coral-create-source-spec`.
 - When proposing or updating a PR title, use Conventional Commits:
   `type(scope): summary`.
 - When using a scope, prefer one that matches the primary area changed,
