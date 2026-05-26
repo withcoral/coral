@@ -17,6 +17,11 @@ inputs:
     default: gb
     hint: Two-letter ISO country code (e.g. gb, us, au, in, ca, de, fr, etc.)
 
+test_queries:
+  - SELECT id, title, company FROM adzuna.search_jobs(what => 'developer', location_filter => 'London') LIMIT 1
+  - SELECT tag, label FROM adzuna.categories LIMIT 1
+  - SELECT salary_lower_bound, vacancy_count FROM adzuna.salary_histogram LIMIT 1
+
 functions:
   - name: search_jobs
     kind: search
@@ -89,13 +94,17 @@ functions:
         - results
     pagination:
       mode: page
-      page_param: page
+      # Adzuna natively uses the path (/search/{page}) for pagination and strictly rejects unknown query parameters.
+      # To satisfy Coral's page mode requirement without causing a 400 Bad Request, we use a benign
+      # parameter (content-type) that Adzuna accepts.
+      page_param: content-type
       page_start: 1
       page_step: 1
       page_size:
         default: 20
         max: 50
         query_param: results_per_page
+
     columns:
       - name: id
         type: Utf8
@@ -215,7 +224,6 @@ tables:
     filters:
       - name: country
       - name: what
-      - name: location_filter
       - name: category
     request:
       method: GET
@@ -230,9 +238,6 @@ tables:
         - name: what
           from: filter
           key: what
-        - name: where
-          from: filter
-          key: location_filter
         - name: category
           from: filter
           key: category
@@ -242,11 +247,11 @@ tables:
       row_strategy: dict_entries
     columns:
       - name: salary_lower_bound
-        type: Utf8
+        type: Float64
         nullable: false
         expr: {kind: path, path: [_key]}
       - name: vacancy_count
-        type: Utf8
+        type: Int64
         nullable: false
         expr: {kind: path, path: [_value]}
       - name: country
@@ -257,7 +262,3 @@ tables:
         type: Utf8
         nullable: true
         expr: {kind: from_filter, key: what}
-      - name: location_filter
-        type: Utf8
-        nullable: true
-        expr: {kind: from_filter, key: location_filter}

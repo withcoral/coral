@@ -25,8 +25,8 @@ To use this source, you will need an Application ID and Application Key from Adz
 4. Provide these when prompted by `coral source add` or set them as environment variables:
 
 ```bash
-export CORAL_ADZUNA_APP_ID="your_app_id"
-export CORAL_ADZUNA_APP_KEY="your_app_key"
+export ADZUNA_APP_ID="your_app_id"
+export ADZUNA_APP_KEY="your_app_key"
 ```
 
 ## Quick Start
@@ -106,11 +106,10 @@ Salary distribution showing vacancy counts per salary band.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `salary_lower_bound` | Utf8 | Lower bound of salary band |
-| `vacancy_count` | Utf8 | Number of vacancies in this band |
+| `salary_lower_bound` | Float64 | Lower bound of salary band |
+| `vacancy_count` | Int64 | Number of vacancies in this band |
 | `country` | Utf8 | Virtual column to override country |
 | `what` | Utf8 | Virtual column from keyword search filter |
-| `location_filter` | Utf8 | Virtual column from location search filter |
 | `category` | Utf8 | Filter by category tag |
 
 ## Notes
