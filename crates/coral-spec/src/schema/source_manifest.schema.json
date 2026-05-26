@@ -28,7 +28,7 @@
     },
     {
       "if": {
-        "properties": { "backend": { "enum": ["jsonl", "parquet"] } },
+        "properties": { "backend": { "const": "file" } },
         "required": ["backend"]
       },
       "then": {
@@ -71,7 +71,7 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
-    "backend": { "type": "string", "enum": ["http", "parquet", "jsonl", "mcp"] },
+    "backend": { "type": "string", "enum": ["http", "file", "mcp"] },
     "inputs": { "$ref": "#/$defs/inputs" },
     "base_url": { "type": "string", "minLength": 1 },
     "auth": { "$ref": "#/$defs/auth" },
@@ -359,17 +359,22 @@
     "file_table": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "source"],
+      "required": ["name", "description", "format", "source"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
         "guide": { "type": "string" },
+        "format": {
+          "type": "string",
+          "enum": ["parquet", "jsonl", "json", "csv"]
+        },
         "filters": {
           "type": "array",
           "items": { "$ref": "#/$defs/filter" }
         },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
         "source": { "$ref": "#/$defs/source" },
+        "format_options": { "$ref": "#/$defs/format_options" },
         "columns": {
           "type": "array",
           "items": { "$ref": "#/$defs/column" }
@@ -386,6 +391,56 @@
         "partitions": {
           "type": "array",
           "items": { "$ref": "#/$defs/partition_column" }
+        },
+        "object_store": { "$ref": "#/$defs/object_store" }
+      }
+    },
+    "object_store": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "auth"],
+          "properties": {
+            "type": { "const": "s3" },
+            "region": { "type": "string", "minLength": 1 },
+            "auth": { "$ref": "#/$defs/s3_auth" }
+          }
+        }
+      ]
+    },
+    "s3_auth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "access_key_id", "secret_access_key"],
+          "properties": {
+            "type": { "const": "access_key" },
+            "access_key_id": { "type": "string", "minLength": 1 },
+            "secret_access_key": { "type": "string", "minLength": 1 },
+            "session_token": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "instance_profile" }
+          }
+        }
+      ]
+    },
+    "format_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "has_header": { "type": "boolean" },
+        "delimiter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1
         }
       }
     },
@@ -395,8 +450,34 @@
       "required": ["name", "type"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "type": { "type": "string", "minLength": 1 }
+        "type": { "$ref": "#/$defs/file_partition_data_type" },
+        "path": { "$ref": "#/$defs/partition_path" }
       }
+    },
+    "file_partition_data_type": {
+      "type": "string",
+      "enum": ["Utf8", "Int64", "Boolean", "Float64", "Json"]
+    },
+    "partition_path": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "hive" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "index"],
+          "properties": {
+            "kind": { "const": "segment" },
+            "index": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
     },
     "manifest_data_type": {
       "type": "string",

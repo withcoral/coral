@@ -249,23 +249,26 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [
             {
                 "name": "events",
                 "description": "Fixture events",
+                "format": "jsonl",
                 "source": table_source.clone(),
                 "columns": table_columns.clone(),
             },
             {
                 "name": "messages",
                 "description": "Fixture messages",
+                "format": "jsonl",
                 "source": table_source.clone(),
                 "columns": table_columns.clone(),
             },
             {
                 "name": "sessions",
                 "description": "Fixture sessions",
+                "format": "jsonl",
                 "source": table_source,
                 "columns": table_columns,
             },
@@ -424,11 +427,12 @@ pub(crate) fn fixture_manifest_with_test_queries_yaml(
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "test_queries": test_queries,
         "tables": [{
             "name": "messages",
             "description": "Fixture messages",
+            "format": "jsonl",
             "source": {
                 "location": format!("file://{}/", data_dir.display()),
                 "glob": "**/*.jsonl",

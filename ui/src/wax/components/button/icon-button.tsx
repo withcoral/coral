@@ -39,7 +39,14 @@ interface IconButtonWithTooltip extends IconButtonPropsBase {
 /**
  * Convenience component for a button containing only an icon.
  */
-export function IconButton({ ariaLabel, name, ref, tooltipSide, tooltipText, ...rest }: IconButtonProps) {
+export function IconButton({
+  ariaLabel,
+  name,
+  ref,
+  tooltipSide,
+  tooltipText,
+  ...rest
+}: IconButtonProps) {
   const button = (
     <Container ariaLabel={ariaLabel ?? tooltipText} ref={ref} {...rest}>
       <Icon name={name} />

@@ -17,7 +17,7 @@ A source spec tells Coral how to connect to an API or read a local dataset, what
 
 How much effort a custom source takes depends on what you are connecting to.
 
-File-based sources (JSONL, CSV, Parquet) are the simplest case — define the file location and columns, and the source is ready to query.
+File-based sources (Parquet, JSONL, JSON, CSV) are the simplest case — define the file location and columns, and the source is ready to query.
 
 API-backed sources vary in difficulty. The source spec model is designed for APIs that have:
 
@@ -94,12 +94,13 @@ Create `local-messages.yaml`:
 name: local_messages
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 test_queries:
   - SELECT * FROM local_messages.messages LIMIT 1
 tables:
   - name: messages
     description: Demo messages
+    format: jsonl
     source:
       location: file:///absolute/path/to/demo-data/
       glob: "**/*.jsonl"
