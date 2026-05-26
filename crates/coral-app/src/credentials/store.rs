@@ -65,7 +65,7 @@ impl CredentialConfigNamespace {
         let digest = hasher.finalize();
         let hex = format!("{digest:x}");
         let short = hex.get(..16).unwrap_or(hex.as_str());
-        Self(format!("config-{short}"))
+        Self(short.to_string())
     }
 
     fn as_str(&self) -> &str {
@@ -1144,7 +1144,7 @@ mod tests {
 
     #[test]
     fn keychain_address_namespaces_by_config_workspace_and_credential_set() {
-        let config_namespace = super::CredentialConfigNamespace("config-test".to_string());
+        let config_namespace = super::CredentialConfigNamespace("test".to_string());
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
@@ -1157,7 +1157,7 @@ mod tests {
 
         assert_eq!(
             address.service,
-            "com.withcoral.coral/config-test/workspace/default"
+            "com.withcoral.coral/test/workspace/default"
         );
         assert_eq!(address.account, credential_set_id.to_string());
     }
