@@ -24,7 +24,7 @@ functions:
     description: |
       Search active job listings with keyword, location, category, and salary filters.
       You can filter by `country` to override the default country.
-    fetch_limit_default: 100
+    fetch_limit_default: 20
     search_limits:
       default_top_k: 20
       max_top_k: 50
@@ -88,6 +88,12 @@ functions:
     response:
       rows_path:
         - results
+    pagination:
+      mode: none
+      page_size:
+        default: 20
+        max: 50
+        query_param: results_per_page
 
 
     columns:
