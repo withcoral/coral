@@ -48,8 +48,8 @@ tables:
     fetch_limit_default: 25
     filters:
       - name: search
-      - name: filter
-      - name: sort
+      - name: filter_value
+      - name: sort_value
     request:
       method: GET
       path: /works
@@ -59,10 +59,10 @@ tables:
           key: search
         - name: filter
           from: filter
-          key: filter
+          key: filter_value
         - name: sort
           from: filter
-          key: sort
+          key: sort_value
         - name: cursor
           from: literal
           value: "*"
@@ -307,7 +307,7 @@ tables:
         description: Echoes the filter value used.
         expr:
           kind: from_filter
-          key: filter
+          key: filter_value
       - name: sort_value
         type: Utf8
         nullable: true
@@ -315,7 +315,7 @@ tables:
         description: Echoes the sort value used.
         expr:
           kind: from_filter
-          key: sort
+          key: sort_value
 
   # ─────────────────────────────────────────────────────────────
   # authors – researchers and their profiles
@@ -335,8 +335,8 @@ tables:
     fetch_limit_default: 25
     filters:
       - name: search
-      - name: filter
-      - name: sort
+      - name: filter_value
+      - name: sort_value
     request:
       method: GET
       path: /authors
@@ -346,10 +346,10 @@ tables:
           key: search
         - name: filter
           from: filter
-          key: filter
+          key: filter_value
         - name: sort
           from: filter
-          key: sort
+          key: sort_value
         - name: cursor
           from: literal
           value: "*"
@@ -477,7 +477,15 @@ tables:
         description: Echoes the filter value.
         expr:
           kind: from_filter
-          key: filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
 
   # ─────────────────────────────────────────────────────────────
   # sources – journals, repositories, conferences
@@ -494,8 +502,8 @@ tables:
     fetch_limit_default: 25
     filters:
       - name: search
-      - name: filter
-      - name: sort
+      - name: filter_value
+      - name: sort_value
     request:
       method: GET
       path: /sources
@@ -505,10 +513,10 @@ tables:
           key: search
         - name: filter
           from: filter
-          key: filter
+          key: filter_value
         - name: sort
           from: filter
-          key: sort
+          key: sort_value
         - name: cursor
           from: literal
           value: "*"
@@ -665,7 +673,16 @@ tables:
         description: Echoes the filter value.
         expr:
           kind: from_filter
-          key: filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+
 
   # ─────────────────────────────────────────────────────────────
   # institutions – universities, companies, research orgs
@@ -682,8 +699,8 @@ tables:
     fetch_limit_default: 25
     filters:
       - name: search
-      - name: filter
-      - name: sort
+      - name: filter_value
+      - name: sort_value
     request:
       method: GET
       path: /institutions
@@ -693,10 +710,10 @@ tables:
           key: search
         - name: filter
           from: filter
-          key: filter
+          key: filter_value
         - name: sort
           from: filter
-          key: sort
+          key: sort_value
         - name: cursor
           from: literal
           value: "*"
@@ -859,7 +876,15 @@ tables:
         description: Echoes the filter value.
         expr:
           kind: from_filter
-          key: filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
 
   # ─────────────────────────────────────────────────────────────
   # topics – research topics and their taxonomy
@@ -877,8 +902,8 @@ tables:
     fetch_limit_default: 25
     filters:
       - name: search
-      - name: filter
-      - name: sort
+      - name: filter_value
+      - name: sort_value
     request:
       method: GET
       path: /topics
@@ -888,10 +913,10 @@ tables:
           key: search
         - name: filter
           from: filter
-          key: filter
+          key: filter_value
         - name: sort
           from: filter
-          key: sort
+          key: sort_value
         - name: cursor
           from: literal
           value: "*"
@@ -1028,4 +1053,12 @@ tables:
         description: Echoes the filter value.
         expr:
           kind: from_filter
-          key: filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value

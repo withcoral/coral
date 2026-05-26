@@ -37,9 +37,21 @@ Every table supports:
 SELECT title, publication_year, cited_by_count, is_oa
 FROM openalex.works
 WHERE search = 'CRISPR'
-  AND filter = 'publication_year:2024'
-  AND sort = 'cited_by_count:desc'
-LIMIT 20;
+  AND filter_value = 'publication_year:2024'
+  AND sort_value = 'cited_by_count:desc'
+LIMIT 5;
+
+/*
++------------------------------------------------------------------------------------+------------------+----------------+-------+
+| title                                                                              | publication_year | cited_by_count | is_oa |
++------------------------------------------------------------------------------------+------------------+----------------+-------+
+| NF-κB in biology and targeted therapy: new insights and translational implications | 2024             | 1640           | true  |
+| The cell biology of ferroptosis                                                    | 2024             | 1129           | true  |
+| Exploring treatment options in cancer: tumor treatment strategies                  | 2024             | 933            | true  |
+| Glucagon-like peptide-1 receptor: mechanisms and advances in therapy               | 2024             | 754            | true  |
+| Ferroptosis in cancer: from molecular mechanisms to therapeutic strategies         | 2024             | 672            | true  |
++------------------------------------------------------------------------------------+------------------+----------------+-------+
+*/
 
 -- Find an author by name
 SELECT display_name, works_count, cited_by_count, orcid
@@ -62,23 +74,59 @@ LIMIT 5;
 -- List open-access journals with the most works
 SELECT display_name, works_count, cited_by_count, apc_usd
 FROM openalex.sources
-WHERE filter = 'is_oa:true,type:journal'
-  AND sort = 'works_count:desc'
-LIMIT 10;
+WHERE filter_value = 'is_oa:true,type:journal'
+  AND sort_value = 'works_count:desc'
+LIMIT 5;
+
+/*
++--------------------------------------+-------------+----------------+---------+
+| display_name                         | works_count | cited_by_count | apc_usd |
++--------------------------------------+-------------+----------------+---------+
+| Medical Entomology and Zoology       | 1875288     | 13152095       |         |
+| PLoS ONE                             | 339206      | 12328711       | 1805    |
+| Scientific Reports                   | 296504      | 7718666        | 2190    |
+| Socio-Environmental Systems Modeling | 217660      | 230604         |         |
+| Journal of Physics Conference Series | 215906      | 793399         |         |
++--------------------------------------+-------------+----------------+---------+
+*/
 
 -- Find US universities sorted by citation count
 SELECT display_name, geo__city, geo__region, works_count, cited_by_count
 FROM openalex.institutions
-WHERE filter = 'country_code:US,type:education'
-  AND sort = 'cited_by_count:desc'
-LIMIT 10;
+WHERE filter_value = 'country_code:US,type:education'
+  AND sort_value = 'cited_by_count:desc'
+LIMIT 5;
+
+/*
++--------------------------+-----------+---------------+-------------+----------------+
+| display_name             | geo__city | geo__region   | works_count | cited_by_count |
++--------------------------+-----------+---------------+-------------+----------------+
+| Harvard University       | Cambridge | Massachusetts | 696902      | 142092461      |
+| University of Washington | Seattle   | Washington    | 515470      | 92495233       |
+| Stanford University      | Stanford  | California    | 520581      | 85197652       |
+| Johns Hopkins University | Baltimore | Maryland      | 489825      | 74260647       |
+| University of Michigan   | Ann Arbor | Michigan      | 974426      | 64969674       |
++--------------------------+-----------+---------------+-------------+----------------+
+*/
 
 -- Browse research topics in Computer Science
 SELECT display_name, subfield__name, works_count
 FROM openalex.topics
-WHERE filter = 'field.id:fields/17'
-  AND sort = 'works_count:desc'
-LIMIT 10;
+WHERE filter_value = 'field.id:fields/17'
+  AND sort_value = 'works_count:desc'
+LIMIT 5;
+
+/*
++-----------------------------------------------+-------------------------------+-------------+
+| display_name                                  | subfield__name                | works_count |
++-----------------------------------------------+-------------------------------+-------------+
+| Geochemistry and Geologic Mapping             | Artificial Intelligence       | 3956270     |
+| Computational Physics and Python Applications | Artificial Intelligence       | 413037      |
+| Research Data Management Practices            | Information Systems           | 373169      |
+| History of Computing Technologies             | Computer Science Applications | 346754      |
+| Educational Methods and Media Use             | Information Systems           | 311168      |
++-----------------------------------------------+-------------------------------+-------------+
+*/
 ```
 
 ## Links
