@@ -211,14 +211,13 @@ testing against a mock Calendar-compatible API.
 
 `GOOGLE_CALENDAR_ACCESS_TOKEN` (required)
 
-Use an OAuth 2.0 access token with the Google Calendar readonly scope.
-For interactive setup, run `coral source add --interactive google_calendar`
-and choose "Connect Google Calendar". Use a Google OAuth Desktop app
-client with the Google Calendar API enabled, then enter its client ID and
-client secret when prompted.
+Use a read-only OAuth 2.0 access token for the Google Calendar API.
+For the guided OAuth flow, enable the Google Calendar API in a Google
+Cloud project and create an OAuth 2.0 client of type "Desktop app".
+The guided OAuth credential method uses that client ID and client secret,
+then requests the https://www.googleapis.com/auth/calendar.readonly scope.
 
-The OAuth flow requests:
-https://www.googleapis.com/auth/calendar.readonly
+To paste a token manually, use a token issued with that same scope.
 
 ### `grafana`
 
