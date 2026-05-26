@@ -25,8 +25,9 @@ tables:
         status    – airing | complete | upcoming (optional)
         rating    – g | pg | pg13 | r17 | r | rx (optional)
         sfw       – true | false (optional)
-        order_by  – score | rank | popularity | members | favorites |
-                    title | episodes | start_date (optional)
+        order_by  – mal_id | title | start_date | end_date | episodes |
+                    score | scored_by | rank | popularity | members |
+                    favorites (optional)
         sort      – asc | desc (optional)
     fetch_limit_default: 25
     filters:
@@ -95,6 +96,13 @@ tables:
         expr:
           kind: from_filter
           key: sort
+      - name: sfw
+        type: Boolean
+        nullable: true
+        description: Filter out adult entries (true to exclude adult content)
+        expr:
+          kind: from_filter
+          key: sfw
       - name: mal_id
         type: Int64
         nullable: false
@@ -346,8 +354,9 @@ tables:
         status    – publishing | complete | hiatus | discontinued | upcoming
                     (optional)
         sfw       – true | false (optional)
-        order_by  – score | rank | popularity | members | favorites | title |
-                    chapters | volumes | start_date (optional)
+        order_by  – mal_id | title | start_date | end_date | chapters |
+                    volumes | score | scored_by | rank | popularity |
+                    members | favorites (optional)
         sort      – asc | desc (optional)
     fetch_limit_default: 25
     filters:
@@ -412,6 +421,13 @@ tables:
         expr:
           kind: from_filter
           key: sort
+      - name: sfw
+        type: Boolean
+        nullable: true
+        description: Filter out adult entries (true to exclude adult content)
+        expr:
+          kind: from_filter
+          key: sfw
       - name: mal_id
         type: Int64
         nullable: false
@@ -661,6 +677,13 @@ tables:
         expr:
           kind: from_filter
           key: filter
+      - name: sfw
+        type: Boolean
+        nullable: true
+        description: Filter out adult entries (true to exclude adult content)
+        expr:
+          kind: from_filter
+          key: sfw
       - name: mal_id
         type: Int64
         nullable: false
