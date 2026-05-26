@@ -15,28 +15,23 @@ tables:
       method: GET
       path: /packages/{{filter.name}}/recent
     columns:
-      - name: name
+      - name: package
         type: Utf8
         expr:
-          kind: from_filter
-          key: name
-      - name: version
-        type: Utf8
-        expr:
-          kind: from_filter
-          key: name
-      - name: last_month_downloads
+          kind: path
+          path: ["package"]
+      - name: last_day_downloads
         type: Int64
         expr:
           kind: path
-          path: ["data", "last_month"]
+          path: ["data", "last_day"]
       - name: last_week_downloads
         type: Int64
         expr:
           kind: path
           path: ["data", "last_week"]
-      - name: summary
-        type: Utf8
+      - name: last_month_downloads
+        type: Int64
         expr:
-          kind: from_filter
-          key: name
+          kind: path
+          path: ["data", "last_month"]
