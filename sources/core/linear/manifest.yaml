@@ -20,14 +20,9 @@ inputs:
     kind: secret
     required: false
     hint: |
-      Connect with Linear OAuth, or provide a raw OAuth access token.
-      Create a Linear OAuth application with the `read` scope and the
+      You can connect with Linear OAuth, or provide a raw OAuth access token.
+      Linear OAuth application needs the `read` scope and the
       redirect callback URL `http://127.0.0.1:53682/oauth/callback`.
-      Coral includes a default Linear OAuth client ID; during interactive
-      setup you can press Enter to use it or provide your own client ID.
-      Coral stores OAuth refresh token metadata, but automatic refresh is
-      not implemented yet; rerun
-      `coral source add linear --interactive` if the access token expires.
       See [Linear OAuth docs](https://linear.app/developers/oauth-2-0-authentication).
     credential:
       methods:
