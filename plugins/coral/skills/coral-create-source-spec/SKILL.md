@@ -86,7 +86,8 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Use source secrets for credentials.
 - For OAuth-backed services, model browser-based setup with `inputs.<TOKEN>.credential.methods[]` using `type: oauth`; keep the runtime `auth` or request header pointing at the same secret input.
 - OAuth credential methods currently mean authorization-code flow with a loopback `http://127.0.0.1` or `http://localhost` redirect URI. Set `flow.pkce` explicitly to `required` or `disabled`, choose `redirect_uri_port_mode: random` for provider apps that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI.
-- If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. If the provider requires confidential OAuth clients, declare `client.secret.input` and the token endpoint `transport` (`basic_auth` or `request_body`).
+- If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. If the provider requires confidential OAuth clients, declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`); `client.id.default` may also be present, but it is not enough by itself.
+- Treat OAuth `client.id.input` and `client.secret.input` as method-specific setup prompts, not top-level source inputs.
 - Do not assume automatic token refresh. If the provider returns short-lived access tokens, call that out as a limitation unless the source has another supported long-lived credential path.
 - Keep table names stable and SQL-friendly.
 - Mark filters as required only when the API truly requires them.

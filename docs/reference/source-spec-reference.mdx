@@ -826,9 +826,13 @@ secret, and stores any refresh token as internal credential metadata.
 invalid and are rejected rather than treated as defaults. `pkce` is either
 `required` or `disabled`. Public clients can declare
 `client.id.default`, `client.id.input`, or both; an interactive `input` value
-overrides `default`. Confidential clients add `client.secret.input` and a
-required `transport` of `basic_auth` or `request_body`. Client secrets are sent
-only to the token endpoint and are never included in the authorization URL.
+overrides `default`. Confidential clients must declare `client.id.input`,
+`client.secret.input`, and a `client.secret.transport` of `basic_auth` or
+`request_body`; they may also include `client.id.default`. Client secrets are
+sent only to the token endpoint and are never included in the authorization URL.
+
+OAuth `client.id.input` and `client.secret.input` are method-specific credential
+retrieval inputs, not top-level entries in the manifest `inputs` map.
 
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
 `scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral may store

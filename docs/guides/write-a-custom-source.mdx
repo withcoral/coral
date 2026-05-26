@@ -165,6 +165,8 @@ Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FRO
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
 
+### Basic token auth
+
 Authentication has two separate parts. The `inputs` block defines the values Coral collects and stores when you add the source. The `auth` block defines how those stored values are used on outgoing HTTP requests. The example below collects `API_TOKEN` as a secret, then uses it to build the `Authorization` header with `HeaderAuth`. For the full auth field reference and additional examples, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
 ```yaml
@@ -211,6 +213,8 @@ tables:
         type: Utf8
 ```
 
+### OAuth credential setup
+
 When a source should offer browser-based OAuth setup, keep the runtime auth shape the same and add `credential.methods` to the secret input. The OAuth method controls how Coral obtains the secret during setup; the `auth` block still decides how that stored secret is sent to the API.
 
 ```yaml
@@ -250,7 +254,13 @@ auth:
       template: Bearer {{input.DEMO_API_TOKEN}}
 ```
 
-Use `pkce: required` for public clients when the provider supports it. Use `pkce: disabled` only for providers that do not support PKCE. If the provider requires a confidential OAuth app, add `client.secret.input` and choose `transport: basic_auth` or `transport: request_body` to match the token endpoint. If the provider requires pre-registered redirect URIs with exact ports, use `redirect_uri_port_mode: fixed` with a non-zero port and tell users to register that exact URI in the OAuth app.
+### OAuth client and redirect options
+
+Use `pkce: required` for public clients when the provider supports it. Use `pkce: disabled` only for providers that do not support PKCE. If the provider requires a confidential OAuth app, declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`) to match the token endpoint. A confidential client can still include `client.id.default`, but it must also include `client.id.input`. If the provider requires pre-registered redirect URIs with exact ports, use `redirect_uri_port_mode: fixed` with a non-zero port and tell users to register that exact URI in the OAuth app.
+
+OAuth `client.id.input` and `client.secret.input` name method-specific setup prompts. They are not top-level source inputs and do not need separate entries under the manifest's `inputs` map.
+
+### Install-time input collection
 
 When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, OAuth access tokens, passwords, private keys, and authorization values must be secrets, even when the credential is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; `type: oauth` runs an OAuth authorization-code flow during interactive setup.
 
