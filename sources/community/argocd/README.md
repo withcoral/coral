@@ -1,189 +1,291 @@
 # Argo CD (Community)
 
-**Version:** 0.1.0
+**Version:** 1.1.1
 **Backend:** HTTP (Argo CD REST API v1)
 **Tables:** 4
-**Base URL:** `{{input.ARGOCD_BASE_URL}}/api/v1`
+**Base URL:** `{{input.ARGOCD_SERVER}}`
 
-Query Argo CD applications, projects, clusters, and repositories through Coral SQL using the [Argo CD REST API](https://cd.apps.argoproj.io/swagger-ui/). Use this data source for GitOps deployment state auditing, cluster alignment tracking, repo sync health monitoring, and managing environment topologies across self-hosted Argo CD installations.
+Query Argo CD applications, projects, clusters, and repositories through Coral SQL using the Argo CD REST API.
 
-Coral exposes read-only `GET` tables. Write operations (syncing applications, creating projects, refreshing repositories) are out of scope for v1.
+Use this source for GitOps deployment auditing, cluster inventory visibility, repository sync inspection, and application health tracking.
+
+Coral exposes read-only access. Application syncs, repository refreshes, project creation, and other write operations are out of scope.
 
 ## Install
 
-Community sources are not bundled with the Coral binary. From the Coral repo root (or with a copied manifest):
+Community sources are not bundled with the Coral binary.
 
 ```bash
+export ARGOCD_SERVER="https://argocd.example.com"
+export ARGOCD_TOKEN="<your-token>"
 coral source add --file sources/community/argocd/manifest.yaml
 ```
 
-Or copy `manifest.yaml` into your workspace and pass that path to `coral source add --file`.
+You may also copy the manifest locally and reference it directly.
 
-Set credentials via environment variables (recommended) or `coral source add --file ... --interactive`.
+## Authentication
 
-## Inputs
+Argo CD uses JWT bearer tokens in the `Authorization: Bearer` header.
 
-| Input | Kind | Required | Description |
+| Input | Description |
+| --- | --- |
+| `ARGOCD_SERVER` | Argo CD server URL with scheme and port, no trailing slash |
+| `ARGOCD_TOKEN` | JWT bearer token for API access |
+
+### Obtain a token
+
+**Option A — Project automation token (recommended):**
+
+```bash
+argocd proj role create-token <project> <role>
+```
+
+**Option B — Admin session token (expires after 24 hours):**
+
+```bash
+curl -k -X POST https://<argocd-host>/api/v1/session \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<password>"}'
+```
+
+### Minimum RBAC permissions
+
+```csv
+p, role:coral-reader, applications, get, */*, allow
+p, role:coral-reader, projects,     get, *,   allow
+p, role:coral-reader, clusters,     get, *,   allow
+p, role:coral-reader, repositories, get, *,   allow
+```
+
+| Table | Resource | Action | Scope |
 | --- | --- | --- | --- |
-| `ARGOCD_BASE_URL` | variable | yes | Root API URL of your Argo CD instance with **no** trailing slash and **no** `/api/v1` path suffix (for example `https://argocd.example.com` or `http://localhost:8080`). |
-| `ARGOCD_AUTH_TOKEN` | secret | yes | Authentication token generated via your Argo CD panel under User Settings or via `argocd account generate-token`. |
+| `argocd.applications` | `applications` | `get` | `<project>/*` or `*/*` |
+| `argocd.projects` | `projects` | `get` | `*` |
+| `argocd.clusters` | `clusters` | `get` | `*` |
+| `argocd.repositories` | `repositories` | `get` | `*` |
 
----
+Project automation tokens need explicit policies:
 
-## Tables overview
+```bash
+argocd proj role add-policy <project> <role> -a get -p allow -r applications  -o '*'
+argocd proj role add-policy <project> <role> -a get -p allow -r clusters       -o '*'
+argocd proj role add-policy <project> <role> -a get -p allow -r repositories   -o '*'
+argocd proj role add-policy <project> <role> -a get -p allow -r projects       -o '<project>'
+```
 
-| Table | API endpoint | Required filter | Pagination |
-| --- | --- | --- | --- |
-| `applications` | `GET /api/v1/applications` | — | Wrapped array response (`items`) |
-| `projects` | `GET /api/v1/projects` | — | Wrapped array response (`items`) |
-| `clusters` | `GET /api/v1/clusters` | — | Raw array response |
-| `repositories` | `GET /api/v1/repositories` | — | Raw array response |
+Official docs:
 
----
+- [Argo CD RBAC](https://argo-cd.readthedocs.io/en/stable/operator-manual/rbac/)
+- [Argo CD API](https://argo-cd.readthedocs.io/en/stable/developer-guide/api-docs/)
 
-## Filters and API mapping
+### TLS note
 
-Coral maps declared SQL filters to native Argo CD API query parameters. Only listed filters are pushed directly down to the REST endpoint; other clauses are filtered in-memory.
+Argo CD uses HTTPS by default. Self-signed certificates cause connection failures unless you run `argocd-server` with `--insecure` and use an `http://` URL.
 
-| SQL filter | Argo CD query param | Tables |
+For local testing with port-forward:
+
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:80 &
+export ARGOCD_SERVER="http://localhost:8080"
+export ARGOCD_TOKEN="<your-token>"
+coral source add --file sources/community/argocd/manifest.yaml
+```
+
+## Performance and query execution
+
+All four tables perform full collection reads from Argo CD list endpoints:
+
+```text
+GET /api/v1/applications
+GET /api/v1/projects
+GET /api/v1/clusters
+GET /api/v1/repositories
+```
+
+SQL `WHERE` and `LIMIT` reduce rows returned to the client but do not shrink the upstream API payload, except for the `project` filter on `argocd.applications`, which is pushed to the API as `?project=...`.
+
+Each table uses `fetch_limit_default: 200` unless SQL sets an explicit `LIMIT`.
+
+## Tables
+
+| Table | Description | Optional pushdown filters |
 | --- | --- | --- |
-| `project` | query `project` | `applications` |
-
----
-
-## Table reference
+| `argocd.applications` | Applications with sync status, health, source, and destination | `project` |
+| `argocd.projects` | AppProjects with repo and destination restrictions | — |
+| `argocd.clusters` | Registered Kubernetes clusters | — |
+| `argocd.repositories` | Configured Git and Helm repositories | — |
 
 ### `argocd.applications`
 
-Deployed GitOps applications managed under Argo CD controllers.
+Primary inventory table. Supports single-source apps (`source__*` columns) and multi-source apps (`sources`, `sync_revisions` JSON columns).
 
-| Column | Type | Description |
-| --- | --- | --- |
-| `name` | Utf8 | Name of the application |
-| `namespace` | Utf8 | Target cluster namespace where resources are deployed |
-| `destination_server` | Utf8 | Target cluster API server host location endpoint |
-| `repo_url` | Utf8 | Source control repository URL containing configurations (returns null for multi-source applications) |
-| `target_revision` | Utf8 | Tracked Git revision tag, branch, or pinned commit SHA (returns null for multi-source applications) |
-| `path` | Utf8 | Target file directory path within the source repository (returns null for multi-source applications) |
-| `sync_status` | Utf8 | Sync status relative to Git state (e.g., `Synced`, `OutOfSync`) |
-| `health_status` | Utf8 | Operational resource status evaluation (e.g., `Healthy`, `Degraded`) |
-| `project` | Utf8 | Argo CD project scope assignment grouping |
-| `created_at` | Timestamp | Timestamp detailing when the application was registered |
-
-**Optional filter:** `project`
+Only `project` is pushed to the API. Filters such as `health_status`, `sync_status`, and `dest_server` apply locally after the list is fetched.
 
 ### `argocd.projects`
 
-AppProjects defining deployment boundaries, resource limits, and cluster permissions.
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `name` | Utf8 | Project unique target name identification |
-| `description` | Utf8 | Text details explaining project target environment roles |
+Project boundaries, allowed source repositories, and destination restrictions.
 
 ### `argocd.clusters`
 
-Connected Kubernetes clusters managed by Argo CD.
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `name` | Utf8 | Human-friendly deployment cluster label name |
-| `server` | Utf8 | Host destination API endpoint location of the control plane |
-| `connection_status` | Utf8 | Connectivity evaluation metric status value (e.g., `Successful`) |
+Registered deployment targets with connection status and application counts.
 
 ### `argocd.repositories`
 
-Configured Git and Helm repositories connected to Argo CD.
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `repo_url` | Utf8 | Connected endpoint sync source repository URL |
-| `type` | Utf8 | Version controller storage backend engine layout (`git` or `helm`) |
-| `connection_status` | Utf8 | Active connection diagnostic authentication status output |
-
----
+Configured repositories with connection status. May return zero rows when repositories are accessed without stored credentials.
 
 ## Example queries
 
-### Active Application Delivery Auditing
-```sql
-SELECT name, namespace, destination_server, sync_status, health_status 
-FROM argocd.applications 
-WHERE health_status = 'Degraded' 
-LIMIT 50;
-```
+### Application health audit
 
 ```sql
-SELECT name, repo_url, target_revision, created_at 
-FROM argocd.applications 
+SELECT
+  name,
+  dest_namespace,
+  dest_server,
+  sync_status,
+  health_status
+FROM argocd.applications
+WHERE health_status = 'Degraded'
+LIMIT 25;
+```
+
+### Applications by project (API pushdown)
+
+```sql
+SELECT
+  name,
+  source__repo_url,
+  source__target_revision,
+  created_at
+FROM argocd.applications
 WHERE project = 'production'
-ORDER BY created_at DESC;
+ORDER BY created_at DESC
+LIMIT 25;
 ```
 
-### Connected Infrastructure Cluster Review
+### Cluster connectivity review
+
 ```sql
-SELECT name, server, connection_status 
-FROM argocd.clusters 
-WHERE connection_status != 'Successful';
+SELECT
+  name,
+  server,
+  connection_status,
+  server_version
+FROM argocd.clusters
+WHERE connection_status != 'Successful'
+LIMIT 25;
 ```
 
-### GitOps Source Repository Status
+### Repository connectivity audit
+
 ```sql
-SELECT repo_url, type, connection_status 
-FROM argocd.repositories 
-ORDER BY type DESC;
+SELECT
+  repo,
+  type,
+  insecure,
+  enable_lfs,
+  connection_status
+FROM argocd.repositories
+ORDER BY type
+LIMIT 25;
 ```
-
----
 
 ## Validation
 
-Run the following format and syntax pipeline validation commands prior to generating a GitHub pull request:
+Local validation for this source:
+
+```text
+YAML parse: passed for sources/community/argocd/manifest.yaml
+Coral manifest schema validation: passed for sources/community/argocd/manifest.yaml
+make lint-sources: passed
+Live API tests: passed against a self-hosted Argo CD instance
+```
+
+Lint the manifest:
 
 ```bash
-# YAML and file style compliance check
 make lint-sources
-
-# Structural schema and type mapping verification
 coral source lint sources/community/argocd/manifest.yaml
 ```
 
-Execute a live target connection test locally:
+Add the source and run declared smoke tests:
 
 ```bash
-export ARGOCD_BASE_URL=https://argocd.example.com
-export ARGOCD_AUTH_TOKEN=your_jwt_token_here
-
+export ARGOCD_SERVER="https://argocd.example.com"
+export ARGOCD_TOKEN="<your-token>"
 coral source add --file sources/community/argocd/manifest.yaml
 coral source test argocd
 ```
 
-Example smoke-test output:
+Validate table access with representative SQL:
 
-```text
-$ coral source test argocd
-
-  ✓ argocd connected successfully
-
-    argocd (4 tables)
-    ├─ applications
-    ├─ projects
-    ├─ clusters
-    └─ repositories
-    Query tests
-    1 declared · 1 passed · 0 failed
-
-  ✓ SELECT name, namespace FROM argocd.applications LIMIT 1
-    1 row
+```bash
+coral sql "SELECT name, health_status, sync_status FROM argocd.applications LIMIT 5"
+coral sql "SELECT name, description FROM argocd.projects LIMIT 5"
+coral sql "SELECT name, server, connection_status FROM argocd.clusters LIMIT 5"
+coral sql "SELECT repo, type, connection_status FROM argocd.repositories LIMIT 5"
 ```
 
----
+Inspect registered tables and columns:
+
+```bash
+coral sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'argocd'"
+coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'argocd' ORDER BY table_name, ordinal_position"
+```
+
+Live Coral evidence:
+
+```text
+✓ argocd connected successfully
+
+argocd (4 tables)
+├─ applications
+├─ clusters
+├─ projects
+└─ repositories
+
+Query tests
+2 declared · 2 passed · 0 failed
+
+✓ SELECT * FROM argocd.applications LIMIT 1
+  1 row
+
+✓ SELECT * FROM argocd.applications WHERE project = 'default' LIMIT 1
+  1 row
+```
+
+Representative query:
+
+```sql
+SELECT
+  name,
+  health_status,
+  sync_status,
+  dest_namespace,
+  created_at
+FROM argocd.applications
+WHERE project = 'default'
+ORDER BY created_at DESC
+LIMIT 3;
+```
+
+Example output:
+
+```text
+name            | health_status | sync_status | dest_namespace | created_at
+guestbook       | Healthy       | Synced      | default        | 2025-03-12T09:14:22Z
+payments-api    | Degraded      | OutOfSync   | payments       | 2025-02-04T16:31:08Z
+platform-config | Healthy       | Synced      | argocd         | 2024-11-20T11:02:44Z
+```
 
 ## Limitations
 
-- **Read-only source.** No sync operations, resource creation, or remote deployment modifications.
-- **No sync or deployment execution.** Reconciliations must be triggered via the Argo CD UI, CLI, or Git engines.
-- **No streaming/watch support.** Data updates rely on polling API cycles; live stream channels are out of scope for v1.
-- **RBAC permissions affect visible resources.** Returned SQL rows are strictly bounded by your personal access token's access controls.
-- **Large Argo CD instances should use SQL `LIMIT`.** Instances with thousands of tracked application records should include tight constraints to prevent memory limits during unpacking operations.
-- **Only REST API-visible resources are modeled.** Underlying custom fields or unexposed cluster telemetry targets are omitted from row strategizing.
+- Read-only source.
+- Application syncs, repository refreshes, and write operations are not supported.
+- No streaming or watch protocol support.
+- Full collection reads are performed for all tables except the `project` pushdown on applications.
+- Project automation tokens only see their project's applications.
+- Admin session tokens expire after 24 hours.
+- `repositories` may return zero rows on fresh installs without stored repository credentials.
+- Multi-source apps populate `sources` and `sync_revisions` instead of `source__*` / `sync_revision`.
+- No `resource_tree` table in v1.
