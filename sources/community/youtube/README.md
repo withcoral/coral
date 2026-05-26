@@ -71,7 +71,7 @@ comma-separated list of up to 50.
 ### `youtube.channels_by_handle`
 
 Channel metadata and statistics, looked up by @-handle. Returns exactly
-one row.
+one row — zero if the handle does not exist.
 
 **Required filter:** `handle` — @-prefixed channel handle, e.g. `@DynamoGaming`
 
