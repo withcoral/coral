@@ -1237,6 +1237,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
+    use std::sync::mpsc as std_mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use tempfile::TempDir;
     use tokio::sync::mpsc;
@@ -1897,6 +1900,97 @@ tables:
                 .keys()
                 .any(|key| key.starts_with("__coral_oauth.QVBJX1RPS0VO.")),
             "manual secret replacement should clear stale OAuth metadata"
+        );
+    }
+
+    #[test]
+    fn source_rollback_snapshots_credentials_after_refresh_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store.clone());
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout.clone());
+        let workspace_name = default_workspace();
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "old-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("install source");
+        let refresh_lock = credential_store
+            .credential_refresh_lock(&workspace_name, &credential_set_id)
+            .expect("hold refresh lock");
+        let config_temp_path = layout
+            .config_file()
+            .with_file_name(format!("config.toml.tmp.{}", std::process::id()));
+        std::fs::create_dir_all(&config_temp_path).expect("block config save temp path");
+        let (started_tx, started_rx) = std_mpsc::channel();
+        let import_manager = manager.clone();
+        let import_workspace = workspace_name.clone();
+        let import_handle = thread::spawn(move || {
+            started_tx.send(()).expect("signal import start");
+            import_manager.import_source(
+                &import_workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "manual-token".to_string(),
+                        }],
+                    },
+                },
+            )
+        });
+        started_rx.recv().expect("wait for import thread");
+        thread::sleep(Duration::from_millis(50));
+        credential_store
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                &BTreeMap::from([
+                    ("API_TOKEN".to_string(), "refreshed-token".to_string()),
+                    (
+                        "__coral_oauth.QVBJX1RPS0VO.refresh_token".to_string(),
+                        "refreshed-refresh-token".to_string(),
+                    ),
+                ]),
+            )
+            .expect("simulate persisted refresh while lock is held");
+        drop(refresh_lock);
+        import_handle
+            .join()
+            .expect("import thread")
+            .expect_err("blocked config save should fail import");
+        drop(std::fs::remove_dir_all(&config_temp_path));
+
+        let material = credential_manager
+            .read_material(&workspace_name, &credential_set_id)
+            .expect("read material");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("refreshed-token")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.refresh_token")
+                .map(String::as_str),
+            Some("refreshed-refresh-token")
         );
     }
 

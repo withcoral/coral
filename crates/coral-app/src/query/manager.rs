@@ -241,9 +241,11 @@ impl QueryManager {
     ) -> QueryRuntimeConfig {
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+        let provider_input_resolver = extensions.source_input_resolver.take();
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
             self.credential_manager.clone(),
+            provider_input_resolver,
         )));
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
@@ -415,7 +417,11 @@ fn validate_required_variables(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use coral_engine::{EngineExtensions, SourceInputResolver, SourceInputResolverError};
+    use coral_spec::parse_source_manifest_yaml;
     use tempfile::TempDir;
 
     use super::*;
@@ -598,6 +604,93 @@ tables:
                 .to_string()
                 .contains("configured for keychain storage"),
             "keychain-routed query failure should name the routed backend: {error}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct DelegatingInputResolver {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[tonic::async_trait]
+    impl SourceInputResolver for DelegatingInputResolver {
+        async fn resolve_inputs(
+            &self,
+            _source: &QuerySource,
+        ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(BTreeMap::from([(
+                "API_TOKEN".to_string(),
+                "delegated-token".to_string(),
+            )]))
+        }
+    }
+
+    struct DelegatingInputResolverProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl EngineExtensionsProvider for DelegatingInputResolverProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            EngineExtensions {
+                source_input_resolver: Some(Arc::new(DelegatingInputResolver {
+                    calls: Arc::clone(&self.calls),
+                })),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_config_delegates_provider_input_resolver() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default(),
+            vec![Arc::new(DelegatingInputResolverProvider {
+                calls: Arc::clone(&calls),
+            })],
+        );
+        let source_spec = parse_source_manifest_yaml(
+            r"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("parse source manifest");
+        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
+        let runtime = fixture
+            .manager
+            .runtime_config(&WorkspaceName::default(), std::slice::from_ref(&source));
+        let input_resolver = runtime
+            .extensions
+            .source_input_resolver
+            .expect("runtime installs input resolver");
+
+        let resolved_inputs = input_resolver
+            .resolve_inputs(&source)
+            .await
+            .expect("resolve source inputs");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            resolved_inputs.get("API_TOKEN").map(String::as_str),
+            Some("delegated-token")
         );
     }
 }

@@ -54,16 +54,19 @@ impl EngineExtensionsProvider for AwsEngineExtensionsProvider {
 pub(crate) struct CredentialRefreshingInputResolver {
     workspace_name: WorkspaceName,
     credential_manager: CredentialManager,
+    delegate: Option<Arc<dyn SourceInputResolver>>,
 }
 
 impl CredentialRefreshingInputResolver {
     pub(crate) fn new(
         workspace_name: WorkspaceName,
         credential_manager: CredentialManager,
+        delegate: Option<Arc<dyn SourceInputResolver>>,
     ) -> Self {
         Self {
             workspace_name,
             credential_manager,
+            delegate,
         }
     }
 }
@@ -72,6 +75,7 @@ impl fmt::Debug for CredentialRefreshingInputResolver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CredentialRefreshingInputResolver")
             .field("workspace_name", &self.workspace_name)
+            .field("has_delegate", &self.delegate.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -94,6 +98,9 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
             )
             .await
             .map_err(source_input_error)?;
+        if let Some(delegate) = &self.delegate {
+            return delegate.resolve_inputs(source).await;
+        }
         let missing_secrets: Vec<String> = source
             .source_spec()
             .required_secret_names()
