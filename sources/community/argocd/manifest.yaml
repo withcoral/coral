@@ -29,8 +29,9 @@ inputs:
       Option B — Admin session token, expires after 24 hours. Obtain with:
       `curl -k -X POST $ARGOCD_SERVER/api/v1/session -H 'Content-Type: application/json' -d '{"username":"admin","password":"<pw>"}'`
 
-      Use Option A for long-lived installs. The token must have at least
-      `applications, get` permission to query the applications table.
+      Use Option A for long-lived installs. Project tokens inherit only
+      explicitly assigned policies — add permissions via
+      `argocd proj role add-policy`. See the README for the full list.
 auth:
   type: HeaderAuth
   headers:

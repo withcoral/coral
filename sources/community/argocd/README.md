@@ -51,9 +51,16 @@ Per-table breakdown:
 | `clusters` | `clusters` | `get` | `*` |
 | `repositories` | `repositories` | `get` | `*` |
 
-If using a project automation token, it implicitly has `applications, get`
-for its own project. Add `projects, get`, `clusters, get`, and
-`repositories, get` to the role if you need those tables.
+Project automation tokens inherit only the policies explicitly added to
+their role — nothing is granted automatically. Add each permission you
+need via `argocd proj role add-policy`:
+
+```bash
+argocd proj role add-policy <project> <role> -a get -o applications    --permission allow
+argocd proj role add-policy <project> <role> -a get -o projects        --permission allow
+argocd proj role add-policy <project> <role> -a get -o clusters        --permission allow
+argocd proj role add-policy <project> <role> -a get -o repositories    --permission allow
+```
 
 See the [ArgoCD RBAC docs](https://argo-cd.readthedocs.io/en/stable/operator-manual/rbac/)
 for full policy syntax.
