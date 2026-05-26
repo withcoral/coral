@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use coral_api::v1::{
     ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
     PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, catalog_item,
+    ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
     AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -82,17 +82,26 @@ impl GrpcHarness {
         variables: Vec<SourceVariable>,
         secrets: Vec<SourceSecret>,
     ) -> Source {
-        self.source_client()
+        let mut stream = self
+            .source_client()
             .import_source(Request::new(ImportSourceRequest {
                 workspace: Some(default_workspace()),
                 manifest_yaml,
                 variables,
                 secrets,
+                oauth_credential_retrievals: Vec::new(),
             }))
             .await
             .expect("import source")
-            .into_inner()
-            .source
+            .into_inner();
+        stream
+            .message()
+            .await
+            .expect("import source stream")
+            .and_then(|response| match response.event {
+                Some(import_source_response::Event::Source(source)) => Some(source),
+                _ => None,
+            })
             .expect("import source response")
     }
 
@@ -240,23 +249,26 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [
             {
                 "name": "events",
                 "description": "Fixture events",
+                "format": "jsonl",
                 "source": table_source.clone(),
                 "columns": table_columns.clone(),
             },
             {
                 "name": "messages",
                 "description": "Fixture messages",
+                "format": "jsonl",
                 "source": table_source.clone(),
                 "columns": table_columns.clone(),
             },
             {
                 "name": "sessions",
                 "description": "Fixture sessions",
+                "format": "jsonl",
                 "source": table_source,
                 "columns": table_columns,
             },
@@ -415,11 +427,12 @@ pub(crate) fn fixture_manifest_with_test_queries_yaml(
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "test_queries": test_queries,
         "tables": [{
             "name": "messages",
             "description": "Fixture messages",
+            "format": "jsonl",
             "source": {
                 "location": format!("file://{}/", data_dir.display()),
                 "glob": "**/*.jsonl",

@@ -30,6 +30,7 @@ pub(crate) fn convert_items(
     columns: &[ColumnSpec],
     schema: SchemaRef,
     filters: &HashMap<String, String>,
+    args: &HashMap<String, String>,
     items: &[Value],
 ) -> Result<RecordBatch> {
     let mut arrays: Vec<Arc<dyn Array>> = Vec::with_capacity(columns.len());
@@ -44,42 +45,45 @@ pub(crate) fn convert_items(
             ManifestDataType::Utf8 => {
                 let array: StringArray = items
                     .iter()
-                    .map(|row| to_utf8(eval_expr(&expr, row, filters)))
+                    .map(|row| to_utf8(eval_expr(&expr, row, filters, args)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
             ManifestDataType::Json => {
                 let array: StringArray = items
                     .iter()
-                    .map(|row| to_json_utf8(eval_expr(&expr, row, filters)))
+                    .map(|row| {
+                        eval_expr(&expr, row, filters, args)
+                            .and_then(|value| json_value_to_text(&value))
+                    })
                     .collect();
                 arrays.push(Arc::new(array));
             }
             ManifestDataType::Int64 => {
                 let array: Int64Array = items
                     .iter()
-                    .map(|row| to_i64(eval_expr(&expr, row, filters)))
+                    .map(|row| to_i64(eval_expr(&expr, row, filters, args)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
             ManifestDataType::Boolean => {
                 let array: BooleanArray = items
                     .iter()
-                    .map(|row| to_bool(eval_expr(&expr, row, filters)))
+                    .map(|row| to_bool(eval_expr(&expr, row, filters, args)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
             ManifestDataType::Float64 => {
                 let array: Float64Array = items
                     .iter()
-                    .map(|row| to_f64(eval_expr(&expr, row, filters)))
+                    .map(|row| to_f64(eval_expr(&expr, row, filters, args)))
                     .collect();
                 arrays.push(Arc::new(array));
             }
             ManifestDataType::Timestamp => {
                 let array: TimestampMicrosecondArray = items
                     .iter()
-                    .map(|row| to_i64(eval_expr(&expr, row, filters)))
+                    .map(|row| to_i64(eval_expr(&expr, row, filters, args)))
                     .collect();
                 let array = array.with_timezone("+00:00");
                 arrays.push(Arc::new(array));
@@ -90,12 +94,17 @@ pub(crate) fn convert_items(
     RecordBatch::try_new(schema, arrays).map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
 }
 
-fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) -> Option<Value> {
+fn eval_expr(
+    expr: &ExprSpec,
+    row: &Value,
+    filters: &HashMap<String, String>,
+    args: &HashMap<String, String>,
+) -> Option<Value> {
     match expr {
         ExprSpec::Path { path } => get_path_value(row, path).cloned(),
         ExprSpec::Coalesce { exprs } => {
             for nested in exprs {
-                let value = eval_expr(nested, row, filters);
+                let value = eval_expr(nested, row, filters, args);
                 if value.as_ref().is_some_and(|v| !v.is_null()) {
                     return value;
                 }
@@ -103,6 +112,7 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
             None
         }
         ExprSpec::FromFilter { key } => filters.get(key).map(|v| Value::String(v.clone())),
+        ExprSpec::FromArg { key } => args.get(key).map(|v| Value::String(v.clone())),
         ExprSpec::Literal { value } => Some(value.clone()),
         ExprSpec::Null => None,
         ExprSpec::JoinArray { path, separator } => eval_join_array(row, path, separator),
@@ -130,7 +140,7 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
             None
         }
         ExprSpec::IfPresent { check, then_value } => {
-            let value = eval_expr(check, row, filters);
+            let value = eval_expr(check, row, filters, args);
             if value.as_ref().is_some_and(|v| !v.is_null()) {
                 Some(Value::String(then_value.clone()))
             } else {
@@ -179,14 +189,16 @@ fn eval_expr(expr: &ExprSpec, row: &Value, filters: &HashMap<String, String>) ->
         }
         ExprSpec::CurrentRow => Some(row.clone()),
         ExprSpec::FormatTimestamp { expr, input } => {
-            eval_format_timestamp(expr, input, row, filters)
+            eval_format_timestamp(expr, input, row, filters, args)
         }
-        ExprSpec::Base64Decode { expr } => eval_base64_decode(expr, row, filters),
+        ExprSpec::Base64Decode { expr } => eval_base64_decode(expr, row, filters, args),
         ExprSpec::Replace { expr, from, to } => {
-            let raw = to_utf8(eval_expr(expr, row, filters))?;
+            let raw = to_utf8(eval_expr(expr, row, filters, args))?;
             Some(Value::String(raw.replace(from, to)))
         }
-        ExprSpec::Template { template, values } => eval_template(template, values, row, filters),
+        ExprSpec::Template { template, values } => {
+            eval_template(template, values, row, filters, args)
+        }
     }
 }
 
@@ -197,8 +209,9 @@ fn eval_format_timestamp(
     input: &TimestampInput,
     row: &Value,
     filters: &HashMap<String, String>,
+    args: &HashMap<String, String>,
 ) -> Option<Value> {
-    let value = eval_expr(expr, row, filters)?;
+    let value = eval_expr(expr, row, filters, args)?;
     let micros = match &value {
         Value::String(s) => parse_timestamp_micros(s, input),
         Value::Number(n) => {
@@ -249,8 +262,9 @@ fn eval_base64_decode(
     expr: &ExprSpec,
     row: &Value,
     filters: &HashMap<String, String>,
+    args: &HashMap<String, String>,
 ) -> Option<Value> {
-    let raw = to_utf8(eval_expr(expr, row, filters))?;
+    let raw = to_utf8(eval_expr(expr, row, filters, args))?;
     let compact = raw
         .chars()
         .filter(|ch| !ch.is_whitespace())
@@ -265,13 +279,14 @@ fn eval_template(
     values: &HashMap<String, ExprSpec>,
     row: &Value,
     filters: &HashMap<String, String>,
+    args: &HashMap<String, String>,
 ) -> Option<Value> {
     // Pre-evaluate every key so replacements are deterministic regardless of
     // HashMap iteration order.
     let evaluated: HashMap<&str, Option<String>> = values
         .iter()
         .map(|(key, expr)| {
-            let raw = eval_expr(expr, row, filters).and_then(|v| to_utf8(Some(v)));
+            let raw = eval_expr(expr, row, filters, args).and_then(|v| to_utf8(Some(v)));
             (key.as_str(), raw)
         })
         .collect();
@@ -297,8 +312,15 @@ fn eval_template(
                         .unwrap_or_default();
                     result.push_str(&rendered);
                 }
+                TemplateNamespace::Arg => {
+                    let rendered = args
+                        .get(token.key())
+                        .cloned()
+                        .or_else(|| token.default_value().map(ToString::to_string))
+                        .unwrap_or_default();
+                    result.push_str(&rendered);
+                }
                 TemplateNamespace::Input
-                | TemplateNamespace::Arg
                 | TemplateNamespace::State
                 | TemplateNamespace::Other(_) => return None,
             },
@@ -355,11 +377,20 @@ fn to_utf8(value: Option<Value>) -> Option<String> {
     }
 }
 
-fn to_json_utf8(value: Option<Value>) -> Option<String> {
-    match value? {
+pub(crate) fn json_value_to_text(value: &Value) -> Option<String> {
+    match value {
         Value::Null => None,
-        other => serde_json::to_string(&other).ok(),
+        Value::String(value) if is_json_text(value) => Some(value.clone()),
+        other => serde_json::to_string(other).ok(),
     }
+}
+
+fn is_json_text(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[' | b'"')) {
+        return false;
+    }
+    serde_json::from_str::<Value>(value).is_ok()
 }
 
 #[expect(
@@ -461,6 +492,7 @@ mod tests {
     fn expr_json(expr: &ExprSpec) -> Value {
         match expr {
             ExprSpec::Path { path } => json!({ "kind": "path", "path": path }),
+            ExprSpec::FromArg { key } => json!({ "kind": "from_arg", "key": key }),
             ExprSpec::IfPresent { check, then_value } => json!({
                 "kind": "if_present",
                 "check": expr_json(check),
@@ -530,7 +562,14 @@ mod tests {
             "created_time": "2026-03-11T12:34:56.123456Z"
         })];
 
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         let col = batch
             .column(0)
             .as_any()
@@ -565,7 +604,14 @@ mod tests {
             serde_json::json!({"status": "ok"}),
             serde_json::json!({"other": "field"}),
         ];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         assert_eq!(batch.num_rows(), 2);
         let col = batch
             .column(0)
@@ -590,7 +636,14 @@ mod tests {
         );
         let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![serde_json::json!({"status": null})];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         let col = batch
             .column(0)
             .as_any()
@@ -624,7 +677,14 @@ mod tests {
             serde_json::json!({"content": [{"type": "tool_use", "name": "Read"}]}),
             serde_json::json!({"content": "plain string"}),
         ];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         assert_eq!(batch.num_rows(), 3);
         let col = batch
             .column(0)
@@ -653,7 +713,14 @@ mod tests {
         let items = vec![serde_json::json!({
             "content": [{"type": "text", "text": "only one"}]
         })];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         assert_eq!(batch.num_rows(), 1);
         let col = batch
             .column(0)
@@ -688,7 +755,14 @@ mod tests {
             serde_json::json!({"labels": {"nodes": []}}),
             serde_json::json!({"labels": {"nodes": [{"name": null}]}}),
         ];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         assert_eq!(batch.num_rows(), 3);
         let col = batch
             .column(0)
@@ -717,7 +791,14 @@ mod tests {
             serde_json::json!({}),
             serde_json::json!({"enabled": "not-a-bool"}),
         ];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         assert_eq!(batch.num_rows(), 5);
         let col = batch
             .column(0)
@@ -746,7 +827,14 @@ mod tests {
         );
         let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![serde_json::json!({"title": "hello world"})];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         let col = batch
             .column(0)
             .as_any()
@@ -771,7 +859,14 @@ mod tests {
             serde_json::json!({"content": "aGVs\nbG8="}),
             serde_json::json!({"content": "not base64"}),
         ];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
         let col = batch
             .column(0)
             .as_any()
@@ -798,6 +893,7 @@ mod tests {
             )]),
             &json!({"title": "hello world"}),
             &HashMap::from([("org".to_string(), "acme".to_string())]),
+            &HashMap::new(),
         );
 
         assert_eq!(
@@ -818,6 +914,7 @@ mod tests {
             )]),
             &json!({"title": "hello world"}),
             &HashMap::new(),
+            &HashMap::new(),
         );
 
         assert_eq!(rendered, Some(Value::String("untitled".to_string())));
@@ -836,12 +933,20 @@ mod tests {
         let items = vec![
             json!({"properties": {"country": "US", "count": 3}}),
             json!({"properties": "hello"}),
+            json!({"properties": "{\"country\":\"DE\",\"count\":7}"}),
             json!({"properties": true}),
             json!({"properties": 3}),
             json!({"properties": null}),
             json!({}),
         ];
-        let batch = convert_items(table.columns(), schema, &HashMap::new(), &items).unwrap();
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
 
         let col = batch
             .column(0)
@@ -858,13 +963,17 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<Value>(col.value(2)).unwrap(),
-            json!(true)
+            json!({"country": "DE", "count": 7}),
         );
         assert_eq!(
             serde_json::from_str::<Value>(col.value(3)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(4)).unwrap(),
             json!(3)
         );
-        assert!(col.is_null(4));
         assert!(col.is_null(5));
+        assert!(col.is_null(6));
     }
 }

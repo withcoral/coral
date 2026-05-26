@@ -1,0 +1,613 @@
+dsl_version: 3
+name: axiom
+version: 0.1.0
+backend: http
+description: >-
+  Query datasets, annotations, monitors, and notifiers from Axiom.
+  Covers dataset metadata and retention policy, deployment and incident
+  annotations, monitor definitions and thresholds, and notifier
+  configurations.
+base_url: "{{input.AXIOM_API_BASE}}/v2"
+
+inputs:
+  AXIOM_API_BASE:
+    kind: variable
+    default: "https://api.axiom.co"
+    hint: |
+      Axiom API base URL. Defaults to the US region.
+      EU workspaces should set this to `https://api.eu.axiom.co`.
+      Do not include a trailing slash.
+  AXIOM_API_TOKEN:
+    kind: secret
+    hint: |
+      Generate an API token from your Axiom dashboard:
+      Settings → API Tokens → New API Token
+      Docs: https://axiom.co/docs/restapi/introduction
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.AXIOM_API_TOKEN}}
+
+test_queries:
+  - SELECT * FROM axiom.datasets LIMIT 5
+  - SELECT id, title, type, time FROM axiom.annotations LIMIT 5
+  - SELECT id, type, time FROM axiom.annotations WHERE start = '2024-01-01T00:00:00Z' LIMIT 5
+  - SELECT id, name, type, disabled, threshold FROM axiom.monitors LIMIT 5
+  - SELECT id, name, type FROM axiom.notifiers LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # axiom.datasets — all datasets visible to the API token
+  # GET /v2/datasets
+  # Response: root JSON array — row_strategy: direct, mode: none, no rows_path
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: datasets
+    description: >-
+      All Axiom datasets accessible to the API token. Each row represents one
+      dataset. Includes retention policy, schema kind, and write permissions.
+      Use the `name` column to build APL queries or as the `datasets` filter on
+      the `annotations` table.
+    guide: |
+      No filters required — returns all datasets the token can access.
+      `created` is an ISO 8601 timestamp. `retention_days` is null when the
+      dataset follows the organisation default. `kind` identifies the schema
+      convention (e.g. `axiom:events:v1`, `otel:traces:v1`).
+    request:
+      method: GET
+      path: /datasets
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Dataset ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Dataset name. Use this as the `datasets` filter on `axiom.annotations`.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: false
+        description: Human-readable dataset description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: who
+        type: Utf8
+        nullable: false
+        description: Display name of the user who created this dataset.
+        expr:
+          kind: path
+          path:
+            - who
+      - name: created
+        type: Timestamp
+        nullable: false
+        description: ISO 8601 timestamp when the dataset was created (required by API).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: >-
+          ISO 8601 timestamp when the dataset was last modified (required by API).
+          Useful for "which datasets haven't been touched in N days" queries.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: kind
+        type: Utf8
+        nullable: false
+        description: >-
+          Schema kind identifier (e.g. `axiom:events:v1`, `otel:traces:v1`,
+          `otel:logs:v1`). Required by the API — user-defined datasets carry
+          an empty string rather than null.
+        expr:
+          kind: path
+          path:
+            - kind
+      - name: retention_days
+        type: Int64
+        nullable: true
+        description: >-
+          Dataset-level retention in days. Null when the dataset inherits the
+          organisation default retention policy.
+        expr:
+          kind: path
+          path:
+            - retentionDays
+      - name: can_write
+        type: Boolean
+        nullable: true
+        description: Whether the API token has write access to this dataset.
+        expr:
+          kind: path
+          path:
+            - canWrite
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # axiom.annotations — deployment, incident, and custom event annotations
+  # GET /v2/annotations
+  # Response: root JSON array — row_strategy: direct, mode: none, no rows_path
+  # Optional query params: datasets, start, end (RFC3339 time window)
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: annotations
+    description: >-
+      Deployment, incident, and custom event annotations across Axiom datasets.
+      Optionally filter by dataset name and time window. `start` and `end` are
+      virtual filter columns — they map to RFC3339 query parameters and are not
+      present in the response body.
+    guide: |
+      All filters are optional. `datasets` narrows results to annotations
+      attached to a specific dataset name (e.g. `WHERE datasets = 'my-app'`).
+      `start` and `end` accept RFC3339 timestamps (e.g.
+      `WHERE start = '2024-01-01T00:00:00Z'`) and restrict the time window
+      server-side. `start` and `end` are virtual — they will not appear as
+      columns in query results.
+
+      Naming note: the `datasets` filter and the `datasets` response column share
+      the same name. The engine routes `WHERE datasets = 'x'` to the query
+      parameter and `SELECT datasets` to the JSON array response field, but they
+      are logically separate. The filter only supports a single dataset name;
+      the upstream API accepts an array but pushdown of multiple values (e.g.
+      `WHERE datasets IN ('a', 'b')`) is not supported — apply post-filter
+      in SQL for multi-dataset queries.
+    filters:
+      - name: datasets
+        required: false
+      - name: start
+        required: false
+      - name: end
+        required: false
+    request:
+      method: GET
+      path: /annotations
+      query:
+        - name: datasets
+          from: filter
+          key: datasets
+        - name: start
+          from: filter
+          key: start
+        - name: end
+          from: filter
+          key: end
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Annotation ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Short title for the annotation (e.g. "Deploy v1.2.3").
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Longer description or body for the annotation.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: type
+        type: Utf8
+        nullable: false
+        description: >-
+          Annotation type (e.g. `deploy`, `incident`). Used to distinguish
+          different event categories in dashboards.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: time
+        type: Timestamp
+        nullable: false
+        description: ISO 8601 start time of the annotated event.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - time
+      - name: end_time
+        type: Timestamp
+        nullable: true
+        description: >-
+          ISO 8601 end time for range annotations (e.g. incident duration).
+          Null for point-in-time annotations.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - endTime
+      - name: url
+        type: Utf8
+        nullable: true
+        description: External URL linked to the annotation (e.g. PR, runbook, or PagerDuty alert).
+        expr:
+          kind: path
+          path:
+            - url
+      - name: datasets
+        type: Json
+        nullable: false
+        description: >-
+          JSON array of dataset names this annotation is attached to (required
+          by API, minItems: 1). Use SQL JSON functions to inspect
+          (e.g. `json_contains(datasets, '"my-app"')`).
+        expr:
+          kind: path
+          path:
+            - datasets
+      - name: start
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          RFC3339 start of the time window filter (e.g. `'2024-01-01T00:00:00Z'`).
+          Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: start
+      - name: end
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          RFC3339 end of the time window filter (e.g. `'2024-12-31T23:59:59Z'`).
+          Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: end
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # axiom.monitors — alert monitors and their threshold/query configuration
+  # GET /v2/monitors
+  # Response: root JSON array — row_strategy: direct, mode: none, no rows_path
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: monitors
+    description: >-
+      Axiom alert monitors. Each row describes one monitor including its type,
+      APL query, threshold, evaluation schedule, and notification settings.
+      Use `disabled = false` to filter for active monitors.
+    guide: |
+      No filters required — returns all monitors in the organisation.
+      `type` is one of `Threshold`, `MatchEvent`, or `AnomalyDetection`.
+      `operator` is one of `Above`, `Below`, `AboveOrEqual`, `BelowOrEqual`,
+      or `AboveOrBelow` (fires when a value falls outside a defined range).
+      `notifier_ids` is a JSON array of notifier IDs — join against
+      `axiom.notifiers` to resolve names. `apl_query` is the full APL
+      expression used to evaluate the monitor condition.
+      `disabled` is nullable — use `WHERE COALESCE(disabled, false) = false`
+      to safely list active monitors and avoid silently dropping null rows.
+    request:
+      method: GET
+      path: /monitors
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Monitor ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable monitor name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Optional description of what the monitor tracks.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: type
+        type: Utf8
+        nullable: false
+        description: >-
+          Monitor evaluation strategy: `Threshold`, `MatchEvent`, or
+          `AnomalyDetection`.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: >-
+          When true, the monitor is paused and will not fire alerts. The field
+          is nullable — use `WHERE COALESCE(disabled, false) = false` to list
+          active monitors without silently dropping rows where the field is null.
+        expr:
+          kind: path
+          path:
+            - disabled
+      - name: apl_query
+        type: Utf8
+        nullable: true
+        description: Full APL query expression evaluated by this monitor.
+        expr:
+          kind: path
+          path:
+            - aplQuery
+      - name: column_name
+        type: Utf8
+        nullable: true
+        description: APL column aggregated for threshold comparison.
+        expr:
+          kind: path
+          path:
+            - columnName
+      - name: operator
+        type: Utf8
+        nullable: true
+        description: >-
+          Comparison operator for threshold monitors: `Above`, `Below`,
+          `AboveOrEqual`, `BelowOrEqual`, or `AboveOrBelow` (fires when the
+          value falls outside a range — above the upper bound or below the
+          lower bound).
+        expr:
+          kind: path
+          path:
+            - operator
+      - name: threshold
+        type: Float64
+        nullable: true
+        description: Numeric threshold value that triggers the alert.
+        expr:
+          kind: path
+          path:
+            - threshold
+      - name: interval_minutes
+        type: Int64
+        nullable: true
+        description: How often the monitor is evaluated, in minutes.
+        expr:
+          kind: path
+          path:
+            - intervalMinutes
+      - name: range_minutes
+        type: Int64
+        nullable: true
+        description: >-
+          Look-back window evaluated on each check, in minutes. The monitor
+          queries data from `now - range_minutes` to `now`.
+        expr:
+          kind: path
+          path:
+            - rangeMinutes
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when the monitor was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User ID or display name of the monitor creator.
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: >-
+          ISO 8601 timestamp when the monitor was last modified. Useful for
+          "which monitors have been edited recently" audit queries.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: disabled_until
+        type: Timestamp
+        nullable: true
+        description: >-
+          ISO 8601 timestamp until which this monitor is snoozed. Null when
+          the monitor is not snoozed. Use `WHERE disabled_until IS NOT NULL`
+          to find currently snoozed monitors.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - disabledUntil
+      - name: notifier_ids
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of notifier IDs attached to this monitor. Join against
+          `axiom.notifiers` on `id` to resolve display names and types.
+        expr:
+          kind: path
+          path:
+            - notifierIds
+      - name: alert_on_no_data
+        type: Boolean
+        nullable: true
+        description: >-
+          When true, the monitor fires an alert if the query returns no data
+          during the evaluation window.
+        expr:
+          kind: path
+          path:
+            - alertOnNoData
+      - name: resolvable
+        type: Boolean
+        nullable: true
+        description: >-
+          When true, the monitor sends a resolve notification when the alert
+          condition is no longer met.
+        expr:
+          kind: path
+          path:
+            - resolvable
+      - name: notify_every_run
+        type: Boolean
+        nullable: true
+        description: >-
+          When true, a notification is sent on every evaluation run while the
+          alert condition persists, not only on state transitions.
+        expr:
+          kind: path
+          path:
+            - notifyEveryRun
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # axiom.notifiers — notification channel configurations
+  # GET /v2/notifiers
+  # Response: root JSON array — row_strategy: direct, mode: none, no rows_path
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: notifiers
+    description: >-
+      Axiom notification channel configurations. Each row represents one
+      notifier (Slack, email, webhook, PagerDuty, OpsGenie, Discord, etc.).
+      Use `id` values to match against `axiom.monitors.notifier_ids`.
+    guide: |
+      No filters required — returns all notifiers in the organisation.
+      `properties` is a JSON object whose shape depends on the notifier type
+      (Slack channels, email addresses, webhook URLs, PagerDuty routing keys,
+      etc.). Use SQL JSON functions to inspect specific fields.
+      `disabled_until` is a Timestamp — null when the notifier is active.
+    request:
+      method: GET
+      path: /notifiers
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Notifier ID. Use this to join against `axiom.monitors.notifier_ids`.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable notifier name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when the notifier was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User ID or display name of the notifier creator.
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: >-
+          ISO 8601 timestamp when the notifier was last modified. Useful for
+          "which notifier configs haven't been touched in N months" queries.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: disabled_until
+        type: Timestamp
+        nullable: true
+        description: >-
+          ISO 8601 timestamp until which this notifier is snoozed. Null when
+          the notifier is active. The API declares this as string/date-time
+          (same shape as `createdAt`), so it is parsed consistently as Timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - disabledUntil
+      - name: properties
+        type: Json
+        nullable: true
+        description: >-
+          Notifier-type-specific configuration as a JSON object. Contains
+          nested sub-objects for each channel type (slack, email, webhook,
+          pagerduty, opsgenie, discord). Use SQL JSON functions to extract
+          fields (e.g. `json_get(properties, 'slack.channels')`).
+        expr:
+          kind: path
+          path:
+            - properties

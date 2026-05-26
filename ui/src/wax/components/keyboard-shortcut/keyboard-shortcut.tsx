@@ -6,7 +6,9 @@ import { Tooltip } from '@/wax/components/tooltip'
 
 import { parseShortcut } from '../keyboard-hint'
 
-export type KeyboardShortcutProps = KeyboardShortcutWithoutTooltipProps | KeyboardShortcutWithTooltipProps
+export type KeyboardShortcutProps =
+  | KeyboardShortcutWithoutTooltipProps
+  | KeyboardShortcutWithTooltipProps
 
 interface KeyboardShortcutBaseProps {
   handler: (event: KeyboardEvent) => void
@@ -51,10 +53,12 @@ function shortcutMatches(event: KeyboardEvent, shortcut: string) {
   const wantsMeta = keys.includes('meta') || keys.includes('$mod')
   const wantsShift = keys.includes('shift')
 
-  return event.altKey === wantsAlt &&
+  return (
+    event.altKey === wantsAlt &&
     event.ctrlKey === wantsControl &&
     event.metaKey === wantsMeta &&
     event.shiftKey === wantsShift
+  )
 }
 
 export function KeyboardShortcut({

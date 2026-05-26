@@ -80,7 +80,7 @@ Source spec parsing and validation.
 | YAML parsing            | Deserializes source specs into typed Rust structs                              |
 | Validation              | Structural invariants, required fields, backend-specific rules (`validate.rs`) |
 | Input discovery         | Extracts required variables and secrets from specs (`inputs.rs`)               |
-| Backend-specific models | HTTP, JSONL, Parquet spec shapes (`backends/`)                                 |
+| Backend-specific models | HTTP and file spec shapes (`backends/`)                                        |
 
 Produces a validated spec model that `coral-engine` consumes. No runtime or I/O, pure data transformation.
 
@@ -93,7 +93,7 @@ Query execution engine.
 | Backend compilation     | Turns validated specs into DataFusion `TableProvider` implementations (`backends/`)   |
 | Runtime registry        | Registers table providers into a DataFusion session (`runtime/`)                      |
 | Query contracts         | Engine-facing types for catalog and query results (`contracts/`)                      |
-| Backend implementations | HTTP, JSONL, Parquet backends (`backends/http`, `backends/jsonl`, `backends/parquet`) |
+| Backend implementations | HTTP and native file backends (`backends/http`, `backends/file`)                      |
 
 ### `coral-mcp`
 
