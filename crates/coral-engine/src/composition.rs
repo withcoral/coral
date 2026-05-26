@@ -8,7 +8,8 @@ use arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use reqwest::header::{HeaderName, HeaderValue};
 
-use crate::{CoreError, contracts::QuerySource};
+use crate::CoreError;
+use crate::contracts::QuerySource;
 
 /// One source's table providers keyed by manifest table name.
 pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;

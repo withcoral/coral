@@ -657,6 +657,7 @@ function TimelineWaterfall({
             }}
           >
             <HttpSpanDetail
+              bodySpans={spans}
               canSelectNextSpan={renderedHttpSpanIndex < navigableSpanIds.length - 1}
               canSelectPreviousSpan={renderedHttpSpanIndex > 0}
               onClose={() => onExpandedHttpSpanIdChange(null)}

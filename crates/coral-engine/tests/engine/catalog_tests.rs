@@ -20,10 +20,11 @@ fn users_manifest(dir: &std::path::Path) -> Value {
         "name": "alpha",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "users",
             "description": "Alpha users",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -42,10 +43,11 @@ fn teams_manifest(dir: &std::path::Path) -> Value {
         "name": "beta",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "teams",
             "description": "Beta teams",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -411,7 +413,7 @@ fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
         "name": "jsonl_inputs",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "inputs": {
             "DATASET": {
                 "kind": "variable",
@@ -426,6 +428,7 @@ fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
         "tables": [{
             "name": "events",
             "description": "Input metadata regression fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
