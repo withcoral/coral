@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 
 use crate::bootstrap::AppError;
+use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -53,6 +54,8 @@ struct PersistedInstalledSource {
     variables: BTreeMap<String, String>,
     #[serde(default)]
     secrets: Vec<String>,
+    #[serde(default)]
+    credential_storage: Option<CredentialStorageKind>,
     origin: SourceOrigin,
 }
 
@@ -63,6 +66,7 @@ impl PersistedInstalledSource {
             version: self.version,
             variables: self.variables,
             secrets: self.secrets,
+            credential_storage: self.credential_storage,
             origin: self.origin,
         }
     }
@@ -74,6 +78,7 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             version: value.version.clone(),
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
+            credential_storage: value.credential_storage,
             origin: value.origin,
         }
     }
@@ -273,6 +278,14 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
             }
             source_item["variables"] = Item::Value(render_inline_table(&source.variables));
             source_item["secrets"] = Item::Value(render_string_array(&source.secrets));
+            if let Some(credential_storage) = source.credential_storage {
+                source_item["credential_storage"] = value(credential_storage.as_config_value());
+            } else {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("credential_storage");
+            }
             source_item["origin"] = value(source.origin.as_config_value());
         }
     }
@@ -352,6 +365,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{AppConfig, PersistedAppConfig, SourceCatalog, render_config};
+    use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::workspaces::WorkspaceName;
@@ -369,6 +383,7 @@ mod tests {
                 "https://api.github.com".to_string(),
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
+            credential_storage: None,
             origin: SourceOrigin::Imported,
         }
     }
@@ -441,6 +456,37 @@ origin = "bundled"
             Some(&"https://api.github.com".to_string())
         );
         assert_eq!(sources[0].secrets, vec!["GITHUB_TOKEN".to_string()]);
+        assert_eq!(sources[0].credential_storage, None);
+        assert_eq!(
+            sources[0].effective_credential_storage(),
+            CredentialStorageKind::File
+        );
+    }
+
+    #[test]
+    fn round_trips_source_credential_storage() {
+        let workspace_name = default_workspace();
+        let mut source = installed_source("github");
+        source.credential_storage = Some(CredentialStorageKind::Keychain);
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, source);
+        let config = AppConfig {
+            version: 1,
+            catalog,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+        assert!(raw.contains("credential_storage = \"keychain\""));
+
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&workspace_name);
+        assert_eq!(
+            sources[0].credential_storage,
+            Some(CredentialStorageKind::Keychain)
+        );
     }
 
     #[test]

@@ -38,6 +38,7 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
+use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
@@ -261,7 +262,9 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
+        let credential_config = CredentialStorageConfig::load(&layout)?;
+        let credential_store =
+            CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let source_manager = SourceManager::new(
             config_store.clone(),
