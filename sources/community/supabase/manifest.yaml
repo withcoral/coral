@@ -1,0 +1,980 @@
+name: supabase
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Supabase Management API data — organizations, projects, edge functions,
+  database backups, secrets, network restrictions, api keys, branches,
+  auth configs, postgrest configs, pgbouncer configs, custom hostnames,
+  and network bans — via the Supabase REST API with Personal Access Token authentication.
+base_url: https://api.supabase.com/v1
+
+inputs:
+  SUPABASE_ACCESS_TOKEN:
+    kind: secret
+    hint: >-
+      Supabase Personal Access Token. Create one at https://supabase.com/dashboard/account/tokens
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.SUPABASE_ACCESS_TOKEN}}"
+
+rate_limit:
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+
+test_queries:
+  - SELECT id, name FROM supabase.organizations LIMIT 1
+  - SELECT id, ref, name, status FROM supabase.projects LIMIT 1
+
+tables:
+  - name: organizations
+    description: >
+      Lists all organizations the user belongs to. Each row includes the
+      organization identifier and name.
+    guide: >
+      Start with `SELECT id, name FROM supabase.organizations`.
+    request:
+      method: GET
+      path: /organizations
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique organization identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Organization name.
+        expr:
+          kind: path
+          path:
+            - name
+
+  - name: projects
+    description: >
+      Lists all projects the user belongs to. Each row includes project
+      configuration, region, status, and database info.
+    guide: >
+      Start with `SELECT id, ref, name, region, status FROM supabase.projects`.
+      The `ref` column is extremely important as it is used as a filter for all other tables.
+    request:
+      method: GET
+      path: /projects
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique project identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: organization_id
+        type: Utf8
+        nullable: false
+        description: Organization ID this project belongs to.
+        expr:
+          kind: path
+          path:
+            - organization_id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: ref
+        type: Utf8
+        nullable: false
+        description: Project reference code. Crucial for filtering other endpoints.
+        expr:
+          kind: path
+          path:
+            - ref
+      - name: region
+        type: Utf8
+        nullable: false
+        description: Cloud provider region (e.g., us-west-1).
+        expr:
+          kind: path
+          path:
+            - region
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Current status of the project (e.g., ACTIVE_HEALTHY).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time the project was created.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: db_host
+        type: Utf8
+        nullable: true
+        description: The host address of the database.
+        expr:
+          kind: path
+          path:
+            - database
+            - host
+      - name: db_version
+        type: Utf8
+        nullable: true
+        description: The Postgres version of the database.
+        expr:
+          kind: path
+          path:
+            - database
+            - version
+      - name: endpoint
+        type: Utf8
+        nullable: true
+        description: The API endpoint for the project.
+        expr:
+          kind: path
+          path:
+            - endpoint
+
+  - name: edge_functions
+    description: >
+      Lists all Edge Functions within a specific project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT id, name, status, verify_jwt FROM supabase.edge_functions WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/functions
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Edge function ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Edge function name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Edge function slug.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: version
+        type: Int64
+        nullable: true
+        description: Edge function version.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current status of the function.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: verify_jwt
+        type: Boolean
+        nullable: true
+        description: Whether JWT verification is required.
+        expr:
+          kind: path
+          path:
+            - verify_jwt
+      - name: import_map
+        type: Boolean
+        nullable: true
+        description: Whether the function uses an import map.
+        expr:
+          kind: path
+          path:
+            - import_map
+      - name: entrypoint_path
+        type: Utf8
+        nullable: true
+        description: Path to the entrypoint file.
+        expr:
+          kind: path
+          path:
+            - entrypoint_path
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the edge function was created.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the edge function was last updated.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: secrets
+    description: >
+      Lists all secrets for a specific project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT name, value FROM supabase.secrets WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/secrets
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Secret name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Secret value (often masked).
+        expr:
+          kind: path
+          path:
+            - value
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: database_backups
+    description: >
+      Lists all database backups for a specific project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT status, is_physical_backup, inserted_at FROM supabase.database_backups WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/database/backups
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Backup ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Associated project ID.
+        expr:
+          kind: path
+          path:
+            - project_id
+      - name: is_physical_backup
+        type: Boolean
+        nullable: true
+        description: Whether it is a physical backup.
+        expr:
+          kind: path
+          path:
+            - is_physical_backup
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Backup status.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: inserted_at
+        type: Timestamp
+        nullable: true
+        description: When the backup was inserted.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - inserted_at
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: network_restrictions
+    description: >
+      Lists network restrictions (CIDR blocks) for a project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT entitled, status, db_allowed_cidrs FROM supabase.network_restrictions WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/network-restrictions
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: entitled
+        type: Boolean
+        nullable: true
+        description: Whether the project is entitled to network restrictions.
+        expr:
+          kind: path
+          path:
+            - entitled
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Network restriction status.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: db_allowed_cidrs
+        type: Json
+        nullable: true
+        description: List of allowed CIDR blocks for the database.
+        expr:
+          kind: path
+          path:
+            - config
+            - dbAllowedCidrs
+      - name: db_allow_all_ips
+        type: Boolean
+        nullable: true
+        description: Whether the database allows all IPs.
+        expr:
+          kind: path
+          path:
+            - config
+            - dbAllowAllIps
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: api_keys
+    description: >
+      Lists API keys (anon, service_role) for a project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT api_key_value, tags FROM supabase.api_keys WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/api-keys
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: api_key_value
+        type: Utf8
+        nullable: false
+        description: The API key value.
+        expr:
+          kind: path
+          path:
+            - api_key
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name of the key.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Tags associated with the key (e.g., anon, service_role).
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: branches
+    description: >
+      Lists all database branches for a specific project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT id, name, status, created_at FROM supabase.branches WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/branches
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Branch ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Branch name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: project_ref
+        type: Utf8
+        nullable: false
+        description: The project reference this branch belongs to.
+        expr:
+          kind: path
+          path:
+            - project_ref
+      - name: parent_project_ref
+        type: Utf8
+        nullable: false
+        description: The parent project reference.
+        expr:
+          kind: path
+          path:
+            - parent_project_ref
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether this is the default branch.
+        expr:
+          kind: path
+          path:
+            - is_default
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Branch status.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the branch was created.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the branch was last updated.
+        expr:
+          kind: format_timestamp
+          input: rfc3339
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: auth_configs
+    description: >
+      Retrieves the GoTrue / Auth configuration for a specific project. Requires a project_ref filter.
+      Extracts detailed settings for external providers (Google, GitHub), SMTP, and MFA.
+    guide: >
+      Filter by project_ref: `SELECT external_google_enabled, external_github_enabled, mailer_secure_email_change_enabled FROM supabase.auth_configs WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/config/auth
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: site_url
+        type: Utf8
+        nullable: true
+        description: The base URL of your website.
+        expr:
+          kind: path
+          path:
+            - site_url
+      - name: additional_redirect_urls
+        type: Json
+        nullable: true
+        description: A list of allowed redirect URLs.
+        expr:
+          kind: path
+          path:
+            - additional_redirect_urls
+      - name: jwt_exp
+        type: Int64
+        nullable: true
+        description: How long tokens are valid for, in seconds.
+        expr:
+          kind: path
+          path:
+            - jwt_exp
+      - name: external_email_enabled
+        type: Boolean
+        nullable: true
+        description: Whether email sign-in is enabled.
+        expr:
+          kind: path
+          path:
+            - external_email_enabled
+      - name: external_phone_enabled
+        type: Boolean
+        nullable: true
+        description: Whether phone sign-in is enabled.
+        expr:
+          kind: path
+          path:
+            - external_phone_enabled
+      - name: external_google_enabled
+        type: Boolean
+        nullable: true
+        description: Whether Google SSO is enabled.
+        expr:
+          kind: path
+          path:
+            - external_google_enabled
+      - name: external_github_enabled
+        type: Boolean
+        nullable: true
+        description: Whether GitHub SSO is enabled.
+        expr:
+          kind: path
+          path:
+            - external_github_enabled
+      - name: external_apple_enabled
+        type: Boolean
+        nullable: true
+        description: Whether Apple SSO is enabled.
+        expr:
+          kind: path
+          path:
+            - external_apple_enabled
+      - name: mailer_autoconfirm
+        type: Boolean
+        nullable: true
+        description: If enabled, users need to confirm their email address before signing in.
+        expr:
+          kind: path
+          path:
+            - mailer_autoconfirm
+      - name: mailer_secure_email_change_enabled
+        type: Boolean
+        nullable: true
+        description: If enabled, a user will be required to confirm any email change on both the old, and new email addresses.
+        expr:
+          kind: path
+          path:
+            - mailer_secure_email_change_enabled
+      - name: smtp_host
+        type: Utf8
+        nullable: true
+        description: The SMTP host.
+        expr:
+          kind: path
+          path:
+            - smtp_host
+      - name: smtp_port
+        type: Utf8
+        nullable: true
+        description: The SMTP port.
+        expr:
+          kind: path
+          path:
+            - smtp_port
+      - name: smtp_user
+        type: Utf8
+        nullable: true
+        description: The SMTP user.
+        expr:
+          kind: path
+          path:
+            - smtp_user
+      - name: smtp_sender_name
+        type: Utf8
+        nullable: true
+        description: The name of the sender.
+        expr:
+          kind: path
+          path:
+            - smtp_sender_name
+      - name: mfa_enroll_enabled
+        type: Boolean
+        nullable: true
+        description: Whether MFA enrollment is allowed.
+        expr:
+          kind: path
+          path:
+            - security_mfa_enroll_enabled
+      - name: mfa_verify_enabled
+        type: Boolean
+        nullable: true
+        description: Whether MFA verification is allowed.
+        expr:
+          kind: path
+          path:
+            - security_mfa_verify_enabled
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: postgrest_configs
+    description: >
+      Retrieves the PostgREST configuration for a specific project. Requires a project_ref filter.
+      Extracts OpenAPI settings, max rows, and role configurations.
+    guide: >
+      Filter by project_ref: `SELECT max_rows, db_schema, db_anon_role FROM supabase.postgrest_configs WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/config/postgrest
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: max_rows
+        type: Int64
+        nullable: true
+        description: The maximum number of rows returned from a view, table, or stored procedure. Limits payload size for accidental or malicious requests.
+        expr:
+          kind: path
+          path:
+            - max_rows
+      - name: db_schema
+        type: Utf8
+        nullable: true
+        description: The database schema to expose to REST clients. Tables, views and stored procedures in this schema will get API endpoints.
+        expr:
+          kind: path
+          path:
+            - db_schema
+      - name: db_anon_role
+        type: Utf8
+        nullable: true
+        description: The database role to use when no client authentication is provided.
+        expr:
+          kind: path
+          path:
+            - db_anon_role
+      - name: db_pool
+        type: Int64
+        nullable: true
+        description: Number of database connections to keep open.
+        expr:
+          kind: path
+          path:
+            - db_pool
+      - name: db_extra_search_path
+        type: Utf8
+        nullable: true
+        description: Extra schemas to add to the search_path of every request.
+        expr:
+          kind: path
+          path:
+            - db_extra_search_path
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: pgbouncer_configs
+    description: >
+      Retrieves the PgBouncer configuration for a specific project. Requires a project_ref filter.
+      Extracts pooling settings and pool modes.
+    guide: >
+      Filter by project_ref: `SELECT pool_mode, default_pool_size, max_client_conn FROM supabase.pgbouncer_configs WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/config/database/pgbouncer
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: pool_mode
+        type: Utf8
+        nullable: true
+        description: The pool mode (transaction, session, statement).
+        expr:
+          kind: path
+          path:
+            - pool_mode
+      - name: default_pool_size
+        type: Int64
+        nullable: true
+        description: The default pool size.
+        expr:
+          kind: path
+          path:
+            - default_pool_size
+      - name: max_client_conn
+        type: Int64
+        nullable: true
+        description: The maximum client connections.
+        expr:
+          kind: path
+          path:
+            - max_client_conn
+      - name: ignore_startup_parameters
+        type: Utf8
+        nullable: true
+        description: Parameters to ignore on startup.
+        expr:
+          kind: path
+          path:
+            - ignore_startup_parameters
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: custom_hostnames
+    description: >
+      Retrieves the Custom Hostname configuration for a specific project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT custom_hostname, status FROM supabase.custom_hostnames WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/custom-hostname
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: custom_hostname
+        type: Utf8
+        nullable: true
+        description: The configured custom hostname.
+        expr:
+          kind: path
+          path:
+            - custom_hostname
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Status of the custom hostname.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: network_bans
+    description: >
+      Retrieves the Network Bans for a specific project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT banned_ipv4_addresses FROM supabase.network_bans WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/network-bans
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: banned_ipv4_addresses
+        type: Json
+        nullable: true
+        description: A list of IPv4 addresses that are currently banned.
+        expr:
+          kind: path
+          path:
+            - banned_ipv4_addresses
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  - name: ssl_enforcement
+    description: >
+      Retrieves the SSL Enforcement configuration for a specific project. Requires a project_ref filter.
+    guide: >
+      Filter by project_ref: `SELECT current_config, is_ssl_enforced FROM supabase.ssl_enforcement WHERE project_ref = 'abcedef'`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_ref}}/ssl-enforcement
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: current_config
+        type: Boolean
+        nullable: true
+        description: The current configuration value for SSL enforcement.
+        expr:
+          kind: path
+          path:
+            - currentConfig
+      - name: is_ssl_enforced
+        type: Boolean
+        nullable: true
+        description: Whether SSL is actually enforced in the database.
+        expr:
+          kind: path
+          path:
+            - isSslEnforced
+      - name: project_ref_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
