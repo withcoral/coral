@@ -71,8 +71,8 @@ inputs:
             flow:
               type: authorization_code
               pkce: required
-            redirect_uri: http://127.0.0.1/oauth/callback
-            redirect_uri_port_mode: random
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri_port_mode: fixed
             endpoints:
               authorization_url: https://github.com/login/oauth/authorize
               token_url: https://github.com/login/oauth/access_token
