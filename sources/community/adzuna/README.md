@@ -2,7 +2,8 @@
 
 **Version:** 0.1.0
 **Backend:** HTTP
-**Tables:** 3
+**Tables:** 2
+**Functions:** 1
 
 Adzuna is a global job aggregator indexing millions of active vacancies across 16+ countries including GB, US, CA, AU, IN, DE, FR, and more. This Coral community source enables users and AI agents to query live job listings, enumerate job categories, and analyze salary distributions using standard SQL — with no custom API wrappers.
 
@@ -31,10 +32,9 @@ export CORAL_ADZUNA_APP_KEY="your_app_key"
 ## Quick Start
 
 ```sql
--- Find developer jobs in London
+-- Find developer jobs in London using the provider-native search function
 SELECT title, company, salary_min, salary_max, redirect_url
-FROM adzuna.jobs
-WHERE what = 'developer' AND location = 'London'
+FROM adzuna.search_jobs(what => 'developer', location_filter => 'London')
 LIMIT 10;
 
 -- List all categories in the US
@@ -55,17 +55,17 @@ Combine Adzuna jobs with other data sources in Coral. For example, joining again
 -- Cross-source JOIN: Adzuna jobs + GitHub open issues
 SELECT g.title AS issue, g.html_url, a.company, a.redirect_url
 FROM github.issues g
-JOIN adzuna.jobs a ON a.what = 'python'
+JOIN adzuna.search_jobs(what => 'python') a ON true
 WHERE g.repo = 'tiangolo/fastapi' AND g.assignee IS NULL
 LIMIT 7;
 ```
 
-## Tables
+## Functions
 
-### `adzuna.jobs`
-Search active job listings with keyword, location, category, and salary filters.
+### `adzuna.search_jobs`
+Provider-native search for active job listings with keyword, location, category, and salary filters.
 
-| Column | Type | Description |
+| Argument / Column | Type | Description |
 |--------|------|-------------|
 | `id` | Utf8 | Unique job ID |
 | `title` | Utf8 | Job title |
@@ -84,9 +84,13 @@ Search active job listings with keyword, location, category, and salary filters.
 | `redirect_url` | Utf8 | Link to apply to the job |
 | `latitude` | Float64 | Latitude of the workspace (nullable) |
 | `longitude` | Float64 | Longitude of the workspace (nullable) |
-| `country` | Utf8 | Virtual column to override country (default: gb) |
-| `what` | Utf8 | Virtual column from keyword search filter |
-| `location_filter` | Utf8 | Virtual column from location search filter |
+| `country` | Utf8 | Argument/Virtual column to override country (default: gb) |
+| `what` | Utf8 | Argument/Virtual column from keyword search filter |
+| `location_filter` | Utf8 | Argument/Virtual column from location search filter |
+| `full_time` | Utf8 | Argument (1/0) |
+| `permanent` | Utf8 | Argument (1/0) |
+
+## Tables
 
 ### `adzuna.categories`
 Enumerate available job sectors for a given country.
@@ -107,6 +111,7 @@ Salary distribution showing vacancy counts per salary band.
 | `country` | Utf8 | Virtual column to override country |
 | `what` | Utf8 | Virtual column from keyword search filter |
 | `location_filter` | Utf8 | Virtual column from location search filter |
+| `category` | Utf8 | Filter by category tag |
 
 ## Notes
 

@@ -16,24 +16,46 @@ inputs:
     kind: variable
     default: gb
     hint: Two-letter ISO country code (e.g. gb, us, au, in, ca, de, fr, etc.)
-tables:
-  - name: jobs
+
+functions:
+  - name: search_jobs
+    kind: search
     description: |
       Search active job listings with keyword, location, category, and salary filters.
       You can filter by `country` to override the default country.
     fetch_limit_default: 100
-    filters:
+    search_limits:
+      default_top_k: 20
+      max_top_k: 50
+      max_calls_per_query: 1
+    args:
       - name: country
+        bind:
+          arg: country
       - name: what
-      - name: location
+        bind:
+          arg: what
+      - name: location_filter
+        bind:
+          arg: location_filter
       - name: category
+        bind:
+          arg: category
       - name: salary_min
+        bind:
+          arg: salary_min
       - name: salary_max
+        bind:
+          arg: salary_max
       - name: full_time
+        bind:
+          arg: full_time
       - name: permanent
+        bind:
+          arg: permanent
     request:
       method: GET
-      path: /jobs/{{filter.country|gb}}/search/{{state.page}}
+      path: /jobs/{{arg.country|gb}}/search/{{state.page}}
       query:
         - name: app_id
           from: input
@@ -42,25 +64,25 @@ tables:
           from: input
           key: ADZUNA_APP_KEY
         - name: what
-          from: filter
+          from: arg
           key: what
         - name: where
-          from: filter
-          key: location
+          from: arg
+          key: location_filter
         - name: category
-          from: filter
+          from: arg
           key: category
         - name: salary_min
-          from: filter
+          from: arg
           key: salary_min
         - name: salary_max
-          from: filter
+          from: arg
           key: salary_max
         - name: full_time
-          from: filter
+          from: arg
           key: full_time
         - name: permanent
-          from: filter
+          from: arg
           key: permanent
     response:
       rows_path:
@@ -146,16 +168,17 @@ tables:
       - name: country
         type: Utf8
         nullable: true
-        expr: {kind: from_filter, key: country}
+        expr: {kind: from_arg, key: country}
       - name: what
         type: Utf8
         nullable: true
-        expr: {kind: from_filter, key: what}
+        expr: {kind: from_arg, key: what}
       - name: location_filter
         type: Utf8
         nullable: true
-        expr: {kind: from_filter, key: location}
+        expr: {kind: from_arg, key: location_filter}
 
+tables:
   - name: categories
     description: Enumerate available job sectors for a given country.
     filters:
@@ -192,7 +215,7 @@ tables:
     filters:
       - name: country
       - name: what
-      - name: location
+      - name: location_filter
       - name: category
     request:
       method: GET
@@ -209,7 +232,7 @@ tables:
           key: what
         - name: where
           from: filter
-          key: location
+          key: location_filter
         - name: category
           from: filter
           key: category
@@ -237,4 +260,4 @@ tables:
       - name: location_filter
         type: Utf8
         nullable: true
-        expr: {kind: from_filter, key: location}
+        expr: {kind: from_filter, key: location_filter}
