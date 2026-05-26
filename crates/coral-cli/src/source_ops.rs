@@ -466,7 +466,7 @@ pub(crate) fn prompt_for_inputs_with_credential_methods(
             }
             ManifestInputKind::Secret => match prompt_secret_with_methods(
                 input,
-                !collected.secrets.is_empty() || !collected.oauth_credentials.is_empty(),
+                !collected.secrets.is_empty() || !collected.oauth_credential_retrievals.is_empty(),
             )? {
                 SecretInputOutcome::SourceConfig(secret) => {
                     if let Some(secret) = secret {
