@@ -587,9 +587,10 @@ pub(crate) fn source_origin_label(origin: i32) -> &'static str {
 
 pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
     match SourceCredentialStorage::try_from(storage) {
+        Ok(SourceCredentialStorage::Unspecified) => "none",
         Ok(SourceCredentialStorage::File) => "file (plaintext)",
         Ok(SourceCredentialStorage::Keychain) => "keychain",
-        Ok(SourceCredentialStorage::Unspecified) | Err(_) => "unknown",
+        Err(_) => "unknown",
     }
 }
 

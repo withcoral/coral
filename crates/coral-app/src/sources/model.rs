@@ -52,6 +52,14 @@ impl InstalledSource {
         self.credential_storage
             .unwrap_or(CredentialStorageKind::File)
     }
+
+    pub(crate) fn credential_storage_for_material(&self) -> Option<CredentialStorageKind> {
+        if self.secrets.is_empty() {
+            None
+        } else {
+            Some(self.effective_credential_storage())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

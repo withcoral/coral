@@ -493,7 +493,7 @@ fn create_bundled_source_with_o_auth_response_from_import_response(
 }
 
 fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSource) -> Source {
-    let credential_storage = source.effective_credential_storage();
+    let credential_storage = source.credential_storage_for_material();
     Source {
         workspace: Some(workspace_to_proto(workspace_name)),
         name: source.name.as_str().to_string(),
@@ -512,7 +512,7 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
             .map(|(key, value)| SourceVariable { key, value })
             .collect(),
         origin: proto_source_origin(source.origin) as i32,
-        credential_storage: proto_source_credential_storage(Some(credential_storage)) as i32,
+        credential_storage: proto_source_credential_storage(credential_storage) as i32,
     }
 }
 

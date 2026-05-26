@@ -1,6 +1,7 @@
 //! Credential material persistence behind file and keychain storage backends.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -58,10 +59,10 @@ impl CredentialConfigNamespace {
     fn from_config_dir(config_dir: &Path) -> Self {
         let canonical = config_dir
             .canonicalize()
-            .unwrap_or_else(|_| config_dir.to_path_buf())
-            .to_string_lossy()
-            .into_owned();
-        let digest = Sha256::digest(canonical.as_bytes());
+            .unwrap_or_else(|_| config_dir.to_path_buf());
+        let mut hasher = Sha256::new();
+        update_hasher_with_os_str(&mut hasher, canonical.as_os_str());
+        let digest = hasher.finalize();
         let hex = format!("{digest:x}");
         let short = hex.get(..16).unwrap_or(hex.as_str());
         Self(format!("config-{short}"))
@@ -70,6 +71,27 @@ impl CredentialConfigNamespace {
     fn as_str(&self) -> &str {
         self.0.as_str()
     }
+}
+
+#[cfg(unix)]
+fn update_hasher_with_os_str(hasher: &mut Sha256, value: &OsStr) {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    hasher.update(value.as_bytes());
+}
+
+#[cfg(windows)]
+fn update_hasher_with_os_str(hasher: &mut Sha256, value: &OsStr) {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    for unit in value.encode_wide() {
+        hasher.update(unit.to_le_bytes());
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn update_hasher_with_os_str(hasher: &mut Sha256, value: &OsStr) {
+    hasher.update(value.to_string_lossy().as_bytes());
 }
 
 trait CredentialMaterialBackend: Send + Sync {
@@ -1174,6 +1196,26 @@ mod tests {
         assert_eq!(
             super::CredentialConfigNamespace::from_config_dir(&config_dir),
             super::CredentialConfigNamespace::from_config_dir(&equivalent)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_namespace_hashes_non_utf8_config_dir_losslessly() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let temp = TempDir::new().expect("temp dir");
+        let first_dir = temp
+            .path()
+            .join(OsString::from_vec(b"coral-config-\xff".to_vec()));
+        let second_dir = temp
+            .path()
+            .join(OsString::from_vec(b"coral-config-\xfe".to_vec()));
+
+        assert_ne!(
+            super::CredentialConfigNamespace::from_config_dir(&first_dir),
+            super::CredentialConfigNamespace::from_config_dir(&second_dir)
         );
     }
 

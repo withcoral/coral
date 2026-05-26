@@ -17,7 +17,8 @@ enum SourceOrigin {
 
 // Where an installed source's credential material is stored.
 enum SourceCredentialStorage {
-  // Credential storage was not specified, usually because the source is not installed.
+  // Credential storage was not specified, either because the source is not installed
+  // or because the installed source has no stored credential material.
   SOURCE_CREDENTIAL_STORAGE_UNSPECIFIED = 0;
   // Credential material is stored in Coral's local plaintext secrets file.
   SOURCE_CREDENTIAL_STORAGE_FILE = 1;

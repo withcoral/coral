@@ -193,13 +193,17 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         validate_required_variables(source, source_spec.declared_inputs())?;
-        let credential_set_id = CredentialSetId::for_source(&source.name);
-        let credential_storage = source.effective_credential_storage();
-        let stored_secrets = self.credential_manager.read_material(
-            workspace_name,
-            &credential_set_id,
-            credential_storage,
-        )?;
+        let stored_secrets =
+            if let Some(credential_storage) = source.credential_storage_for_material() {
+                let credential_set_id = CredentialSetId::for_source(&source.name);
+                self.credential_manager.read_material(
+                    workspace_name,
+                    &credential_set_id,
+                    credential_storage,
+                )?
+            } else {
+                BTreeMap::new()
+            };
         let mut resolved_secrets = BTreeMap::new();
         let missing_secrets: Vec<String> = source_spec
             .required_secret_names()

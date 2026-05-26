@@ -39,7 +39,7 @@ async fn import_source_persists_and_lists() {
     assert_eq!(added.origin, SourceOrigin::Imported as i32);
     assert_eq!(
         added.credential_storage,
-        SourceCredentialStorage::File as i32
+        SourceCredentialStorage::Unspecified as i32
     );
     assert!(added.variables.is_empty());
     assert!(added.secrets.is_empty());
@@ -48,7 +48,7 @@ async fn import_source_persists_and_lists() {
         fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(config_raw.contains("[workspaces.default.sources.local_messages]"));
     assert!(config_raw.contains("secrets = []"));
-    assert!(config_raw.contains("credential_storage = \"file\""));
+    assert!(!config_raw.contains("credential_storage"));
     assert!(!config_raw.contains("credential_set_id"));
     assert!(!config_raw.contains("[workspaces.default.credentials"));
     assert!(!config_raw.contains("manifest_yaml = "));
@@ -66,7 +66,7 @@ async fn import_source_persists_and_lists() {
     assert_eq!(listed[0].name, "local_messages");
     assert_eq!(
         listed[0].credential_storage,
-        SourceCredentialStorage::File as i32
+        SourceCredentialStorage::Unspecified as i32
     );
 }
 

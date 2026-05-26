@@ -86,7 +86,8 @@ If the source is already installed, running this command again replaces its stor
 Sources use OS credential storage by default when Coral can write, read, and
 delete a keychain probe item. If the keychain is unavailable in `auto` mode,
 Coral stores the source secrets in plaintext file storage and shows
-`file (plaintext)` in source output.
+`file (plaintext)` in source output. Sources with no stored secret material show
+`none`.
 
 ### `coral source add --file <PATH>`
 
