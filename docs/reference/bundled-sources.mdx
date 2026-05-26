@@ -180,9 +180,10 @@ Cloud; for GitHub Enterprise Server, use
 
 `GITHUB_TOKEN` (required)
 
-For GitHub Cloud, choose "Connect with GitHub OAuth app" during
-interactive install to authorize through GitHub OAuth's browser
-authorization-code flow or device-code flow.
+For GitHub Cloud, choose "Connect with GitHub device code" during
+interactive install to authorize through GitHub OAuth's device-code
+flow, or choose "Connect with GitHub OAuth app" for the browser
+authorization-code flow.
 Coral uses its bundled GitHub OAuth app client ID by default;
 enter GITHUB_OAUTH_CLIENT_ID only if you need to override it.
 The browser flow uses a loopback callback URL; GitHub requires
