@@ -1,0 +1,78 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Coral Custom Source Spec: Open Collective
+# Wraps Open Collective GraphQL API as a SQL table
+# ──────────────────────────────────────────────────────────────────────────
+
+dsl_version: 3
+name: opencollective
+version: "1.0.0"
+description: >
+  Open Collective funding data — query total amounts raised, contributor counts,
+  and backer details for any open source project using public GraphQL API.
+backend: http
+base_url: https://api.opencollective.com/graphql/v2
+
+tables:
+  - name: collectives
+    description: One row per Open Collective project/org.
+    filters:
+      - name: slug
+        required: true
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: Content-Type
+          from: template
+          template: application/json
+      body:
+        format: json
+        fields:
+          - path: ["query"]
+            from: template
+            template: |
+              query ($slug: String) {
+                collective(slug: $slug) {
+                  slug
+                  name
+                  currency
+                  stats {
+                    totalAmountReceived {
+                      value
+                      currency
+                    }
+                    contributorsCount
+                  }
+                  githubHandle
+                }
+              }
+          - path: ["variables", "slug"]
+            from: filter
+            key: slug
+    response:
+      rows_path: ["data", "collective"]
+    columns:
+      - name: slug
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: slug
+      - name: name
+        type: Utf8
+      - name: currency
+        type: Utf8
+      - name: total_amount_received
+        type: Float64
+        expr:
+          kind: path
+          path: ["stats", "totalAmountReceived", "value"]
+      - name: contributors_count
+        type: Int64
+        expr:
+          kind: path
+          path: ["stats", "contributorsCount"]
+      - name: github_url
+        type: Utf8
+        expr:
+          kind: path
+          path: ["githubHandle"]
