@@ -317,7 +317,7 @@ function bodyEmptyText(kind: 'request' | 'response', attrs: Record<string, unkno
 
   if (truncated) return `${label} was truncated${size ? ` (${size})` : ''}, but no preview was recorded.`
   if (present) return `${label} was present${size ? ` (${size})` : ''}, but content was not captured. ${ENABLE_BODY_RECORDING_TEXT}`
-  return `No ${kind} body was recorded for this request. ${ENABLE_BODY_RECORDING_TEXT}`
+  return `No ${kind} body was recorded for this request.`
 }
 
 function metaChip(label: string, value: React.ReactNode) {

@@ -24,7 +24,6 @@ pub(crate) fn compile_query_source(
     source: &QuerySource,
     runtime_context: &crate::QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-    http_body_capture_max_bytes: Option<usize>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     compile_validated_manifest(
         source.source_spec(),
@@ -33,7 +32,6 @@ pub(crate) fn compile_query_source(
             source_secrets: source.secrets().clone(),
             source_variables: source.variables().clone(),
             request_authenticators,
-            http_body_capture_max_bytes,
         },
     )
 }
@@ -53,7 +51,6 @@ pub(crate) fn compile_source_manifest(
             source_secrets,
             source_variables,
             request_authenticators: &request_authenticators,
-            http_body_capture_max_bytes: None,
         },
     )
 }

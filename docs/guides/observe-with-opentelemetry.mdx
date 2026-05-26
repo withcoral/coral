@@ -43,7 +43,7 @@ HTTP request and response body previews are not recorded by default. To enable l
 record_http_bodies = true
 ```
 
-Recorded HTTP body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. They are not exported to OTLP by default, but broad trace filters can include them.
+Recorded HTTP body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. Body preview spans are never exported to OTLP, even if a broad `[otel].trace_filter` would otherwise match `coral.http.body`.
 
 ## Configuration reference
 

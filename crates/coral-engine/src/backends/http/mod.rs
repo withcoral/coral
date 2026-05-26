@@ -63,7 +63,7 @@ pub(crate) fn compile_manifest(
         request.source_secrets.clone(),
         request.source_variables.clone(),
         request.request_authenticators.clone(),
-        request.http_body_capture_max_bytes,
+        request.runtime_context.http_body_capture_max_bytes,
     )
 }
 
