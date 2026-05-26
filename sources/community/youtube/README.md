@@ -33,8 +33,8 @@ coral source add --file sources/community/youtube/manifest.yaml
 coral source test youtube
 ```
 
-The built-in test query reads `youtube.channels` for `@DynamoGaming` and
-verifies that authentication and column mapping are working.
+The built-in test query reads `youtube.channels_by_handle` for `@DynamoGaming`
+and verifies that authentication and column mapping are working.
 
 ## Quota
 
@@ -44,6 +44,7 @@ per project. Costs per table:
 | Table | Units per call |
 |---|---|
 | `channels` | 1 |
+| `channels_by_handle` | 1 |
 | `playlist_items` | 1 |
 | `videos` | 1 |
 | `comment_threads` | 1 |
@@ -59,15 +60,20 @@ if you need more capacity.
 
 ### `youtube.channels`
 
-Channel metadata and statistics.
+Channel metadata and statistics, looked up by channel ID.
 
-**Filters (provide one):**
-- `handle` — @-prefixed channel handle, e.g. `@DynamoGaming`
-- `channel_id` — UC-prefixed channel ID, or comma-separated list of up to 50
+**Required filter:** `channel_id` — UC-prefixed channel ID, or
+comma-separated list of up to 50.
 
-**Note:** Omitting both filters produces a 400 API error. Statistics
-(`statistics__view_count`, `statistics__subscriber_count`,
+**Note:** Statistics (`statistics__view_count`, `statistics__subscriber_count`,
 `statistics__video_count`) are returned as strings by the YouTube API.
+
+### `youtube.channels_by_handle`
+
+Channel metadata and statistics, looked up by @-handle. Returns exactly
+one row.
+
+**Required filter:** `handle` — @-prefixed channel handle, e.g. `@DynamoGaming`
 
 ### `youtube.playlist_items`
 
@@ -93,15 +99,17 @@ Statistics are returned as strings.
 
 ### `youtube.search`
 
-Search YouTube for videos, channels, or playlists.
+Search YouTube for videos, channels, or playlists by keyword.
 
-**Optional filters:** `q`, `channel_id`, `type`, `order`, `published_after`,
+**Required filter:** `q` — the search keyword (e.g. `'machine learning'`)
+
+**Optional filters:** `channel_id`, `type`, `order`, `published_after`,
 `published_before`
 
-**WARNING:** Each call costs 100 quota units. The table defaults to 50
-results — add an explicit `LIMIT` for larger scans. All filters are
-optional per the YouTube API; omitting both `q` and `channel_id` returns
-0 rows silently.
+**WARNING:** Each call costs 100 quota units — 100× more expensive than
+every other table. The table defaults to 50 results. To browse a
+channel's videos without a keyword, use `youtube.playlist_items` instead
+(1 unit per call).
 
 ### `youtube.comment_threads`
 
@@ -122,13 +130,13 @@ All replies to a specific comment thread.
 ## Example Queries
 
 ```sql
--- Look up a channel by handle
+-- Look up a channel by @-handle (uses channels_by_handle)
 SELECT id, snippet__title, statistics__subscriber_count,
        statistics__video_count, content_details__related_playlists__uploads
-FROM youtube.channels
+FROM youtube.channels_by_handle
 WHERE handle = '@DynamoGaming';
 
--- Look up a channel by ID
+-- Look up a channel by ID, or multiple channels at once (uses channels)
 SELECT id, snippet__title, snippet__country, statistics__subscriber_count
 FROM youtube.channels
 WHERE channel_id = 'UCVTqNpUKJA_Ef_sJVWg7NdQ';
@@ -186,9 +194,10 @@ LIMIT 20;
 - **`search` quota cost.** Each `search` call costs 100 quota units vs. 1
   for every other table. The 10,000-unit daily quota allows ~100 search
   calls per day.
-- **`comment_threads` reply preview.** The API returns a preview of replies
-  inside each thread row. `youtube.comments WHERE parent_id = '<id>'` is
-  required to retrieve the complete reply list.
+- **`comment_threads` has no reply content.** Each row contains the top-level
+  comment and a reply count (`snippet__total_reply_count`), but reply text is
+  not fetched. Use `youtube.comments WHERE parent_id = '<thread_id>'` to
+  retrieve all replies for a thread.
 - **`search` → `videos` join.** `youtube.videos` requires a constant
   `video_id` filter, so a dynamic join from `search` results is not
   supported. Use a two-step approach: run `search`, collect the video IDs,

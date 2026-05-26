@@ -2,8 +2,8 @@ dsl_version: 3
 name: youtube
 version: 1.2.0
 description: >-
-  Query channels, videos, playlist items, search results, and comments from
-  YouTube Data API v3.
+  Query channels (by ID or handle), videos, playlist items, search results,
+  and comments from YouTube Data API v3.
 backend: http
 base_url: https://www.googleapis.com/youtube/v3
 inputs:
@@ -168,9 +168,10 @@ tables:
   - name: channels_by_handle
     description: Look up a YouTube channel by @-handle
     guide: |
-      Returns metadata, statistics, and content details for a single YouTube
+      Returns metadata, statistics, and content details for a YouTube
       channel looked up by @-handle. `handle` is required and must be the
-      @-prefixed handle (e.g. `@DynamoGaming`). Returns exactly one row.
+      @-prefixed handle (e.g. `@DynamoGaming`). Returns at most one row;
+      returns 0 rows if the handle does not exist.
 
       To look up by channel ID instead (or multiple channels at once),
       use `youtube.channels`.
@@ -313,9 +314,10 @@ tables:
     description: Videos and other items within a YouTube playlist
     guide: |
       Returns all items in a YouTube playlist in order. `playlist_id` is
-      required. To list a channel's uploads, query `youtube.channels` first
-      and use the `content_details__related_playlists__uploads` value as the
-      playlist_id. Results paginate automatically via pageToken.
+      required. To list a channel's uploads, query `youtube.channels` (by ID)
+      or `youtube.channels_by_handle` (by handle) first and use the
+      `content_details__related_playlists__uploads` value as the playlist_id.
+      Results paginate automatically via pageToken.
     filters:
       - name: playlist_id
         required: true
