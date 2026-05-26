@@ -1,6 +1,6 @@
 dsl_version: 3
 name: youtube
-version: 1.2.0
+version: 1.3.0
 description: >-
   Query channels (by ID or handle), videos, playlist items, search results,
   and comments from YouTube Data API v3.
@@ -21,6 +21,7 @@ auth:
       template: "{{input.YOUTUBE_API_KEY}}"
 test_queries:
   - SELECT * FROM youtube.channels_by_handle WHERE handle = '@DynamoGaming' LIMIT 1
+  - SELECT * FROM youtube.channels WHERE channel_id = 'UCBR8-60-B28hp2BmDPdntcQ' LIMIT 1
 tables:
   - name: channels
     description: Look up YouTube channels by ID
@@ -717,23 +718,21 @@ tables:
             - publicStatsViewable
 
   - name: search
-    description: Search YouTube for videos, channels, or playlists by keyword
+    description: Provider-ranked YouTube search results for videos, channels, or playlists
     guide: |
-      Returns search results for the given keyword query. `q` is required —
-      it is the search term and the primary scoping input for this table.
-      Optionally add `channel_id` to restrict results to a specific channel,
-      and `type` to restrict to `video`, `channel`, or `playlist` (default:
-      all three). `order` accepts `relevance` (default), `date`, `rating`,
-      `title`, `videoCount`, or `viewCount`. `published_after` and
-      `published_before` accept RFC 3339 timestamps (e.g.
-      `2024-01-01T00:00:00Z`).
+      Returns relevance-ranked search results for the given keyword query.
+      `q` (the search term) is required — this is a provider-native search
+      endpoint; results are ranked by YouTube. Optionally add `channel_id`
+      to restrict to a specific channel, `type` to filter by resource type
+      (`video`, `channel`, or `playlist`; default: all three), `order`
+      (`relevance`, `date`, `rating`, `title`, `videoCount`, `viewCount`),
+      and RFC 3339 date bounds via `published_after` / `published_before`.
 
-      WARNING: each search call costs 100 quota units regardless of result
-      count — 100× more expensive than every other table. The default daily
-      quota is 10,000 units (~100 search calls/day). This table defaults to
-      50 results to limit accidental drain; add an explicit LIMIT for larger
-      scans. To browse a channel's videos cheaply (1 unit/call), use
-      `youtube.playlist_items` instead.
+      WARNING: each search call costs 100 quota units — 100× more expensive
+      than every other table. The daily default quota is 10,000 units (~100
+      calls/day). Defaults to 50 results to limit accidental drain; add an
+      explicit LIMIT for larger scans. To browse a channel's videos cheaply
+      (1 unit/call), use `youtube.playlist_items` instead.
 
       The result `id__video_id`, `id__channel_id`, or `id__playlist_id`
       column will be populated depending on the result type; the others will
@@ -795,7 +794,7 @@ tables:
       - name: q
         type: Utf8
         nullable: true
-        description: Search query string
+        description: Search query string (provider-native ranked search)
         expr:
           kind: from_filter
           key: q
@@ -934,11 +933,15 @@ tables:
       Returns top-level comment threads for a video. Each row represents one
       thread. The top-level comment is in the `top_comment__*` columns;
       `snippet__total_reply_count` shows how many replies exist. To retrieve
-      all replies for a thread, query `youtube.comments` with `parent_id`
-      set to the thread `id`.
+      all replies, query `youtube.comments WHERE parent_id = '<top_comment__id>'`
+      using the `top_comment__id` value from this table.
+
+      Defaults to 200 threads. Popular videos can have millions of comments
+      so add an explicit LIMIT for deeper scans.
 
       `order` accepts `time` (default) or `relevance`. `search_terms`
       filters threads to those containing the given text.
+    fetch_limit_default: 200
     filters:
       - name: video_id
         required: true
@@ -1001,7 +1004,7 @@ tables:
       - name: id
         type: Utf8
         nullable: false
-        description: Comment thread ID — use as parent_id in youtube.comments to fetch all replies
+        description: Top-level comment ID — use this as parent_id in youtube.comments to fetch all replies (equals the thread id on YouTube)
         expr:
           kind: path
           path:
@@ -1149,16 +1152,23 @@ tables:
   - name: comments
     description: Replies to a YouTube comment thread
     guide: |
-      Returns all replies to a specific comment thread. `parent_id` is
-      required and must be a thread `id` from `youtube.comment_threads`.
-      Unlike the `replies` preview embedded in comment_threads rows, this
-      table returns the complete paginated list of replies.
+      Defaults to 100 replies. Use an explicit LIMIT for threads with many
+      replies to avoid walking every page.
+
+      Returns all replies to a specific top-level comment. `parent_id` is
+      required and must be the `top_comment__id` value from
+      `youtube.comment_threads`. The YouTube API `comments.list` endpoint
+      accepts the ID of the comment whose replies to retrieve — on YouTube
+      this is always `snippet.topLevelComment.id`, exposed here as
+      `top_comment__id`. In practice this value is identical to the thread
+      `id`, but the API contract is the comment ID.
 
       Typical workflow:
         1. Query `youtube.comment_threads WHERE video_id = '<id>'` to find
-           threads and their `id` values.
-        2. Query `youtube.comments WHERE parent_id = '<thread_id>'` to read
-           all replies for a thread with replies.
+           threads and their `top_comment__id` values.
+        2. Query `youtube.comments WHERE parent_id = '<top_comment__id>'` to
+           read all replies for that thread.
+    fetch_limit_default: 100
     filters:
       - name: parent_id
         required: true
@@ -1190,7 +1200,7 @@ tables:
       - name: parent_id
         type: Utf8
         nullable: true
-        description: Thread ID filter used to look up replies
+        description: Use top_comment__id from youtube.comment_threads — YouTube parentId is a comment ID, not thread ID (same value on YouTube)
         expr:
           kind: from_filter
           key: parent_id

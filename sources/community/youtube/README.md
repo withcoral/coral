@@ -1,6 +1,6 @@
 # YouTube Community Source
 
-Query YouTube channels, videos, playlists, search results, and comments
+Query YouTube channels, videos, playlist items, search results, and comments
 through Coral SQL using the YouTube Data API v3.
 
 ## Setup
