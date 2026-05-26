@@ -565,6 +565,9 @@ auth:
 Auth and request templates can use `||` to choose the first available value
 and `concat(...)` to join string literals and template values, for example
 `{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}`.
+This is useful when a source supports both pasted API-key headers and OAuth:
+OAuth stores the raw `access_token`, so templates should compose any required
+`Bearer ` prefix.
 
 #### `BasicAuth`
 

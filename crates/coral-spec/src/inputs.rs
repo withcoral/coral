@@ -1759,6 +1759,29 @@ tables: []
     }
 
     #[test]
+    fn expression_template_input_references_are_boundary_aware() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  OAUTH_TOKEN:
+    kind: secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: '{{filter.input.API_KEY || input.OAUTH_TOKEN}}'
+tables: []
+";
+        let inputs = collect(manifest).expect("filter key should not be read as an input key");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].key, "OAUTH_TOKEN");
+    }
+
+    #[test]
     fn inline_template_defaults_are_rejected() {
         let manifest = r#"
 name: demo

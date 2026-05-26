@@ -684,6 +684,22 @@ fn validate_arg_template(
     context: &str,
 ) -> Result<()> {
     for token in template.tokens() {
+        if token.is_expression() {
+            for key in token.arg_keys() {
+                if !request_arg_names.contains(key) {
+                    return Err(ManifestError::validation(format!(
+                        "{context} references unknown request arg '{key}' in template '{}'",
+                        template.raw()
+                    )));
+                }
+            }
+            if let Some(key) = token.filter_keys().into_iter().next() {
+                return Err(ManifestError::validation(format!(
+                    "{context} uses unsupported function request template token 'filter.{key}'"
+                )));
+            }
+            continue;
+        }
         match token.namespace() {
             TemplateNamespace::Arg => {
                 if !request_arg_names.contains(token.key()) {
@@ -838,6 +854,11 @@ pub(crate) fn validate_template(
                         template.raw()
                     )));
                 }
+            }
+            if let Some(key) = token.arg_keys().into_iter().next() {
+                return Err(ManifestError::validation(format!(
+                    "{context} uses function argument token 'arg.{key}' outside a function request"
+                )));
             }
             continue;
         }
@@ -1283,6 +1304,61 @@ mod tests {
     }
 
     #[test]
+    fn validate_http_table_rejects_function_arg_expression_tokens() {
+        let request = RequestSpec {
+            path: ParsedTemplate::parse(r"/search/{{arg.q || input.API_KEY}}").expect("template"),
+            ..RequestSpec::default()
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &request,
+            &[],
+            &PaginationSpec::default(),
+            None,
+            &[],
+        )
+        .expect_err("table request expression templates should reject function arguments");
+
+        assert!(
+            error
+                .to_string()
+                .contains("uses function argument token 'arg.q' outside a function request")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_unknown_filter_expression_tokens() {
+        let request = RequestSpec {
+            path: ParsedTemplate::parse(r"/search/{{filter.missing || input.API_KEY}}")
+                .expect("template"),
+            ..RequestSpec::default()
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &request,
+            &[],
+            &PaginationSpec::default(),
+            None,
+            &[],
+        )
+        .expect_err("table request expression templates should reject unknown filters");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown filter 'missing'")
+        );
+    }
+
+    #[test]
     fn validate_http_function_rejects_table_filter_value_sources() {
         let cases = [
             ValueSourceSpec::Filter {
@@ -1346,6 +1422,32 @@ mod tests {
                 "unexpected error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn validate_http_function_accepts_arg_expression_tokens() {
+        let function = function_with_request_value(ValueSourceSpec::Template {
+            template: ParsedTemplate::parse(r"{{arg.q || input.API_KEY}}").expect("template"),
+        });
+
+        validate_http_function("demo", &function)
+            .expect("function request expression should accept declared args");
+    }
+
+    #[test]
+    fn validate_http_function_rejects_unknown_arg_expression_tokens() {
+        let function = function_with_request_value(ValueSourceSpec::Template {
+            template: ParsedTemplate::parse(r"{{arg.missing || input.API_KEY}}").expect("template"),
+        });
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("function request expression should reject unknown args");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown request arg 'missing'")
+        );
     }
 
     #[test]
