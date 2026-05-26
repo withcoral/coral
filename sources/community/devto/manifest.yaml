@@ -249,7 +249,7 @@ tables:
       row_strategy: direct
     pagination:
       mode: none
-    columns:
+    columns: &user_columns
       - name: id
         type: Int64
         nullable: false
@@ -314,51 +314,7 @@ tables:
       row_strategy: direct
     pagination:
       mode: none
-    columns:
-      - name: id
-        type: Int64
-        nullable: false
-        description: User ID.
-      - name: username
-        type: Utf8
-        nullable: false
-        description: Username.
-      - name: name
-        type: Utf8
-        nullable: false
-        description: Display name.
-      - name: summary
-        type: Utf8
-        nullable: true
-        description: User profile summary/bio.
-      - name: location
-        type: Utf8
-        nullable: true
-        description: User location.
-      - name: website_url
-        type: Utf8
-        nullable: true
-        description: User website URL.
-      - name: joined_at
-        type: Utf8
-        nullable: true
-        description: Date the user joined DEV.to (e.g. Dec 27, 2015).
-      - name: twitter_username
-        type: Utf8
-        nullable: true
-        description: Twitter handle.
-      - name: github_username
-        type: Utf8
-        nullable: true
-        description: GitHub handle.
-      - name: profile_image
-        type: Utf8
-        nullable: true
-        description: URL of the user profile image.
-      - name: email
-        type: Utf8
-        nullable: true
-        description: Public email address, if set.
+    columns: *user_columns
 
   # ──────────────────────────────────────────────────────────────────────
   # tags — list active tags
