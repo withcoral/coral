@@ -90,9 +90,13 @@ tables:
     description: Questions (items) in a Google Forms form.
     guide: |
       Each row is one question item in the form. Requires form_id filter.
-      item_id is the stable identifier for each question — use it to match
-      answers in the responses table. title is the question text shown to
-      respondents. required indicates whether the question must be answered
+      Only items of type CHECKBOX, RADIO, SHORT_ANSWER, PARAGRAPH, DROPDOWN,
+      SCALE, DATE, and TIME are returned. Page breaks, images, section headers,
+      and videos are excluded. Grid question sub-items live under
+      questionGroupItem.questions[] and are not included.
+      question_id is the stable identifier used as keys in responses.answers —
+      use it to join with the responses table. title is the question text shown
+      to respondents. required indicates whether the question must be answered
       before the form can be submitted.
     filters:
       - name: form_id
@@ -107,6 +111,9 @@ tables:
     response:
       rows_path:
         - items
+      row_filter:
+        field: questionItem
+        operator: exists
       allow_404_empty: false
       row_strategy: direct
     pagination:
@@ -115,11 +122,24 @@ tables:
       - name: item_id
         type: Utf8
         nullable: false
-        description: Unique item ID for this question. Matches keys in the responses.answers object.
+        description: Unique item ID for this question item.
         expr:
           kind: path
           path:
             - itemId
+      - name: question_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Question ID from the Google Forms API. This is the key used in
+          responses.answers — join this to responses.answers keys to resolve
+          question titles and submitted values.
+        expr:
+          kind: path
+          path:
+            - questionItem
+            - question
+            - questionId
       - name: title
         type: Utf8
         nullable: true
@@ -161,9 +181,11 @@ tables:
       response_id is the stable identifier for each response.
       create_time and last_submitted_time are ISO 8601 timestamps.
       respondent_email is populated only if the form collects email addresses.
-      answers is a JSON object mapping item_id keys (from the questions table)
+      answers is a JSON object mapping question_id keys (from the questions table)
       to answer objects containing the submitted values.
       Use after_timestamp to fetch responses submitted after a given time.
+      The filter value must use the format: timestamp >= <ISO8601>
+      or timestamp > <ISO8601> (e.g. timestamp >= 2024-01-01T00:00:00Z).
     filters:
       - name: form_id
         required: true
@@ -179,7 +201,7 @@ tables:
     response:
       rows_path:
         - responses
-      allow_404_empty: true
+      allow_404_empty: false
       row_strategy: direct
     pagination:
       mode: cursor_query
@@ -227,9 +249,9 @@ tables:
         type: Utf8
         nullable: true
         description: >-
-          JSON object mapping item_id keys to answer objects. Each answer
-          contains the question ID and submitted values. Join item_id keys
-          to questions.item_id to resolve question titles.
+          JSON object mapping question_id keys to answer objects. Each answer
+          contains the submitted values. Join question_id keys to
+          questions.question_id to resolve question titles.
         expr:
           kind: path
           path:

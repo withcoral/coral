@@ -59,12 +59,12 @@ FROM google_forms.form
 WHERE form_id = 'your-form-id';
 
 -- List all questions
-SELECT item_id, title, required
+SELECT item_id, question_id, title, required
 FROM google_forms.questions
 WHERE form_id = 'your-form-id';
 
 -- List required questions only
-SELECT item_id, title
+SELECT item_id, question_id, title
 FROM google_forms.questions
 WHERE form_id = 'your-form-id'
   AND required = true;
@@ -83,7 +83,23 @@ WHERE form_id = 'your-form-id';
 SELECT response_id, create_time, answers
 FROM google_forms.responses
 WHERE form_id = 'your-form-id'
-  AND after_timestamp = 'timestamp=2024-01-01T00:00:00Z';
+  AND after_timestamp = 'timestamp >= 2024-01-01T00:00:00Z';
+```
+
+## Joining Questions and Responses
+
+The `answers` column in `responses` is a JSON object keyed by `question_id` from the `questions` table:
+
+```sql
+-- Get questions to find question_id values
+SELECT question_id, title
+FROM google_forms.questions
+WHERE form_id = 'your-form-id';
+
+-- Then fetch responses and match answers by question_id
+SELECT response_id, create_time, answers
+FROM google_forms.responses
+WHERE form_id = 'your-form-id';
 ```
 
 ## Discovery Order
@@ -94,17 +110,34 @@ form
     → questions (WHERE form_id = '...')
     → responses (WHERE form_id = '...')
 questions
-  → item_id → matches keys in responses.answers
+  → question_id → matches keys in responses.answers
 ```
 
 ## Limitations
 
 - **Read-only**: This source only supports `SELECT` operations.
 - **Access token expiry**: OAuth 2.0 access tokens expire after 1 hour.
-- **Answers as JSON**: The `answers` column is a raw JSON object. Join `item_id` from the `questions` table to resolve question titles.
-- **after_timestamp filter**: The Google Forms API expects the filter value in the format `timestamp=<ISO8601>` (e.g. `timestamp=2024-01-01T00:00:00Z`).
+- **Answers as JSON**: The `answers` column is a raw JSON object. Join `question_id` from the `questions` table to resolve question titles.
+- **after_timestamp filter**: The Google Forms API expects the filter value using comparison operators. Use `timestamp >= <ISO8601>` or `timestamp > <ISO8601>` (e.g. `timestamp >= 2024-01-01T00:00:00Z`).
+- **Question types**: The `questions` table only returns actual question items (CHECKBOX, RADIO, SHORT_ANSWER, PARAGRAPH, DROPDOWN, SCALE, DATE, TIME). Page breaks, images, section headers, and videos are excluded.
 
 ## Notes
 
 - The `form_id` is stable and does not change when the form is renamed.
-- Use the `questions` table to map `item_id` values in `answers` to human-readable question titles.
+- Use `question_id` (not `item_id`) to match answers keys in the responses table.
+- Grid question sub-items live under `questionGroupItem.questions[]` and are not returned by this source.
+
+## Live Test Output
+
+Run these commands to verify the source works against a real Google Form:
+
+```bash
+coral source add --file sources/community/google_forms/manifest.yaml
+coral source test google_forms
+
+coral query "SELECT form_id, title, description FROM google_forms.form WHERE form_id = 'your-real-form-id'"
+coral query "SELECT item_id, question_id, title, required FROM google_forms.questions WHERE form_id = 'your-real-form-id' LIMIT 5"
+coral query "SELECT response_id, create_time FROM google_forms.responses WHERE form_id = 'your-real-form-id' LIMIT 3"
+```
+
+> Replace `your-real-form-id` with a real form ID and paste actual terminal output here.
