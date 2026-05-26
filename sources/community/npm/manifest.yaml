@@ -5,6 +5,11 @@ description: npm package download statistics.
 backend: http
 base_url: https://api.npmjs.org
 
+test_queries:
+  - >-
+    SELECT package, downloads, start, end
+    FROM npm.packages WHERE name = 'express' AND period = 'last-month' LIMIT 1
+
 tables:
   - name: packages
     description: npm package download stats.
@@ -12,8 +17,7 @@ tables:
       - name: name
         required: true
       - name: period
-        required: false
-        default: last-month
+        required: true
     request:
       method: GET
       path: /downloads/point/{{filter.period}}/{{filter.name}}

@@ -9,7 +9,7 @@ No authentication is required — the endpoint is fully public.
 
 | Table | Description |
 | ----- | ----------- |
-| `npm.packages` | Retrieve download stats (daily, weekly, monthly) for any npm package |
+| `npm.packages` | Retrieve download stats for any npm package by period (`last-day`, `last-week`, `last-month`) |
 
 ## Setup
 
@@ -39,5 +39,5 @@ coral source lint sources/community/npm/manifest.yaml
 Run test query:
 
 ```bash
-coral sql "SELECT * FROM npm.packages WHERE name = 'express'"
+coral sql "SELECT * FROM npm.packages WHERE name = 'express' AND period = 'last-month'"
 ```
