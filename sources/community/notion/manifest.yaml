@@ -1,0 +1,461 @@
+name: notion
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query users, pages, databases, and block children from Notion
+  via the Notion REST API v1.
+base_url: https://api.notion.com/v1
+
+inputs:
+  NOTION_TOKEN:
+    kind: secret
+    hint: |
+      Connect your Notion workspace via "Connect with Notion" below, or
+      paste an internal integration token.
+
+      To use OAuth, create a public Notion integration at
+      https://www.notion.so/my-integrations, set the redirect URI to
+      http://127.0.0.1:53682/oauth/callback, and copy the OAuth Client
+      ID and Secret into NOTION_CLIENT_ID and NOTION_CLIENT_SECRET.
+
+      To use an internal integration token, create an internal integration
+      at https://www.notion.so/my-integrations and paste the secret_xxx
+      token when prompted. Make sure to share the pages and databases you
+      want to query with the integration.
+
+      Note: this source sends Authorization: Bearer and works with both
+      OAuth access tokens and internal integration tokens (both Bearer).
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Notion
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: disabled
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://api.notion.com/v1/oauth/authorize
+              token_url: https://api.notion.com/v1/oauth/token
+            client:
+              id:
+                input: NOTION_CLIENT_ID
+              secret:
+                input: NOTION_CLIENT_SECRET
+                transport: basic_auth
+        - type: source_config
+          label: Paste internal integration token
+
+  NOTION_CLIENT_ID:
+    kind: variable
+    hint: |
+      OAuth Client ID from your Notion public integration settings at
+      https://www.notion.so/my-integrations.
+
+  NOTION_CLIENT_SECRET:
+    kind: secret
+    hint: |
+      OAuth Client Secret from your Notion public integration settings.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.NOTION_TOKEN}}
+
+request_headers:
+  - name: Notion-Version
+    from: literal
+    value: "2022-06-28"
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name, type FROM notion.users LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # users — workspace members
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: users
+    description: >-
+      Members of the Notion workspace visible to the integration.
+      Returns both person and bot users.
+    guide: |
+      No required filters. Use `type` to distinguish person users from
+      bots. `email` is only populated for person users and only when the
+      integration has the user email capability enabled. Join `name` or
+      `email` with `linear.users` or `github.members` for cross-tool
+      team analytics.
+    request:
+      method: GET
+      path: /users
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Notion user ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the user.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "User type: person or bot."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: email
+        type: Utf8
+        nullable: true
+        description: >-
+          Email address for person users. Only populated when the
+          integration has the user email capability enabled.
+        expr:
+          kind: path
+          path:
+            - person
+            - email
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: URL of the user avatar image.
+        expr:
+          kind: path
+          path:
+            - avatar_url
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # databases — databases the integration has access to
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: databases
+    description: >-
+      Databases the integration has access to in the workspace, discovered
+      via the Notion search API. Only databases explicitly shared with the
+      integration are returned.
+    guide: |
+      No required filters. Uses POST /search with a database filter.
+      Only databases shared with the integration appear. Use `id` as
+      `database_id` when querying pages or building downstream queries.
+      `title` is extracted from the first element of the rich text title
+      array in the API response.
+    request:
+      method: POST
+      path: /search
+      body:
+        - path:
+            - filter
+            - value
+          from: literal
+          value: database
+        - path:
+            - filter
+            - property
+          from: literal
+          value: object
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        body_path:
+          - page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Notion database ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: >-
+          Database title extracted from the first rich text element of
+          the title array in the API response.
+        expr:
+          kind: path
+          path:
+            - title
+            - "0"
+            - plain_text
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the database was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the database was last edited.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL of the database in Notion.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the database is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # pages — pages the integration has access to
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: pages
+    description: >-
+      Pages the integration has access to in the workspace, discovered
+      via the Notion search API. Only pages explicitly shared with the
+      integration are returned.
+    guide: |
+      No required filters. Uses POST /search with a page filter. Only
+      pages shared with the integration appear. Use `id` as `block_id`
+      in `notion.blocks` to retrieve page content. `title` is extracted
+      from the first element of the rich text title array under the
+      page properties Title field.
+    request:
+      method: POST
+      path: /search
+      body:
+        - path:
+            - filter
+            - value
+          from: literal
+          value: page
+        - path:
+            - filter
+            - property
+          from: literal
+          value: object
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        body_path:
+          - page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Notion page ID. Pass as block_id to notion.blocks to fetch content.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the page was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the page was last edited.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL of the page in Notion.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the page is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: created_by_id
+        type: Utf8
+        nullable: true
+        description: ID of the user who created the page.
+        expr:
+          kind: path
+          path:
+            - created_by
+            - id
+      - name: last_edited_by_id
+        type: Utf8
+        nullable: true
+        description: ID of the user who last edited the page.
+        expr:
+          kind: path
+          path:
+            - last_edited_by
+            - id
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # blocks — child blocks of a page or block
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: blocks
+    description: >-
+      Child blocks of a Notion page or block. Each row is one direct
+      child block. Use for extracting structured content from known pages.
+    guide: |
+      Requires `block_id`. Pass a page ID from `notion.pages` or any
+      block ID to retrieve its direct children. Use `has_children` to
+      identify blocks with nested content — those require a separate
+      query with the child block's `id` as `block_id`. `type` indicates
+      the block kind such as paragraph, heading_1, to_do, code, or
+      bulleted_list_item.
+    filters:
+      - name: block_id
+        required: true
+    request:
+      method: GET
+      path: /blocks/{{filter.block_id}}/children
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: start_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Block ID. Pass as block_id to retrieve nested children.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Block type such as paragraph, heading_1, heading_2, heading_3,
+          to_do, code, bulleted_list_item, numbered_list_item, or image.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the block was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: last_edited_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the block was last edited.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_edited_time
+      - name: has_children
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether this block has nested child blocks. Query again with
+          this block's id as block_id to retrieve them.
+        expr:
+          kind: path
+          path:
+            - has_children
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the block is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: block_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Page or block ID passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: block_id
