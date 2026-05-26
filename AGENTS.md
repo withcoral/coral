@@ -45,9 +45,9 @@
   install-script matrix in sync with every OS/architecture target that the
   installer supports.
 - `make docs-check` intentionally skips the aggregate community source catalog.
-  Source-only changes under `sources/community/**` do not need to update that
-  generated page; keep docs freshness strict for generator changes, docs
-  changes, and bundled sources under `sources/core/**`.
+  Any PR may leave that generated page stale so unrelated changes do not fail
+  on aggregate community catalog drift; keep docs freshness strict for bundled
+  sources under `sources/core/**`, `docs/docs.json`, and the changelog.
 - Keep checked-in generated files marked in `.gitattributes` with
   `linguist-generated` so GitHub collapses them by default in PR diffs.
 - Source inputs that carry credentials must be `kind: secret`, never

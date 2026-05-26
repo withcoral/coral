@@ -25,8 +25,8 @@
   `make docs-generate`; update source manifests or the xtask renderer rather
   than editing those pages by hand
 - `make docs-check` intentionally skips
-  `docs/reference/community-sources.mdx`; source-only
-  `sources/community/**` PRs are allowed to leave that generated page stale.
+  `docs/reference/community-sources.mdx`; any PR may leave that generated page
+  stale so unrelated changes do not fail on aggregate community catalog drift.
 
 ## Maintaining these instructions
 - Keep docs-specific agent rules here; keep repo-wide agent and contributor
