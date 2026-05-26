@@ -5,185 +5,230 @@
 **Tables:** 5
 **Base URL:** `{{input.COOLIFY_BASE_URL}}/api/v1`
 
-Query Coolify projects, environments, servers, applications, and active deployments through Coral SQL using the [Coolify REST API](https://coolify.io/docs/api-reference). Use this data source for PaaS state auditing, deployment tracking, server health monitoring, and managing environment topologies across self-hosted instances or Coolify Cloud accounts.
+Query Coolify projects, environments, servers, applications, and active deployments through Coral SQL using the [Coolify REST API](https://coolify.io/docs/api-reference).
 
-Coral exposes read-only `GET` tables. Write operations (triggering deployments, stopping services, provisioning resources) are out of scope for v1.
+Use this source for:
+
+* deployment auditing
+* application inventory
+* server fleet monitoring
+* Git deployment visibility
+* environment topology inspection
+
+Coral exposes read-only `GET` tables. Deployment execution, provisioning, updates, and destructive operations are out of scope for v1.
+
+---
+
+## Authentication & Token Scoping
+
+Coolify API tokens are team-scoped.
+
+Visibility returned through Coral depends entirely on the permissions assigned to the API token.
+
+### Token setup
+
+1. Open the Coolify dashboard.
+2. Navigate to:
+   `Keys & Tokens → API tokens`
+3. Create a token with read access.
+
+### Minimum permissions
+
+The token should have:
+
+* read/view access for projects
+* read/view access for applications
+* read/view access for servers
+* read/view access for deployments
+
+### Sensitive data visibility
+
+Some environment variables or sensitive deployment metadata may remain hidden unless the token has elevated permissions.
+
+---
 
 ## Install
 
-Community sources are not bundled with the Coral binary. From the Coral repo root (or with a copied manifest):
+Community sources are not bundled with the Coral binary.
 
 ```bash
 coral source add --file sources/community/coolify/manifest.yaml
 ```
 
-Or copy `manifest.yaml` into your workspace and pass that path to `coral source add --file`.
+You can also copy `manifest.yaml` locally and reference it using:
 
-Set credentials via environment variables (recommended) or `coral source add --file ... --interactive`.
+```bash
+coral source add --file ./manifest.yaml
+```
+
+---
 
 ## Inputs
 
-| Input | Kind | Required | Description |
-| --- | --- | --- | --- |
-| `COOLIFY_BASE_URL` | variable | yes | Root URL of your instance with **no** trailing slash and **no** `/api/v1` path suffix (for example `https://coolify.example.com` or `http://localhost:8000`). |
-| `COOLIFY_API_TOKEN` | secret | yes | Personal API token obtained from your Coolify panel under **Keys & Tokens → API tokens**. |
+| Input               | Kind     | Required | Description                                                   |
+| ------------------- | -------- | -------- | ------------------------------------------------------------- |
+| `COOLIFY_BASE_URL`  | variable | yes      | Root Coolify URL without trailing slash and without `/api/v1` |
+| `COOLIFY_API_TOKEN` | secret   | yes      | API token generated from Coolify                              |
 
 ---
 
-## Tables overview
+## Tables Overview
 
-| Table | API endpoint | Required filter | Pagination |
-| --- | --- | --- | --- |
-| `projects` | `GET /api/v1/projects` | — | Full array response |
-| `environments` | `GET /api/v1/projects/{project_uuid}/environments` | `project_uuid` | Full array response |
-| `servers` | `GET /api/v1/servers` | — | Full array response |
-| `applications` | `GET /api/v1/applications` | — | Full array response |
-| `deployments` | `GET /api/v1/deployments` | — | Full array response |
-
-Project-scoped environment tables require an explicit SQL lookup condition, for example `WHERE project_uuid = 'string-uuid'`.
+| Table          | Endpoint                                           | Required Filter |
+| -------------- | -------------------------------------------------- | --------------- |
+| `projects`     | `GET /api/v1/projects`                             | —               |
+| `environments` | `GET /api/v1/projects/{project_uuid}/environments` | `project_uuid`  |
+| `servers`      | `GET /api/v1/servers`                              | —               |
+| `applications` | `GET /api/v1/applications`                         | —               |
+| `deployments`  | `GET /api/v1/deployments`                          | —               |
 
 ---
 
-## Filters and API mapping
+## Filters and API Mapping
 
-Coral maps declared SQL filters to native Coolify API query parameters. Only listed filters are pushed directly down to the REST endpoint; other clauses are filtered in-memory.
+Only declared filters are pushed down directly to the Coolify API.
 
-| SQL filter | Coolify query param | Tables |
-| --- | --- | --- |
+| SQL Filter     | API Parameter         | Tables         |
+| -------------- | --------------------- | -------------- |
 | `project_uuid` | path `{project_uuid}` | `environments` |
-| `tag` | query `tag` | `applications` |
+| `tag`          | query `tag`           | `applications` |
 
 ---
 
-## Table reference
+## Table Reference
 
 ### `coolify.projects`
 
-Top-level grouping for your environments and resources.
+Top-level Coolify projects.
 
-| Column | Type | Description |
-| --- | --- | --- |
-| `id` | Int64 | Internal database ID of the project |
-| `uuid` | Utf8 | Project unique UUID |
-| `name` | Utf8 | Project name |
-| `description` | Utf8 | Optional project description |
-
-### `coolify.environments`
-
-Environments (e.g., production, staging) configured within a project.
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `project_uuid` | Utf8 | Parent project UUID from the required filter |
-| `id` | Int64 | Internal database ID of the environment |
-| `name` | Utf8 | Environment name |
-| `description` | Utf8 | Optional environment description |
-| `project_id` | Int64 | Relational project ID |
-| `created_at` | Timestamp | Environment creation time |
-| `updated_at` | Timestamp | Last record update time |
-
-**Required filter:** `project_uuid`
-
-### `coolify.servers`
-
-Registered server nodes managed by Coolify.
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `id` | Int64 | Internal database ID of the server |
-| `uuid` | Utf8 | Server UUID |
-| `name` | Utf8 | Server name |
-| `description` | Utf8 | Server description |
-| `ip` | Utf8 | IP address or hostname used for SSH connections |
-| `user` | Utf8 | SSH username |
-| `port` | Int64 | SSH connection port |
-| `proxy_type` | Utf8 | Embedded reverse proxy engine type (traefik, caddy, etc.) |
-| `unreachable_count`| Int64 | Consecutively failed health check counts |
-
-### `coolify.applications`
-
-Deployed microservices, websites, and codebases.
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `tag` | Utf8 | Optional tag identifier filter |
-| `id` | Int64 | Internal application ID |
-| `uuid` | Utf8 | Application unique UUID |
-| `name` | Utf8 | Application name |
-| `description` | Utf8 | Application text details |
-| `status` | Utf8 | Current container execution status |
-| `fqdn` | Utf8 | Configured domain routing points |
-| `git_repository` | Utf8 | Source control origin target |
-| `git_branch` | Utf8 | Monitored branch target |
-| `git_commit_sha` | Utf8 | Active running deployment commit hash |
-| `build_pack` | Utf8 | Deployment builder framework (nixpacks, dockerfile, etc.) |
-| `environment_id` | Int64 | Parent environment ID linkage |
-| `destination_id` | Int64 | Destination infrastructure server ID |
-| `health_check_enabled`| Boolean | State of endpoint automated monitoring checks |
-| `created_at` | Timestamp | Application registration date |
-| `updated_at` | Timestamp | Last configuration change date |
-
-### `coolify.deployments`
-
-Active or historic application build queue tracking.
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `id` | Int64 | Internal deployment row ID |
-| `deployment_uuid` | Utf8 | Deployment worker execution UUID |
-| `application_id` | Utf8 | Target resource identity string |
-| `application_name` | Utf8 | Target resource name |
-| `server_id` | Int64 | Destination build runner node ID |
-| `server_name` | Utf8 | Destination build runner name |
-| `status` | Utf8 | Active step state (in-progress, finished, failed) |
-| `commit` | Utf8 | Processing commit hash identifier |
-| `commit_message` | Utf8 | Associated deployment code commit logs |
-| `deployment_url` | Utf8 | Direct internal panel path link to review build standard outputs |
-| `force_rebuild` | Boolean | True if image builds ran without active layer caches |
-| `is_webhook` | Boolean | True if automated git webhooks initiated execution |
-| `is_api` | Boolean | True if manual execution triggers calls via endpoint loops |
-| `rollback` | Boolean | True if rollback triggers invoked state actions |
-| `git_type` | Utf8 | Code hosting hub provider origin details |
-| `created_at` | Timestamp | Start timestamps for delivery operations |
-| `updated_at` | Timestamp | End or final state synchronization check timestamps |
+| Column        | Type  | Description         |
+| ------------- | ----- | ------------------- |
+| `id`          | Int64 | Internal project ID |
+| `uuid`        | Utf8  | Project UUID        |
+| `name`        | Utf8  | Project name        |
+| `description` | Utf8  | Project description |
 
 ---
 
-## Example queries
+### `coolify.environments`
 
-### Project Topology Discovery
+Environments belonging to a project.
+
+| Column         | Type      | Description             |
+| -------------- | --------- | ----------------------- |
+| `project_uuid` | Utf8      | Parent project UUID     |
+| `id`           | Int64     | Environment ID          |
+| `name`         | Utf8      | Environment name        |
+| `description`  | Utf8      | Environment description |
+| `project_id`   | Int64     | Internal project ID     |
+| `created_at`   | Timestamp | Creation timestamp      |
+| `updated_at`   | Timestamp | Last update timestamp   |
+
+**Required filter:** `project_uuid`
+
+---
+
+### `coolify.servers`
+
+Registered Coolify deployment servers.
+
+| Column              | Type  | Description                      |
+| ------------------- | ----- | -------------------------------- |
+| `id`                | Int64 | Internal server ID               |
+| `uuid`              | Utf8  | Server UUID                      |
+| `name`              | Utf8  | Server name                      |
+| `description`       | Utf8  | Server description               |
+| `ip`                | Utf8  | Server IP or hostname            |
+| `user`              | Utf8  | SSH username                     |
+| `port`              | Int64 | SSH port                         |
+| `proxy_type`        | Utf8  | Reverse proxy engine             |
+| `unreachable_count` | Int64 | Consecutive failed health checks |
+
+---
+
+### `coolify.applications`
+
+Applications deployed through Coolify.
+
+| Column                 | Type      | Description                  |
+| ---------------------- | --------- | ---------------------------- |
+| `tag`                  | Utf8      | Optional application tag     |
+| `id`                   | Int64     | Internal application ID      |
+| `uuid`                 | Utf8      | Application UUID             |
+| `name`                 | Utf8      | Application name             |
+| `status`               | Utf8      | Runtime status               |
+| `fqdn`                 | Utf8      | Application domains          |
+| `git_repository`       | Utf8      | Source repository            |
+| `git_branch`           | Utf8      | Git branch                   |
+| `git_commit_sha`       | Utf8      | Active deployment commit SHA |
+| `build_pack`           | Utf8      | Deployment build pack        |
+| `environment_id`       | Int64     | Parent environment ID        |
+| `destination_id`       | Int64     | Destination server ID        |
+| `health_check_enabled` | Boolean   | Health check enabled         |
+| `created_at`           | Timestamp | Creation timestamp           |
+| `updated_at`           | Timestamp | Last update timestamp        |
+
+---
+
+### `coolify.deployments`
+
+Currently running deployment queue entries.
+
+> Historical deployments are not exposed through this endpoint.
+
+| Column             | Type      | Description       |
+| ------------------ | --------- | ----------------- |
+| `deployment_uuid`  | Utf8      | Deployment UUID   |
+| `application_name` | Utf8      | Application name  |
+| `server_name`      | Utf8      | Target server     |
+| `status`           | Utf8      | Deployment status |
+| `commit`           | Utf8      | Commit SHA        |
+| `commit_message`   | Utf8      | Commit message    |
+| `deployment_url`   | Utf8      | Deployment UI URL |
+| `created_at`       | Timestamp | Start timestamp   |
+
+---
+
+## Example Queries
+
+### Project inventory
+
 ```sql
-SELECT uuid, name, description 
-FROM coolify.projects 
+SELECT uuid, name
+FROM coolify.projects
 ORDER BY name;
 ```
 
+### Environment inventory
+
 ```sql
-SELECT name, description, created_at 
-FROM coolify.environments 
-WHERE project_uuid = '0189b2c4-e5fd-7264-ba36-8cf9b3d2efaa';
+SELECT name, created_at
+FROM coolify.environments
+WHERE project_uuid = 'project-uuid';
 ```
 
-### Server Cluster Auditing
+### Server audit
+
 ```sql
-SELECT name, ip, user, port, proxy_type, unreachable_count 
-FROM coolify.servers 
+SELECT name, ip, proxy_type, unreachable_count
+FROM coolify.servers
 WHERE unreachable_count > 0;
 ```
 
-### Application Routing and Source Controls
+### Running applications
+
 ```sql
-SELECT name, status, fqdn, git_repository, git_branch 
-FROM coolify.applications 
-WHERE status = 'running' 
+SELECT name, status, fqdn, git_repository
+FROM coolify.applications
+WHERE status = 'running'
 LIMIT 50;
 ```
 
-### Pipeline Deployment Queue Review
+### Active deployments
+
 ```sql
-SELECT application_name, server_name, status, commit_message, deployment_url 
-FROM coolify.deployments 
-WHERE status = 'in-progress' 
+SELECT application_name, status, commit_message
+FROM coolify.deployments
 ORDER BY created_at DESC;
 ```
 
@@ -191,22 +236,84 @@ ORDER BY created_at DESC;
 
 ## Validation
 
-Run the following format and syntax pipeline validation commands prior to generating a GitHub pull request:
+Run before opening a PR:
 
 ```bash
-# YAML and file style compliance check
 make lint-sources
 
-# Structural schema and type mapping verification
 coral source lint sources/community/coolify/manifest.yaml
 ```
 
-Execute a live target connection test locally:
+---
+
+## Smoke Test
 
 ```bash
 export COOLIFY_BASE_URL=https://coolify.example.com
-export COOLIFY_API_TOKEN=your_token_here
+export COOLIFY_API_TOKEN=<token>
 
 coral source add --file sources/community/coolify/manifest.yaml
+
 coral source test coolify
 ```
+
+Example output from a sanitized local test run:
+
+```text
+$ coral source test coolify
+
+  ✓ coolify connected successfully
+
+    coolify (5 tables)
+    ├─ applications
+    ├─ deployments
+    ├─ environments
+    ├─ projects
+    └─ servers
+
+    Query tests
+    1 declared · 1 passed · 0 failed
+
+    ✓ SELECT uuid, name FROM coolify.projects LIMIT 1
+      1 row
+```
+
+Representative query output:
+
+```text
+$ coral sql "SELECT uuid, name FROM coolify.projects LIMIT 5"
+
++----------------+--------------+
+| uuid           | name         |
++----------------+--------------+
+| proj-smoke-001 | Demo Project |
++----------------+--------------+
+
+$ coral sql "SELECT name, ip, proxy_type FROM coolify.servers LIMIT 5"
+
++--------------+-------------+-------------+
+| name         | ip          | proxy_type  |
++--------------+-------------+-------------+
+| prod-server  | 10.0.0.12   | traefik     |
+| staging-node | 10.0.0.18   | caddy       |
++--------------+-------------+-------------+
+
+$ coral sql "SELECT application_name, status, commit FROM coolify.deployments LIMIT 5"
+
++------------------+-------------+--------------+
+| application_name | status      | commit       |
++------------------+-------------+--------------+
+| api-service      | in_progress | abc123def456 |
++------------------+-------------+--------------+
+```
+
+---
+
+## Limitations
+
+* Read-only source
+* No deployment execution support
+* No provisioning or delete operations
+* No historical deployment API modeling
+* Token permissions affect visible rows
+* Large instances should use SQL `LIMIT`

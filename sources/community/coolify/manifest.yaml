@@ -170,7 +170,7 @@ tables:
         type: Utf8
         nullable: true
         description: Reverse proxy type (traefik, caddy, none).
-        expr: {kind: path, path: [proxy, type]}
+        expr: {kind: path, path: [proxy_type]}
       - name: unreachable_count
         type: Int64
         nullable: true
@@ -383,4 +383,3 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr: {kind: path, path: [updated_at]}
-          
