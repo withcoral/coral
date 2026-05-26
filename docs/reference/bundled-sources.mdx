@@ -17,9 +17,11 @@ If the source you need is not available, you can extend Coral by [writing a cust
 
 | Source | Backend | Description |
 | --- | --- | --- |
+| [claude](#claude) | `file` | Query local Claude Code transcript events and prompt history from ~/.claude. |
 | [clickup](#clickup) | `http` | Query tasks, spaces, folders, lists, goals, time entries, comments, views, tags, custom fields, teams, and users from ClickUp. |
 | [cloudwatch_logs](#cloudwatch_logs) | `http` | Query Amazon CloudWatch Logs groups, streams, and events. |
 | [cloudwatch_metrics](#cloudwatch_metrics) | `http` | Query Amazon CloudWatch metrics and monitoring metadata. |
+| [codex](#codex) | `file` | Query local Codex session event logs from ~/.codex/sessions. |
 | [confluence](#confluence) | `http` | Query spaces, pages, blog posts, comments, attachments, labels, and related metadata from Confluence Cloud. |
 | [datadog](#datadog) | `http` | Query monitors, events, incidents, dashboards, hosts, services, APM dependencies, downtimes, SLOs, synthetic tests, users, logs, spans, and metrics from Datadog. |
 | [github](#github) | `http` | Query repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata from GitHub (Cloud or Enterprise). |
@@ -45,7 +47,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 Supported sources fall into two categories.
 
 - **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.
-- **File-backed** — Coral reads local Parquet or JSONL files directly.
+- **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.
 
 ## Upgrading bundled sources
 
@@ -55,6 +57,10 @@ To update bundled sources, upgrade the Coral binary. Coral resolves each bundled
 
 Each source has its own set of interactive inputs — API tokens, base URLs, or
 other per-install configuration.
+
+### `claude`
+
+No configuration required.
 
 ### `clickup`
 
@@ -114,6 +120,10 @@ AWS access key ID with the CloudWatch read permissions.
 AWS secret access key.
 Coral does not read your AWS CLI profile, AWS SSO cache, or
 `AWS_PROFILE` at query time for this bundled source.
+
+### `codex`
+
+No configuration required.
 
 ### `confluence`
 

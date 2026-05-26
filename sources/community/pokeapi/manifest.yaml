@@ -1,0 +1,344 @@
+name: pokeapi
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >
+  Query Pokemon data from the free PokeAPI (https://pokeapi.co).
+  PokeAPI is an open-source API with no strict limits. Please be polite and cache data when possible.
+base_url: https://pokeapi.co/api/v2
+test_queries:
+  - SELECT * FROM pokeapi.pokemon_list LIMIT 1
+  - SELECT * FROM pokeapi.pokemon WHERE name_or_id = 'pikachu' LIMIT 1
+  - SELECT * FROM pokeapi.moves WHERE name_or_id = 'swords-dance' LIMIT 1
+  - SELECT * FROM pokeapi.types WHERE name_or_id = 'fire' LIMIT 1
+  - SELECT * FROM pokeapi.abilities WHERE name_or_id = 'overgrow' LIMIT 1
+  - SELECT * FROM pokeapi.species WHERE name_or_id = 'bulbasaur' LIMIT 1
+  - SELECT * FROM pokeapi.moves_list LIMIT 1
+  - SELECT * FROM pokeapi.types_list LIMIT 1
+  - SELECT * FROM pokeapi.abilities_list LIMIT 1
+  - SELECT * FROM pokeapi.species_list LIMIT 1
+tables:
+  - name: pokemon_list
+    description: List Pokemon names and URLs.
+    request:
+      method: GET
+      path: /pokemon
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the pokemon.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the pokemon.
+        nullable: true
+        expr: {kind: path, path: [url]}
+
+  - name: pokemon
+    description: Fetch a specific Pokemon by name or ID.
+    filters:
+      - name: name_or_id
+        required: true
+    request:
+      method: GET
+      path: /pokemon/{{filter.name_or_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name_or_id
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: name_or_id}
+      - name: id
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: base_experience
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [base_experience]}
+      - name: height
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [height]}
+      - name: weight
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [weight]}
+      - name: abilities
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [abilities]}
+      - name: stats
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [stats]}
+      - name: types
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [types]}
+
+  - name: moves
+    description: Fetch a specific Move by name or ID.
+    filters:
+      - name: name_or_id
+        required: true
+    request:
+      method: GET
+      path: /move/{{filter.name_or_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name_or_id
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: name_or_id}
+      - name: id
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: accuracy
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [accuracy]}
+      - name: power
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [power]}
+      - name: pp
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [pp]}
+      - name: type_name
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [type, name]}
+
+  - name: types
+    description: Fetch a specific Type by name or ID.
+    filters:
+      - name: name_or_id
+        required: true
+    request:
+      method: GET
+      path: /type/{{filter.name_or_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name_or_id
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: name_or_id}
+      - name: id
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: damage_relations
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [damage_relations]}
+
+  - name: abilities
+    description: Fetch a specific Ability by name or ID.
+    filters:
+      - name: name_or_id
+        required: true
+    request:
+      method: GET
+      path: /ability/{{filter.name_or_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name_or_id
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: name_or_id}
+      - name: id
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: effect_entries
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [effect_entries]}
+
+  - name: species
+    description: Fetch a specific Pokemon Species by name or ID.
+    filters:
+      - name: name_or_id
+        required: true
+    request:
+      method: GET
+      path: /pokemon-species/{{filter.name_or_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name_or_id
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: name_or_id}
+      - name: id
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: base_happiness
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [base_happiness]}
+      - name: capture_rate
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [capture_rate]}
+      - name: flavor_text_entries
+        type: Json
+        nullable: true
+        expr: {kind: path, path: [flavor_text_entries]}
+
+  - name: moves_list
+    description: List Move names and URLs.
+    request:
+      method: GET
+      path: /move
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the move.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the move.
+        nullable: true
+        expr: {kind: path, path: [url]}
+
+  - name: types_list
+    description: List Type names and URLs.
+    request:
+      method: GET
+      path: /type
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the type.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the type.
+        nullable: true
+        expr: {kind: path, path: [url]}
+
+  - name: abilities_list
+    description: List Ability names and URLs.
+    request:
+      method: GET
+      path: /ability
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the ability.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the ability.
+        nullable: true
+        expr: {kind: path, path: [url]}
+
+  - name: species_list
+    description: List Species names and URLs.
+    request:
+      method: GET
+      path: /pokemon-species
+    response:
+      rows_path: [results]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        description: Name of the species.
+        nullable: true
+        expr: {kind: path, path: [name]}
+      - name: url
+        type: Utf8
+        description: Detail URL for the species.
+        nullable: true
+        expr: {kind: path, path: [url]}

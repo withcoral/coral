@@ -17,6 +17,22 @@ pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        return Ok(());
+    }
+    fs::create_dir_all(path)?;
+    set_dir_permissions_private(path)?;
+    Ok(())
+}
+
+pub(crate) fn create_new_file_private(path: &Path) -> io::Result<File> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir(parent)?;
+    }
+    open_create_new_file_private(path)
+}
+
 /// Write to a temp file then rename to avoid partial writes on crash.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp_path = temp_path_for(path);
@@ -113,6 +129,22 @@ fn open_append_file_private(path: &Path) -> io::Result<File> {
 #[cfg(not(unix))]
 fn open_append_file_private(path: &Path) -> io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
+}
+
+#[cfg(unix)]
+fn open_create_new_file_private(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_create_new_file_private(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
 }
 
 fn temp_path_for(path: &Path) -> PathBuf {

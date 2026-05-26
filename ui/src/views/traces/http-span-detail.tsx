@@ -32,6 +32,8 @@ const REQUEST_BODY_PRESENT_ATTR = 'http.request.body.present'
 const RESPONSE_BODY_PRESENT_ATTR = 'http.response.body.present'
 const REQUEST_BODY_SIZE_ATTR = 'http.request.body.size'
 const RESPONSE_BODY_SIZE_ATTR = 'http.response.body.size'
+const BODY_SPAN_TARGET = 'coral.http.body'
+const BODY_SPAN_DIRECTION_ATTR = 'coral.http.body.direction'
 const BODY_ATTRIBUTE_KEYS = new Set([REQUEST_BODY_ATTR, RESPONSE_BODY_ATTR])
 const BODY_DETAILS = {
   request: {
@@ -344,6 +346,28 @@ function attrText(value: unknown): string | undefined {
   return String(value)
 }
 
+function bodySpanAttributes(
+  bodySpans: TraceSpan[],
+  parentSpanId: string,
+  kind: BodyKind,
+): Record<string, unknown> | undefined {
+  const bodyAttr = kind === 'request' ? REQUEST_BODY_ATTR : RESPONSE_BODY_ATTR
+  const bodySpanName = `coral.http.${kind}.body`
+  for (const candidate of bodySpans) {
+    if (candidate.parentSpanId !== parentSpanId) continue
+    const candidateAttrs = parseJsonObject(candidate.attributesJson)
+    const isBodySpan =
+      candidate.name === bodySpanName ||
+      candidateAttrs.target === BODY_SPAN_TARGET ||
+      bodyAttr in candidateAttrs
+    if (!isBodySpan) continue
+    const direction = attrText(candidateAttrs[BODY_SPAN_DIRECTION_ATTR])
+    if (direction && direction !== kind) continue
+    if (bodyAttr in candidateAttrs) return candidateAttrs
+  }
+  return undefined
+}
+
 function formatBytes(value: unknown): string | undefined {
   const raw = attrText(value)
   if (!raw) return undefined
@@ -406,11 +430,13 @@ export function HttpSpanDetail({
   onClose,
   onSelectNextSpan,
   onSelectPreviousSpan,
+  bodySpans = [],
   span,
   traceStart,
 }: {
   canSelectNextSpan: boolean
   canSelectPreviousSpan: boolean
+  bodySpans?: TraceSpan[]
   onClose: () => void
   onSelectNextSpan: () => void
   onSelectPreviousSpan: () => void
@@ -420,14 +446,20 @@ export function HttpSpanDetail({
   const [activeTab, setActiveTab] = useState<HttpDetailTab>('response')
   const [copyState, setCopyState] = useState<CopyState>('idle')
   const attrs = parseJsonObject(span.attributesJson)
+  const requestBodyAttrs = bodySpanAttributes(bodySpans, span.spanId, 'request')
+  const responseBodyAttrs = bodySpanAttributes(bodySpans, span.spanId, 'response')
   const url = spanUrl(span)
   const params = requestParams(url)
-  const rawRequestBody = attrs[REQUEST_BODY_ATTR]
-  const rawResponseBody = attrs[RESPONSE_BODY_ATTR]
+  const rawRequestBody = requestBodyAttrs?.[REQUEST_BODY_ATTR] ?? attrs[REQUEST_BODY_ATTR]
+  const rawResponseBody = responseBodyAttrs?.[RESPONSE_BODY_ATTR] ?? attrs[RESPONSE_BODY_ATTR]
   const requestBody = parseMaybeJson(rawRequestBody)
   const responseBody = parseMaybeJson(rawResponseBody)
-  const requestBodyTruncated = attrBool(attrs[REQUEST_BODY_TRUNCATED_ATTR])
-  const responseBodyTruncated = attrBool(attrs[RESPONSE_BODY_TRUNCATED_ATTR])
+  const requestBodyTruncated = attrBool(
+    requestBodyAttrs?.[REQUEST_BODY_TRUNCATED_ATTR] ?? attrs[REQUEST_BODY_TRUNCATED_ATTR],
+  )
+  const responseBodyTruncated = attrBool(
+    responseBodyAttrs?.[RESPONSE_BODY_TRUNCATED_ATTR] ?? attrs[RESPONSE_BODY_TRUNCATED_ATTR],
+  )
   const paramsValue = Object.keys(params).length ? params : undefined
   const preferredTab = preferredHttpDetailTab(responseBody, requestBody, paramsValue)
   const tabLabel = (id: HttpDetailTab) => {
