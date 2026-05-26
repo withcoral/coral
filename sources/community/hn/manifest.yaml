@@ -1,5 +1,5 @@
 name: hn
-version: 0.1.1
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: Hacker News search and item lookup via the public Algolia HN API (no auth).
@@ -7,6 +7,10 @@ base_url: https://hn.algolia.com/api/v1
 test_queries:
   - SELECT * FROM hn.search_by_date WHERE query = 'rust' AND tags = 'story' LIMIT 1
   - SELECT * FROM hn.users WHERE username = 'pg' LIMIT 1
+  - SELECT * FROM hn.front_page LIMIT 1
+  - SELECT * FROM hn.ask_hn LIMIT 1
+  - SELECT * FROM hn.show_hn LIMIT 1
+  - SELECT * FROM hn.jobs LIMIT 1
 tables:
   - name: search
     description: |
@@ -527,3 +531,691 @@ tables:
           kind: path
           path:
             - about
+
+  - name: front_page
+    description: Fetch stories currently on the Hacker News front page.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: numeric_filters
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: tags
+          from: literal
+          value: front_page,story
+        - name: query
+          from: filter
+          key: query
+        - name: numericFilters
+          from: filter
+          key: numeric_filters
+    response:
+      rows_path:
+        - hits
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: hitsPerPage
+    columns:
+      - name: object_id
+        type: Utf8
+        nullable: false
+        description: HN item ID as a string (Algolia's primary key).
+        expr:
+          kind: path
+          path:
+            - objectID
+      - name: author
+        type: Utf8
+        nullable: true
+        description: HN username of the submitter or commenter.
+        expr:
+          kind: path
+          path:
+            - author
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Story title (null for comments).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Story URL (null for comments and Ask HN posts).
+        expr:
+          kind: path
+          path:
+            - url
+      - name: story_text
+        type: Utf8
+        nullable: true
+        description: HTML body for self-posts.
+        expr:
+          kind: path
+          path:
+            - story_text
+      - name: comment_text
+        type: Utf8
+        nullable: true
+        description: HTML body for comment hits.
+        expr:
+          kind: path
+          path:
+            - comment_text
+      - name: story_title
+        type: Utf8
+        nullable: true
+        description: For comment hits, the parent story's title.
+        expr:
+          kind: path
+          path:
+            - story_title
+      - name: story_url
+        type: Utf8
+        nullable: true
+        description: For comment hits, the parent story's URL.
+        expr:
+          kind: path
+          path:
+            - story_url
+      - name: story_id
+        type: Int64
+        nullable: true
+        description: Parent story ID.
+        expr:
+          kind: path
+          path:
+            - story_id
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Direct parent item ID for comment hits.
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: points
+        type: Int64
+        nullable: true
+        description: Story score; null for comments.
+        expr:
+          kind: path
+          path:
+            - points
+      - name: num_comments
+        type: Int64
+        nullable: true
+        description: Total descendant comments on a story.
+        expr:
+          kind: path
+          path:
+            - num_comments
+      - name: created_at_i
+        type: Int64
+        nullable: false
+        description: Creation time as Unix epoch seconds.
+        expr:
+          kind: path
+          path:
+            - created_at_i
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Creation time as a UTC Timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at_i
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: |
+          Comma-joined Algolia `_tags`. The first element is the row's type
+          (`story`, `comment`, `poll`, `pollopt`, or `job`).
+        expr:
+          kind: join_array
+          path:
+            - _tags
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the `query` filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: numeric_filters
+        type: Utf8
+        nullable: true
+        description: Echoes the `numeric_filters` filter.
+        expr:
+          kind: from_filter
+          key: numeric_filters
+
+  - name: ask_hn
+    description: Fetch Ask HN posts.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: numeric_filters
+    request:
+      method: GET
+      path: /search_by_date
+      query:
+        - name: tags
+          from: literal
+          value: ask_hn
+        - name: query
+          from: filter
+          key: query
+        - name: numericFilters
+          from: filter
+          key: numeric_filters
+    response:
+      rows_path:
+        - hits
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: hitsPerPage
+    columns:
+      - name: object_id
+        type: Utf8
+        nullable: false
+        description: HN item ID as a string (Algolia's primary key).
+        expr:
+          kind: path
+          path:
+            - objectID
+      - name: author
+        type: Utf8
+        nullable: true
+        description: HN username of the submitter or commenter.
+        expr:
+          kind: path
+          path:
+            - author
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Story title (null for comments).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Story URL (null for comments and Ask HN posts).
+        expr:
+          kind: path
+          path:
+            - url
+      - name: story_text
+        type: Utf8
+        nullable: true
+        description: HTML body for self-posts.
+        expr:
+          kind: path
+          path:
+            - story_text
+      - name: comment_text
+        type: Utf8
+        nullable: true
+        description: HTML body for comment hits.
+        expr:
+          kind: path
+          path:
+            - comment_text
+      - name: story_title
+        type: Utf8
+        nullable: true
+        description: For comment hits, the parent story's title.
+        expr:
+          kind: path
+          path:
+            - story_title
+      - name: story_url
+        type: Utf8
+        nullable: true
+        description: For comment hits, the parent story's URL.
+        expr:
+          kind: path
+          path:
+            - story_url
+      - name: story_id
+        type: Int64
+        nullable: true
+        description: Parent story ID.
+        expr:
+          kind: path
+          path:
+            - story_id
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Direct parent item ID for comment hits.
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: points
+        type: Int64
+        nullable: true
+        description: Story score; null for comments.
+        expr:
+          kind: path
+          path:
+            - points
+      - name: num_comments
+        type: Int64
+        nullable: true
+        description: Total descendant comments on a story.
+        expr:
+          kind: path
+          path:
+            - num_comments
+      - name: created_at_i
+        type: Int64
+        nullable: false
+        description: Creation time as Unix epoch seconds.
+        expr:
+          kind: path
+          path:
+            - created_at_i
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Creation time as a UTC Timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at_i
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: |
+          Comma-joined Algolia `_tags`. The first element is the row's type
+          (`story`, `comment`, `poll`, `pollopt`, or `job`).
+        expr:
+          kind: join_array
+          path:
+            - _tags
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the `query` filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: numeric_filters
+        type: Utf8
+        nullable: true
+        description: Echoes the `numeric_filters` filter.
+        expr:
+          kind: from_filter
+          key: numeric_filters
+
+  - name: show_hn
+    description: Fetch Show HN posts.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: numeric_filters
+    request:
+      method: GET
+      path: /search_by_date
+      query:
+        - name: tags
+          from: literal
+          value: show_hn
+        - name: query
+          from: filter
+          key: query
+        - name: numericFilters
+          from: filter
+          key: numeric_filters
+    response:
+      rows_path:
+        - hits
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: hitsPerPage
+    columns:
+      - name: object_id
+        type: Utf8
+        nullable: false
+        description: HN item ID as a string (Algolia's primary key).
+        expr:
+          kind: path
+          path:
+            - objectID
+      - name: author
+        type: Utf8
+        nullable: true
+        description: HN username of the submitter or commenter.
+        expr:
+          kind: path
+          path:
+            - author
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Story title (null for comments).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Story URL (null for comments and Ask HN posts).
+        expr:
+          kind: path
+          path:
+            - url
+      - name: story_text
+        type: Utf8
+        nullable: true
+        description: HTML body for self-posts.
+        expr:
+          kind: path
+          path:
+            - story_text
+      - name: comment_text
+        type: Utf8
+        nullable: true
+        description: HTML body for comment hits.
+        expr:
+          kind: path
+          path:
+            - comment_text
+      - name: story_title
+        type: Utf8
+        nullable: true
+        description: For comment hits, the parent story's title.
+        expr:
+          kind: path
+          path:
+            - story_title
+      - name: story_url
+        type: Utf8
+        nullable: true
+        description: For comment hits, the parent story's URL.
+        expr:
+          kind: path
+          path:
+            - story_url
+      - name: story_id
+        type: Int64
+        nullable: true
+        description: Parent story ID.
+        expr:
+          kind: path
+          path:
+            - story_id
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Direct parent item ID for comment hits.
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: points
+        type: Int64
+        nullable: true
+        description: Story score; null for comments.
+        expr:
+          kind: path
+          path:
+            - points
+      - name: num_comments
+        type: Int64
+        nullable: true
+        description: Total descendant comments on a story.
+        expr:
+          kind: path
+          path:
+            - num_comments
+      - name: created_at_i
+        type: Int64
+        nullable: false
+        description: Creation time as Unix epoch seconds.
+        expr:
+          kind: path
+          path:
+            - created_at_i
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Creation time as a UTC Timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at_i
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: |
+          Comma-joined Algolia `_tags`. The first element is the row's type
+          (`story`, `comment`, `poll`, `pollopt`, or `job`).
+        expr:
+          kind: join_array
+          path:
+            - _tags
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the `query` filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: numeric_filters
+        type: Utf8
+        nullable: true
+        description: Echoes the `numeric_filters` filter.
+        expr:
+          kind: from_filter
+          key: numeric_filters
+
+  - name: jobs
+    description: Fetch Job posts on Hacker News.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: numeric_filters
+    request:
+      method: GET
+      path: /search_by_date
+      query:
+        - name: tags
+          from: literal
+          value: job
+        - name: query
+          from: filter
+          key: query
+        - name: numericFilters
+          from: filter
+          key: numeric_filters
+    response:
+      rows_path:
+        - hits
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: hitsPerPage
+    columns:
+      - name: object_id
+        type: Utf8
+        nullable: false
+        description: HN item ID as a string (Algolia's primary key).
+        expr:
+          kind: path
+          path:
+            - objectID
+      - name: author
+        type: Utf8
+        nullable: true
+        description: HN username of the submitter or commenter.
+        expr:
+          kind: path
+          path:
+            - author
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Story title (null for comments).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Story URL (null for comments and Ask HN posts).
+        expr:
+          kind: path
+          path:
+            - url
+      - name: story_text
+        type: Utf8
+        nullable: true
+        description: HTML body for self-posts.
+        expr:
+          kind: path
+          path:
+            - story_text
+      - name: comment_text
+        type: Utf8
+        nullable: true
+        description: HTML body for comment hits.
+        expr:
+          kind: path
+          path:
+            - comment_text
+      - name: story_title
+        type: Utf8
+        nullable: true
+        description: For comment hits, the parent story's title.
+        expr:
+          kind: path
+          path:
+            - story_title
+      - name: story_url
+        type: Utf8
+        nullable: true
+        description: For comment hits, the parent story's URL.
+        expr:
+          kind: path
+          path:
+            - story_url
+      - name: story_id
+        type: Int64
+        nullable: true
+        description: Parent story ID.
+        expr:
+          kind: path
+          path:
+            - story_id
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Direct parent item ID for comment hits.
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: points
+        type: Int64
+        nullable: true
+        description: Story score; null for comments.
+        expr:
+          kind: path
+          path:
+            - points
+      - name: num_comments
+        type: Int64
+        nullable: true
+        description: Total descendant comments on a story.
+        expr:
+          kind: path
+          path:
+            - num_comments
+      - name: created_at_i
+        type: Int64
+        nullable: false
+        description: Creation time as Unix epoch seconds.
+        expr:
+          kind: path
+          path:
+            - created_at_i
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Creation time as a UTC Timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at_i
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: |
+          Comma-joined Algolia `_tags`. The first element is the row's type
+          (`story`, `comment`, `poll`, `pollopt`, or `job`).
+        expr:
+          kind: join_array
+          path:
+            - _tags
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the `query` filter.
+        expr:
+          kind: from_filter
+          key: query
+      - name: numeric_filters
+        type: Utf8
+        nullable: true
+        description: Echoes the `numeric_filters` filter.
+        expr:
+          kind: from_filter
+          key: numeric_filters

@@ -270,10 +270,17 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
+        let http_body_capture_max_bytes = telemetry_config
+            .trace_history
+            .http_body_recording_max_bytes();
+        let query_runtime_context = env
+            .query_runtime_context()
+            .with_http_body_capture_max_bytes(http_body_capture_max_bytes);
+
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            env.query_runtime_context(),
+            query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
         );
@@ -1085,6 +1092,7 @@ tables:
             credential_manager,
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
+                ..QueryRuntimeContext::default()
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
@@ -1184,7 +1192,7 @@ tables:
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -1283,7 +1291,7 @@ tables:
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );

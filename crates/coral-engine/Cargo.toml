@@ -43,8 +43,10 @@ coral-spec.workspace = true
 [dev-dependencies]
 arrow.workspace = true
 coral-spec.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 parquet.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+tracing-subscriber.workspace = true
 wiremock.workspace = true
