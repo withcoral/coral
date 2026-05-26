@@ -112,10 +112,6 @@ function formatRawValue(value: unknown, formatted: string): string {
   return typeof value === 'string' ? value : formatted
 }
 
-function hasBodyValue(value: JsonValue | undefined): boolean {
-  return value !== undefined && value !== null && value !== ''
-}
-
 interface GraphqlBodyPreview {
   bodyKind: BodyKind
   operationName?: string
@@ -390,17 +386,6 @@ function bodyEmptyText(kind: BodyKind, attrs: Record<string, unknown>, truncated
   return `No ${kind} body was recorded for this request.`
 }
 
-function preferredHttpDetailTab(
-  responseBody: JsonValue | undefined,
-  requestBody: JsonValue | undefined,
-  paramsValue: Record<string, string | string[]> | undefined,
-): HttpDetailTab {
-  if (hasBodyValue(responseBody)) return 'response'
-  if (hasBodyValue(requestBody)) return 'request'
-  if (paramsValue) return 'params'
-  return 'response'
-}
-
 function formattedCopyLabel(copyState: CopyState) {
   switch (copyState) {
     case 'formatted':
@@ -443,7 +428,7 @@ export function HttpSpanDetail({
   span: TraceSpan
   traceStart: bigint
 }) {
-  const [activeTab, setActiveTab] = useState<HttpDetailTab>('response')
+  const [activeTab, setActiveTab] = useState<HttpDetailTab>(TAB_IDS[0])
   const [copyState, setCopyState] = useState<CopyState>('idle')
   const attrs = parseJsonObject(span.attributesJson)
   const requestBodyAttrs = bodySpanAttributes(bodySpans, span.spanId, 'request')
@@ -461,7 +446,6 @@ export function HttpSpanDetail({
     responseBodyAttrs?.[RESPONSE_BODY_TRUNCATED_ATTR] ?? attrs[RESPONSE_BODY_TRUNCATED_ATTR],
   )
   const paramsValue = Object.keys(params).length ? params : undefined
-  const preferredTab = preferredHttpDetailTab(responseBody, requestBody, paramsValue)
   const tabLabel = (id: HttpDetailTab) => {
     if (id === 'params') return 'Params'
     if (id === 'request') return `Request body${requestBodyTruncated ? ' (truncated)' : ''}`
@@ -497,7 +481,6 @@ export function HttpSpanDetail({
   const requestOperation = spanRequestOperation(span)
   const requestEndpoint = spanRequestEndpoint(span)
 
-  useEffect(() => setActiveTab(preferredTab), [preferredTab, span.spanId])
   useEffect(() => setCopyState('idle'), [activeTab, span.spanId])
   useEffect(() => {
     if (copyState === 'idle') return
