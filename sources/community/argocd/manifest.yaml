@@ -48,7 +48,7 @@ tables:
     description: ArgoCD applications with sync status, health, source or sources, and destination
     guide: |
       The primary table. Returns all applications visible to the configured
-      token. Filter on `health_status`, `sync_status`, or `dest_server`
+      token. Filter on `project`, `health_status`, `sync_status`, or `dest_server`
       using SQL WHERE clauses.
 
       Key values for `health_status`: Healthy, Degraded, Progressing,
