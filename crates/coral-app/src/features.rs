@@ -127,6 +127,10 @@ impl Features {
         self.enabled.get(&feature).copied().unwrap_or(false)
     }
 
+    fn feedback_enabled(&self, explicit_enable: bool) -> bool {
+        explicit_enable || self.enabled(Feature::Feedback)
+    }
+
     fn from_raw_overrides(raw: &RawFeatureOverrides) -> Self {
         let mut features = Self::default();
         for (key, value) in raw.iter() {
@@ -149,6 +153,20 @@ impl Features {
         }
         features
     }
+}
+
+/// Resolves whether the MCP feedback tool should be enabled for this process.
+///
+/// Explicit process flags can enable feedback for one run, but cannot disable a
+/// persistent opt-in from local config.
+///
+/// # Errors
+///
+/// Returns [`AppError`] if the local config path cannot be discovered or
+/// `config.toml` exists but cannot be read or parsed.
+pub fn resolve_feedback_enabled(explicit_enable: bool) -> Result<bool, AppError> {
+    let features = FeatureStore::discover(None)?.load()?;
+    Ok(features.feedback_enabled(explicit_enable))
 }
 
 /// Loader for runtime features from Coral's local config.
@@ -286,6 +304,13 @@ mod tests {
     }
 
     #[test]
+    fn explicit_feedback_enable_overrides_default_disabled_feature() {
+        let features = Features::default();
+
+        assert!(features.feedback_enabled(true));
+    }
+
+    #[test]
     fn known_boolean_override_enables_feedback() {
         let raw = raw([("feedback", RawFeatureValue::Bool(true))]);
         let features = Features::from_raw_overrides(&raw);
@@ -299,6 +324,14 @@ mod tests {
         let features = Features::from_raw_overrides(&raw);
 
         assert!(!features.enabled(Feature::Feedback));
+    }
+
+    #[test]
+    fn explicit_feedback_enable_overrides_config_disabled_feature() {
+        let raw = raw([("feedback", RawFeatureValue::Bool(false))]);
+        let features = Features::from_raw_overrides(&raw);
+
+        assert!(features.feedback_enabled(true));
     }
 
     #[test]

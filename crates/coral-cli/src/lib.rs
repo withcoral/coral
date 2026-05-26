@@ -478,11 +478,9 @@ async fn run_app_command(
             onboard::run(&app).await?;
         }
         Command::McpStdio(args) => {
-            let features = coral_app::features::FeatureStore::discover(None)
-                .and_then(|store| store.load())
-                .map_err(anyhow::Error::from)?;
             let feedback_enabled =
-                args.enable_feedback || features.enabled(coral_app::features::Feature::Feedback);
+                coral_app::features::resolve_feedback_enabled(args.enable_feedback)
+                    .map_err(anyhow::Error::from)?;
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {

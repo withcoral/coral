@@ -132,7 +132,8 @@ coral onboard
 
 ## `coral features`
 
-Inspect and manage experimental runtime features in [`config.toml`](/reference/configuration).
+Coral ships with experimental runtime features that can be enabled on demand.
+These features are defined in [`config.toml`](/reference/configuration).
 
 ### `coral features list`
 
@@ -152,7 +153,10 @@ coral features enable feedback
 
 ### `coral features disable <FEATURE>`
 
-Remove a persistent runtime feature opt-in from `config.toml`, returning the feature to its built-in default.
+Disable updates `config.toml` so the feature is not enabled for future runs.
+For features disabled by default, such as `feedback`, Coral removes the opt-in
+and falls back to the built-in default. The default for each feature is listed
+in [Configuration](/reference/configuration#runtime-features).
 
 ```shellscript
 coral features disable feedback
