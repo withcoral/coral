@@ -39,7 +39,7 @@ inputs:
               type: authorization_code
               pkce: required
             redirect_uri: http://127.0.0.1:53682/oauth/callback
-            redirect_uri_port: fixed
+            redirect_uri_port_mode: fixed
             endpoints:
               authorization_url: https://linear.app/oauth/authorize
               token_url: https://api.linear.app/oauth/token
