@@ -256,9 +256,11 @@ auth:
 
 ### OAuth client and redirect options
 
-Use `pkce: required` for public clients when the provider supports it. Use `pkce: disabled` only for providers that do not support PKCE. If the provider requires a confidential OAuth app, declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`) to match the token endpoint. A confidential client can still include `client.id.default`, but it must also include `client.id.input`. If the provider requires pre-registered redirect URIs with exact ports, use `redirect_uri_port_mode: fixed` with a non-zero port and tell users to register that exact URI in the OAuth app.
+Choose OAuth client settings from the provider's OAuth app and token endpoint requirements:
 
-OAuth `client.id.input` and `client.secret.input` name method-specific setup prompts. They are not top-level source inputs and do not need separate entries under the manifest's `inputs` map.
+- Use `pkce: required` for public clients when the provider supports it. Use `pkce: disabled` only for providers that do not support PKCE.
+- When the token endpoint requires client authentication with a client secret, prompt for both OAuth client values: set `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`) to match the token endpoint.
+- When the provider requires pre-registered redirect URIs with exact ports, use `redirect_uri_port_mode: fixed` with a non-zero port and tell users to register that exact URI in the OAuth app.
 
 ### Install-time input collection
 
