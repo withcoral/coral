@@ -23,13 +23,12 @@ inputs:
       JWT bearer token for ArgoCD API access. Two options:
 
       Option A (recommended) — Project automation token. Scoped to one
-      project, configurable expiry, immediately revocable:
-        argocd proj role create-token <project> <role>
+      project, configurable expiry, immediately revocable. Generate with:
+      `argocd proj role create-token <project> <role>`
 
-      Option B — Admin session token (expires after 24 hours):
-        curl -k -X POST $ARGOCD_SERVER/api/v1/session \
-          -H 'Content-Type: application/json' \
-          -d '{"username":"admin","password":"<password>"}'
+      Option B — Admin session token, expires after 24 hours. Obtain with:
+      `curl -k -X POST $ARGOCD_SERVER/api/v1/session -H 'Content-Type:
+      application/json' -d '{"username":"admin","password":"<pw>"}'`
 
       Use Option A for long-lived installs. The token must have at least
       `applications, get` permission to query the applications table.
@@ -50,8 +49,8 @@ tables:
     description: ArgoCD applications with sync status, health, source or sources, and destination
     guide: |
       The primary table. Returns all applications visible to the configured
-      token. Filter on `health_status`, `sync_status`, `spec__project`, or
-      `dest_server` using SQL WHERE clauses.
+      token. Filter on `health_status`, `sync_status`, or `dest_server`
+      using SQL WHERE clauses.
 
       Key values for `health_status`: Healthy, Degraded, Progressing,
       Suspended, Missing, Unknown.
@@ -230,13 +229,23 @@ tables:
       - name: sync_revision
         type: Utf8
         nullable: true
-        description: Git revision currently deployed
+        description: "Git revision currently deployed (single-source apps only; null for multi-source apps — see sync_revisions)"
         expr:
           kind: path
           path:
             - status
             - sync
             - revision
+      - name: sync_revisions
+        type: Json
+        nullable: true
+        description: "Deployed revisions for multi-source apps (ArgoCD v2.6+); null for single-source apps — see sync_revision instead"
+        expr:
+          kind: path
+          path:
+            - status
+            - sync
+            - revisions
       - name: operation_phase
         type: Utf8
         nullable: true
@@ -301,7 +310,8 @@ tables:
     guide: |
       Returns all ArgoCD projects visible to the configured token. Projects
       group applications and define RBAC boundaries, allowed source repos,
-      and permitted destination clusters and namespaces.
+      and permitted destination clusters and namespaces. Requires
+      `projects, get, *` permission on the token.
 
       `source_repos` and `destinations` are JSON arrays — use JSON functions
       or inspect them as text to check allowed values.
@@ -374,10 +384,10 @@ tables:
   - name: clusters
     description: Kubernetes clusters registered with ArgoCD
     guide: |
-      Returns all clusters registered as deployment targets. The
-      `connection_status` column shows whether ArgoCD can currently reach
-      each cluster. The in-cluster server (`https://kubernetes.default.svc`)
-      is always present.
+      Returns all clusters registered as deployment targets. Requires
+      `clusters, get, *` permission on the token. The `connection_status`
+      column shows whether ArgoCD can currently reach each cluster. The
+      in-cluster server (`https://kubernetes.default.svc`) is always present.
 
       Use `server` values from this table to filter `argocd.applications`
       by `dest_server`.
@@ -455,7 +465,8 @@ tables:
   - name: repositories
     description: Git and Helm repositories configured in ArgoCD
     guide: |
-      Returns all source repositories configured in ArgoCD. A `Successful`
+      Returns all source repositories configured in ArgoCD. Requires
+      `repositories, get, *` permission on the token. A `Successful`
       `connection_status` means ArgoCD can currently reach and authenticate
       to the repo. Use `repo` values to cross-reference with
       `argocd.applications` `source__repo_url`.

@@ -17,9 +17,7 @@ argocd proj role create-token <project> <role>
 ```
 
 Project tokens are scoped to one project, have configurable expiry, and
-can be revoked immediately without affecting other tokens. The token must
-have at least `applications, get` permission to query the `applications`
-table.
+can be revoked immediately without affecting other tokens.
 
 **Option B — Admin session token (expires after 24 hours):**
 
@@ -31,7 +29,36 @@ curl -k -X POST https://<argocd-host>/api/v1/session \
 
 Copy the `token` value from the JSON response.
 
-### 2. TLS note
+### 2. Minimum RBAC permissions
+
+Create a least-privilege role with only the permissions needed for the
+tables you plan to query. In an ArgoCD RBAC policy file:
+
+```csv
+# Minimum permissions for all four tables
+p, role:coral-reader, applications, get, */*, allow
+p, role:coral-reader, projects,     get, *,   allow
+p, role:coral-reader, clusters,     get, *,   allow
+p, role:coral-reader, repositories, get, *,   allow
+```
+
+Per-table breakdown:
+
+| Table | Resource | Action | Scope |
+|---|---|---|---|
+| `applications` | `applications` | `get` | `<project>/*` or `*/*` |
+| `projects` | `projects` | `get` | `*` |
+| `clusters` | `clusters` | `get` | `*` |
+| `repositories` | `repositories` | `get` | `*` |
+
+If using a project automation token, it implicitly has `applications, get`
+for its own project. Add `projects, get`, `clusters, get`, and
+`repositories, get` to the role if you need those tables.
+
+See the [ArgoCD RBAC docs](https://argo-cd.readthedocs.io/en/stable/operator-manual/rbac/)
+for full policy syntax.
+
+### 3. TLS note
 
 ArgoCD's API server uses HTTPS by default. Coral requires a valid TLS
 certificate — self-signed certs will cause connection failures. If your
@@ -45,7 +72,7 @@ kubectl patch deployment argocd-server -n argocd \
   -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--insecure"}]'
 ```
 
-### 3. Add the source
+### 4. Add the source
 
 ```bash
 export ARGOCD_SERVER="https://argocd.example.com"   # no trailing slash
@@ -62,7 +89,7 @@ export ARGOCD_TOKEN="<your-token>"
 coral source add --file sources/community/argocd/manifest.yaml
 ```
 
-### 4. Verify
+### 5. Verify
 
 ```bash
 coral source test argocd
@@ -86,25 +113,40 @@ token, which can only see its own project's apps.
 clauses (`health_status`, `sync_status`, `dest_server`, etc.) apply
 locally after the full list is fetched.
 
-Multi-source apps (ArgoCD v2.6+) use `spec.sources[]` — for these,
-`source__*` columns are null and the `sources` JSON column contains the
-full array of source definitions.
+**Single-source vs multi-source apps:**
+
+ArgoCD supports two application shapes:
+
+- **Single-source** (`spec.source`): `source__repo_url`,
+  `source__target_revision`, `source__path`, and `source__chart` are
+  populated. `sync_revision` holds the single deployed Git revision.
+  `sources` and `sync_revisions` are null.
+- **Multi-source** (`spec.sources[]`, ArgoCD v2.6+): all `source__*`
+  columns are null. Use the `sources` JSON column for the full array of
+  source definitions. `sync_revisions` holds the JSON array of deployed
+  revisions (one per source); `sync_revision` is null.
 
 ### `argocd.projects`
 
 ArgoCD projects with allowed source repositories, destination
 restrictions, and cluster-scoped resource whitelists.
 
+**Minimum permission:** `projects, get, *`
+
 ### `argocd.clusters`
 
 Kubernetes clusters registered as deployment targets, with connection
 status and application count.
+
+**Minimum permission:** `clusters, get, *`
 
 ### `argocd.repositories`
 
 Git and Helm repositories configured in ArgoCD with connection status.
 Returns 0 rows when no repositories are explicitly registered (repos
 accessed without stored credentials do not appear).
+
+**Minimum permission:** `repositories, get, *`
 
 ## Example Queries
 
@@ -117,26 +159,19 @@ WHERE health_status != 'Healthy' OR sync_status != 'Synced';
 
 -- What is deployed in production right now?
 SELECT name, source__repo_url, source__target_revision,
-       sync_revision, operation_phase
+       sync_revision, sync_revisions, operation_phase
 FROM argocd.applications
 WHERE dest_server = 'https://prod-cluster.example.com';
 
--- Apps drifted from target
-SELECT name, sync_status, source__target_revision,
-       sync_revision, operation_finished_at
+-- Multi-source apps: inspect all sources and their deployed revisions
+SELECT name, sources, sync_revisions
 FROM argocd.applications
-WHERE sync_status = 'OutOfSync'
-ORDER BY operation_finished_at DESC;
+WHERE sources IS NOT NULL;
 
 -- Scope to a specific project (server-side filter)
 SELECT name, health_status, sync_status, dest_namespace
 FROM argocd.applications
 WHERE project = 'payments';
-
--- Multi-source apps: inspect all sources
-SELECT name, sources
-FROM argocd.applications
-WHERE sources IS NOT NULL;
 
 -- Cluster connectivity overview
 SELECT name, server, connection_status, server_version, applications_count
@@ -165,7 +200,9 @@ WHERE a.health_status = 'Degraded';
   Project automation tokens are recommended for persistent installs.
 - **`repositories` returns 0 rows** on fresh installs where repos are
   accessed without stored credentials. This is correct ArgoCD behaviour.
-- **Multi-source apps.** Apps using `spec.sources[]` (ArgoCD v2.6+)
-  have null `source__*` columns. Use the `sources` JSON column instead.
+- **Multi-source revision shape.** For multi-source apps, `sync_revision`
+  is null and deployed revisions are in `sync_revisions` (JSON array, one
+  entry per source). For single-source apps, `sync_revision` is a string
+  and `sync_revisions` is null.
 - **No `resource_tree` in v1.** The Kubernetes resource tree per
   application is complex to flatten usefully and is left for a follow-on.
