@@ -9,7 +9,7 @@ No authentication is required for basic public project information.
 
 | Table | Description |
 | ----- | ----------- |
-| `opencollective.collectives` | Retrieve funding details, balance, and contributor counts by project slug |
+| `opencollective.collectives` | Retrieve funding details and contributor counts by project slug |
 
 ## Setup
 

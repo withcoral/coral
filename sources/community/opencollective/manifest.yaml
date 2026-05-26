@@ -1,8 +1,3 @@
-# ──────────────────────────────────────────────────────────────────────────
-# Coral Custom Source Spec: Open Collective
-# Wraps Open Collective GraphQL API as a SQL table
-# ──────────────────────────────────────────────────────────────────────────
-
 dsl_version: 3
 name: opencollective
 version: "1.0.0"
@@ -11,6 +6,13 @@ description: >
   for any open source project using the public GraphQL API.
 backend: http
 base_url: https://api.opencollective.com/graphql/v2
+
+test_queries:
+  - >-
+    SELECT name, total_amount_received, contributors_count
+    FROM opencollective.collectives
+    WHERE slug = 'webpack'
+    LIMIT 1
 
 tables:
   - name: collectives
