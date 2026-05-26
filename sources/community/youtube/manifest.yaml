@@ -1,0 +1,338 @@
+# ============================================================
+# YouTube — Coral Community Source Spec
+# ============================================================
+#
+# WHAT THIS FILE DOES:
+#   Teaches Coral SQL how to connect to YouTube Data API v3
+#   and expose YouTube data as queryable SQL tables.
+#
+# AFTER THIS PR MERGES, anyone can run:
+#   coral sql "SELECT title, channel_title
+#              FROM youtube.liked_videos
+#              LIMIT 20"
+#
+# TABLES PROVIDED:
+#   youtube.liked_videos   → last 50 liked videos (playlistId LL)
+#   youtube.playlists      → user's saved playlists
+#   youtube.channels       → authenticated user's channel info
+#
+# NOTE ON WATCH HISTORY:
+#   Google permanently restricted watch history API access in 2016.
+#   The HL playlist returns empty for all users regardless of scope.
+#   Liked videos (LL) is the best available proxy for learning activity.
+#
+# AUTH:
+#   OAuth2 Bearer token with youtube.readonly scope.
+#   Same Google Cloud project as Gmail/Calendar if already set up.
+#
+# TESTED AGAINST:
+#   YouTube Data API v3 — real response verified May 2026.
+#   Column names match actual API response fields.
+#
+# Bounty submission for: https://github.com/withcoral/coral
+# ============================================================
+
+name: youtube
+version: 0.1.0
+dsl_version: 3
+description: >
+  Query YouTube liked videos, playlists, and channel stats using SQL.
+  Uses Google Data API v3 with OAuth2 for private data access.
+  Ideal for tracking learning patterns — which tutorials you actually
+  liked and saved versus passive watching.
+backend: http
+
+# ── INPUTS ──────────────────────────────────────────────────
+inputs:
+  YOUTUBE_ACCESS_TOKEN:
+    kind: secret
+    hint: >
+      Google OAuth2 access token with the
+      https://www.googleapis.com/auth/youtube.readonly scope.
+      Obtain via Google OAuth Playground:
+      https://developers.google.com/oauthplayground
+      Select "YouTube Data API v3" → youtube.readonly scope,
+      authorize with your Google account, and copy the access token.
+      If you already use Gmail or Google Calendar with Coral,
+      this uses the same Google Cloud project credentials.
+
+# ── BASE URL ─────────────────────────────────────────────────
+base_url: "https://www.googleapis.com/youtube/v3"
+
+# ── AUTH ─────────────────────────────────────────────────────
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      template: "Bearer {{input.YOUTUBE_ACCESS_TOKEN}}"
+
+# ── TABLES ───────────────────────────────────────────────────
+
+tables:
+
+  # ──────────────────────────────────────────────────────────
+  # TABLE 1: liked_videos
+  # ──────────────────────────────────────────────────────────
+  # Maps to: GET /playlistItems?playlistId=LL
+  #
+  # WHY liked videos:
+  #   Google permanently removed watch history API access in 2016.
+  #   Liked videos (playlistId "LL") is the best available proxy
+  #   for intentional learning — you only like videos you found
+  #   genuinely useful.
+  #
+  # REAL API RESPONSE STRUCTURE (verified May 2026):
+  #   items[n].id
+  #   items[n].snippet.title
+  #   items[n].snippet.publishedAt
+  #   items[n].snippet.description
+  #   items[n].snippet.position
+  #   items[n].snippet.videoOwnerChannelTitle
+  #   items[n].snippet.videoOwnerChannelId
+  #   items[n].snippet.resourceId.videoId
+  #   items[n].snippet.thumbnails.default.url
+  #
+  # USAGE:
+  #   SELECT title, channel_title
+  #   FROM youtube.liked_videos
+  #   LIMIT 20
+  #
+  #   SELECT channel_title, COUNT(*) as videos_liked
+  #   FROM youtube.liked_videos
+  #   GROUP BY channel_title
+  #   ORDER BY videos_liked DESC
+  # ──────────────────────────────────────────────────────────
+  - name: liked_videos
+    description: >
+      Videos liked by the authenticated user.
+      Pulled from the special liked videos playlist (ID: LL).
+      Returns up to 50 most recently liked videos.
+      Use as a learning activity signal — liked videos indicate
+      content the user found genuinely useful.
+    request:
+      method: GET
+      path: /playlistItems
+      params:
+        - name: part
+          value: snippet
+        - name: playlistId
+          value: LL
+        - name: maxResults
+          value: "50"
+    response:
+      rows_path: [items]
+    columns:
+      - name: video_id
+        type: Utf8
+        description: Unique YouTube video identifier
+        expr:
+          kind: path
+          path: snippet.resourceId.videoId
+
+      - name: title
+        type: Utf8
+        description: Title of the liked video
+        expr:
+          kind: path
+          path: snippet.title
+
+      - name: channel_title
+        type: Utf8
+        description: Name of the channel that published the video
+        expr:
+          kind: path
+          path: snippet.videoOwnerChannelTitle
+
+      - name: channel_id
+        type: Utf8
+        description: Unique ID of the channel
+        expr:
+          kind: path
+          path: snippet.videoOwnerChannelId
+
+      - name: liked_at
+        type: Utf8
+        description: >
+          ISO 8601 timestamp of when the video was added to the
+          liked videos playlist
+        expr:
+          kind: path
+          path: snippet.publishedAt
+
+      - name: position
+        type: Int64
+        description: Position in the liked videos playlist. 0 = most recent.
+        expr:
+          kind: path
+          path: snippet.position
+
+      - name: description
+        type: Utf8
+        description: Video description
+        expr:
+          kind: path
+          path: snippet.description
+
+      - name: thumbnail_url
+        type: Utf8
+        description: Default thumbnail image URL (120x90px)
+        expr:
+          kind: path
+          path: snippet.thumbnails.default.url
+
+      - name: playlist_item_id
+        type: Utf8
+        description: Unique ID of this item in the liked videos playlist
+        expr:
+          kind: path
+          path: id
+
+  # ──────────────────────────────────────────────────────────
+  # TABLE 2: playlists
+  # ──────────────────────────────────────────────────────────
+  # Maps to: GET /playlists?mine=true
+  #
+  # USAGE:
+  #   SELECT title, item_count
+  #   FROM youtube.playlists
+  #   ORDER BY item_count DESC
+  # ──────────────────────────────────────────────────────────
+  - name: playlists
+    description: >
+      Playlists created by the authenticated user.
+      Returns title, description, video count, and privacy status.
+    request:
+      method: GET
+      path: /playlists
+      params:
+        - name: part
+          value: snippet,contentDetails,status
+        - name: mine
+          value: "true"
+        - name: maxResults
+          value: "50"
+    response:
+      rows_path: [items]
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique playlist ID
+
+      - name: title
+        type: Utf8
+        expr:
+          kind: path
+          path: snippet.title
+
+      - name: description
+        type: Utf8
+        expr:
+          kind: path
+          path: snippet.description
+
+      - name: published_at
+        type: Utf8
+        description: When the playlist was created (ISO 8601)
+        expr:
+          kind: path
+          path: snippet.publishedAt
+
+      - name: item_count
+        type: Int64
+        description: Number of videos currently in the playlist
+        expr:
+          kind: path
+          path: contentDetails.itemCount
+
+      - name: privacy_status
+        type: Utf8
+        description: "public, unlisted, or private"
+        expr:
+          kind: path
+          path: status.privacyStatus
+
+      - name: thumbnail_url
+        type: Utf8
+        description: Default thumbnail URL for the playlist
+        expr:
+          kind: path
+          path: snippet.thumbnails.default.url
+
+  # ──────────────────────────────────────────────────────────
+  # TABLE 3: channels
+  # ──────────────────────────────────────────────────────────
+  # Maps to: GET /channels?mine=true
+  #
+  # USAGE:
+  #   SELECT title, subscriber_count, video_count
+  #   FROM youtube.channels
+  # ──────────────────────────────────────────────────────────
+  - name: channels
+    description: >
+      The authenticated user's YouTube channel metadata and statistics.
+      Returns subscriber count, total views, and video count.
+    request:
+      method: GET
+      path: /channels
+      params:
+        - name: part
+          value: snippet,statistics
+        - name: mine
+          value: "true"
+    response:
+      rows_path: [items]
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique channel ID
+
+      - name: title
+        type: Utf8
+        expr:
+          kind: path
+          path: snippet.title
+
+      - name: description
+        type: Utf8
+        expr:
+          kind: path
+          path: snippet.description
+
+      - name: custom_url
+        type: Utf8
+        description: The @handle or custom URL of the channel
+        expr:
+          kind: path
+          path: snippet.customUrl
+
+      - name: published_at
+        type: Utf8
+        description: When the channel was created (ISO 8601)
+        expr:
+          kind: path
+          path: snippet.publishedAt
+
+      - name: subscriber_count
+        type: Int64
+        expr:
+          kind: path
+          path: statistics.subscriberCount
+
+      - name: video_count
+        type: Int64
+        expr:
+          kind: path
+          path: statistics.videoCount
+
+      - name: view_count
+        type: Int64
+        description: Total lifetime views across all videos
+        expr:
+          kind: path
+          path: statistics.viewCount
+
+      - name: country
+        type: Utf8
+        expr:
+          kind: path
+          path: snippet.country
