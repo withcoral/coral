@@ -79,7 +79,7 @@ tables:
         type: Utf8
         virtual: true
         nullable: true
-        description: State filter used in the query (fresh, rising).
+        description: State filter used in the query (rising, fresh, all).
         expr:
           kind: from_filter
           key: state
