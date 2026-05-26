@@ -9,7 +9,7 @@ No authentication is required — the endpoint is fully public.
 
 | Table | Description |
 | ----- | ----------- |
-| `pypi.packages` | Retrieve last week and last month download stats for any package |
+| `pypi.packages` | Retrieve last day, last week, and last month download stats for any package |
 
 ## Setup
 

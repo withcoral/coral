@@ -5,6 +5,11 @@ description: PyPI package download statistics from pypistats.org.
 backend: http
 base_url: https://pypistats.org/api
 
+test_queries:
+  - >-
+    SELECT package, last_day_downloads, last_week_downloads, last_month_downloads
+    FROM pypi.packages WHERE name = 'requests' LIMIT 1
+
 tables:
   - name: packages
     description: PyPI package download stats.
