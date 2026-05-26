@@ -91,6 +91,7 @@ await review.pause()
 ```
 
 Guidelines:
+
 - Add chapters before important user-visible transitions.
 - Use concise chapter titles; explain intent in the optional description.
 - Use `review.pause()` after major assertions or visual states so the recording

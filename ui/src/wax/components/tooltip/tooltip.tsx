@@ -36,16 +36,22 @@ export function Tooltip({
 
   const composedRef = useComposedRefs(
     triggerRef,
-    (children as React.ReactElement<{ ref?: React.Ref<HTMLElement> }>).props?.ref
+    (children as React.ReactElement<{ ref?: React.Ref<HTMLElement> }>).props?.ref,
   )
 
   return (
     <BaseTooltip.Provider delay={delay}>
       <BaseTooltip.Root disabled={disabled}>
-        <BaseTooltip.Trigger ref={composedRef} render={children as React.ReactElement<Record<string, unknown>>} />
+        <BaseTooltip.Trigger
+          ref={composedRef}
+          render={children as React.ReactElement<Record<string, unknown>>}
+        />
         <BaseTooltip.Portal>
           <BaseTooltip.Positioner className={styles.positioner} side={side} sideOffset={sideOffset}>
-            <BaseTooltip.Popup className={classNames(styles.popup, className)} style={{ maxWidth: maxWidth }}>
+            <BaseTooltip.Popup
+              className={classNames(styles.popup, className)}
+              style={{ maxWidth: maxWidth }}
+            >
               <BaseTooltip.Arrow className={styles.arrow} />
               {content}
             </BaseTooltip.Popup>

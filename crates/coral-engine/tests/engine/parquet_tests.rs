@@ -14,10 +14,11 @@ fn parquet_manifest(name: &str, dir: &Path) -> Value {
         "name": name,
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "parquet",
+        "backend": "file",
         "tables": [{
             "name": "users",
             "description": "Users fixture",
+            "format": "parquet",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.parquet"
@@ -155,7 +156,7 @@ async fn parquet_manifest_with_declared_secret_inputs_registers_and_queries() {
         "name": "warehouse",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "parquet",
+        "backend": "file",
         "inputs": {
             "api_token": { "kind": "secret" },
             "signing_key": { "kind": "secret" },
@@ -163,6 +164,7 @@ async fn parquet_manifest_with_declared_secret_inputs_registers_and_queries() {
         "tables": [{
             "name": "users",
             "description": "Warehouse users",
+            "format": "parquet",
             "source": {
                 "location": dir_url(temp.path()),
                 "glob": "**/*.parquet"
@@ -196,13 +198,14 @@ async fn parquet_manifest_with_declared_secret_inputs_registers_and_queries() {
         "name": "warehouse2",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "parquet",
+        "backend": "file",
         "inputs": {
             "api_token": { "kind": "secret" },
         },
         "tables": [{
             "name": "users",
             "description": "Warehouse users",
+            "format": "parquet",
             "source": {
                 "location": dir_url(temp2.path()),
                 "glob": "**/*.parquet"

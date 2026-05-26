@@ -62,8 +62,8 @@ pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) 
 #[serde(rename_all = "snake_case")]
 pub enum SourceBackend {
     Http,
-    Parquet,
-    Jsonl,
+    File,
+    Mcp,
 }
 
 /// Normalized scalar data types supported by the source-spec DSL.

@@ -30,7 +30,9 @@ interface ButtonBaseProps {
   variant?: ButtonVariant
 }
 
-export function Container<T extends ElementType = 'button'>(props: ButtonProps<T> & { ref?: React.Ref<HTMLElement> }) {
+export function Container<T extends ElementType = 'button'>(
+  props: ButtonProps<T> & { ref?: React.Ref<HTMLElement> },
+) {
   const {
     ariaLabel,
     as,
@@ -69,7 +71,12 @@ export function Container<T extends ElementType = 'button'>(props: ButtonProps<T
             isSymbolOnly = true
 
             return [
-              <LonelyIconImplementation key={childElement.key} name={iconProps.name} size={size} variant={variant} />,
+              <LonelyIconImplementation
+                key={childElement.key}
+                name={iconProps.name}
+                size={size}
+                variant={variant}
+              />,
             ]
           }
 
@@ -79,19 +86,31 @@ export function Container<T extends ElementType = 'button'>(props: ButtonProps<T
             hasSuffix = true
           }
 
-          return [<IconImplementation key={childElement.key} name={iconProps.name} size={size} variant={variant} />]
+          return [
+            <IconImplementation
+              key={childElement.key}
+              name={iconProps.name}
+              size={size}
+              variant={variant}
+            />,
+          ]
         }
 
         case Text: {
           return [
-            <TextImplementation buttonVariant={variant} key={child.key} size={size} {...childElement.props} />,
+            <TextImplementation
+              buttonVariant={variant}
+              key={child.key}
+              size={size}
+              {...childElement.props}
+            />,
           ]
         }
 
         default:
           return [child]
       }
-    }
+    },
   )
 
   const componentProps = {
@@ -108,7 +127,7 @@ export function Container<T extends ElementType = 'button'>(props: ButtonProps<T
         variant,
       }),
       { [disabledClass]: disabled },
-      className
+      className,
     ),
     ref,
     ...rest,

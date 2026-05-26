@@ -19,13 +19,16 @@
         "properties": {
           "tables": {
             "items": { "$ref": "#/$defs/http_table" }
+          },
+          "functions": {
+            "items": { "$ref": "#/$defs/table_function" }
           }
         }
       }
     },
     {
       "if": {
-        "properties": { "backend": { "enum": ["jsonl", "parquet"] } },
+        "properties": { "backend": { "const": "file" } },
         "required": ["backend"]
       },
       "then": {
@@ -39,15 +42,21 @@
     },
     {
       "if": {
-        "properties": {
-          "backend": { "not": { "enum": ["http", "jsonl", "parquet"] } }
-        },
+        "properties": { "backend": { "const": "mcp" } },
         "required": ["backend"]
       },
       "then": {
+        "required": ["server"],
+        "anyOf": [
+          { "required": ["tables"] },
+          { "required": ["functions"] }
+        ],
         "properties": {
           "tables": {
-            "items": false
+            "items": { "$ref": "#/$defs/mcp_table" }
+          },
+          "functions": {
+            "items": { "$ref": "#/$defs/mcp_table_function" }
           }
         }
       }
@@ -62,7 +71,7 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
-    "backend": { "type": "string", "enum": ["http", "parquet", "jsonl"] },
+    "backend": { "type": "string", "enum": ["http", "file", "mcp"] },
     "inputs": { "$ref": "#/$defs/inputs" },
     "base_url": { "type": "string", "minLength": 1 },
     "auth": { "$ref": "#/$defs/auth" },
@@ -71,6 +80,7 @@
       "items": { "$ref": "#/$defs/header" }
     },
     "rate_limit": { "$ref": "#/$defs/rate_limit" },
+    "server": { "$ref": "#/$defs/mcp_server" },
     "tables": {
       "type": "array",
       "minItems": 1,
@@ -79,7 +89,7 @@
     "functions": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/table_function" }
+      "items": { "type": "object" }
     },
     "onboarding": {
       "type": "object",
@@ -349,17 +359,22 @@
     "file_table": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "source"],
+      "required": ["name", "description", "format", "source"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
         "guide": { "type": "string" },
+        "format": {
+          "type": "string",
+          "enum": ["parquet", "jsonl", "json", "csv"]
+        },
         "filters": {
           "type": "array",
           "items": { "$ref": "#/$defs/filter" }
         },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
         "source": { "$ref": "#/$defs/source" },
+        "format_options": { "$ref": "#/$defs/format_options" },
         "columns": {
           "type": "array",
           "items": { "$ref": "#/$defs/column" }
@@ -376,6 +391,56 @@
         "partitions": {
           "type": "array",
           "items": { "$ref": "#/$defs/partition_column" }
+        },
+        "object_store": { "$ref": "#/$defs/object_store" }
+      }
+    },
+    "object_store": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "auth"],
+          "properties": {
+            "type": { "const": "s3" },
+            "region": { "type": "string", "minLength": 1 },
+            "auth": { "$ref": "#/$defs/s3_auth" }
+          }
+        }
+      ]
+    },
+    "s3_auth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "access_key_id", "secret_access_key"],
+          "properties": {
+            "type": { "const": "access_key" },
+            "access_key_id": { "type": "string", "minLength": 1 },
+            "secret_access_key": { "type": "string", "minLength": 1 },
+            "session_token": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "instance_profile" }
+          }
+        }
+      ]
+    },
+    "format_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "has_header": { "type": "boolean" },
+        "delimiter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1
         }
       }
     },
@@ -385,8 +450,34 @@
       "required": ["name", "type"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "type": { "type": "string", "minLength": 1 }
+        "type": { "$ref": "#/$defs/file_partition_data_type" },
+        "path": { "$ref": "#/$defs/partition_path" }
       }
+    },
+    "file_partition_data_type": {
+      "type": "string",
+      "enum": ["Utf8", "Int64", "Boolean", "Float64", "Json"]
+    },
+    "partition_path": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "hive" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "index"],
+          "properties": {
+            "kind": { "const": "segment" },
+            "index": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
     },
     "manifest_data_type": {
       "type": "string",
@@ -466,6 +557,151 @@
           "items": { "$ref": "#/$defs/column" }
         }
       }
+    },
+    "mcp_table_function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "tool"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "tool": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "fetch_limit_default": { "type": "integer", "minimum": 1 },
+        "args": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/table_function_arg" }
+        },
+        "pagination": { "$ref": "#/$defs/mcp_pagination" },
+        "response": { "$ref": "#/$defs/response" },
+        "columns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/column" }
+        }
+      }
+    },
+    "mcp_table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "tool"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "tool": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "guide": { "type": "string" },
+        "fetch_limit_default": { "type": "integer", "minimum": 1 },
+        "tool_args": {
+          "type": "object",
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "$ref": "#/$defs/mcp_tool_arg_value" }
+        },
+        "filters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/mcp_table_filter" }
+        },
+        "limit_binding": { "$ref": "#/$defs/mcp_limit_binding" },
+        "pagination": { "$ref": "#/$defs/mcp_pagination" },
+        "response": { "$ref": "#/$defs/response" },
+        "columns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/column" }
+        }
+      }
+    },
+    "mcp_limit_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_arg"],
+      "properties": {
+        "tool_arg": { "type": "string", "minLength": 1 },
+        "max": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "mcp_pagination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cursor_arg", "response_cursor_path"],
+      "properties": {
+        "cursor_arg": { "type": "string", "minLength": 1 },
+        "response_cursor_path": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "max_pages": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "mcp_table_filter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "tool_arg"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"] },
+        "required": { "type": "boolean" },
+        "mode": { "type": "string", "enum": ["equality", "search", "contains"] },
+        "description": { "type": "string" },
+        "tool_arg": { "type": "string", "minLength": 1 }
+      }
+    },
+    "mcp_tool_arg_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from"],
+      "properties": {
+        "from": { "type": "string" },
+        "template": { "type": "string" },
+        "value": {},
+        "key": { "type": "string", "minLength": 1 },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "default": {},
+        "seconds": { "type": "integer" },
+        "separator": { "type": "string", "minLength": 1 },
+        "part": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
+    },
+    "mcp_server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "command"],
+      "properties": {
+        "transport": { "type": "string", "enum": ["stdio"] },
+        "command": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "env": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/mcp_env" }
+        }
+      }
+    },
+    "mcp_env": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "from"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "from": { "type": "string" },
+        "template": { "type": "string" },
+        "value": {},
+        "key": { "type": "string", "minLength": 1 },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "default": {},
+        "seconds": { "type": "integer" },
+        "separator": { "type": "string", "minLength": 1 },
+        "part": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
     "table_function_arg": {
       "type": "object",

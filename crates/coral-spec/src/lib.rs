@@ -49,10 +49,11 @@
 //! name: demo
 //! version: 0.1.0
 //! dsl_version: 3
-//! backend: jsonl
+//! backend: file
 //! tables:
 //!   - name: events
 //!     description: Demo events
+//!     format: jsonl
 //!     source:
 //!       location: file:///tmp/demo/
 //!     columns:
@@ -62,7 +63,7 @@
 //! )?;
 //!
 //! assert_eq!(manifest.schema_name(), "demo");
-//! assert!(manifest.as_jsonl().is_some());
+//! assert!(manifest.as_file().is_some());
 //! let _inputs = manifest.declared_inputs();
 //! # Ok::<(), coral_spec::ManifestError>(())
 //! ```
@@ -86,6 +87,10 @@ mod template;
 mod validate;
 
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
+pub use backends::mcp::{
+    McpEnvSpec, McpLimitBinding, McpServerSpec, McpSourceManifest, McpTableFilterBinding,
+    McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
+};
 pub(crate) use common::validate_test_queries;
 pub use common::{
     BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,

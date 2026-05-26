@@ -28,7 +28,7 @@ test_queries:
 | `name`        | Source name, also used as the SQL schema name      |
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http`, `jsonl`, or `parquet` |
+| `backend`     | How data is fetched: `http` or `file` |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
 
 ## Test queries
@@ -247,16 +247,18 @@ Column-expression templates do not support `secret`, `variable`, or `state` name
 
 ## File-backed tables
 
-For `jsonl` and `parquet`, each table points at a file location:
+For `backend: file`, each table declares its own `format` and points at a
+location:
 
 ```yaml
 name: local_messages
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: messages
     description: Demo messages
+    format: jsonl
     source:
       location: file:///absolute/path/to/demo-data/
       glob: "**/*.jsonl"
@@ -271,9 +273,125 @@ tables:
 
 Notes:
 
-- `jsonl` currently expects `file://` locations
-- `parquet` supports `file://` and `s3://` locations
-- if you omit `glob`, Coral uses a backend-specific default
+- Supported formats are `parquet`, `jsonl`, `json`, and `csv`
+- Supported transports are `file://` and `s3://` for every file format
+- If you omit `glob`, Coral uses a format-specific default
+
+### JSONL and JSON
+
+`jsonl` reads newline-delimited JSON objects. `json` reads JSON arrays of
+objects.
+
+Tables using either format must declare columns. Declare nested object or array
+fields as `type: Json`; Coral exposes those values as JSON text so they can be
+queried with `json_get_*` functions such as `json_get_str(payload, 'id')`.
+
+### CSV
+
+CSV tables must declare columns. They support `format_options.has_header` and
+`format_options.delimiter`.
+
+### Parquet
+
+Parquet tables can infer columns when `columns: []` is used.
+
+### Shared file table constraints
+
+File-backed tables do not support declared `filters`, virtual columns, or
+`columns[*].expr`; use SQL projections and predicates instead.
+
+For `s3://` locations, declare the S3 object-store policy under the table
+source instead of relying on magic input names:
+
+```yaml
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: us-east-1
+  AWS_ACCESS_KEY_ID:
+    kind: secret
+  AWS_SECRET_ACCESS_KEY:
+    kind: secret
+tables:
+  - name: events
+    description: S3 events
+    format: jsonl
+    source:
+      location: s3://example-bucket/events/
+      object_store:
+        type: s3
+        region: "{{input.AWS_REGION}}"
+        auth:
+          type: access_key
+          access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+          secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+```
+
+Use `auth: { type: instance_profile }` when the runtime should use the host's
+AWS instance profile.
+
+### File path partitions
+
+File-backed tables can expose partition columns derived from object paths. When
+`path` is omitted, partitions use Hive-style path segments:
+
+Partition columns support `Utf8`, `Int64`, `Boolean`, `Float64`, and `Json`;
+`Timestamp` partitions are not supported.
+
+```yaml
+source:
+  location: file:///absolute/path/to/events/
+  glob: "**/*.jsonl"
+  partitions:
+    - name: year
+      type: Int64
+    - name: month
+      type: Int64
+```
+
+This expects paths such as:
+
+```text
+year=2026/month=05/events.jsonl
+```
+
+For JSON and JSONL tables, positional path segments are also supported:
+
+```yaml
+source:
+  location: file:///Users/james/.codex/sessions/
+  glob: "20??/**/*.jsonl"
+  partitions:
+    - name: year
+      type: Int64
+      path:
+        kind: segment
+        index: 0
+    - name: month
+      type: Int64
+      path:
+        kind: segment
+        index: 1
+    - name: day
+      type: Int64
+      path:
+        kind: segment
+        index: 2
+```
+
+This maps paths such as `2026/05/14/session.jsonl` to partition columns
+`year = 2026`, `month = 5`, and `day = 14`. SQL predicates on partition columns
+can prune unrelated files before JSON rows are decoded.
+
+For JSON and JSONL tables, declaring partitions makes the path layout part of
+the table contract. Files that do not provide every declared partition value in
+the configured layout fail the query; matching paths with invalid typed
+partition values also fail the query.
+
+Parquet and CSV tables use DataFusion's native listing table reader and support
+Hive-style partitioning. Positional segment partitioning is currently limited to
+JSON and JSONL tables because those formats already use Coral's custom JSON row
+mapper.
 
 ## HTTP-backed tables
 

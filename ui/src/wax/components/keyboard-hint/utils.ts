@@ -1,6 +1,7 @@
 const isMacOs =
   typeof navigator !== 'undefined' &&
-  ((navigator as Navigator & { userAgentData?: { platform: string } }).userAgentData?.platform === 'macOS' ||
+  ((navigator as Navigator & { userAgentData?: { platform: string } }).userAgentData?.platform ===
+    'macOS' ||
     /mac/i.test(navigator.platform))
 
 const prettyKeyboardKey: Record<string, string> = {
