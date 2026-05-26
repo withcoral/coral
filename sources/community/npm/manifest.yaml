@@ -11,32 +11,36 @@ tables:
     filters:
       - name: name
         required: true
+      - name: period
+        required: false
+        default: last-month
     request:
       method: GET
-      path: /downloads/point/last-month/{{filter.name}}
+      path: /downloads/point/{{filter.period}}/{{filter.name}}
     columns:
-      - name: name
+      - name: package
         type: Utf8
         expr:
-          kind: from_filter
-          key: name
-      - name: version
-        type: Utf8
-        expr:
-          kind: from_filter
-          key: name
-      - name: weekly_downloads
+          kind: path
+          path: ["package"]
+      - name: downloads
         type: Int64
         expr:
           kind: path
           path: ["downloads"]
-      - name: monthly_downloads
-        type: Int64
-        expr:
-          kind: path
-          path: ["downloads"]
-      - name: description
+      - name: start
         type: Utf8
         expr:
+          kind: path
+          path: ["start"]
+      - name: end
+        type: Utf8
+        expr:
+          kind: path
+          path: ["end"]
+      - name: period
+        type: Utf8
+        virtual: true
+        expr:
           kind: from_filter
-          key: name
+          key: period

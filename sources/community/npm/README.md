@@ -9,7 +9,7 @@ No authentication is required — the endpoint is fully public.
 
 | Table | Description |
 | ----- | ----------- |
-| `npm.packages` | Retrieve monthly download stats for any npm package |
+| `npm.packages` | Retrieve download stats (daily, weekly, monthly) for any npm package |
 
 ## Setup
 
@@ -22,9 +22,9 @@ coral source add --file sources/community/npm/manifest.yaml
 ## Example query
 
 ```sql
-SELECT monthly_downloads
+SELECT package, downloads, start, end
 FROM npm.packages
-WHERE name = 'express'
+WHERE name = 'express' AND period = 'last-week'
 LIMIT 1;
 ```
 
