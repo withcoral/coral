@@ -27,17 +27,16 @@ Every table supports:
 | Filter   | Description                                                                        |
 | -------- | ---------------------------------------------------------------------------------- |
 | `search` | Full-text keyword search across names and titles.                                  |
-| `filter` | [Structured filtering](https://docs.openalex.org/how-to-use-the-api/get-lists-of-entities/filter-entity-lists) using OpenAlex filter syntax. |
-| `sort`   | Sort results (e.g. `cited_by_count:desc`, `publication_year:asc`).                 |
+| `filter_value` | [Structured filtering](https://docs.openalex.org/how-to-use-the-api/get-lists-of-entities/filter-entity-lists) using OpenAlex filter syntax. |
+| `sort_value`   | Sort results (e.g. `cited_by_count:desc`, `publication_year:asc`).                 |
 
 ## Example queries
 
 ```sql
 -- Search for works about "CRISPR" published in 2024, sorted by citations
 SELECT title, publication_year, cited_by_count, is_oa
-FROM openalex.works
-WHERE search = 'CRISPR'
-  AND filter_value = 'publication_year:2024'
+FROM openalex.search_works(q => 'CRISPR')
+WHERE filter_value = 'publication_year:2024'
   AND sort_value = 'cited_by_count:desc'
 LIMIT 5;
 
@@ -55,20 +54,19 @@ LIMIT 5;
 
 -- Find an author by name
 SELECT display_name, works_count, cited_by_count, orcid
-FROM openalex.authors
-WHERE search = 'Yann LeCun'
+FROM openalex.search_authors(q => 'Yann LeCun')
 LIMIT 5;
 
 /*
-+--------------+-------------+----------------+
-| display_name | works_count | cited_by_count |
-+--------------+-------------+----------------+
-| Yann LeCun   | 480         | 249194         |
-| Yann Lecun   | 45          | 1932           |
-| Yann LeCun   | 1           | 0              |
-| Yann LeCun   | 2           | 0              |
-| Yann LeCun   | 1           | 0              |
-+--------------+-------------+----------------+
++--------------+-------------+----------------+-------+
+| display_name | works_count | cited_by_count | orcid |
++--------------+-------------+----------------+-------+
+| Yann LeCun   | 480         | 249194         |       |
+| Yann Lecun   | 45          | 1932           |       |
+| Yann LeCun   | 1           | 0              |       |
+| Yann LeCun   | 2           | 0              |       |
+| Yann LeCun   | 1           | 0              |       |
++--------------+-------------+----------------+-------+
 */
 
 -- List open-access journals with the most works

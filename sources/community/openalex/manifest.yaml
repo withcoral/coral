@@ -22,8 +22,8 @@ request_headers:
     value: application/json
 
 test_queries:
-  - SELECT title, publication_year, cited_by_count FROM openalex.works WHERE search = 'machine learning' LIMIT 1
-  - SELECT display_name, works_count, cited_by_count FROM openalex.authors WHERE search = 'einstein' LIMIT 1
+  - SELECT title, publication_year, cited_by_count FROM openalex.search_works(q => 'machine learning') LIMIT 1
+  - SELECT display_name, works_count, cited_by_count FROM openalex.search_authors(q => 'einstein') LIMIT 1
   - SELECT display_name, works_count FROM openalex.topics LIMIT 1
 
 tables:
@@ -47,16 +47,12 @@ tables:
       (e.g. `cited_by_count:desc`, `publication_year:desc`).
     fetch_limit_default: 25
     filters:
-      - name: search
       - name: filter_value
       - name: sort_value
     request:
       method: GET
       path: /works
       query:
-        - name: search
-          from: filter
-          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -210,6 +206,15 @@ tables:
           kind: path
           path:
             - authorships
+      - name: primary_topic__id
+        type: Utf8
+        nullable: true
+        description: Primary topic ID.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - id
       - name: primary_topic__name
         type: Utf8
         nullable: true
@@ -334,16 +339,12 @@ tables:
       openalex.works WHERE filter = 'author.id:A5023888391' LIMIT 10`.
     fetch_limit_default: 25
     filters:
-      - name: search
       - name: filter_value
       - name: sort_value
     request:
       method: GET
       path: /authors
       query:
-        - name: search
-          from: filter
-          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -462,14 +463,6 @@ tables:
           kind: path
           path:
             - created_date
-      - name: search
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the search filter value.
-        expr:
-          kind: from_filter
-          key: search
       - name: filter_value
         type: Utf8
         nullable: true
@@ -501,16 +494,12 @@ tables:
       structured queries like `filter = 'is_oa:true,type:journal'`.
     fetch_limit_default: 25
     filters:
-      - name: search
       - name: filter_value
       - name: sort_value
     request:
       method: GET
       path: /sources
       query:
-        - name: search
-          from: filter
-          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -658,14 +647,6 @@ tables:
           kind: path
           path:
             - updated_date
-      - name: search
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the search filter value.
-        expr:
-          kind: from_filter
-          key: search
       - name: filter_value
         type: Utf8
         nullable: true
@@ -698,16 +679,12 @@ tables:
       for structured queries like `filter = 'country_code:US,type:education'`.
     fetch_limit_default: 25
     filters:
-      - name: search
       - name: filter_value
       - name: sort_value
     request:
       method: GET
       path: /institutions
       query:
-        - name: search
-          from: filter
-          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -861,14 +838,6 @@ tables:
           kind: path
           path:
             - updated_date
-      - name: search
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the search filter value.
-        expr:
-          kind: from_filter
-          key: search
       - name: filter_value
         type: Utf8
         nullable: true
@@ -901,16 +870,12 @@ tables:
       openalex.works WHERE filter = 'topics.id:T10048' LIMIT 10`.
     fetch_limit_default: 25
     filters:
-      - name: search
       - name: filter_value
       - name: sort_value
     request:
       method: GET
       path: /topics
       query:
-        - name: search
-          from: filter
-          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -1038,14 +1003,6 @@ tables:
           kind: path
           path:
             - updated_date
-      - name: search
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the search filter value.
-        expr:
-          kind: from_filter
-          key: search
       - name: filter_value
         type: Utf8
         nullable: true
@@ -1062,3 +1019,883 @@ tables:
         expr:
           kind: from_filter
           key: sort_value
+
+
+functions:
+  - name: search_works
+    kind: search
+    description: >-
+      Search for works using provider-native full-text search.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 200
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /works
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: mailto
+          from: input
+          key: OPENALEX_EMAIL
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex work ID (e.g. https://openalex.org/W2741809807).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: doi
+        type: Utf8
+        nullable: true
+        description: DOI URL (e.g. https://doi.org/10.1234/example).
+        expr:
+          kind: path
+          path:
+            - doi
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Work title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the work.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score (only present when using search filter).
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: publication_year
+        type: Int64
+        nullable: true
+        description: Year the work was published.
+        expr:
+          kind: path
+          path:
+            - publication_year
+      - name: publication_date
+        type: Utf8
+        nullable: true
+        description: Full publication date (ISO 8601, e.g. 2024-01-15).
+        expr:
+          kind: path
+          path:
+            - publication_date
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Work type (article, preprint, book, dataset, review, etc.).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: language
+        type: Utf8
+        nullable: true
+        description: ISO 639-1 language code (e.g. en, fr, de).
+        expr:
+          kind: path
+          path:
+            - language
+      - name: is_oa
+        type: Boolean
+        nullable: true
+        description: Whether the work is open access.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - is_oa
+      - name: oa_status
+        type: Utf8
+        nullable: true
+        description: >-
+          Open access status: gold, green, hybrid, bronze, or closed.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - oa_status
+      - name: oa_url
+        type: Utf8
+        nullable: true
+        description: Best available open access URL for the full text.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - oa_url
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total number of citations this work has received.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: is_retracted
+        type: Boolean
+        nullable: true
+        description: Whether the work has been retracted.
+        expr:
+          kind: path
+          path:
+            - is_retracted
+      - name: authorships
+        type: Json
+        nullable: true
+        description: >-
+          Full authorship array as JSON. Each entry has author (id, display_name,
+          orcid), institutions, countries, and position.
+        expr:
+          kind: path
+          path:
+            - authorships
+      - name: primary_topic__id
+        type: Utf8
+        nullable: true
+        description: Primary topic ID.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - id
+      - name: primary_topic__name
+        type: Utf8
+        nullable: true
+        description: Primary topic display name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - display_name
+      - name: primary_topic__subfield
+        type: Utf8
+        nullable: true
+        description: Primary topic subfield name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - subfield
+            - display_name
+      - name: primary_topic__field
+        type: Utf8
+        nullable: true
+        description: Primary topic field name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - field
+            - display_name
+      - name: primary_topic__domain
+        type: Utf8
+        nullable: true
+        description: Primary topic domain name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - domain
+            - display_name
+      - name: keywords
+        type: Json
+        nullable: true
+        description: >-
+          Keywords array as JSON. Each entry has id, display_name, and score.
+        expr:
+          kind: path
+          path:
+            - keywords
+      - name: referenced_works_count
+        type: Int64
+        nullable: true
+        description: Number of works referenced by this work.
+        expr:
+          kind: path
+          path:
+            - referenced_works_count
+      - name: abstract_inverted_index
+        type: Json
+        nullable: true
+        description: >-
+          Inverted index of the abstract as JSON. Keys are words, values are
+          position arrays. Reconstruct by sorting positions.
+        expr:
+          kind: path
+          path:
+            - abstract_inverted_index
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: created_date
+        type: Utf8
+        nullable: true
+        description: Creation date in OpenAlex (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_date
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the search filter value used.
+        expr:
+          kind: from_filter
+          key: search
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value used.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+
+  # ─────────────────────────────────────────────────────────────
+  # authors – researchers and their profiles
+  # ─────────────────────────────────────────────────────────────
+  - name: search_authors
+    kind: search
+    description: >-
+      Search for authors using provider-native full-text search.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 200
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /authors
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: mailto
+          from: input
+          key: OPENALEX_EMAIL
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex author ID (e.g. https://openalex.org/A5023888391).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: orcid
+        type: Utf8
+        nullable: true
+        description: ORCID identifier URL.
+        expr:
+          kind: path
+          path:
+            - orcid
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works by this author.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count across all works.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score (only present when using search).
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: last_known_institutions
+        type: Json
+        nullable: true
+        description: >-
+          Last known institutional affiliations as JSON array. Each entry has
+          id, display_name, ror, country_code, and type.
+        expr:
+          kind: path
+          path:
+            - last_known_institutions
+      - name: topics
+        type: Json
+        nullable: true
+        description: >-
+          Research topics as JSON array with id, display_name, count, and
+          subfield/field/domain hierarchy.
+        expr:
+          kind: path
+          path:
+            - topics
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch this author's works.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: created_date
+        type: Utf8
+        nullable: true
+        description: Creation date in OpenAlex.
+        expr:
+          kind: path
+          path:
+            - created_date
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+
+  # ─────────────────────────────────────────────────────────────
+  # sources – journals, repositories, conferences
+  # ─────────────────────────────────────────────────────────────
+  - name: search_sources
+    kind: search
+    description: >-
+      Search for sources using provider-native full-text search.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 200
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /sources
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: mailto
+          from: input
+          key: OPENALEX_EMAIL
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex source ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Source display name (e.g. Nature, arXiv).
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: issn_l
+        type: Utf8
+        nullable: true
+        description: Linking ISSN.
+        expr:
+          kind: path
+          path:
+            - issn_l
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Source type: journal, repository, conference, ebook platform, etc.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: host_organization_name
+        type: Utf8
+        nullable: true
+        description: Name of the host organization (e.g. Springer Nature, Elsevier).
+        expr:
+          kind: path
+          path:
+            - host_organization_name
+      - name: country_code
+        type: Utf8
+        nullable: true
+        description: Country code of the source (ISO 3166-1 alpha-2).
+        expr:
+          kind: path
+          path:
+            - country_code
+      - name: is_oa
+        type: Boolean
+        nullable: true
+        description: Whether the source is fully open access.
+        expr:
+          kind: path
+          path:
+            - is_oa
+      - name: is_in_doaj
+        type: Boolean
+        nullable: true
+        description: Whether the source is listed in the Directory of Open Access Journals.
+        expr:
+          kind: path
+          path:
+            - is_in_doaj
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works in this source.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count across all works in this source.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: homepage_url
+        type: Utf8
+        nullable: true
+        description: Source homepage URL.
+        expr:
+          kind: path
+          path:
+            - homepage_url
+      - name: apc_usd
+        type: Int64
+        nullable: true
+        description: Article processing charge in USD.
+        expr:
+          kind: path
+          path:
+            - apc_usd
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works in this source.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+
+
+  # ─────────────────────────────────────────────────────────────
+  # institutions – universities, companies, research orgs
+  # ─────────────────────────────────────────────────────────────
+  - name: search_institutions
+    kind: search
+    description: >-
+      Search for institutions using provider-native full-text search.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 200
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /institutions
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: mailto
+          from: input
+          key: OPENALEX_EMAIL
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex institution ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Institution name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: ror
+        type: Utf8
+        nullable: true
+        description: ROR (Research Organization Registry) identifier.
+        expr:
+          kind: path
+          path:
+            - ror
+      - name: country_code
+        type: Utf8
+        nullable: true
+        description: Country code (ISO 3166-1 alpha-2).
+        expr:
+          kind: path
+          path:
+            - country_code
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Institution type: education, company, healthcare, nonprofit,
+          government, facility, other.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: homepage_url
+        type: Utf8
+        nullable: true
+        description: Institution homepage URL.
+        expr:
+          kind: path
+          path:
+            - homepage_url
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works affiliated with this institution.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: geo__city
+        type: Utf8
+        nullable: true
+        description: City where the institution is located.
+        expr:
+          kind: path
+          path:
+            - geo
+            - city
+      - name: geo__region
+        type: Utf8
+        nullable: true
+        description: Region/state where the institution is located.
+        expr:
+          kind: path
+          path:
+            - geo
+            - region
+      - name: geo__country
+        type: Utf8
+        nullable: true
+        description: Country name.
+        expr:
+          kind: path
+          path:
+            - geo
+            - country
+      - name: associated_institutions
+        type: Json
+        nullable: true
+        description: >-
+          Associated institutions as JSON array with id, display_name,
+          country_code, type, and relationship.
+        expr:
+          kind: path
+          path:
+            - associated_institutions
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works from this institution.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+
+  # ─────────────────────────────────────────────────────────────
+  # topics – research topics and their taxonomy
+  # ─────────────────────────────────────────────────────────────
+  - name: search_topics
+    kind: search
+    description: >-
+      Search for topics using provider-native full-text search.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 200
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /topics
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: mailto
+          from: input
+          key: OPENALEX_EMAIL
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+─
