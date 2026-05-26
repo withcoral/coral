@@ -1,59 +1,170 @@
 # DEV.to (Forem)
 
-Query articles, users, and tags from [DEV.to](https://dev.to) and other Forem communities. This source uses the public Forem API and requires absolutely **no authentication**.
+**Version:** 0.1.0
+**Backend:** HTTP
+**Tables:** 3
+**Base URL:** `https://dev.to/api`
 
-## Available Tables
+Query articles, users, and tags from [DEV.to](https://dev.to) and other Forem communities via the public [Forem API](https://developers.forem.com/api/v1). No authentication required.
+
+```bash
+coral source add --file sources/community/devto/manifest.yaml
+```
+
+## Tables
+
+| Table | Description | Filters |
+|---|---|---|
+| `articles` | Published articles on DEV.to | `tag`, `username`, `state`, `top` |
+| `users` | User profile lookup | `id` (required) or `username` (required) |
+| `tags` | Active tags on the platform | — |
+
+---
 
 ### `articles`
 
-Fetch a list of published articles.
+Fetch a list of published articles. Supports filtering by tag, author, state, and top-of-timeframe.
 
-```sql
--- Find the most popular Rust articles
-SELECT title, url, positive_reactions_count 
-FROM devto.articles 
-WHERE tag = 'rust' 
-ORDER BY positive_reactions_count DESC 
-LIMIT 5;
+#### Filters
 
--- Find fresh articles from a specific user
-SELECT title, url 
-FROM devto.articles 
-WHERE username = 'ben' AND state = 'fresh';
-```
+| Filter | Type | Description |
+|---|---|---|
+| `tag` | string | Filter articles by a specific tag (e.g. `rust`, `javascript`) |
+| `username` | string | Filter articles by a specific author's username |
+| `state` | string | Filter by state: `fresh` (recently published) or `rising` (trending) |
+| `top` | integer | Return top articles over the past N days (e.g. `7` for the week) |
 
-**Supported Filters:**
-- `tag`: Filter articles by a specific tag (e.g. `javascript`, `python`).
-- `username`: Filter articles published by a specific user.
-- `state`: Filter by state, such as `fresh` or `rising`.
-- `top`: Number of days to filter top articles (e.g. `7` for top articles of the week).
+#### Columns
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | Int64 | Article ID |
+| `title` | Utf8 | Article title |
+| `description` | Utf8 | Short description |
+| `slug` | Utf8 | URL slug |
+| `url` | Utf8 | Full URL to the article on DEV.to |
+| `canonical_url` | Utf8 | Original URL if crossposted |
+| `comments_count` | Int64 | Number of comments |
+| `public_reactions_count` | Int64 | Number of public reactions |
+| `positive_reactions_count` | Int64 | Number of positive reactions |
+| `reading_time_minutes` | Int64 | Estimated reading time in minutes |
+| `tags` | Utf8 | Comma-separated list of tags |
+| `published_at` | Timestamp | Publication timestamp |
+| `created_at` | Timestamp | Creation timestamp |
+| `last_comment_at` | Timestamp | Timestamp of the last comment |
+| `edited_at` | Timestamp | Timestamp of last edit |
+| `author_username` | Utf8 | Username of the author (from nested `user` object) |
+| `author_name` | Utf8 | Display name of the author (from nested `user` object) |
+| `organization_name` | Utf8 | Organization name if posted under one |
+| `cover_image` | Utf8 | URL of the article cover image |
+| `social_image` | Utf8 | URL of the social share image |
+| `path` | Utf8 | Relative path on DEV.to (e.g. `/username/slug`) |
+| `published_timestamp` | Utf8 | ISO 8601 publication timestamp string |
+| `language` | Utf8 | Language code (e.g. `en`) |
+| `readable_publish_date` | Utf8 | Human-readable publish date (e.g. `May 26`) |
+| `type_of` | Utf8 | Type of the resource (always `article`) |
+| `tag` | Utf8 | Echoes the `tag` filter used |
+| `username` | Utf8 | Echoes the `username` filter used |
+| `state` | Utf8 | Echoes the `state` filter used |
+| `top` | Int64 | Echoes the `top` filter used |
+
+---
 
 ### `users`
 
-Lookup a specific user profile. You must provide either an `id` or a `username`.
+Lookup a specific DEV.to user profile. You must provide either an `id` or a `username`.
 
-```sql
--- Lookup a user by username
-SELECT name, summary, location, website_url 
-FROM devto.users 
-WHERE username = 'ben';
+#### Filters
 
--- Lookup a user by ID
-SELECT username, name, joined_at 
-FROM devto.users 
-WHERE id = 1;
-```
+| Filter | Type | Required | Description |
+|---|---|---|---|
+| `id` | Int64 | Yes (or `username`) | The numerical user ID |
+| `username` | string | Yes (or `id`) | The DEV.to handle (e.g. `ben`) |
 
-**Supported Filters:**
-- `id`: The numerical ID of the user.
-- `username`: The DEV.to handle (e.g. `ben`).
+#### Columns
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | Int64 | User ID |
+| `username` | Utf8 | Username |
+| `name` | Utf8 | Display name |
+| `summary` | Utf8 | User profile summary/bio |
+| `location` | Utf8 | User location |
+| `website_url` | Utf8 | User website URL |
+| `joined_at` | Utf8 | Date the user joined DEV.to (e.g. `Dec 27, 2015`) |
+| `twitter_username` | Utf8 | Twitter handle |
+| `github_username` | Utf8 | GitHub handle |
+| `profile_image` | Utf8 | URL of the user profile image |
+| `email` | Utf8 | Public email address, if set |
+
+---
 
 ### `tags`
 
 List active tags used on DEV.to.
 
-```sql
-SELECT name, short_summary 
-FROM devto.tags 
-LIMIT 10;
+#### Columns
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | Int64 | Tag ID |
+| `name` | Utf8 | Tag name |
+| `bg_color_hex` | Utf8 | Hex color code for the tag background |
+| `text_color_hex` | Utf8 | Hex color code for the tag text |
+| `short_summary` | Utf8 | A short description of the tag |
+
+---
+
+## Quick start
+
+```bash
+# Confirm connectivity
+coral sql "SELECT title, url FROM devto.articles WHERE tag = 'rust' LIMIT 1"
+
+# Find the most popular articles of the week
+coral sql "
+  SELECT title, url, positive_reactions_count, reading_time_minutes
+  FROM devto.articles
+  WHERE tag = 'javascript' AND top = 7
+  ORDER BY positive_reactions_count DESC
+  LIMIT 10
+"
+
+# Find fresh articles from a specific user
+coral sql "
+  SELECT title, url, published_at
+  FROM devto.articles
+  WHERE username = 'ben' AND state = 'fresh'
+  LIMIT 5
+"
+
+# Lookup a user profile
+coral sql "
+  SELECT name, summary, location, github_username, profile_image
+  FROM devto.users
+  WHERE username = 'ben'
+"
+
+# Lookup a user by ID
+coral sql "
+  SELECT username, name, joined_at, email
+  FROM devto.users
+  WHERE id = 1
+"
+
+# Browse active tags
+coral sql "
+  SELECT name, short_summary, bg_color_hex
+  FROM devto.tags
+  LIMIT 10
+"
 ```
+
+## Notes
+
+- The `users` table functions as a **lookup table** — you must provide either an `id` or `username` filter. The Forem API does not support listing all users without admin authentication.
+- The API uses different endpoints depending on the filter: `id` routes to `/users/{id}`, while `username` routes to `/users/by_username?url={username}`. The manifest handles this via `when_filters` request routing.
+- `joined_at` in `users` returns a human-readable date string (e.g. `Dec 27, 2015`), not an ISO 8601 timestamp.
+- `tags` in `articles` is a comma-separated string (e.g. `javascript, node, rust`). Filter by a single tag using the `tag` filter.
+- No authentication or API key is required for any of the implemented endpoints.
+- The Forem API enforces a rate limit of **30 requests per 30 seconds** for unauthenticated access. Keep this in mind when running large paginated queries.

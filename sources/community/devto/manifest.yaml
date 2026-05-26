@@ -194,6 +194,45 @@ tables:
           path:
             - organization
             - name
+      - name: cover_image
+        type: Utf8
+        nullable: true
+        description: URL of the article cover image.
+      - name: social_image
+        type: Utf8
+        nullable: true
+        description: URL of the social share image.
+      - name: path
+        type: Utf8
+        nullable: true
+        description: Relative path to the article on DEV.to (e.g. /username/slug).
+      - name: edited_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of last edit.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - edited_at
+      - name: published_timestamp
+        type: Utf8
+        nullable: true
+        description: ISO 8601 publication timestamp string.
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Language code of the article (e.g. en).
+      - name: readable_publish_date
+        type: Utf8
+        nullable: true
+        description: Human-readable publish date (e.g. May 26).
+      - name: type_of
+        type: Utf8
+        nullable: true
+        description: Type of the resource (always article).
 
   # ──────────────────────────────────────────────────────────────────────
   # users — lookup a user by ID or username
@@ -257,6 +296,14 @@ tables:
         type: Utf8
         nullable: true
         description: GitHub handle.
+      - name: profile_image
+        type: Utf8
+        nullable: true
+        description: URL of the user profile image.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Public email address, if set.
 
   # ──────────────────────────────────────────────────────────────────────
   # tags — list active tags
