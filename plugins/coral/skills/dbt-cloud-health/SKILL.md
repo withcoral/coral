@@ -1,4 +1,4 @@
-﻿# dbt Cloud Health Skill
++# dbt Cloud Health Skill
 
 Use this skill to query dbt Cloud jobs, runs, and environments through Coral SQL.
 The dbt_cloud source exposes three tables: `dbt_cloud.jobs`, `dbt_cloud.runs`, and `dbt_cloud.environments`.
