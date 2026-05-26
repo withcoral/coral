@@ -1,5 +1,6 @@
 import classNames from 'classnames'
-import React, { ElementType, MouseEvent } from 'react'
+import React from 'react'
+import type { ElementType, MouseEvent } from 'react'
 
 import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
@@ -15,6 +16,17 @@ import {
 function handleDisabledClick(event: MouseEvent<HTMLElement>) {
   event.preventDefault()
   event.stopPropagation()
+}
+
+function resolveAriaLabel(
+  children: React.ReactNode,
+  explicitLabel: string | undefined,
+  isMinimized: boolean,
+) {
+  if (explicitLabel !== undefined) return explicitLabel
+  if (!isMinimized || typeof children !== 'string') return undefined
+
+  return children
 }
 
 export interface SidebarButtonProps<T extends ElementType = 'button'> {
@@ -49,12 +61,14 @@ export function SidebarButton<T extends ElementType = 'button'>(
     isMinimized = false,
     ref,
     variant = 'default',
+    'aria-label': ariaLabel,
     ...rest
   } = props
 
   const Component = (as ?? 'button') as ElementType
   const isNativeButton = Component === 'button'
   const type = 'type' in props ? props.type! : 'button'
+  const resolvedAriaLabel = resolveAriaLabel(children, ariaLabel, isMinimized)
 
   const componentProps = {
     className: classNames(
@@ -64,6 +78,7 @@ export function SidebarButton<T extends ElementType = 'button'>(
     ),
     ref,
     ...rest,
+    ...(resolvedAriaLabel !== undefined && { 'aria-label': resolvedAriaLabel }),
     onClick: !isNativeButton && disabled ? handleDisabledClick : rest.onClick,
     ...(isNativeButton && { disabled, type }),
     ...(!isNativeButton && disabled && { 'aria-disabled': true, href: undefined, tabIndex: -1 }),
@@ -72,7 +87,7 @@ export function SidebarButton<T extends ElementType = 'button'>(
   return (
     <Component {...componentProps}>
       <Icon className={iconStyles({ variant })} color="inherit" name={icon} size="18" />
-      {children && <span className={textStyles({ variant })}>{children}</span>}
+      {!isMinimized && children && <span className={textStyles({ variant })}>{children}</span>}
     </Component>
   )
 }

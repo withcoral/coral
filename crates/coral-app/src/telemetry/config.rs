@@ -7,11 +7,12 @@ use serde::Deserialize;
 use crate::bootstrap::AppError;
 use crate::state::AppStateLayout;
 
-pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off";
-pub(super) const DEFAULT_LOCAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace";
+pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off";
+pub(super) const DEFAULT_LOCAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace,coral.http.body=trace";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
 const DEFAULT_TRACE_HISTORY_RETENTION_DAYS: u64 = 7;
+const DEFAULT_TRACE_HISTORY_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;
 const HOURS_PER_DAY: u64 = 24;
 const SECONDS_PER_HOUR: u64 = 60 * 60;
 
@@ -60,6 +61,8 @@ impl Default for OtlpConfig {
 pub(crate) struct TraceHistoryConfig {
     pub(crate) enabled: bool,
     pub(crate) retention_days: u64,
+    pub(crate) record_http_bodies: bool,
+    pub(crate) http_body_max_bytes: usize,
 }
 
 impl Default for TraceHistoryConfig {
@@ -67,6 +70,8 @@ impl Default for TraceHistoryConfig {
         Self {
             enabled: true,
             retention_days: DEFAULT_TRACE_HISTORY_RETENTION_DAYS,
+            record_http_bodies: false,
+            http_body_max_bytes: DEFAULT_TRACE_HISTORY_HTTP_BODY_MAX_BYTES,
         }
     }
 }
@@ -94,6 +99,12 @@ impl TelemetryConfig {
 }
 
 impl TraceHistoryConfig {
+    #[must_use]
+    pub(crate) fn http_body_recording_max_bytes(&self) -> Option<usize> {
+        (self.enabled && self.record_http_bodies && self.http_body_max_bytes > 0)
+            .then_some(self.http_body_max_bytes)
+    }
+
     #[must_use]
     pub(crate) fn retention(&self) -> Duration {
         Duration::from_secs(
@@ -123,6 +134,8 @@ mod tests {
 
         assert_eq!(config, TelemetryConfig::default());
         assert!(config.trace_history.enabled);
+        assert!(!config.trace_history.record_http_bodies);
+        assert_eq!(config.trace_history.http_body_recording_max_bytes(), None);
     }
 
     #[test]
@@ -145,6 +158,8 @@ service_name = "from-config"
 [trace_history]
 enabled = true
 retention_days = 14
+record_http_bodies = true
+http_body_max_bytes = 42
 "#,
         )
         .expect("write config");
@@ -165,6 +180,36 @@ retention_days = 14
             config.trace_history.retention(),
             Duration::from_hours(14 * 24)
         );
+        assert!(config.trace_history.record_http_bodies);
+        assert_eq!(config.trace_history.http_body_max_bytes, 42);
+        assert_eq!(
+            config.trace_history.http_body_recording_max_bytes(),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn http_body_recording_requires_trace_history() {
+        let config = TraceHistoryConfig {
+            enabled: false,
+            record_http_bodies: true,
+            http_body_max_bytes: 8,
+            ..TraceHistoryConfig::default()
+        };
+
+        assert_eq!(config.http_body_recording_max_bytes(), None);
+    }
+
+    #[test]
+    fn http_body_recording_requires_positive_max_bytes() {
+        let config = TraceHistoryConfig {
+            enabled: true,
+            record_http_bodies: true,
+            http_body_max_bytes: 0,
+            ..TraceHistoryConfig::default()
+        };
+
+        assert_eq!(config.http_body_recording_max_bytes(), None);
     }
 
     #[test]
