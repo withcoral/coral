@@ -60,11 +60,19 @@ Fetch geolocation details. By default, it fetches the details for the IP from wh
 
 ```bash
 # Fetch geolocation details for your current IP address
-coral sql "
-  SELECT country, regionName, city, lat, lon, isp
+coral sql '
+  SELECT country, "regionName", city, lat, lon, isp
   FROM ip_api.location
   LIMIT 1
-"
+'
+
+/*
++---------+-------------------------------------+-----------+---------+---------+-------------------------------+
+| country | regionName                          | city      | lat     | lon     | isp                           |
++---------+-------------------------------------+-----------+---------+---------+-------------------------------+
+| India   | National Capital Territory of Delhi | New Delhi | 28.6327 | 77.2198 | Reliance Jio Infocomm Limited |
++---------+-------------------------------------+-----------+---------+---------+-------------------------------+
+*/
 
 # Fetch geolocation details for a specific IP (e.g., Google DNS)
 coral sql "
@@ -73,12 +81,28 @@ coral sql "
   WHERE query = '8.8.8.8'
 "
 
+/*
++---------+---------------+---------+------------+--------------------+
+| query   | country       | city    | isp        | asn                |
++---------+---------------+---------+------------+--------------------+
+| 8.8.8.8 | United States | Ashburn | Google LLC | AS15169 Google LLC |
++---------+---------------+---------+------------+--------------------+
+*/
+
 # Fetch geolocation details for a domain name
 coral sql "
   SELECT query, country, city, isp
   FROM ip_api.location
   WHERE query = 'github.com'
 "
+
+/*
++----------------+-----------+-----------+-----------------------+
+| query          | country   | city      | isp                   |
++----------------+-----------+-----------+-----------------------+
+| 20.205.243.166 | Singapore | Singapore | Microsoft Corporation |
++----------------+-----------+-----------+-----------------------+
+*/
 ```
 
 ## Links
