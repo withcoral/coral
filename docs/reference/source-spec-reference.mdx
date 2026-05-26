@@ -835,6 +835,8 @@ pagination:
 
 HTTP source specs can declare the variables and secrets this source needs under a top-level `inputs` map. Inputs are where credentials and other configuration values are set up. They are not where those values are sent. Runtime request fields, such as `auth`, `request_headers`, table request headers, query params, and body fields, decide where stored inputs are used.
 
+### Input map basics
+
 At install time, `coral source add` collects each input from an environment variable matching the key, or prompts interactively when you pass `--interactive`.
 
 - **Variables**: non-secret configuration like base URLs or organization IDs
@@ -859,7 +861,7 @@ auth:
       template: Bearer {{input.API_TOKEN}}
 ```
 
-Rules:
+### Input rules
 
 - `kind: variable` values are stored with source variables
 - `kind: secret` values are stored with source secrets
@@ -870,13 +872,25 @@ Rules:
 - input keys must not start with Coral's reserved internal prefix `__coral`
 - declaring an input does not add it to any request by itself; reference it from `auth`, headers, query params, body fields, or other runtime request configuration where it should be used
 
+### Credential methods
+
 Secret inputs can also declare `credential.methods` metadata for install-time
-credential retrieval choices. When `credential` is omitted, Coral collects the
-secret the same way as `type: source_config`: from an environment variable by
-default, or from an interactive prompt when `coral source add --interactive` is
-used. `credential.methods` only controls how the secret is collected; runtime
-request authentication is still defined by `auth` or request headers that
-reference the input.
+credential retrieval choices. `credential.methods` only controls how the secret
+is collected; runtime request authentication is still defined by `auth` or
+request headers that reference the input.
+
+Supported credential method types:
+
+- `source_config`: read the secret from an environment variable by default, or
+  from an interactive prompt when `coral source add --interactive` is used. When
+  `credential` is omitted, Coral uses this behavior.
+- `oauth`: run an OAuth authorization-code flow with a loopback callback URI and
+  store the returned access token in the same source secret.
+
+Use `type: oauth` when the provider should issue the source secret through a
+browser-based OAuth setup instead of asking the user to paste a token. If you
+want to support both flows, list the OAuth method first and add a
+`source_config` fallback for users who already have a token.
 
 ```yaml
 inputs:
@@ -910,12 +924,26 @@ inputs:
           label: Paste token
 ```
 
-Supported credential method types are `source_config` and `oauth`.
-`source_config` uses the normal source input path: an environment variable by
-default, or an interactive prompt when `coral source add --interactive` is
-used. OAuth currently supports authorization-code flow with a loopback HTTP
-callback URI: `http://127.0.0.1[:<port>]/<path>` or
-`http://localhost[:<port>]/<path>`.
+### OAuth flow and client settings
+
+OAuth methods require `flow.type: authorization_code` and an explicit `pkce` of
+`required` or `disabled`. Public clients can declare `client.id.default`,
+`client.id.input`, or both; an interactive `input` value overrides `default`.
+OAuth methods whose token endpoint requires client-secret authentication must
+prompt for both OAuth client values: set `client.id.input`,
+`client.secret.input`, and a `client.secret.transport` of `basic_auth` or
+`request_body`. Client secrets are sent only to the token endpoint and are never
+included in the authorization URL.
+
+Scopes are declared under `scopes.scope`; `delimiter: space` represents
+`scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral may store
+refresh tokens and OAuth metadata alongside the source secret, but automatic
+token refresh is not implemented yet.
+
+### OAuth redirect URIs
+
+OAuth currently supports loopback HTTP callback URIs:
+`http://127.0.0.1[:<port>]/<path>` or `http://localhost[:<port>]/<path>`.
 
 `redirect_uri_port_mode` controls how Coral binds the loopback port. When this
 field is omitted, Coral treats `redirect_uri` port `0` as `random`; otherwise it
@@ -933,18 +961,7 @@ the loopback flow and returns the provider authorization URL. After the
 callback, Coral exchanges the code, stores the access token as the source
 secret, and stores any refresh token as internal credential metadata.
 
-`flow.type` and `pkce` are required. Unspecified protobuf enum values are
-invalid and are rejected rather than treated as defaults. `pkce` is either
-`required` or `disabled`. Public clients can declare
-`client.id.default`, `client.id.input`, or both; an interactive `input` value
-overrides `default`. Confidential clients add `client.secret.input` and a
-required `transport` of `basic_auth` or `request_body`. Client secrets are sent
-only to the token endpoint and are never included in the authorization URL.
-
-Scopes are declared under `scopes.scope`; `delimiter: space` represents
-`scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral may store
-refresh tokens and OAuth metadata alongside the source secret, but automatic
-token refresh is not implemented yet.
+### Inspecting configured inputs
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config
