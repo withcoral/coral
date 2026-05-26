@@ -1,0 +1,226 @@
+name: pagerduty
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  PAGERDUTY_TOKEN:
+    kind: secret
+    hint: PagerDuty REST API token (from PagerDuty → User Settings → API Access)
+  PAGERDUTY_EMAIL:
+    kind: variable
+    hint: Your PagerDuty account email (required for API requests)
+
+base_url: "https://api.pagerduty.com"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Token token={{input.PAGERDUTY_TOKEN}}"
+    - name: Accept
+      from: template
+      template: "application/vnd.pagerduty+json;version=2"
+    - name: From
+      from: template
+      template: "{{input.PAGERDUTY_EMAIL}}"
+
+test_queries:
+  - SELECT id, name, status FROM pagerduty.services LIMIT 1
+  - SELECT id, title, urgency, status FROM pagerduty.incidents LIMIT 1
+
+tables:
+  - name: incidents
+    description: PagerDuty incidents — active, resolved, and acknowledged. Join with github.actions on timing to correlate CI failures with production incidents.
+    request:
+      method: GET
+      path: /incidents
+    response:
+      rows_path:
+        - incidents
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: id
+        type: Utf8
+      - name: incident_number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: urgency
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: resolved_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: service__id
+        type: Utf8
+      - name: service__summary
+        type: Utf8
+      - name: assigned_via
+        type: Utf8
+      - name: last_status_change_at
+        type: Utf8
+      - name: escalation_policy__id
+        type: Utf8
+      - name: escalation_policy__summary
+        type: Utf8
+
+  - name: services
+    description: PagerDuty services — represents a microservice or system component being monitored.
+    request:
+      method: GET
+      path: /services
+    response:
+      rows_path:
+        - services
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: escalation_policy__id
+        type: Utf8
+      - name: escalation_policy__summary
+        type: Utf8
+      - name: incident_urgency_rule__type
+        type: Utf8
+
+  - name: teams
+    description: PagerDuty teams — groups of users who own services and respond to incidents.
+    request:
+      method: GET
+      path: /teams
+    response:
+      rows_path:
+        - teams
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: html_url
+        type: Utf8
+
+  - name: users
+    description: PagerDuty users — team members who respond to incidents.
+    request:
+      method: GET
+      path: /users
+    response:
+      rows_path:
+        - users
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: email
+        type: Utf8
+      - name: role
+        type: Utf8
+      - name: job_title
+        type: Utf8
+      - name: time_zone
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: invitation_sent
+        type: Boolean
+
+  - name: escalation_policies
+    description: PagerDuty escalation policies — defines how incidents escalate through teams.
+    request:
+      method: GET
+      path: /escalation_policies
+    response:
+      rows_path:
+        - escalation_policies
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: num_loops
+        type: Int64
+      - name: html_url
+        type: Utf8
+
+  - name: schedules
+    description: PagerDuty on-call schedules — who is on call and when.
+    request:
+      method: GET
+      path: /schedules
+    response:
+      rows_path:
+        - schedules
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: time_zone
+        type: Utf8
+      - name: html_url
+        type: Utf8
