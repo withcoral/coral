@@ -1,0 +1,107 @@
+name: scorecard
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query OpenSSF Scorecard security health checks for any public GitHub repository.
+  Returns up to 18 security dimensions (code review, branch protection, signed
+  releases, pinned dependencies, SAST, fuzzing, and more) with a score 0–10
+  and a plain-English reason for each. No authentication required. Scores are
+  updated weekly by the OpenSSF Scorecard project.
+base_url: https://api.securityscorecards.dev
+
+test_queries:
+  - SELECT check_name, score, reason FROM scorecard.checks WHERE owner = 'expressjs' AND repo = 'express' LIMIT 5
+
+tables:
+  - name: checks
+    description: >-
+      OpenSSF Scorecard security checks for a GitHub repository. Each row is one
+      security dimension (e.g. Code-Review, Branch-Protection, Signed-Releases)
+      with a score from 0 (worst) to 10 (best) and a plain-English reason.
+      Score -1 means the check is not applicable for this repo (e.g. no releases
+      to sign). Works for any public GitHub repository tracked by OpenSSF.
+    guide: >-
+      Each row is one OpenSSF Scorecard security check for the given GitHub repository.
+      Always include BOTH filters:
+        WHERE owner = '<github-owner>' AND repo = '<github-repo>'
+
+      Known checks: Binary-Artifacts, Branch-Protection, CII-Best-Practices,
+      Code-Review, Dangerous-Workflow, Fuzzing, License, Maintained,
+      Packaging, Pinned-Dependencies, SAST, Security-Policy,
+      Signed-Releases, Token-Permissions, Vulnerabilities.
+
+      Scores: 10 = excellent, 0 = critical gap, -1 = not applicable.
+      Sort by score ASC to surface which checks need the most improvement.
+      Filter WHERE score < 5 to find critical security gaps.
+    fetch_limit_default: 30
+    filters:
+      - name: owner
+        required: true
+      - name: repo
+        required: true
+    request:
+      method: GET
+      path: /projects/github.com/{{filter.owner}}/{{filter.repo}}
+    response:
+      rows_path:
+        - checks
+    pagination:
+      mode: none
+    columns:
+      - name: check_name
+        type: Utf8
+        nullable: false
+        description: >-
+          Name of the security check (e.g. 'Code-Review', 'Branch-Protection',
+          'Signed-Releases', 'Pinned-Dependencies').
+        expr:
+          kind: path
+          path:
+            - name
+
+      - name: score
+        type: Int64
+        nullable: true
+        description: >-
+          Score from 0 (critical gap) to 10 (excellent). -1 means the check
+          is not applicable for this repository (e.g. no releases to sign).
+        expr:
+          kind: path
+          path:
+            - score
+
+      - name: reason
+        type: Utf8
+        nullable: true
+        description: Plain-English explanation of why the check received this score.
+        expr:
+          kind: path
+          path:
+            - reason
+
+      - name: documentation_url
+        type: Utf8
+        nullable: true
+        description: Link to the OpenSSF Scorecard documentation for this check.
+        expr:
+          kind: path
+          path:
+            - documentation
+            - url
+
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Echoes the owner filter used to produce this row.
+        expr:
+          kind: from_filter
+          key: owner
+
+      - name: repo
+        type: Utf8
+        nullable: true
+        description: Echoes the repo filter used to produce this row.
+        expr:
+          kind: from_filter
+          key: repo
