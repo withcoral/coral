@@ -214,4 +214,3 @@ tables:
         expr:
           kind: from_filter
           key: filter
-
