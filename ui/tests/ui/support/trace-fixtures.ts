@@ -401,7 +401,7 @@ function sourceHost(source: SourceName): string {
 
 function traceSummary(index: number, fixture: TraceFixture): TraceSummary {
   const displayIndex = index + 1
-  const traceId = `trace-${displayIndex.toString().padStart(2, '0')}`
+  const traceId = traceIdForIndex(index)
   const durationNanos = `${fixture.durationMs * 1_000_000}`
 
   return create(TraceSummarySchema, {
@@ -413,10 +413,14 @@ function traceSummary(index: number, fixture: TraceFixture): TraceSummary {
     startTimeUnixNanos: nanos(displayIndex * 1_000),
     endTimeUnixNanos: nanos(displayIndex * 1_000 + fixture.durationMs),
     durationNanos,
-    spanCount: index === selectedTraceIndex ? detailSpans.length : 3,
+    spanCount: index === selectedTraceIndex ? selectedTraceSpans.length : 3,
     rowCount: `${fixture.rows ?? 0}`,
     rowCountRecorded: fixture.rows !== undefined,
   })
+}
+
+function traceIdForIndex(index: number): string {
+  return `trace-${(index + 1).toString().padStart(2, '0')}`
 }
 
 function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSpan {
@@ -432,7 +436,6 @@ function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSp
 
   if (fixture.requestBody) {
     attrs['http.request.body.present'] = true
-    attrs['coral.http.request.body'] = JSON.stringify(fixture.requestBody)
   } else if (fixture.requestBodyPresent !== undefined) {
     attrs['http.request.body.present'] = fixture.requestBodyPresent
   }
@@ -441,9 +444,6 @@ function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSp
   }
   if (fixture.requestBodyTruncated) {
     attrs['coral.http.request.body.truncated'] = true
-  }
-  if (fixture.responseBody !== undefined) {
-    attrs['coral.http.response.body'] = JSON.stringify(fixture.responseBody)
   }
   if (fixture.responseBodyPresent !== undefined) {
     attrs['http.response.body.present'] = fixture.responseBodyPresent
@@ -473,6 +473,60 @@ function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSp
   })
 }
 
+function bodySpan(
+  traceId: string,
+  parentSpanId: string,
+  fixture: SpanFixture,
+  index: number,
+  kind: 'request' | 'response',
+): TraceSpan | undefined {
+  const body = kind === 'request' ? fixture.requestBody : fixture.responseBody
+  if (body === undefined) return undefined
+
+  const bodyAttr = kind === 'request' ? 'coral.http.request.body' : 'coral.http.response.body'
+  const truncatedAttr =
+    kind === 'request' ? 'coral.http.request.body.truncated' : 'coral.http.response.body.truncated'
+  const truncated =
+    kind === 'request' ? fixture.requestBodyTruncated : fixture.responseBodyTruncated
+  const startOffsetMs = 7_000 + index * 37 + (kind === 'request' ? 1 : 2)
+  const attrs: Record<string, unknown> = {
+    target: 'coral.http.body',
+    'coral.http.body.direction': kind,
+    [bodyAttr]: JSON.stringify(body),
+    [truncatedAttr]: Boolean(truncated),
+  }
+
+  return create(TraceSpanSchema, {
+    traceId,
+    spanId: `${parentSpanId}-${kind}-body`,
+    parentSpanId,
+    name: `coral.http.${kind}.body`,
+    kind: 'internal',
+    status: TraceStatus.OK,
+    startTimeUnixNanos: nanos(startOffsetMs),
+    endTimeUnixNanos: nanos(startOffsetMs),
+    durationNanos: '0',
+    attributesJson: JSON.stringify(attrs),
+    eventsJson: '[]',
+    linksJson: '[]',
+    resourceJson: JSON.stringify({ 'service.name': 'coral' }),
+    scopeName: 'coral',
+  })
+}
+
+function spansForFixture(traceId: string, fixture: SpanFixture, index: number): TraceSpan[] {
+  const span = httpSpan(traceId, fixture, index)
+  return [
+    span,
+    bodySpan(traceId, span.spanId, fixture, index, 'request'),
+    bodySpan(traceId, span.spanId, fixture, index, 'response'),
+  ].filter((candidate): candidate is TraceSpan => candidate !== undefined)
+}
+
+const selectedTraceSpans = detailSpans.flatMap((fixture, index) =>
+  spansForFixture(traceIdForIndex(selectedTraceIndex), fixture, index + 1),
+)
+
 export const tenTraceList: TraceSummary[] = traceFixtures.map((fixture, index) =>
   traceSummary(index, fixture),
 )
@@ -488,5 +542,5 @@ export const emptyTraceListResponse: ListTracesResponse = create(ListTracesRespo
 
 export const selectedTraceDetailResponse: GetTraceResponse = create(GetTraceResponseSchema, {
   summary: selectedTrace,
-  spans: detailSpans.map((fixture, index) => httpSpan(selectedTrace.traceId, fixture, index + 1)),
+  spans: selectedTraceSpans,
 })

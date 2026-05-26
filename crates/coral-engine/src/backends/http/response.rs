@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::error::provider_error;
+use crate::backends::http::trace::HttpBodyCapture;
 use coral_spec::ResponseBodyFormat;
 
 pub(super) struct ResponseDecodeContext<'a> {
@@ -12,7 +13,9 @@ pub(super) struct ResponseDecodeContext<'a> {
     pub(super) table_name: &'a str,
     pub(super) method_label: &'a str,
     pub(super) logged_url: &'a str,
+    pub(super) body_capture: &'a HttpBodyCapture,
     pub(super) response_span: &'a tracing::Span,
+    pub(super) request_id: u64,
 }
 
 pub(super) async fn decode_response_body(
@@ -25,7 +28,9 @@ pub(super) async fn decode_response_body(
         table_name,
         method_label,
         logged_url,
+        body_capture,
         response_span,
+        request_id,
     } = context;
     match format {
         ResponseBodyFormat::Json => {
@@ -33,6 +38,8 @@ pub(super) async fn decode_response_body(
                 decode_error(source_schema, table_name, method_label, logged_url, &error)
             })?;
             response_span.record("http.response.body.size", bytes.len());
+            let trace_body = String::from_utf8_lossy(&bytes);
+            body_capture.record_response(response_span, request_id, trace_body.as_ref());
             serde_json::from_slice(&bytes).map_err(|error| {
                 json_decode_error(source_schema, table_name, method_label, logged_url, &error)
             })
@@ -42,6 +49,7 @@ pub(super) async fn decode_response_body(
                 decode_error(source_schema, table_name, method_label, logged_url, &error)
             })?;
             response_span.record("http.response.body.size", text.len());
+            body_capture.record_response(response_span, request_id, &text);
             let mut rows = Vec::new();
             for (index, line) in text.lines().enumerate() {
                 let trimmed = line.trim();
