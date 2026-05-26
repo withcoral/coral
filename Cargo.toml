@@ -55,6 +55,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 datafusion = "53"
+datafusion-datasource = "53"
+datafusion-datasource-json = "53"
 datafusion-functions-json = "0.53"
 datafusion-tracing = "53.0.1"
 dialoguer = "0.12"
