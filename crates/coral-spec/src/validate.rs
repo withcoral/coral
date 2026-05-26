@@ -440,6 +440,12 @@ pub(crate) fn validate_unique_values(values: &[String], context: &str) -> Result
 pub(crate) fn validate_columns(columns: &[ColumnSpec], schema: &str, table: &str) -> Result<()> {
     let mut seen_columns = HashSet::new();
     for col in columns {
+        col.manifest_data_type().map_err(|error| {
+            ManifestError::validation(format!(
+                "{schema}.{table} column '{}' has invalid type '{}': {error}",
+                col.name, col.data_type
+            ))
+        })?;
         if !seen_columns.insert(col.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate column '{}'",
@@ -858,8 +864,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        validate_filters_and_column_exprs, validate_http_function, validate_http_function_names,
-        validate_http_table, validate_table_names,
+        validate_columns, validate_filters_and_column_exprs, validate_http_function,
+        validate_http_function_names, validate_http_table, validate_table_names,
     };
     use crate::common::{
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
@@ -896,6 +902,22 @@ mod tests {
         let mut column = test_column();
         column.expr = Some(expr);
         column
+    }
+
+    #[test]
+    fn validate_columns_rejects_invalid_column_type() {
+        let mut column = test_column();
+        column.data_type = "Banana".to_string();
+
+        let error = validate_columns(&[column], "demo", "messages")
+            .expect_err("column types should be validated");
+
+        assert!(
+            error
+                .to_string()
+                .contains("demo.messages column 'id' has invalid type 'Banana'"),
+            "unexpected error: {error}"
+        );
     }
 
     fn base_request() -> RequestSpec {

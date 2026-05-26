@@ -179,7 +179,9 @@ fn app_code(error: &AppError) -> Code {
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingConfigDir
-        | AppError::Credentials(CredentialsError::Parse(_)) => Code::FailedPrecondition,
+        | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
+            Code::FailedPrecondition
+        }
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Io(_)
         | AppError::Yaml(_)

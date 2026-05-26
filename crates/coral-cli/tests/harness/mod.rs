@@ -25,8 +25,8 @@ use coral_api::v1::{
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
     PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
+    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -54,6 +54,7 @@ fn mock_source() -> Source {
         secrets: Vec::new(),
         variables: Vec::new(),
         origin: SourceOrigin::Bundled as i32,
+        credential_storage: SourceCredentialStorage::File as i32,
     }
 }
 
@@ -285,6 +286,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
+                credential_storage: SourceCredentialStorage::File as i32,
             },
             SourceInfo {
                 name: "slack".to_string(),
@@ -293,6 +295,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 inputs: Vec::new(),
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
+                credential_storage: SourceCredentialStorage::Unspecified as i32,
             },
         ],
     }
@@ -326,6 +329,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             }],
             installed: true,
             origin: SourceOrigin::Bundled as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
         }),
         "slack" => Ok(SourceInfo {
             name: "slack".to_string(),
@@ -334,6 +338,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             inputs: Vec::new(),
             installed: false,
             origin: SourceOrigin::Bundled as i32,
+            credential_storage: SourceCredentialStorage::Unspecified as i32,
         }),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
@@ -342,6 +347,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             inputs: Vec::new(),
             installed: true,
             origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
@@ -442,6 +448,7 @@ impl Default for MockServerConfig {
                         secrets: Vec::new(),
                         variables: Vec::new(),
                         origin: SourceOrigin::Bundled as i32,
+                        credential_storage: SourceCredentialStorage::File as i32,
                     },
                     Source {
                         workspace: Some(workspace()),
@@ -450,6 +457,7 @@ impl Default for MockServerConfig {
                         secrets: Vec::new(),
                         variables: Vec::new(),
                         origin: SourceOrigin::Imported as i32,
+                        credential_storage: SourceCredentialStorage::File as i32,
                     },
                 ],
             }),
