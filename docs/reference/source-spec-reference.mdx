@@ -925,9 +925,10 @@ inputs:
 OAuth supports device-code flow and authorization-code flow.
 
 For device-code flow, declare `flow.type: device_code`,
-`endpoints.device_authorization_url`, and `endpoints.token_url`. Device-code
-OAuth uses a public client ID only: `client.secret` must not be declared, and
-no callback URL, loopback listener, client secret, or PKCE setting is required.
+`endpoints.device_authorization_url`, `endpoints.token_url`, and a public
+client ID through `client.id.default`, `client.id.input`, or both. Device-code
+OAuth uses a public client ID only: `client.secret` must not be declared, and no
+callback URL, loopback listener, client secret, or PKCE setting is required.
 
 For authorization-code flow, declare `flow.type: authorization_code`, an
 explicit `pkce` of `required` or `disabled`, `redirect_uri`,

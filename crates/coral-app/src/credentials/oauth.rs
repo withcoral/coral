@@ -27,6 +27,7 @@ use crate::bootstrap::AppError;
 use crate::credentials::OAUTH_INTERNAL_KEY_PREFIX;
 
 const SESSION_TTL: Duration = Duration::from_mins(10);
+const DEVICE_CODE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 
 #[derive(Clone)]
@@ -275,7 +276,9 @@ impl OAuthCredentialManager {
                 "device_code OAuth methods must not declare a client secret".to_string(),
             ));
         }
-        let device = request_device_code(&self.http, &oauth, &client_id).await?;
+        let device =
+            request_device_code(&self.http, &oauth, &client_id, DEVICE_CODE_REQUEST_TIMEOUT)
+                .await?;
         let authorization_url = device
             .verification_uri_complete
             .clone()
@@ -776,6 +779,7 @@ async fn request_device_code(
     http: &reqwest::Client,
     oauth: &ManifestOAuthCredentialSpec,
     client_id: &str,
+    timeout: Duration,
 ) -> Result<DeviceAuthorizationResponse, AppError> {
     let device_authorization_url = oauth.device_authorization_url.as_deref().ok_or_else(|| {
         AppError::InvalidInput(
@@ -789,19 +793,30 @@ async fn request_device_code(
             join_scope_values(scopes.scope.delimiter, &scopes.scope.values),
         ));
     }
-    let response = http
-        .post(device_authorization_url)
-        .header(ACCEPT, "application/json")
-        .form(&form)
-        .send()
-        .await
-        .map_err(|error| {
-            AppError::FailedPrecondition(format!("OAuth device code request failed: {error}"))
+    let request = async {
+        let response = http
+            .post(device_authorization_url)
+            .header(ACCEPT, "application/json")
+            .form(&form)
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!("OAuth device code request failed: {error}"))
+            })?;
+        let status = response.status();
+        let body = response.text().await.map_err(|error| {
+            AppError::FailedPrecondition(format!("OAuth device code response failed: {error}"))
         })?;
-    let status = response.status();
-    let body = response.text().await.map_err(|error| {
-        AppError::FailedPrecondition(format!("OAuth device code response failed: {error}"))
-    })?;
+        Ok::<_, AppError>((status, body))
+    };
+    let (status, body) = tokio::time::timeout(timeout, request)
+        .await
+        .map_err(|_elapsed| {
+            AppError::FailedPrecondition(format!(
+                "OAuth device code request timed out after {} seconds",
+                timeout.as_secs()
+            ))
+        })??;
     if !status.is_success() {
         return Err(AppError::FailedPrecondition(format!(
             "OAuth device code request failed with HTTP {status}: {}",
@@ -1184,7 +1199,7 @@ mod tests {
         AuthorizationCodeSessionConfig, OAuthCredentialManager, OAuthSessionCommon,
         StartOAuthCredentialRequest, basic_client_authorization, join_scope_values,
         material_key_belongs_to_input, oauth_metadata_prefix, parse_token_response, pkce_challenge,
-        receive_callback,
+        receive_callback, request_device_code,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -1417,6 +1432,49 @@ mod tests {
                 .internal_metadata
                 .get(&format!("{}client_id", oauth_metadata_prefix("API_TOKEN")))
                 .map(String::as_str),
+            Some("device-client")
+        );
+    }
+
+    #[tokio::test]
+    async fn device_code_request_times_out_before_session_start() {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("device listener");
+        let device_url = format!(
+            "http://{}/device/code",
+            listener.local_addr().expect("addr")
+        );
+        let server = tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().expect("accept device request");
+            let request = read_http_request(&mut stream);
+            let mut closed = [0_u8; 1];
+            match stream.read(&mut closed) {
+                Ok(_) | Err(_) => {}
+            }
+            request
+        });
+        let oauth = device_oauth_spec(&device_url, "http://127.0.0.1/token");
+
+        let result = request_device_code(
+            &reqwest::Client::new(),
+            &oauth,
+            "device-client",
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+        let error = match result {
+            Ok(_device) => panic!("device request should time out"),
+            Err(error) => error,
+        };
+        let captured = server.await.expect("device server");
+
+        assert!(
+            error
+                .to_string()
+                .contains("OAuth device code request timed out"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            captured.form.get("client_id").map(String::as_str),
             Some("device-client")
         );
     }
