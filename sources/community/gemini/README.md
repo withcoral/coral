@@ -56,7 +56,7 @@ LIMIT 5;
 -- Generate text using gemini-flash-latest
 SELECT response, prompt_token_count, candidates_token_count
 FROM gemini.generate
-WHERE model = 'gemini-flash-latest' 
+WHERE model = 'gemini-flash-latest'
   AND prompt = 'Explain how a SQL JOIN works in one short paragraph.';
 /*
 +-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+

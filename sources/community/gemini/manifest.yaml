@@ -50,7 +50,7 @@ tables:
         type: Utf8
         nullable: false
         description: The model name (e.g., gemini-flash-latest).
-        expr: 
+        expr:
           kind: replace
           expr: {kind: path, path: [name]}
           from: "models/"
