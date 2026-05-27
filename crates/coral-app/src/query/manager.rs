@@ -15,7 +15,7 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
@@ -170,6 +170,9 @@ impl QueryManager {
         for source in catalog.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
+                Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
+                    return Err(error);
+                }
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -190,10 +193,17 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         validate_required_variables(source, source_spec.declared_inputs())?;
-        let credential_set_id = CredentialSetId::for_source(&source.name);
-        let stored_secrets = self
-            .credential_manager
-            .read_material(workspace_name, &credential_set_id)?;
+        let stored_secrets =
+            if let Some(credential_storage) = source.credential_storage_for_material() {
+                let credential_set_id = CredentialSetId::for_source(&source.name);
+                self.credential_manager.read_material(
+                    workspace_name,
+                    &credential_set_id,
+                    credential_storage,
+                )?
+            } else {
+                BTreeMap::new()
+            };
         let mut resolved_secrets = BTreeMap::new();
         let missing_secrets: Vec<String> = source_spec
             .required_secret_names()
@@ -227,10 +237,9 @@ impl QueryManager {
     }
 
     fn runtime_config(&self, selected_sources: &[QuerySource]) -> QueryRuntimeConfig {
-        QueryRuntimeConfig::new(
-            self.runtime_context.clone(),
-            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources),
-        )
+        let extensions =
+            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+        QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
 
@@ -342,7 +351,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
-        AppError::TomlDecode(_) => "TOML_DECODE",
+        AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
         AppError::TomlEncode(_) => "TOML_ENCODE",
         AppError::Json(_) => "JSON",
         AppError::Transport(_) => "TRANSPORT",
@@ -394,4 +403,109 @@ fn validate_required_variables(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::sources::model::SourceOrigin;
+
+    struct QueryManagerFixture {
+        _temp: TempDir,
+        manager: QueryManager,
+    }
+
+    fn query_manager_with(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> QueryManagerFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            runtime_context,
+            layout,
+            providers,
+        );
+        QueryManagerFixture {
+            _temp: temp,
+            manager,
+        }
+    }
+
+    #[test]
+    fn runtime_config_preserves_app_owned_http_body_capture_max_bytes() {
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default().with_http_body_capture_max_bytes(Some(42)),
+            Vec::new(),
+        );
+
+        let runtime = fixture.manager.runtime_config(&[]);
+
+        let config = runtime
+            .context
+            .http_body_capture_max_bytes
+            .expect("body capture config");
+        assert_eq!(config, 42);
+    }
+
+    #[test]
+    fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github").expect("source name");
+        config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name,
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["GITHUB_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Keychain),
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist source");
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let manager = QueryManager::new(
+            config_store,
+            CredentialManager::new(credential_store),
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+
+        let error = manager
+            .load_query_sources(&workspace_name)
+            .expect_err("unavailable keychain should fail closed");
+
+        assert!(
+            matches!(
+                error,
+                AppError::Credentials(CredentialsError::Unavailable(_))
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("configured for keychain storage"),
+            "keychain-routed query failure should name the routed backend: {error}"
+        );
+    }
 }

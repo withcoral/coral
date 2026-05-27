@@ -17,13 +17,15 @@ A source spec tells Coral how to connect to an API or read a local dataset, what
 
 How much effort a custom source takes depends on what you are connecting to.
 
-File-based sources (JSONL, CSV, Parquet) are the simplest case — define the file location and columns, and the source is ready to query.
+File-based sources (Parquet, JSONL, JSON, CSV) are the simplest case — define the file location and columns, and the source is ready to query.
 
 API-backed sources vary in difficulty. The source spec model is designed for APIs that have:
 
-- **Long-lived, non-SSO API credentials** — an API key, personal access token, or service account that does not require a browser-based login flow
-- **Structured, accessible documentation** — an OpenAPI spec, GraphQL schema, or clearly organized REST docs that describe endpoints and response shapes
+- **HTTP credentials Coral can store locally** — an API key, personal access token, service account credential, or OAuth device-code or authorization-code flow that returns an access token for Coral to use on API requests
+- **Structured, accessible documentation** — an OpenAPI spec, GraphQL schema, or clearly organized REST docs that describe endpoints, response shapes, authentication, scopes, and OAuth client settings
 - **Real data to validate against** — actual records in the account so you can confirm the source is returning the expected results during development
+
+OAuth-backed services can work well when the provider supports device-code flow, or when it supports an authorization-code loopback redirect URI such as `http://127.0.0.1:<port>/oauth/callback` or `http://localhost:<port>/oauth/callback`. Coral can run the OAuth flow during `coral source add --interactive`, store the returned access token as the source secret, and use that secret through the normal `auth` or request-header fields. Automatic token refresh is not implemented yet, so prefer providers whose access tokens are long-lived enough for the source's expected use.
 
 If you are unsure whether your API is a good candidate, ask us in [Discord](https://withcoral.com/discord) before getting started.
 
@@ -94,12 +96,13 @@ Create `local-messages.yaml`:
 name: local_messages
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 test_queries:
   - SELECT * FROM local_messages.messages LIMIT 1
 tables:
   - name: messages
     description: Demo messages
+    format: jsonl
     source:
       location: file:///absolute/path/to/demo-data/
       glob: "**/*.jsonl"
@@ -163,6 +166,8 @@ Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FRO
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
 
+### Basic token auth
+
 Authentication has two separate parts. The `inputs` block defines the values Coral collects and stores when you add the source. The `auth` block defines how those stored values are used on outgoing HTTP requests. The example below collects `API_TOKEN` as a secret, then uses it to build the `Authorization` header with `HeaderAuth`. For the full auth field reference and additional examples, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
 ```yaml
@@ -209,7 +214,58 @@ tables:
         type: Utf8
 ```
 
-When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, passwords, private keys, and authorization values must be secrets, even when the API key is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; other methods, such as OAuth authorization-code flow, describe alternative install-time retrieval choices.
+### OAuth credential setup
+
+When a source should offer OAuth setup, keep the runtime auth shape the same and add `credential.methods` to the secret input. The OAuth method controls how Coral obtains the secret during setup; the `auth` block still decides how that stored secret is sent to the API.
+
+```yaml
+inputs:
+  DEMO_API_TOKEN:
+    kind: secret
+    hint: Access token for the Demo API. Use OAuth setup or paste a token with read access.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Demo
+          description: Open a browser and authorize Coral to read Demo API data.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://demo.example.com/oauth/authorize
+              token_url: https://demo.example.com/oauth/token
+            client:
+              id:
+                input: DEMO_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read:data
+        - type: source_config
+          label: Paste token
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.DEMO_API_TOKEN}}
+```
+
+### OAuth client and redirect options
+
+Choose OAuth client settings from the provider's OAuth app and token endpoint requirements:
+
+- Use `pkce: required` for public clients when the provider supports it. Use `pkce: disabled` only for providers that do not support PKCE.
+- When the token endpoint requires client authentication with a client secret, prompt for both OAuth client values: set `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`) to match the token endpoint.
+- When the provider requires pre-registered redirect URIs with exact ports, use `redirect_uri_port_mode: fixed` with a non-zero port and tell users to register that exact URI in the OAuth app.
+
+### Install-time input collection
+
+When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, OAuth access tokens, passwords, private keys, and authorization values must be secrets, even when the credential is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; OAuth device-code and authorization-code methods describe alternative install-time retrieval choices.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
