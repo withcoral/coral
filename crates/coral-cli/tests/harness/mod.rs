@@ -3,6 +3,7 @@
     reason = "Integration test crates share this harness, but each target only uses a subset of the helpers."
 )]
 
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -31,6 +32,7 @@ use coral_api::v1::{
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
+use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -953,6 +955,7 @@ impl SourceService for MockSourceService {
 
 pub(crate) struct MockServer {
     endpoint_uri: String,
+    config_dir: TempDir,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), tonic::transport::Error>>,
     captured: Arc<Captured>,
@@ -995,6 +998,7 @@ impl MockServer {
         });
         Self {
             endpoint_uri,
+            config_dir: TempDir::new().expect("mock server config dir"),
             shutdown_tx: Some(shutdown_tx),
             task,
             captured,
@@ -1013,7 +1017,12 @@ impl MockServer {
     pub(crate) fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
+        cmd.env("CORAL_CONFIG_DIR", self.config_dir.path());
         cmd
+    }
+
+    pub(crate) fn config_dir(&self) -> &Path {
+        self.config_dir.path()
     }
 
     pub(crate) fn execute_sql_requests(&self) -> Vec<ExecuteSqlRequest> {
