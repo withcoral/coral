@@ -9,12 +9,11 @@ description: >-
   free OpenAlex REST API. No authentication required; optionally provide an
   email for higher rate limits (polite pool).
 inputs:
-  OPENALEX_EMAIL:
-    kind: variable
-    default: ""
+  OPENALEX_API_KEY:
+    kind: secret
     hint: >-
-      Optional email address for the OpenAlex polite pool (10 req/s vs 1 req/s).
-      Example: you@example.com. Leave empty for anonymous access.
+      Optional API key for OpenAlex. Using a key places you in the polite pool for higher
+      rate limits. Get a free key at https://openalex.org. Leave empty for anonymous access.
 base_url: https://api.openalex.org
 request_headers:
   - name: Accept
@@ -49,10 +48,14 @@ tables:
     filters:
       - name: filter_value
       - name: sort_value
+      - name: search
     request:
       method: GET
       path: /works
       query:
+        - name: search
+          from: filter
+          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -62,9 +65,9 @@ tables:
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -341,10 +344,14 @@ tables:
     filters:
       - name: filter_value
       - name: sort_value
+      - name: search
     request:
       method: GET
       path: /authors
       query:
+        - name: search
+          from: filter
+          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -354,9 +361,9 @@ tables:
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -496,10 +503,14 @@ tables:
     filters:
       - name: filter_value
       - name: sort_value
+      - name: search
     request:
       method: GET
       path: /sources
       query:
+        - name: search
+          from: filter
+          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -509,9 +520,9 @@ tables:
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -681,10 +692,14 @@ tables:
     filters:
       - name: filter_value
       - name: sort_value
+      - name: search
     request:
       method: GET
       path: /institutions
       query:
+        - name: search
+          from: filter
+          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -694,9 +709,9 @@ tables:
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -872,10 +887,14 @@ tables:
     filters:
       - name: filter_value
       - name: sort_value
+      - name: search
     request:
       method: GET
       path: /topics
       query:
+        - name: search
+          from: filter
+          key: search
         - name: filter
           from: filter
           key: filter_value
@@ -885,9 +904,9 @@ tables:
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -1023,18 +1042,21 @@ tables:
 
 functions:
   - name: search_works
-    kind: search
     description: >-
       Search for works using provider-native full-text search.
-    search_limits:
-      default_top_k: 25
-      max_top_k: 200
-      max_calls_per_query: 1
     args:
       - name: q
         required: true
         bind:
           arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
     request:
       method: GET
       path: /works
@@ -1043,17 +1065,17 @@ functions:
           from: arg
           key: q
         - name: filter
-          from: filter
-          key: filter_value
+          from: arg
+          key: filter
         - name: sort
-          from: filter
-          key: sort_value
+          from: arg
+          key: sort
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -1286,47 +1308,26 @@ functions:
           kind: path
           path:
             - created_date
-      - name: search
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the search filter value used.
-        expr:
-          kind: from_filter
-          key: search
-      - name: filter_value
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the filter value used.
-        expr:
-          kind: from_filter
-          key: filter_value
-      - name: sort_value
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the sort value used.
-        expr:
-          kind: from_filter
-          key: sort_value
 
   # ─────────────────────────────────────────────────────────────
   # authors – researchers and their profiles
   # ─────────────────────────────────────────────────────────────
   - name: search_authors
-    kind: search
     description: >-
       Search for authors using provider-native full-text search.
-    search_limits:
-      default_top_k: 25
-      max_top_k: 200
-      max_calls_per_query: 1
     args:
       - name: q
         required: true
         bind:
           arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
     request:
       method: GET
       path: /authors
@@ -1335,17 +1336,17 @@ functions:
           from: arg
           key: q
         - name: filter
-          from: filter
-          key: filter_value
+          from: arg
+          key: filter
         - name: sort
-          from: filter
-          key: sort_value
+          from: arg
+          key: sort
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -1452,39 +1453,26 @@ functions:
           kind: path
           path:
             - created_date
-      - name: filter_value
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the filter value.
-        expr:
-          kind: from_filter
-          key: filter_value
-      - name: sort_value
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the sort value used.
-        expr:
-          kind: from_filter
-          key: sort_value
 
   # ─────────────────────────────────────────────────────────────
   # sources – journals, repositories, conferences
   # ─────────────────────────────────────────────────────────────
   - name: search_sources
-    kind: search
     description: >-
       Search for sources using provider-native full-text search.
-    search_limits:
-      default_top_k: 25
-      max_top_k: 200
-      max_calls_per_query: 1
     args:
       - name: q
         required: true
         bind:
           arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
     request:
       method: GET
       path: /sources
@@ -1493,17 +1481,17 @@ functions:
           from: arg
           key: q
         - name: filter
-          from: filter
-          key: filter_value
+          from: arg
+          key: filter
         - name: sort
-          from: filter
-          key: sort_value
+          from: arg
+          key: sort
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -1639,40 +1627,27 @@ functions:
           kind: path
           path:
             - updated_date
-      - name: filter_value
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the filter value.
-        expr:
-          kind: from_filter
-          key: filter_value
-      - name: sort_value
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the sort value used.
-        expr:
-          kind: from_filter
-          key: sort_value
 
 
   # ─────────────────────────────────────────────────────────────
   # institutions – universities, companies, research orgs
   # ─────────────────────────────────────────────────────────────
   - name: search_institutions
-    kind: search
     description: >-
       Search for institutions using provider-native full-text search.
-    search_limits:
-      default_top_k: 25
-      max_top_k: 200
-      max_calls_per_query: 1
     args:
       - name: q
         required: true
         bind:
           arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
     request:
       method: GET
       path: /institutions
@@ -1681,17 +1656,17 @@ functions:
           from: arg
           key: q
         - name: filter
-          from: filter
-          key: filter_value
+          from: arg
+          key: filter
         - name: sort
-          from: filter
-          key: sort_value
+          from: arg
+          key: sort
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -1833,39 +1808,26 @@ functions:
           kind: path
           path:
             - updated_date
-      - name: filter_value
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the filter value.
-        expr:
-          kind: from_filter
-          key: filter_value
-      - name: sort_value
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: Echoes the sort value used.
-        expr:
-          kind: from_filter
-          key: sort_value
 
   # ─────────────────────────────────────────────────────────────
   # topics – research topics and their taxonomy
   # ─────────────────────────────────────────────────────────────
   - name: search_topics
-    kind: search
     description: >-
       Search for topics using provider-native full-text search.
-    search_limits:
-      default_top_k: 25
-      max_top_k: 200
-      max_calls_per_query: 1
     args:
       - name: q
         required: true
         bind:
           arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
     request:
       method: GET
       path: /topics
@@ -1874,17 +1836,17 @@ functions:
           from: arg
           key: q
         - name: filter
-          from: filter
-          key: filter_value
+          from: arg
+          key: filter
         - name: sort
-          from: filter
-          key: sort_value
+          from: arg
+          key: sort
         - name: cursor
           from: literal
           value: "*"
-        - name: mailto
+        - name: api_key
           from: input
-          key: OPENALEX_EMAIL
+          key: OPENALEX_API_KEY
     response:
       rows_path:
         - results
@@ -1898,3 +1860,107 @@ functions:
         default: 25
         max: 200
         query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex topic ID (e.g. https://openalex.org/T10048).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Topic display name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Topic description text.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: subfield__name
+        type: Utf8
+        nullable: true
+        description: Subfield name in the topic hierarchy.
+        expr:
+          kind: path
+          path:
+            - subfield
+            - display_name
+      - name: field__name
+        type: Utf8
+        nullable: true
+        description: Field name in the topic hierarchy.
+        expr:
+          kind: path
+          path:
+            - field
+            - display_name
+      - name: domain__name
+        type: Utf8
+        nullable: true
+        description: Domain name (top level of the topic hierarchy).
+        expr:
+          kind: path
+          path:
+            - domain
+            - display_name
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works classified under this topic.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count for works in this topic.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: keywords
+        type: Json
+        nullable: true
+        description: Keywords associated with this topic as JSON array.
+        expr:
+          kind: path
+          path:
+            - keywords
+      - name: siblings
+        type: Json
+        nullable: true
+        description: >-
+          Sibling topics in the same subfield as JSON array with id and
+          display_name.
+        expr:
+          kind: path
+          path:
+            - siblings
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works in this topic.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+
+

@@ -7,7 +7,7 @@ institutions, and 4 500+ research topics.
 ## Setup
 
 No authentication is required. For higher rate limits (10 req/s instead of
-1 req/s), set the `OPENALEX_EMAIL` input to your email address to join the
+1 req/s), set the `OPENALEX_API_KEY` input to a free OpenAlex API key to join the
 [polite pool](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication#the-polite-pool).
 
 ## Tables
@@ -132,3 +132,70 @@ LIMIT 5;
 - [OpenAlex API documentation](https://docs.openalex.org/)
 - [OpenAlex filter reference](https://docs.openalex.org/how-to-use-the-api/get-lists-of-entities/filter-entity-lists)
 - [OpenAlex entity schemas](https://docs.openalex.org/api-entities)
+
+## Local Testing
+
+```bash
+coral source add --file sources/community/openalex/manifest.yaml
+# Added source openalex
+# 
+#   ✓ openalex connected successfully
+# 
+#     openalex (5 tables)
+#     ├─ authors
+#     ├─ institutions
+#     ├─ sources
+#     ├─ topics
+#     └─ works
+#     openalex (5 table functions)
+#     ├─ search_authors
+#     ├─ search_institutions
+#     ├─ search_sources
+#     ├─ search_topics
+#     └─ search_works
+#     Query tests
+#     3 declared · 3 passed · 0 failed
+# 
+#     ✓ SELECT title, publication_year, cited_by_count FROM openalex.search_works(q => 'machine learning') LIMIT 1
+#       1 row
+# 
+#     ✓ SELECT display_name, works_count, cited_by_count FROM openalex.search_authors(q => 'einstein') LIMIT 1
+#       1 row
+# 
+#     ✓ SELECT display_name, works_count FROM openalex.topics LIMIT 1
+#       1 row
+
+coral source test openalex
+#   ✓ openalex connected successfully
+# 
+#     openalex (5 tables)
+#     ├─ authors
+#     ├─ institutions
+#     ├─ sources
+#     ├─ topics
+#     └─ works
+#     openalex (5 table functions)
+#     ├─ search_authors
+#     ├─ search_institutions
+#     ├─ search_sources
+#     ├─ search_topics
+#     └─ search_works
+#     Query tests
+#     3 declared · 3 passed · 0 failed
+# 
+#     ✓ SELECT title, publication_year, cited_by_count FROM openalex.search_works(q => 'machine learning') LIMIT 1
+#       1 row
+# 
+#     ✓ SELECT display_name, works_count, cited_by_count FROM openalex.search_authors(q => 'einstein') LIMIT 1
+#       1 row
+# 
+#     ✓ SELECT display_name, works_count FROM openalex.topics LIMIT 1
+#       1 row
+
+coral sql "SELECT display_name, works_count FROM openalex.topics LIMIT 1"
+# +-----------------------------------+-------------+
+# | display_name                      | works_count |
+# +-----------------------------------+-------------+
+# | Geochemistry and Geologic Mapping | 3956270     |
+# +-----------------------------------+-------------+
+```
