@@ -19,7 +19,7 @@ The [Open Source Security Foundation (OpenSSF) Scorecard](https://github.com/oss
 - Is SAST (static analysis) running on all commits? (`SAST`)
 - Are releases signed? (`Signed-Releases`)
 
-Each check produces a score from **0** (critical gap) to **10** (excellent). Score **-1** means the check is not applicable (e.g. no releases to sign).
+Each check produces a score from **0** (lowest) to **10** (highest). Score **-1** means the check is not applicable (e.g. no releases to sign). Scores are a heuristic signal — checks also carry separate risk levels in the upstream Scorecard project.
 
 > **Note:** The Scorecard API serves precomputed results for repositories already indexed by OpenSSF. Repositories not yet tracked return a 404. See the [Scorecard REST API docs](https://github.com/ossf/scorecard#scorecard-rest-api) for details on coverage.
 
@@ -27,8 +27,10 @@ Each check produces a score from **0** (critical gap) to **10** (excellent). Sco
 
 | Table | Required filters | Purpose |
 |---|---|---|
-| `scorecard.checks` | `owner`, `repo` | Per-check scores (0–10) with plain-English reasons |
-| `scorecard.project` | `owner`, `repo` | Aggregate score, scored date, commit SHA, tool version |
+| `scorecard.checks` | `owner`, `repo` | Per-check scores (0–10), reasons, actionable details, and doc links |
+| `scorecard.project` | `owner`, `repo` | Aggregate score, scored timestamp, commit SHA, tool version |
+
+Both tables return empty rows (not an error) when the repository is not yet indexed by OpenSSF Scorecard.
 
 ## Usage
 

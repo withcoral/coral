@@ -52,6 +52,7 @@ tables:
     response:
       rows_path:
         - checks
+      allow_404_empty: true
     pagination:
       mode: none
     columns:
@@ -70,8 +71,9 @@ tables:
         type: Int64
         nullable: true
         description: >-
-          Score from 0 (critical gap) to 10 (excellent). -1 means the check
+          Score from 0 (lowest) to 10 (highest). -1 means the check
           is not applicable for this repository (e.g. no releases to sign).
+          Scores are a heuristic signal; checks also carry separate risk levels.
         expr:
           kind: path
           path:
@@ -85,6 +87,27 @@ tables:
           kind: path
           path:
             - reason
+
+      - name: details
+        type: Json
+        nullable: true
+        description: >-
+          Actionable evidence for the check result — workflow files, warnings,
+          and specific findings. Carries the remediation detail behind the reason.
+        expr:
+          kind: path
+          path:
+            - details
+
+      - name: documentation_short
+        type: Utf8
+        nullable: true
+        description: One-line summary of what this check evaluates.
+        expr:
+          kind: path
+          path:
+            - documentation
+            - short
 
       - name: documentation_url
         type: Utf8
@@ -137,17 +160,21 @@ tables:
       path: /projects/github.com/{{filter.owner}}/{{filter.repo}}
     response:
       rows_path: []
+      allow_404_empty: true
     pagination:
       mode: none
     columns:
       - name: date
-        type: Utf8
+        type: Timestamp
         nullable: true
-        description: ISO 8601 date when this Scorecard result was produced (weekly cadence).
+        description: >-
+          Timestamp when this Scorecard result was produced (ISO 8601, weekly cadence).
+          Use to assess data freshness before acting on scores.
         expr:
-          kind: path
+          kind: format_timestamp
           path:
             - date
+          input: iso8601
 
       - name: aggregate_score
         type: Float64
