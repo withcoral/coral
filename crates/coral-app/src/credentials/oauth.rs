@@ -11,8 +11,8 @@ use base64::engine::general_purpose::{
 };
 use chrono::{DateTime, Utc};
 use coral_spec::{
-    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthPkceMode,
-    ManifestOAuthRedirectBindPort, ManifestOAuthScopeDelimiter,
+    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthFlowKind,
+    ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort, ManifestOAuthScopeDelimiter,
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde_json::Value;
@@ -27,6 +27,7 @@ use crate::bootstrap::AppError;
 use crate::credentials::OAUTH_INTERNAL_KEY_PREFIX;
 
 const SESSION_TTL: Duration = Duration::from_mins(10);
+const DEVICE_CODE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 
 #[derive(Clone)]
@@ -43,6 +44,9 @@ pub(crate) struct StartOAuthCredentialRequest<'a> {
 pub(crate) struct OAuthAuthorization {
     pub(crate) authorization_url: String,
     pub(crate) expires_in_seconds: u64,
+    pub(crate) user_code: Option<String>,
+    pub(crate) verification_uri: Option<String>,
+    pub(crate) verification_uri_complete: Option<String>,
 }
 
 #[derive(Clone)]
@@ -53,11 +57,15 @@ pub(crate) struct OAuthCredentialMaterial {
     pub(crate) safe_metadata: BTreeMap<String, String>,
 }
 
-struct OAuthSessionConfig {
+struct OAuthSessionCommon {
     input_key: String,
     oauth: ManifestOAuthCredentialSpec,
     client_id: String,
     client_secret: Option<String>,
+}
+
+struct AuthorizationCodeSessionConfig {
+    common: OAuthSessionCommon,
     state: String,
     code_verifier: Option<String>,
     // Request path accepted by the local callback listener.
@@ -66,6 +74,13 @@ struct OAuthSessionConfig {
     provider_redirect_uri: String,
     listener: TcpListener,
     expires_at: Instant,
+}
+
+struct DeviceCodeSessionConfig {
+    common: OAuthSessionCommon,
+    device_code: String,
+    interval: Duration,
+    expires_in: Duration,
 }
 
 struct Callback {
@@ -83,6 +98,15 @@ enum CallbackRequestResult {
         status: &'static str,
         message: &'static str,
     },
+}
+
+struct DeviceAuthorizationResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    expires_in: Duration,
+    interval: Duration,
 }
 
 struct TokenResponse {
@@ -114,6 +138,42 @@ impl OAuthCredentialManager {
         reject_unknown_credential_inputs(&oauth, &credential_inputs)?;
         let client_id = resolve_client_id(&oauth, &credential_inputs)?;
         let client_secret = resolve_client_secret(&oauth, &credential_inputs)?;
+        match oauth.flow.kind {
+            ManifestOAuthFlowKind::AuthorizationCode => {
+                self.authorize_authorization_code(
+                    request.input_key.to_string(),
+                    oauth,
+                    client_id,
+                    client_secret,
+                    on_authorization,
+                )
+                .await
+            }
+            ManifestOAuthFlowKind::DeviceCode => {
+                self.authorize_device_code(
+                    request.input_key.to_string(),
+                    oauth,
+                    client_id,
+                    client_secret,
+                    on_authorization,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn authorize_authorization_code<F, Fut>(
+        &self,
+        input_key: String,
+        oauth: ManifestOAuthCredentialSpec,
+        client_id: String,
+        client_secret: Option<String>,
+        on_authorization: F,
+    ) -> Result<OAuthCredentialMaterial, AppError>
+    where
+        F: FnOnce(OAuthAuthorization) -> Fut,
+        Fut: Future<Output = Result<(), AppError>>,
+    {
         let (listener, callback_path, provider_redirect_uri) =
             bind_redirect_listener(&oauth).await?;
         let state = random_token();
@@ -126,11 +186,14 @@ impl OAuthCredentialManager {
             code_verifier.as_deref(),
         )?;
         let expires_at = Instant::now() + SESSION_TTL;
-        let session = OAuthSessionConfig {
-            input_key: request.input_key.to_string(),
+        let common = OAuthSessionCommon {
+            input_key,
             oauth,
             client_id,
             client_secret,
+        };
+        let session = AuthorizationCodeSessionConfig {
+            common,
             state,
             code_verifier,
             callback_path,
@@ -141,9 +204,12 @@ impl OAuthCredentialManager {
         on_authorization(OAuthAuthorization {
             authorization_url,
             expires_in_seconds: SESSION_TTL.as_secs(),
+            user_code: None,
+            verification_uri: None,
+            verification_uri_complete: None,
         })
         .await?;
-        self.run_session(session).await
+        self.run_authorization_code_session(session).await
     }
 
     pub(crate) fn validate_credential_inputs(
@@ -153,28 +219,123 @@ impl OAuthCredentialManager {
         let credential_inputs = normalize_credential_inputs(credential_inputs)?;
         reject_unknown_credential_inputs(oauth, &credential_inputs)?;
         let _client_id = resolve_client_id(oauth, &credential_inputs)?;
-        let _client_secret = resolve_client_secret(oauth, &credential_inputs)?;
-        oauth
-            .redirect_bind_port()
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        match oauth.flow.kind {
+            ManifestOAuthFlowKind::AuthorizationCode => {
+                let _client_secret = resolve_client_secret(oauth, &credential_inputs)?;
+                oauth
+                    .redirect_bind_port()
+                    .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+                let authorization_url = oauth.authorization_url.as_deref().ok_or_else(|| {
+                    AppError::InvalidInput(
+                        "authorization_code OAuth method is missing authorization_url".to_string(),
+                    )
+                })?;
+                Url::parse(authorization_url).map_err(|error| {
+                    AppError::InvalidInput(format!("invalid OAuth authorization URL: {error}"))
+                })?;
+            }
+            ManifestOAuthFlowKind::DeviceCode => {
+                if oauth.client.secret.is_some() {
+                    return Err(AppError::InvalidInput(
+                        "device_code OAuth methods must not declare a client secret".to_string(),
+                    ));
+                }
+                let device_authorization_url =
+                    oauth.device_authorization_url.as_deref().ok_or_else(|| {
+                        AppError::InvalidInput(
+                            "device_code OAuth method is missing device_authorization_url"
+                                .to_string(),
+                        )
+                    })?;
+                Url::parse(device_authorization_url).map_err(|error| {
+                    AppError::InvalidInput(format!(
+                        "invalid OAuth device authorization URL: {error}"
+                    ))
+                })?;
+            }
+        }
+        Url::parse(&oauth.token_url)
+            .map_err(|error| AppError::InvalidInput(format!("invalid OAuth token URL: {error}")))?;
         Ok(())
     }
 
-    async fn run_session(
+    async fn authorize_device_code<F, Fut>(
         &self,
-        session: OAuthSessionConfig,
+        input_key: String,
+        oauth: ManifestOAuthCredentialSpec,
+        client_id: String,
+        client_secret: Option<String>,
+        on_authorization: F,
+    ) -> Result<OAuthCredentialMaterial, AppError>
+    where
+        F: FnOnce(OAuthAuthorization) -> Fut,
+        Fut: Future<Output = Result<(), AppError>>,
+    {
+        if client_secret.is_some() {
+            return Err(AppError::InvalidInput(
+                "device_code OAuth methods must not declare a client secret".to_string(),
+            ));
+        }
+        let device =
+            request_device_code(&self.http, &oauth, &client_id, DEVICE_CODE_REQUEST_TIMEOUT)
+                .await?;
+        let authorization_url = device
+            .verification_uri_complete
+            .clone()
+            .unwrap_or_else(|| device.verification_uri.clone());
+        let user_code = device.user_code.clone();
+        let verification_uri = device.verification_uri.clone();
+        let verification_uri_complete = device.verification_uri_complete.clone();
+        let expires_in = device.expires_in;
+        let common = OAuthSessionCommon {
+            input_key,
+            oauth,
+            client_id,
+            client_secret: None,
+        };
+        let session = DeviceCodeSessionConfig {
+            common,
+            device_code: device.device_code,
+            interval: device.interval,
+            expires_in,
+        };
+        on_authorization(OAuthAuthorization {
+            authorization_url,
+            expires_in_seconds: expires_in.as_secs(),
+            user_code: Some(user_code),
+            verification_uri: Some(verification_uri),
+            verification_uri_complete,
+        })
+        .await?;
+        self.run_device_code_session(session).await
+    }
+
+    async fn run_authorization_code_session(
+        &self,
+        session: AuthorizationCodeSessionConfig,
     ) -> Result<OAuthCredentialMaterial, AppError> {
         let deadline = tokio::time::Instant::from_std(session.expires_at);
         let callback = tokio::time::timeout_at(deadline, receive_callback(&session))
             .await
-            .map_err(|_elapsed| expired_session_error(&session.input_key))??;
+            .map_err(|_elapsed| expired_session_error(&session.common.input_key))??;
         let token = tokio::time::timeout_at(
             deadline,
             exchange_authorization_code(&self.http, &session, &callback.code),
         )
         .await
-        .map_err(|_elapsed| expired_session_error(&session.input_key))??;
-        Ok(oauth_credential_material(&session, &token))
+        .map_err(|_elapsed| expired_session_error(&session.common.input_key))??;
+        Ok(oauth_credential_material(&session.common, &token))
+    }
+
+    async fn run_device_code_session(
+        &self,
+        session: DeviceCodeSessionConfig,
+    ) -> Result<OAuthCredentialMaterial, AppError> {
+        let token =
+            tokio::time::timeout(session.expires_in, poll_device_token(&self.http, &session))
+                .await
+                .map_err(|_elapsed| expired_session_error(&session.common.input_key))??;
+        Ok(oauth_credential_material(&session.common, &token))
     }
 }
 
@@ -295,7 +456,12 @@ async fn bind_redirect_listener(
     let bind_port = oauth
         .redirect_bind_port()
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-    let redirect_uri = Url::parse(&oauth.redirect_uri)
+    let redirect_uri_value = oauth.redirect_uri.as_deref().ok_or_else(|| {
+        AppError::InvalidInput(
+            "authorization_code OAuth method is missing redirect_uri".to_string(),
+        )
+    })?;
+    let redirect_uri = Url::parse(redirect_uri_value)
         .map_err(|error| AppError::InvalidInput(format!("invalid OAuth redirect URI: {error}")))?;
     let host = redirect_uri
         .host_str()
@@ -327,7 +493,7 @@ async fn bind_redirect_listener(
             })?;
     }
     let provider_redirect_uri = match bind_port {
-        ManifestOAuthRedirectBindPort::Fixed(_) => oauth.redirect_uri.clone(),
+        ManifestOAuthRedirectBindPort::Fixed(_) => redirect_uri_value.to_string(),
         ManifestOAuthRedirectBindPort::Random => effective_redirect_uri.to_string(),
     };
     let callback_path = effective_redirect_uri.path().to_string();
@@ -341,7 +507,12 @@ fn build_authorization_url(
     state: &str,
     code_verifier: Option<&str>,
 ) -> Result<String, AppError> {
-    let mut url = Url::parse(&oauth.authorization_url).map_err(|error| {
+    let authorization_url = oauth.authorization_url.as_deref().ok_or_else(|| {
+        AppError::InvalidInput(
+            "authorization_code OAuth method is missing authorization_url".to_string(),
+        )
+    })?;
+    let mut url = Url::parse(authorization_url).map_err(|error| {
         AppError::InvalidInput(format!("invalid OAuth authorization URL: {error}"))
     })?;
     {
@@ -396,7 +567,7 @@ fn pkce_challenge(verifier: &str) -> String {
     BASE64_URL_SAFE_NO_PAD.encode(digest)
 }
 
-async fn receive_callback(session: &OAuthSessionConfig) -> Result<Callback, AppError> {
+async fn receive_callback(session: &AuthorizationCodeSessionConfig) -> Result<Callback, AppError> {
     let (result_tx, mut result_rx) = mpsc::channel(8);
     let deadline = tokio::time::Instant::from_std(session.expires_at);
     loop {
@@ -604,9 +775,175 @@ async fn write_callback_response(
     Ok(())
 }
 
+async fn request_device_code(
+    http: &reqwest::Client,
+    oauth: &ManifestOAuthCredentialSpec,
+    client_id: &str,
+    timeout: Duration,
+) -> Result<DeviceAuthorizationResponse, AppError> {
+    let device_authorization_url = oauth.device_authorization_url.as_deref().ok_or_else(|| {
+        AppError::InvalidInput(
+            "device_code OAuth method is missing device_authorization_url".to_string(),
+        )
+    })?;
+    let mut form = vec![("client_id", client_id.to_string())];
+    if let Some(scopes) = oauth.scopes.as_ref() {
+        form.push((
+            "scope",
+            join_scope_values(scopes.scope.delimiter, &scopes.scope.values),
+        ));
+    }
+    let request = async {
+        let response = http
+            .post(device_authorization_url)
+            .header(ACCEPT, "application/json")
+            .form(&form)
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!("OAuth device code request failed: {error}"))
+            })?;
+        let status = response.status();
+        let body = response.text().await.map_err(|error| {
+            AppError::FailedPrecondition(format!("OAuth device code response failed: {error}"))
+        })?;
+        Ok::<_, AppError>((status, body))
+    };
+    let (status, body) = tokio::time::timeout(timeout, request)
+        .await
+        .map_err(|_elapsed| {
+            AppError::FailedPrecondition(format!(
+                "OAuth device code request timed out after {} seconds",
+                timeout.as_secs()
+            ))
+        })??;
+    if !status.is_success() {
+        return Err(AppError::FailedPrecondition(format!(
+            "OAuth device code request failed with HTTP {status}: {}",
+            truncate_detail(&body)
+        )));
+    }
+    parse_device_authorization_response(&body)
+}
+
+fn parse_device_authorization_response(
+    body: &str,
+) -> Result<DeviceAuthorizationResponse, AppError> {
+    let body: Value = serde_json::from_str(body).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "OAuth device authorization response was not JSON: {error}"
+        ))
+    })?;
+    if let Some(message) = oauth_error_message(&body) {
+        return Err(AppError::FailedPrecondition(format!(
+            "OAuth device authorization failed: {message}"
+        )));
+    }
+    let device_code = json_string_field(&body, "device_code")?.to_string();
+    let user_code = json_string_field(&body, "user_code")?.to_string();
+    let verification_uri = json_string_field(&body, "verification_uri")
+        .or_else(|_| json_string_field(&body, "verification_url"))?
+        .to_string();
+    let verification_uri_complete = body
+        .get("verification_uri_complete")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let expires_in = Duration::from_secs(json_u64_field(&body, "expires_in")?.max(1));
+    let interval = Duration::from_secs(
+        optional_json_u64_field(&body, "interval")
+            .unwrap_or(5)
+            .max(1),
+    );
+    Ok(DeviceAuthorizationResponse {
+        device_code,
+        user_code,
+        verification_uri,
+        verification_uri_complete,
+        expires_in,
+        interval,
+    })
+}
+
+async fn poll_device_token(
+    http: &reqwest::Client,
+    session: &DeviceCodeSessionConfig,
+) -> Result<TokenResponse, AppError> {
+    let deadline = Instant::now() + session.expires_in;
+    let mut interval = session.interval;
+    loop {
+        let form = vec![
+            ("client_id", session.common.client_id.clone()),
+            ("device_code", session.device_code.clone()),
+            (
+                "grant_type",
+                "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+            ),
+        ];
+        let response = http
+            .post(&session.common.oauth.token_url)
+            .header(ACCEPT, "application/json")
+            .form(&form)
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!("OAuth device token request failed: {error}"))
+            })?;
+        let status = response.status();
+        let body = response.text().await.map_err(|error| {
+            AppError::FailedPrecondition(format!("OAuth device token response failed: {error}"))
+        })?;
+        let value: Value = serde_json::from_str(&body).map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "OAuth device token response was not JSON: {error}"
+            ))
+        })?;
+        if let Some(error) = value.get("error").and_then(Value::as_str) {
+            match error {
+                "authorization_pending" => {}
+                "slow_down" => {
+                    interval += Duration::from_secs(5);
+                }
+                "expired_token" => {
+                    return Err(AppError::FailedPrecondition(
+                        "OAuth device code expired; rerun `coral source add`".to_string(),
+                    ));
+                }
+                "access_denied" => {
+                    return Err(AppError::FailedPrecondition(
+                        "OAuth device authorization was denied".to_string(),
+                    ));
+                }
+                _ => {
+                    let message = oauth_error_message(&value)
+                        .unwrap_or_else(|| format!("OAuth provider returned error '{error}'"));
+                    return Err(AppError::FailedPrecondition(format!(
+                        "OAuth device token request failed: {message}"
+                    )));
+                }
+            }
+        } else {
+            if !status.is_success() {
+                return Err(AppError::FailedPrecondition(format!(
+                    "OAuth device token request failed with HTTP {status}: {}",
+                    truncate_detail(&body)
+                )));
+            }
+            return parse_token_response_value(&value);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AppError::FailedPrecondition(
+                "OAuth device code expired; rerun `coral source add`".to_string(),
+            ));
+        }
+        tokio::time::sleep(interval.min(remaining)).await;
+    }
+}
+
 async fn exchange_authorization_code(
     http: &reqwest::Client,
-    session: &OAuthSessionConfig,
+    session: &AuthorizationCodeSessionConfig,
     code: &str,
 ) -> Result<TokenResponse, AppError> {
     let mut form = vec![
@@ -615,11 +952,12 @@ async fn exchange_authorization_code(
         ("redirect_uri", session.provider_redirect_uri.clone()),
     ];
     let mut request = http
-        .post(&session.oauth.token_url)
+        .post(&session.common.oauth.token_url)
         .header(ACCEPT, "application/json");
     match (
-        session.client_secret.as_deref(),
+        session.common.client_secret.as_deref(),
         session
+            .common
             .oauth
             .client
             .secret
@@ -629,15 +967,15 @@ async fn exchange_authorization_code(
         (Some(secret), Some(ManifestOAuthClientSecretTransport::BasicAuth)) => {
             request = request.header(
                 AUTHORIZATION,
-                basic_client_authorization(&session.client_id, secret),
+                basic_client_authorization(&session.common.client_id, secret),
             );
         }
         (Some(secret), Some(ManifestOAuthClientSecretTransport::RequestBody)) => {
-            form.push(("client_id", session.client_id.clone()));
+            form.push(("client_id", session.common.client_id.clone()));
             form.push(("client_secret", secret.to_string()));
         }
         (None, None) => {
-            form.push(("client_id", session.client_id.clone()));
+            form.push(("client_id", session.common.client_id.clone()));
         }
         _ => {
             return Err(AppError::FailedPrecondition(
@@ -676,6 +1014,15 @@ fn parse_token_response(body: &str) -> Result<TokenResponse, AppError> {
     let body: Value = serde_json::from_str(body).map_err(|error| {
         AppError::FailedPrecondition(format!("OAuth token response was not JSON: {error}"))
     })?;
+    parse_token_response_value(&body)
+}
+
+fn parse_token_response_value(body: &Value) -> Result<TokenResponse, AppError> {
+    if let Some(message) = oauth_error_message(body) {
+        return Err(AppError::FailedPrecondition(format!(
+            "OAuth token response returned error: {message}"
+        )));
+    }
     let access_token = body
         .get("access_token")
         .and_then(Value::as_str)
@@ -715,8 +1062,41 @@ fn parse_token_response(body: &str) -> Result<TokenResponse, AppError> {
     })
 }
 
+fn json_string_field<'a>(body: &'a Value, field: &str) -> Result<&'a str, AppError> {
+    body.get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!("OAuth response did not include {field}"))
+        })
+}
+
+fn json_u64_field(body: &Value, field: &str) -> Result<u64, AppError> {
+    optional_json_u64_field(body, field).ok_or_else(|| {
+        AppError::FailedPrecondition(format!("OAuth response did not include {field}"))
+    })
+}
+
+fn optional_json_u64_field(body: &Value, field: &str) -> Option<u64> {
+    body.get(field)
+        .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+}
+
+fn oauth_error_message(body: &Value) -> Option<String> {
+    let error = body.get("error").and_then(Value::as_str)?;
+    let description = body
+        .get("error_description")
+        .or_else(|| body.get("error_description_uri"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    Some(match description {
+        Some(description) => format!("{error}: {description}"),
+        None => error.to_string(),
+    })
+}
+
 fn oauth_credential_material(
-    session: &OAuthSessionConfig,
+    session: &OAuthSessionCommon,
     token: &TokenResponse,
 ) -> OAuthCredentialMaterial {
     let prefix = oauth_metadata_prefix(&session.input_key);
@@ -816,9 +1196,10 @@ mod tests {
     use std::net::TcpListener as StdTcpListener;
 
     use super::{
-        OAuthCredentialManager, OAuthSessionConfig, StartOAuthCredentialRequest,
-        basic_client_authorization, join_scope_values, material_key_belongs_to_input,
-        oauth_metadata_prefix, parse_token_response, pkce_challenge, receive_callback,
+        AuthorizationCodeSessionConfig, OAuthCredentialManager, OAuthSessionCommon,
+        StartOAuthCredentialRequest, basic_client_authorization, join_scope_values,
+        material_key_belongs_to_input, oauth_metadata_prefix, parse_token_response, pkce_challenge,
+        receive_callback, request_device_code,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -987,6 +1368,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn device_code_oauth_session_polls_and_stores_token_material() {
+        let fixture = DeviceOAuthFixture::new();
+        let oauth = device_oauth_spec(&fixture.device_url, &fixture.token_url);
+        let manager = OAuthCredentialManager::new();
+
+        let (authorization_tx, authorization_rx) = oneshot::channel();
+        let authorize = manager.authorize(
+            StartOAuthCredentialRequest {
+                input_key: "API_TOKEN",
+                oauth: &oauth,
+                credential_inputs: vec![(
+                    "OAUTH_CLIENT_ID".to_string(),
+                    "device-client".to_string(),
+                )],
+            },
+            move |authorization| async move {
+                authorization_tx.send(authorization).map_err(|_error| {
+                    crate::bootstrap::AppError::FailedPrecondition(
+                        "authorization receiver closed".to_string(),
+                    )
+                })
+            },
+        );
+        let authorization = async {
+            let authorization = authorization_rx.await.expect("authorization");
+            assert_eq!(
+                authorization.authorization_url,
+                "https://github.com/login/device?user_code=ABCD-1234"
+            );
+            assert_eq!(authorization.user_code.as_deref(), Some("ABCD-1234"));
+            assert_eq!(
+                authorization.verification_uri.as_deref(),
+                Some("https://github.com/login/device")
+            );
+        };
+
+        let (completed, ()) = tokio::join!(authorize, authorization);
+        let completed = completed.expect("authorize oauth");
+        let captured = fixture.server.await.expect("device server");
+
+        assert_eq!(completed.input_key, "API_TOKEN");
+        assert_eq!(completed.access_token, "access-token");
+        assert_eq!(
+            captured.device.form.get("client_id").map(String::as_str),
+            Some("device-client")
+        );
+        assert_eq!(
+            captured.device.form.get("scope").map(String::as_str),
+            Some("repo read:org")
+        );
+        assert_eq!(
+            captured.token.form.get("grant_type").map(String::as_str),
+            Some("urn:ietf:params:oauth:grant-type:device_code")
+        );
+        assert_eq!(
+            captured.token.form.get("device_code").map(String::as_str),
+            Some("device-code")
+        );
+        assert!(!captured.token.form.contains_key("client_secret"));
+        assert_eq!(
+            completed
+                .internal_metadata
+                .get(&format!("{}client_id", oauth_metadata_prefix("API_TOKEN")))
+                .map(String::as_str),
+            Some("device-client")
+        );
+    }
+
+    #[tokio::test]
+    async fn device_code_request_times_out_before_session_start() {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("device listener");
+        let device_url = format!(
+            "http://{}/device/code",
+            listener.local_addr().expect("addr")
+        );
+        let server = tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().expect("accept device request");
+            let request = read_http_request(&mut stream);
+            let mut closed = [0_u8; 1];
+            match stream.read(&mut closed) {
+                Ok(_) | Err(_) => {}
+            }
+            request
+        });
+        let oauth = device_oauth_spec(&device_url, "http://127.0.0.1/token");
+
+        let result = request_device_code(
+            &reqwest::Client::new(),
+            &oauth,
+            "device-client",
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+        let error = match result {
+            Ok(_device) => panic!("device request should time out"),
+            Err(error) => error,
+        };
+        let captured = server.await.expect("device server");
+
+        assert!(
+            error
+                .to_string()
+                .contains("OAuth device code request timed out"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            captured.form.get("client_id").map(String::as_str),
+            Some("device-client")
+        );
+    }
+
+    #[tokio::test]
     async fn confidential_oauth_session_uses_basic_auth_secret_transport() {
         let fixture = OAuthFixture::new(None);
         let redirect_port = free_loopback_port();
@@ -1041,22 +1534,24 @@ mod tests {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
             .await
             .expect("bind callback listener");
-        let session = OAuthSessionConfig {
-            input_key: "API_TOKEN".to_string(),
-            oauth: oauth_spec(
-                "https://provider.example.com/oauth/token",
-                redirect_port,
-                ManifestOAuthPkceMode::Disabled,
-                ManifestOAuthClientSpec {
-                    id: ManifestOAuthClientIdSpec {
-                        default: Some("client".to_string()),
-                        input: None,
+        let session = AuthorizationCodeSessionConfig {
+            common: OAuthSessionCommon {
+                input_key: "API_TOKEN".to_string(),
+                oauth: oauth_spec(
+                    "https://provider.example.com/oauth/token",
+                    redirect_port,
+                    ManifestOAuthPkceMode::Disabled,
+                    ManifestOAuthClientSpec {
+                        id: ManifestOAuthClientIdSpec {
+                            default: Some("client".to_string()),
+                            input: None,
+                        },
+                        secret: None,
                     },
-                    secret: None,
-                },
-            ),
-            client_id: "client".to_string(),
-            client_secret: None,
+                ),
+                client_id: "client".to_string(),
+                client_secret: None,
+            },
             state: "expected-state".to_string(),
             code_verifier: None,
             callback_path: "/oauth/callback".to_string(),
@@ -1101,22 +1596,24 @@ mod tests {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
             .await
             .expect("bind callback listener");
-        let session = OAuthSessionConfig {
-            input_key: "API_TOKEN".to_string(),
-            oauth: oauth_spec(
-                "https://provider.example.com/oauth/token",
-                redirect_port,
-                ManifestOAuthPkceMode::Disabled,
-                ManifestOAuthClientSpec {
-                    id: ManifestOAuthClientIdSpec {
-                        default: Some("client".to_string()),
-                        input: None,
+        let session = AuthorizationCodeSessionConfig {
+            common: OAuthSessionCommon {
+                input_key: "API_TOKEN".to_string(),
+                oauth: oauth_spec(
+                    "https://provider.example.com/oauth/token",
+                    redirect_port,
+                    ManifestOAuthPkceMode::Disabled,
+                    ManifestOAuthClientSpec {
+                        id: ManifestOAuthClientIdSpec {
+                            default: Some("client".to_string()),
+                            input: None,
+                        },
+                        secret: None,
                     },
-                    secret: None,
-                },
-            ),
-            client_id: "client".to_string(),
-            client_secret: None,
+                ),
+                client_id: "client".to_string(),
+                client_secret: None,
+            },
             state: "expected-state".to_string(),
             code_verifier: None,
             callback_path: "/oauth/callback".to_string(),
@@ -1361,11 +1858,39 @@ mod tests {
                 kind: ManifestOAuthFlowKind::AuthorizationCode,
                 pkce,
             },
-            redirect_uri: redirect_uri.to_string(),
+            redirect_uri: Some(redirect_uri.to_string()),
             redirect_uri_port_mode,
-            authorization_url: "https://provider.example.com/oauth/authorize".to_string(),
+            authorization_url: Some("https://provider.example.com/oauth/authorize".to_string()),
+            device_authorization_url: None,
             token_url: token_url.to_string(),
             client,
+            scopes: Some(ManifestOAuthScopesSpec {
+                scope: ManifestOAuthScopeSpec {
+                    delimiter: ManifestOAuthScopeDelimiter::Space,
+                    values: vec!["repo".to_string(), "read:org".to_string()],
+                },
+            }),
+        }
+    }
+
+    fn device_oauth_spec(device_url: &str, token_url: &str) -> ManifestOAuthCredentialSpec {
+        ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::DeviceCode,
+                pkce: ManifestOAuthPkceMode::Disabled,
+            },
+            redirect_uri: None,
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: None,
+            device_authorization_url: Some(device_url.to_string()),
+            token_url: token_url.to_string(),
+            client: ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: None,
+                    input: Some("OAUTH_CLIENT_ID".to_string()),
+                },
+                secret: None,
+            },
             scopes: Some(ManifestOAuthScopesSpec {
                 scope: ManifestOAuthScopeSpec {
                     delimiter: ManifestOAuthScopeDelimiter::Space,
@@ -1436,6 +1961,44 @@ mod tests {
         }
     }
 
+    struct DeviceOAuthFixture {
+        device_url: String,
+        token_url: String,
+        server: JoinHandle<CapturedDeviceFlowRequests>,
+    }
+
+    impl DeviceOAuthFixture {
+        fn new() -> Self {
+            let listener = StdTcpListener::bind("127.0.0.1:0").expect("device listener");
+            let base_url = format!("http://{}", listener.local_addr().expect("addr"));
+            let device_url = format!("{base_url}/device/code");
+            let token_url = format!("{base_url}/access_token");
+            let server = tokio::task::spawn_blocking(move || {
+                let (mut device_stream, _) = listener.accept().expect("accept device request");
+                let device = read_http_request(&mut device_stream);
+                let device_body = r#"{"device_code":"device-code","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","verification_uri_complete":"https://github.com/login/device?user_code=ABCD-1234","expires_in":900,"interval":1}"#;
+                write_json_response(&mut device_stream, device_body);
+
+                let (mut token_stream, _) = listener.accept().expect("accept token request");
+                let token = read_http_request(&mut token_stream);
+                let token_body = r#"{"access_token":"access-token","token_type":"Bearer","scope":"repo read:org"}"#;
+                write_json_response(&mut token_stream, token_body);
+
+                CapturedDeviceFlowRequests { device, token }
+            });
+            Self {
+                device_url,
+                token_url,
+                server,
+            }
+        }
+    }
+
+    struct CapturedDeviceFlowRequests {
+        device: CapturedTokenRequest,
+        token: CapturedTokenRequest,
+    }
+
     struct CapturedTokenRequest {
         authorization: Option<String>,
         form: BTreeMap<String, String>,
@@ -1491,5 +2054,15 @@ mod tests {
             authorization,
             form,
         }
+    }
+
+    fn write_json_response(stream: &mut std::net::TcpStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write json response");
     }
 }

@@ -78,7 +78,6 @@
         "group": "Guides",
         "pages": [
           "guides/use-coral-over-mcp",
-          "guides/connect-slack",
           "guides/write-a-custom-source",
           "guides/observe-with-opentelemetry"
         ]

@@ -21,11 +21,11 @@ File-based sources (Parquet, JSONL, JSON, CSV) are the simplest case — define 
 
 API-backed sources vary in difficulty. The source spec model is designed for APIs that have:
 
-- **HTTP credentials Coral can store locally** — an API key, personal access token, service account credential, or OAuth authorization-code flow that returns an access token for Coral to use on API requests
+- **HTTP credentials Coral can store locally** — an API key, personal access token, service account credential, or OAuth device-code or authorization-code flow that returns an access token for Coral to use on API requests
 - **Structured, accessible documentation** — an OpenAPI spec, GraphQL schema, or clearly organized REST docs that describe endpoints, response shapes, authentication, scopes, and OAuth client settings
 - **Real data to validate against** — actual records in the account so you can confirm the source is returning the expected results during development
 
-OAuth-backed services can work well when the provider supports a loopback redirect URI such as `http://127.0.0.1:<port>/oauth/callback` or `http://localhost:<port>/oauth/callback`. Coral can run the browser-based authorization-code flow during `coral source add --interactive`, store the returned access token as the source secret, and use that secret through the normal `auth` or request-header fields. Automatic token refresh is not implemented yet, so prefer providers whose access tokens are long-lived enough for the source's expected use.
+OAuth-backed services can work well when the provider supports device-code flow, or when it supports an authorization-code loopback redirect URI such as `http://127.0.0.1:<port>/oauth/callback` or `http://localhost:<port>/oauth/callback`. Coral can run the OAuth flow during `coral source add --interactive`, store the returned access token as the source secret, and use that secret through the normal `auth` or request-header fields. Automatic token refresh is not implemented yet, so prefer providers whose access tokens are long-lived enough for the source's expected use.
 
 If you are unsure whether your API is a good candidate, ask us in [Discord](https://withcoral.com/discord) before getting started.
 
@@ -216,7 +216,7 @@ tables:
 
 ### OAuth credential setup
 
-When a source should offer browser-based OAuth setup, keep the runtime auth shape the same and add `credential.methods` to the secret input. The OAuth method controls how Coral obtains the secret during setup; the `auth` block still decides how that stored secret is sent to the API.
+When a source should offer OAuth setup, keep the runtime auth shape the same and add `credential.methods` to the secret input. The OAuth method controls how Coral obtains the secret during setup; the `auth` block still decides how that stored secret is sent to the API.
 
 ```yaml
 inputs:
@@ -265,7 +265,7 @@ Choose OAuth client settings from the provider's OAuth app and token endpoint re
 
 ### Install-time input collection
 
-When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, OAuth access tokens, passwords, private keys, and authorization values must be secrets, even when the credential is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; `type: oauth` runs an OAuth authorization-code flow during interactive setup.
+When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, OAuth access tokens, passwords, private keys, and authorization values must be secrets, even when the credential is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; OAuth device-code and authorization-code methods describe alternative install-time retrieval choices.
 
 For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 

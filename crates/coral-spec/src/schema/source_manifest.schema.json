@@ -175,7 +175,7 @@
     "oauth_credential_method": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["flow", "redirect_uri", "endpoints", "client"],
+      "required": ["flow", "endpoints", "client"],
       "properties": {
         "flow": { "$ref": "#/$defs/oauth_flow" },
         "redirect_uri": { "type": "string", "minLength": 1 },
@@ -183,24 +183,65 @@
         "endpoints": { "$ref": "#/$defs/oauth_endpoints" },
         "client": { "$ref": "#/$defs/oauth_client" },
         "scopes": { "$ref": "#/$defs/oauth_scopes" }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "flow": {
+              "properties": {
+                "type": { "const": "authorization_code" }
+              },
+              "required": ["type", "pkce"]
+            },
+            "endpoints": {
+              "required": ["authorization_url", "token_url"]
+            }
+          },
+          "required": ["redirect_uri"]
+        },
+        {
+          "properties": {
+            "flow": {
+              "properties": {
+                "type": { "const": "device_code" },
+                "pkce": { "const": "disabled" }
+              },
+              "required": ["type"]
+            },
+            "endpoints": {
+              "required": ["device_authorization_url", "token_url"],
+              "not": { "required": ["authorization_url"] }
+            },
+            "client": {
+              "not": { "required": ["secret"] }
+            }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["redirect_uri"] },
+              { "required": ["redirect_uri_port_mode"] }
+            ]
+          }
+        }
+      ]
     },
     "oauth_flow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "pkce"],
+      "required": ["type"],
       "properties": {
-        "type": { "const": "authorization_code" },
+        "type": { "type": "string", "enum": ["authorization_code", "device_code"] },
         "pkce": { "type": "string", "enum": ["required", "disabled"] }
       }
     },
     "oauth_endpoints": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["authorization_url", "token_url"],
+      "required": ["token_url"],
       "properties": {
         "authorization_url": { "type": "string", "minLength": 1 },
-        "token_url": { "type": "string", "minLength": 1 }
+        "token_url": { "type": "string", "minLength": 1 },
+        "device_authorization_url": { "type": "string", "minLength": 1 }
       }
     },
     "oauth_client": {
