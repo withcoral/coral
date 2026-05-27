@@ -98,15 +98,10 @@ tables:
     request:
       method: GET
       path: /boards/{{filter.board_id}}/monitors
-      query: []
-    pagination:
-      mode: page
-      page_param: page
-      page_start: 1
-      page_size:
-        default: 25
-        max: 100
-        query_param: per_page
+      query:
+        - name: status
+          from: filter
+          key: status
     response:
       rows_path:
         - data
@@ -258,6 +253,7 @@ tables:
     filters:
       - name: board_id
         required: true
+      - name: status
   - name: history
     description: Status history for a board
     guide: |

@@ -5,7 +5,7 @@ This is the canonical `statusgator` source shipped in `sources/core`.
 Notes
 - API version: v3 (base URL: `https://statusgator.com/api/v3`).
 - Authentication: A bearer token is required for all requests. Create a read-only organization API token from the StatusGator dashboard. Set it in the `STATUSGATOR_API_TOKEN` input (required).
-- Pagination: List endpoints use page-based pagination (`page` and `per_page`). The manifest exposes page parameters where applicable; use filters to control page size and iterate pages when exporting large datasets.
+- Coral handles pagination internally for supported endpoints. Use SQL `LIMIT` and table-specific filters such as `board_id`, `monitor_id`, date ranges, `phase`, `severity`, or `status` to keep result sets focused.
 
 Usage examples
 
