@@ -43,6 +43,7 @@ request_headers:
 test_queries:
   - SELECT id, name FROM tableau.projects LIMIT 1
   - SELECT id, name, project_name FROM tableau.workbooks LIMIT 1
+  - SELECT id, name, workbook_name FROM tableau.views LIMIT 1
 
 tables:
   - name: projects
@@ -338,8 +339,10 @@ tables:
   - name: users
     description: Tableau site users.
     guide: |
-      User rows reflect the authenticated user's Tableau permissions. The
-      endpoint paginates with `pageNumber` and `pageSize`.
+      User rows require Tableau Server or site administrator permissions for
+      username/password or PAT sign-in. JWT-connected apps require the
+      `tableau:users:read` scope. The endpoint paginates with `pageNumber`
+      and `pageSize`.
     fetch_limit_default: 100
     request:
       method: GET
