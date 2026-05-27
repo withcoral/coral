@@ -513,11 +513,11 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::credentials::CredentialStorageKind;
     use super::{
         AppConfig, PersistedAppConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
         load_raw_feature_overrides, render_config, set_raw_feature_override,
     };
+    use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;

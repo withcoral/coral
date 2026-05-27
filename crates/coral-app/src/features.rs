@@ -69,7 +69,7 @@ const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
     feature: Feature::Feedback,
     key: "feedback",
     default_enabled: false,
-    description: "Expose the optional MCP feedback tool.",
+    description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
     enable_flag: "enable-feedback",
     disable_flag: "disable-feedback",
 }];
