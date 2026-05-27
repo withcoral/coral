@@ -6,7 +6,7 @@ description: Fetch random cat facts and list paginated facts from CatFact.ninja.
 base_url: https://catfact.ninja
 test_queries:
   - SELECT fact, length FROM cat_facts.random_fact LIMIT 1
-  - SELECT fact, length FROM cat_facts.facts LIMIT 10
+  - SELECT fact, length FROM cat_facts.facts LIMIT 15
 tables:
   - name: random_fact
     description: Get a single random cat fact.
@@ -46,6 +46,7 @@ tables:
     pagination:
       mode: page
       page_param: page
+      page_start: 1
       page_size:
         default: 10
         max: 100
