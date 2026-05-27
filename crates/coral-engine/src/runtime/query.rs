@@ -31,10 +31,10 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
-    QuerySource, RequestAuthenticator, SourceDecorator, SourceInputResolver, TableFunctionInfo,
-    TableInfo,
+    CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, QueryExecution,
+    QueryMemoryConfig, QueryPlan, QueryResultObserver, QueryResultObserverError,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceDecorator,
+    SourceInputResolver, TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -56,6 +56,7 @@ struct FallbackRuntimeConfig {
     sources: Vec<QuerySource>,
     runtime_context: QueryRuntimeContext,
     dependent_join: DependentJoinConfig,
+    memory: QueryMemoryConfig,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
@@ -87,6 +88,7 @@ async fn build_runtime_inner(
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let QueryRuntimeConfig {
         context: runtime_context,
+        memory,
         dependent_join,
         mut extensions,
     } = runtime;
@@ -104,6 +106,7 @@ async fn build_runtime_inner(
             sources: sources.to_vec(),
             runtime_context: runtime_context.clone(),
             dependent_join: dependent_join.clone(),
+            memory: memory.clone(),
             request_authenticators: request_authenticators.clone(),
             source_input_resolver: source_input_resolver.clone(),
         })
@@ -116,6 +119,7 @@ async fn build_runtime_inner(
         source_input_resolver,
         extensions.source_decorators.as_mut_slice(),
         &dependent_join,
+        &memory,
     )
     .await?;
 
@@ -136,8 +140,9 @@ async fn build_registered_runtime(
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
     dependent_join: &DependentJoinConfig,
+    memory: &QueryMemoryConfig,
 ) -> Result<RegisteredRuntime, CoreError> {
-    let ctx = build_session_context(dependent_join)?;
+    let ctx = build_session_context(dependent_join, memory)?;
     let registration = register_runtime_sources(
         &ctx,
         sources,
@@ -180,14 +185,18 @@ async fn build_registered_runtime(
 
 fn build_session_context(
     dependent_join: &DependentJoinConfig,
+    memory: &QueryMemoryConfig,
 ) -> Result<Arc<SessionContext>, CoreError> {
     let session_config = SessionConfig::new().with_information_schema(true).set_bool(
         "datafusion.execution.listing_table_ignore_subdirectory",
         false,
     );
+    let mut runtime_env_builder = RuntimeEnvBuilder::new().with_object_list_cache_limit(0);
+    if let Some(limit) = memory.limit {
+        runtime_env_builder = runtime_env_builder.with_memory_limit(limit.as_bytes(), 1.0);
+    }
     let runtime_env = Arc::new(
-        RuntimeEnvBuilder::new()
-            .with_object_list_cache_limit(0)
+        runtime_env_builder
             .build()
             .map_err(|err| datafusion_to_core(&err, &[]))?,
     );
@@ -504,6 +513,7 @@ impl FallbackRuntimeConfig {
             self.source_input_resolver.clone(),
             source_decorators.as_mut_slice(),
             &self.dependent_join.without_rewrites(),
+            &self.memory,
         )
         .await
     }
@@ -554,11 +564,17 @@ fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> 
         other => other,
     }
 }
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::str::FromStr as _;
+
+    use datafusion::execution::memory_pool::MemoryConsumer;
+
     use super::*;
-    use crate::ColumnInfo;
+    use crate::{
+        ColumnInfo, DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
+    };
 
     fn adapter_with_table() -> QueryRuntimeAdapter {
         QueryRuntimeAdapter {
@@ -607,5 +623,63 @@ mod tests {
             .expect("missing context table");
         assert!(context_table.columns.is_empty());
         assert_eq!(context_table.required_filters, ["owner".to_string()]);
+    }
+
+    #[test]
+    fn build_session_context_applies_memory_limit() {
+        let ctx = build_session_context(
+            &DependentJoinConfig::default(),
+            &QueryMemoryConfig {
+                limit: Some(MemorySize::from_str("1Ki").unwrap()),
+            },
+        )
+        .expect("session context should build");
+        let pool = ctx.runtime_env().memory_pool.clone();
+        let reservation = MemoryConsumer::new("test").register(&pool);
+
+        reservation
+            .try_grow(512)
+            .expect("reservation below limit should succeed");
+        let error = reservation
+            .try_grow(1024)
+            .expect_err("reservation above limit should fail");
+
+        assert!(
+            error.to_string().contains("Resources exhausted"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_runtime_preserves_memory_limit() {
+        let fallback = FallbackRuntimeConfig {
+            sources: Vec::new(),
+            runtime_context: QueryRuntimeContext::default(),
+            dependent_join: DependentJoinConfig::default(),
+            memory: QueryMemoryConfig {
+                limit: Some(MemorySize::from_str("1Ki").unwrap()),
+            },
+            request_authenticators: HashMap::new(),
+            source_input_resolver: None,
+        };
+
+        let runtime = fallback
+            .build_without_dependent_join()
+            .await
+            .expect("fallback runtime should build");
+        let pool = runtime.ctx.runtime_env().memory_pool.clone();
+        let reservation = MemoryConsumer::new("fallback-test").register(&pool);
+
+        reservation
+            .try_grow(512)
+            .expect("reservation below fallback limit should succeed");
+        let error = reservation
+            .try_grow(1024)
+            .expect_err("reservation above fallback limit should fail");
+
+        assert!(
+            error.to_string().contains("Resources exhausted"),
+            "unexpected error: {error}"
+        );
     }
 }

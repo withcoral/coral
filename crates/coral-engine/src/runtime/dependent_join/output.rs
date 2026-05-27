@@ -13,6 +13,7 @@ use crate::runtime::dependent_join::bindings::{
     Tuple, extract_binding_value, filter_values_for_tuple,
 };
 use crate::runtime::dependent_join::state::DependentJoinRuntimeState;
+use crate::runtime::memory::{RetainedMemory, RetainedRecordBatches};
 
 #[derive(Clone, Copy)]
 pub(crate) struct BuildJoinedBatchesConfig<'a> {
@@ -28,28 +29,18 @@ pub(crate) struct BuildJoinedBatchesConfig<'a> {
 }
 
 pub(crate) fn build_joined_batches(
-    config: BuildJoinedBatchesConfig<'_>,
-) -> Result<Vec<RecordBatch>> {
-    let BuildJoinedBatchesConfig {
-        state,
-        dependent_source_schema,
-        dependent_table,
-        binding_filters,
-        literal_filters,
-        dependent_projection,
-        resolver_projection_len,
-        dependent_first,
-        output_schema,
-    } = config;
+    config: &BuildJoinedBatchesConfig<'_>,
+    output_memory: RetainedMemory,
+) -> Result<RetainedRecordBatches> {
     let dependent_schema = schema_from_columns(
-        dependent_table.columns(),
-        dependent_source_schema,
-        dependent_table.name(),
+        config.dependent_table.columns(),
+        config.dependent_source_schema,
+        config.dependent_table.name(),
     )?;
-    let mut batches = Vec::new();
+    let mut output_batches = RetainedRecordBatches::new(output_memory);
 
-    for tuple in state.binding_tuples() {
-        let Some(rows) = state.buffered_rows_for_tuple(tuple) else {
+    for tuple in config.state.binding_tuples() {
+        let Some(rows) = config.state.buffered_rows_for_tuple(tuple) else {
             continue;
         };
 
@@ -57,9 +48,10 @@ pub(crate) fn build_joined_batches(
             continue;
         }
 
-        let filter_values = filter_values_for_tuple(literal_filters, binding_filters, tuple)?;
+        let filter_values =
+            filter_values_for_tuple(config.literal_filters, config.binding_filters, tuple)?;
         let dependent_batch = convert_items(
-            dependent_table.columns(),
+            config.dependent_table.columns(),
             Arc::clone(&dependent_schema),
             &filter_values,
             &HashMap::new(),
@@ -71,14 +63,15 @@ pub(crate) fn build_joined_batches(
         // equality here: keep only rows whose key columns match the binding,
         // exactly as the unrewritten hash join would.
         let dependent_batch =
-            filter_rows_matching_binding(&dependent_batch, binding_filters, tuple)?;
+            filter_rows_matching_binding(&dependent_batch, config.binding_filters, tuple)?;
         if dependent_batch.num_rows() == 0 {
             continue;
         }
-        let dependent_batch = project_dependent_batch(&dependent_batch, dependent_projection)?;
+        let dependent_batch =
+            project_dependent_batch(&dependent_batch, config.dependent_projection)?;
 
         let mut resolver_rows_by_batch = BTreeMap::<usize, Vec<usize>>::new();
-        for resolver_row in state.resolver_rows_for_tuple(tuple) {
+        for resolver_row in config.state.resolver_rows_for_tuple(tuple) {
             resolver_rows_by_batch
                 .entry(resolver_row.batch_idx)
                 .or_default()
@@ -86,19 +79,20 @@ pub(crate) fn build_joined_batches(
         }
 
         for (resolver_batch_idx, resolver_row_indices) in resolver_rows_by_batch {
-            batches.push(join_for_resolver_rows(
-                state,
+            let batch = join_for_resolver_rows(
+                config.state,
                 resolver_batch_idx,
                 &resolver_row_indices,
                 &dependent_batch,
-                resolver_projection_len,
-                dependent_first,
-                Arc::clone(output_schema),
-            )?);
+                config.resolver_projection_len,
+                config.dependent_first,
+                Arc::clone(config.output_schema),
+            )?;
+            output_batches.push(batch)?;
         }
     }
 
-    Ok(batches)
+    Ok(output_batches)
 }
 
 fn join_for_resolver_rows(

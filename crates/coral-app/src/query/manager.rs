@@ -358,6 +358,7 @@ impl QueryManager {
             .iter()
             .map(|source| source.source_name().to_string())
             .collect::<Vec<_>>();
+        runtime.memory = config.memory_config()?;
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
     }
