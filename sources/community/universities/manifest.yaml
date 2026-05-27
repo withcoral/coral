@@ -25,7 +25,12 @@ tables:
     response:
       rows_path: []
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
     columns:
       - name: name
         type: Utf8
