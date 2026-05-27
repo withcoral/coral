@@ -29,8 +29,8 @@ tables:
     request:
       method: GET
       path: /models
-      query:
-        - name: key
+      headers:
+        - name: x-goog-api-key
           from: template
           template: "{{input.GEMINI_API_KEY}}"
     response:
@@ -49,8 +49,12 @@ tables:
       - name: name
         type: Utf8
         nullable: false
-        description: The model name (e.g., models/gemini-1.5-flash).
-        expr: {kind: path, path: [name]}
+        description: The model name (e.g., gemini-flash-latest).
+        expr: 
+          kind: replace
+          expr: {kind: path, path: [name]}
+          from: "models/"
+          to: ""
       - name: version
         type: Utf8
         nullable: true
@@ -102,10 +106,10 @@ tables:
   # ──────────────────────────────────────────────────────────────────────
   - name: generate
     description: >
-      Run prompt inference against a specific Gemini model (e.g. gemini-1.5-flash).
+      Run prompt inference against a specific Gemini model (e.g. gemini-flash-latest).
     guide: >
       Use this table to execute LLM prompts. `SELECT response FROM gemini.generate
-      WHERE model = 'gemini-1.5-flash' AND prompt = 'Explain SQL joins.'`.
+      WHERE model = 'gemini-flash-latest' AND prompt = 'Explain SQL joins.'`.
     filters:
       - name: model
         required: true
@@ -118,14 +122,13 @@ tables:
     request:
       method: POST
       path: /models/{{filter.model}}:generateContent
-      query:
-        - name: key
-          from: template
-          template: "{{input.GEMINI_API_KEY}}"
       headers:
         - name: Content-Type
           from: literal
           value: application/json
+        - name: x-goog-api-key
+          from: template
+          template: "{{input.GEMINI_API_KEY}}"
       body:
         - path: [contents, "0", role]
           from: literal
@@ -139,6 +142,9 @@ tables:
         - path: [systemInstruction, parts, "0", text]
           from: filter
           key: system
+        - path: [generationConfig, temperature]
+          from: filter
+          key: temperature
     response:
       row_strategy: direct
     pagination:

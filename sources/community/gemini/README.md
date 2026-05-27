@@ -30,7 +30,7 @@ The `generate` table requires specific filters to execute prompts:
 
 | Filter        | Required | Description                                                                        |
 | ------------- | -------- | ---------------------------------------------------------------------------------- |
-| `model`       | **Yes**  | The Gemini model ID to use (e.g., `gemini-1.5-flash`, `gemini-1.5-pro`).           |
+| `model`       | **Yes**  | The Gemini model ID to use (e.g., `gemini-flash-latest`, `gemini-1.5-pro`).           |
 | `prompt`      | **Yes**  | The text prompt to send to the model.                                              |
 | `system`      | No       | Optional system instruction to guide the model's behavior.                         |
 
@@ -45,11 +45,11 @@ LIMIT 5;
 +----------------------------------+---------+---------------------------+-------------------+--------------------+
 | name                             | version | display_name              | input_token_limit | output_token_limit |
 +----------------------------------+---------+---------------------------+-------------------+--------------------+
-| models/gemini-2.5-flash          | 001     | Gemini 2.5 Flash          | 1048576           | 65536              |
-| models/gemini-2.5-pro            | 2.5     | Gemini 2.5 Pro            | 1048576           | 65536              |
-| models/gemini-2.0-flash          | 2.0     | Gemini 2.0 Flash          | 1048576           | 8192               |
-| models/gemini-2.0-flash-001      | 2.0     | Gemini 2.0 Flash 001      | 1048576           | 8192               |
-| models/gemini-2.0-flash-lite-001 | 2.0     | Gemini 2.0 Flash-Lite 001 | 1048576           | 8192               |
+| gemini-2.5-flash                 | 001     | Gemini 2.5 Flash          | 1048576           | 65536              |
+| gemini-2.5-pro                   | 2.5     | Gemini 2.5 Pro            | 1048576           | 65536              |
+| gemini-2.0-flash                 | 2.0     | Gemini 2.0 Flash          | 1048576           | 8192               |
+| gemini-2.0-flash-001             | 2.0     | Gemini 2.0 Flash 001      | 1048576           | 8192               |
+| gemini-2.0-flash-lite-001        | 2.0     | Gemini 2.0 Flash-Lite 001 | 1048576           | 8192               |
 +----------------------------------+---------+---------------------------+-------------------+--------------------+
 */
 
