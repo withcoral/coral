@@ -3,11 +3,6 @@
 This source queries the [Google People API](https://developers.google.com/people)
 to expose contacts and contact groups as queryable SQL tables.
 
-# Google Contacts Connector
-
-This source queries the [Google People API](https://developers.google.com/people)
-to expose contacts and contact groups as queryable SQL tables.
-
 ## Auth & Setup Guide
 
 To connect Google Contacts, you must first configure a Google Cloud project and an OAuth consent screen to obtain your Client ID and Client Secret:
