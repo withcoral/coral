@@ -59,7 +59,7 @@ LIMIT 50;
 Search note titles or body text for a keyword using Coral's local SQL engine:
 
 > [!NOTE]
-> The Google Keep API does not support keyword search filtering on the server. The `LIKE` operator is evaluated locally by Coral after fetching the records. To prevent fetching your entire note history, always pair local text search with a server-side `filter` (e.g. `trashed = false` or `update_time >= ...`) and a `LIMIT`.
+> The Google Keep API does not support keyword search filtering on the server. The `LIKE` operator is evaluated locally by Coral after fetching the records. To prevent fetching your entire note history, always pair local text search with a server-side `filter` (e.g. `trashed = false` or `updateTime >= ...`) and a `LIMIT`.
 
 ```sql
 SELECT title, body_text
