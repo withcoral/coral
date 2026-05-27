@@ -9,9 +9,10 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
-    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
-    query_test_result, source_input_spec::Input as ProtoSourceInput,
+    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess,
+    SourceCredentialStorage, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    Workspace, catalog_item, import_source_response, query_test_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -36,6 +37,10 @@ async fn import_source_persists_and_lists() {
     assert_eq!(added.name, "local_messages");
     assert_eq!(added.version, "0.1.0");
     assert_eq!(added.origin, SourceOrigin::Imported as i32);
+    assert_eq!(
+        added.credential_storage,
+        SourceCredentialStorage::Unspecified as i32
+    );
     assert!(added.variables.is_empty());
     assert!(added.secrets.is_empty());
 
@@ -43,6 +48,7 @@ async fn import_source_persists_and_lists() {
         fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(config_raw.contains("[workspaces.default.sources.local_messages]"));
     assert!(config_raw.contains("secrets = []"));
+    assert!(!config_raw.contains("credential_storage"));
     assert!(!config_raw.contains("credential_set_id"));
     assert!(!config_raw.contains("[workspaces.default.credentials"));
     assert!(!config_raw.contains("manifest_yaml = "));
@@ -58,6 +64,10 @@ async fn import_source_persists_and_lists() {
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "local_messages");
+    assert_eq!(
+        listed[0].credential_storage,
+        SourceCredentialStorage::Unspecified as i32
+    );
 }
 
 #[tokio::test]
@@ -98,6 +108,10 @@ async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     assert_eq!(fetched.name, "secured_messages");
     assert_eq!(fetched.version, "0.1.0");
     assert_eq!(fetched.origin, SourceOrigin::Imported as i32);
+    assert_eq!(
+        fetched.credential_storage,
+        SourceCredentialStorage::File as i32
+    );
     assert_eq!(fetched.variables, imported.variables);
     assert_eq!(fetched.secrets, imported.secrets);
 }
@@ -110,18 +124,26 @@ async fn import_duplicate_source_overwrites_existing_source() {
         .import_source(manifest_yaml.clone(), Vec::new(), Vec::new())
         .await;
 
-    let reimported = harness
+    let mut import_stream = harness
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
             manifest_yaml: manifest_yaml.replace("0.1.0", "0.2.0"),
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect("duplicate import should overwrite")
-        .into_inner()
-        .source
+        .into_inner();
+    let reimported = import_stream
+        .message()
+        .await
+        .expect("duplicate import stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
         .expect("import source response");
     assert_eq!(reimported.version, "0.2.0");
 
@@ -150,6 +172,7 @@ async fn import_invalid_manifest_returns_invalid_argument() {
             manifest_yaml: invalid_manifest_yaml(),
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("invalid manifest should fail");
@@ -495,10 +518,11 @@ async fn validate_source_skipped_registration_returns_unary_failed_precondition(
         "name": "missing_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "messages",
             "description": "Missing messages",
+            "format": "jsonl",
             "source": {
                 "location": format!("file://{}/", missing_dir.display()),
                 "glob": "**/*.jsonl",
@@ -558,6 +582,7 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
                 value: "https://example.com".to_string(),
             }],
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("missing required secret should fail");
@@ -583,6 +608,7 @@ async fn import_source_missing_required_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("missing required variable should fail");
@@ -611,6 +637,7 @@ async fn import_source_unknown_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("unknown variable should fail");
@@ -641,6 +668,7 @@ async fn import_source_unknown_secret_returns_invalid_argument() {
                     value: "unused".to_string(),
                 },
             ],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("unknown secret should fail");
@@ -675,6 +703,7 @@ async fn import_source_repeated_variable_returns_invalid_argument() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("repeated variable should fail");
@@ -709,6 +738,7 @@ async fn import_source_repeated_secret_returns_invalid_argument() {
                     value: "shadow-token".to_string(),
                 },
             ],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("repeated secret should fail");
@@ -792,6 +822,10 @@ async fn get_source_info_returns_available_bundled_metadata() {
     assert_eq!(info.name, "github");
     assert_eq!(info.origin, SourceOrigin::Bundled as i32);
     assert!(!info.installed);
+    assert_eq!(
+        info.credential_storage,
+        SourceCredentialStorage::Unspecified as i32
+    );
     assert!(!info.description.is_empty());
     assert!(!info.version.is_empty());
     assert!(
@@ -834,6 +868,10 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     assert_eq!(info.version, "0.1.0");
     assert_eq!(info.origin, SourceOrigin::Imported as i32);
     assert!(info.installed);
+    assert_eq!(
+        info.credential_storage,
+        SourceCredentialStorage::File as i32
+    );
     assert_eq!(info.inputs.len(), 2);
     assert_eq!(info.inputs[0].key, "API_BASE");
     match info.inputs[0].input.as_ref().expect("input metadata") {
@@ -1261,6 +1299,7 @@ async fn import_rolls_back_on_config_write_failure() {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
         .expect_err("config write should fail");

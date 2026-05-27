@@ -1,7 +1,12 @@
-.PHONY: install rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check
+.PHONY: install ui-build rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check
 
-install:
+install: ui-build
 	cargo install --path crates/coral-cli --locked
+
+ui-build:
+	npm ci --prefix ui
+	npm run build --prefix ui
+	test -s ui/dist/index.html
 
 rust-checks:
 	cargo fmt --all -- --check
@@ -50,7 +55,8 @@ fix-sources:
 # ----------------------------------------------------------------------------
 # Regenerates the source catalog pages and Mintlify navigation from
 # sources/core/*/manifest.y{a,}ml and sources/community/*/manifest.y{a,}ml
-# via the xtask binary.
+# via the xtask binary. docs-check intentionally skips the community source
+# catalog so PRs do not fail on aggregate community source catalog drift.
 #
 #   make docs-generate   # write/refresh the generated files in docs/
 #   make docs-check      # CI freshness check: non-zero exit if stale
@@ -67,7 +73,6 @@ docs-check:
 	cargo run --locked -p xtask -- generate-docs \
 	  --sources-dir sources/core \
 	  --index docs/reference/bundled-sources.mdx \
-	  --community-sources-dir sources/community \
-	  --community-index docs/reference/community-sources.mdx \
 	  --docs-json docs/docs.json \
+	  --skip-community-sources \
 	  --check

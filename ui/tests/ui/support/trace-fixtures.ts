@@ -44,61 +44,71 @@ interface SpanFixture {
 const traceFixtures: TraceFixture[] = [
   {
     source: 'github',
-    query: "SELECT number, title, state FROM github.pull_requests WHERE repository = 'coral' AND state = 'open' ORDER BY updated_at DESC LIMIT 25",
+    query:
+      "SELECT number, title, state FROM github.pull_requests WHERE repository = 'coral' AND state = 'open' ORDER BY updated_at DESC LIMIT 25",
     durationMs: 384,
     rows: 12,
   },
   {
     source: 'slack',
-    query: "SELECT channel_name, user_name, text FROM slack.messages WHERE channel_name = 'eng-coral' AND text ILIKE '%release%' ORDER BY ts DESC LIMIT 50",
+    query:
+      "SELECT channel_name, user_name, text FROM slack.messages WHERE channel_name = 'eng-coral' AND text ILIKE '%release%' ORDER BY ts DESC LIMIT 50",
     durationMs: 512,
     rows: 31,
   },
   {
     source: 'linear',
-    query: "SELECT identifier, title, state_name, assignee_name FROM linear.issues WHERE team_key = 'CORAL' AND state_type != 'completed' ORDER BY updated_at DESC LIMIT 40",
+    query:
+      "SELECT identifier, title, state_name, assignee_name FROM linear.issues WHERE team_key = 'CORAL' AND state_type != 'completed' ORDER BY updated_at DESC LIMIT 40",
     durationMs: 438,
     rows: 18,
   },
   {
     source: 'github',
-    query: "SELECT login, merged_pull_requests FROM github.contributors WHERE repository = 'coral' ORDER BY merged_pull_requests DESC LIMIT 10",
+    query:
+      "SELECT login, merged_pull_requests FROM github.contributors WHERE repository = 'coral' ORDER BY merged_pull_requests DESC LIMIT 10",
     durationMs: 295,
     rows: 10,
   },
   {
     source: 'slack',
-    query: "SELECT channel_name, count(*) AS messages FROM slack.messages WHERE ts > now() - interval '7 days' GROUP BY channel_name ORDER BY messages DESC",
+    query:
+      "SELECT channel_name, count(*) AS messages FROM slack.messages WHERE ts > now() - interval '7 days' GROUP BY channel_name ORDER BY messages DESC",
     durationMs: 620,
     rows: 8,
   },
   {
     source: 'github',
-    query: "SELECT workflow_name, conclusion, run_started_at FROM github.actions_runs WHERE repository = 'coral' ORDER BY run_started_at DESC LIMIT 20",
+    query:
+      "SELECT workflow_name, conclusion, run_started_at FROM github.actions_runs WHERE repository = 'coral' ORDER BY run_started_at DESC LIMIT 20",
     durationMs: 466,
     rows: 20,
   },
   {
     source: 'linear',
-    query: "SELECT identifier, title, priority_label FROM linear.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%' ORDER BY updated_at DESC LIMIT 10",
+    query:
+      "SELECT identifier, title, priority_label FROM linear.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%' ORDER BY updated_at DESC LIMIT 10",
     durationMs: 735,
     rows: 4,
   },
   {
     source: 'slack',
-    query: "SELECT user_name, reaction, item_text FROM slack.reactions WHERE channel_name = 'eng-coral' AND reaction IN ('eyes', 'shipit') ORDER BY ts DESC LIMIT 25",
+    query:
+      "SELECT user_name, reaction, item_text FROM slack.reactions WHERE channel_name = 'eng-coral' AND reaction IN ('eyes', 'shipit') ORDER BY ts DESC LIMIT 25",
     durationMs: 341,
     rows: 16,
   },
   {
     source: 'github',
-    query: "SELECT number, title, author_login FROM github.issues WHERE repository = 'coral' AND labels @> ARRAY['bug'] ORDER BY created_at DESC LIMIT 15",
+    query:
+      "SELECT number, title, author_login FROM github.issues WHERE repository = 'coral' AND labels @> ARRAY['bug'] ORDER BY created_at DESC LIMIT 15",
     durationMs: 419,
     rows: 7,
   },
   {
     source: 'linear',
-    query: "SELECT project_name, count(*) AS open_issues FROM linear.issues WHERE state_type != 'completed' GROUP BY project_name ORDER BY open_issues DESC",
+    query:
+      "SELECT project_name, count(*) AS open_issues FROM linear.issues WHERE state_type != 'completed' GROUP BY project_name ORDER BY open_issues DESC",
     durationMs: 548,
     rows: 6,
   },
@@ -130,8 +140,16 @@ const detailSpans: SpanFixture[] = [
       data: {
         issues: {
           nodes: [
-            { identifier: 'CORAL-128', title: 'Add Playwright coverage for trace stream', priorityLabel: 'High' },
-            { identifier: 'CORAL-134', title: 'Record UI review flows with screencast chapters', priorityLabel: 'Medium' },
+            {
+              identifier: 'CORAL-128',
+              title: 'Add Playwright coverage for trace stream',
+              priorityLabel: 'High',
+            },
+            {
+              identifier: 'CORAL-134',
+              title: 'Record UI review flows with screencast chapters',
+              priorityLabel: 'Medium',
+            },
           ],
         },
       },
@@ -167,8 +185,18 @@ const detailSpans: SpanFixture[] = [
     path: '/repos/oxide/coral/pulls?state=open&per_page=25',
     durationMs: 113,
     responseBody: [
-      { number: 417, title: 'Add MSW Playwright trace fixtures', user: { login: 'ludo' }, state: 'open' },
-      { number: 412, title: 'Tighten Coral UI trace detail layout', user: { login: 'maia' }, state: 'open' },
+      {
+        number: 417,
+        title: 'Add MSW Playwright trace fixtures',
+        user: { login: 'ludo' },
+        state: 'open',
+      },
+      {
+        number: 412,
+        title: 'Tighten Coral UI trace detail layout',
+        user: { login: 'maia' },
+        state: 'open',
+      },
     ],
   },
   {
@@ -204,8 +232,16 @@ const detailSpans: SpanFixture[] = [
     responseBody: {
       ok: true,
       messages: [
-        { user: 'U01ALICE', text: 'Playwright trace review is ready for feedback', ts: '1763999999.000100' },
-        { user: 'U02BOB', text: 'Can we include Linear and GitHub spans?', ts: '1763999988.000200' },
+        {
+          user: 'U01ALICE',
+          text: 'Playwright trace review is ready for feedback',
+          ts: '1763999999.000100',
+        },
+        {
+          user: 'U02BOB',
+          text: 'Can we include Linear and GitHub spans?',
+          ts: '1763999988.000200',
+        },
       ],
     },
   },
@@ -248,7 +284,15 @@ const detailSpans: SpanFixture[] = [
     method: 'GET',
     path: '/api/reactions.get?channel=C08CORAL&timestamp=1763999999.000100',
     durationMs: 44,
-    responseBody: { ok: true, message: { reactions: [{ name: 'eyes', count: 3 }, { name: 'shipit', count: 1 }] } },
+    responseBody: {
+      ok: true,
+      message: {
+        reactions: [
+          { name: 'eyes', count: 3 },
+          { name: 'shipit', count: 1 },
+        ],
+      },
+    },
   },
   {
     source: 'linear',
@@ -267,7 +311,9 @@ const detailSpans: SpanFixture[] = [
 }`,
       variables: { includeArchived: false },
     },
-    responseBody: { data: { projects: { nodes: [{ name: 'Coral UI' }, { name: 'Source Runtime' }] } } },
+    responseBody: {
+      data: { projects: { nodes: [{ name: 'Coral UI' }, { name: 'Source Runtime' }] } },
+    },
   },
   {
     source: 'github',
@@ -322,7 +368,19 @@ const detailSpans: SpanFixture[] = [
     durationMs: 52,
     requestBodyPresent: true,
     requestBodySize: 2048,
-    responseBody: { data: { issues: { nodes: [{ identifier: 'CORAL-201', title: 'Request body present fallback', priorityLabel: 'Low' }] } } },
+    responseBody: {
+      data: {
+        issues: {
+          nodes: [
+            {
+              identifier: 'CORAL-201',
+              title: 'Request body present fallback',
+              priorityLabel: 'Low',
+            },
+          ],
+        },
+      },
+    },
   },
 ]
 
@@ -343,7 +401,7 @@ function sourceHost(source: SourceName): string {
 
 function traceSummary(index: number, fixture: TraceFixture): TraceSummary {
   const displayIndex = index + 1
-  const traceId = `trace-${displayIndex.toString().padStart(2, '0')}`
+  const traceId = traceIdForIndex(index)
   const durationNanos = `${fixture.durationMs * 1_000_000}`
 
   return create(TraceSummarySchema, {
@@ -355,10 +413,14 @@ function traceSummary(index: number, fixture: TraceFixture): TraceSummary {
     startTimeUnixNanos: nanos(displayIndex * 1_000),
     endTimeUnixNanos: nanos(displayIndex * 1_000 + fixture.durationMs),
     durationNanos,
-    spanCount: index === selectedTraceIndex ? detailSpans.length : 3,
+    spanCount: index === selectedTraceIndex ? selectedTraceSpans.length : 3,
     rowCount: `${fixture.rows ?? 0}`,
     rowCountRecorded: fixture.rows !== undefined,
   })
+}
+
+function traceIdForIndex(index: number): string {
+  return `trace-${(index + 1).toString().padStart(2, '0')}`
 }
 
 function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSpan {
@@ -374,7 +436,6 @@ function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSp
 
   if (fixture.requestBody) {
     attrs['http.request.body.present'] = true
-    attrs['coral.http.request.body'] = JSON.stringify(fixture.requestBody)
   } else if (fixture.requestBodyPresent !== undefined) {
     attrs['http.request.body.present'] = fixture.requestBodyPresent
   }
@@ -383,9 +444,6 @@ function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSp
   }
   if (fixture.requestBodyTruncated) {
     attrs['coral.http.request.body.truncated'] = true
-  }
-  if (fixture.responseBody !== undefined) {
-    attrs['coral.http.response.body'] = JSON.stringify(fixture.responseBody)
   }
   if (fixture.responseBodyPresent !== undefined) {
     attrs['http.response.body.present'] = fixture.responseBodyPresent
@@ -415,7 +473,63 @@ function httpSpan(traceId: string, fixture: SpanFixture, index: number): TraceSp
   })
 }
 
-export const tenTraceList: TraceSummary[] = traceFixtures.map((fixture, index) => traceSummary(index, fixture))
+function bodySpan(
+  traceId: string,
+  parentSpanId: string,
+  fixture: SpanFixture,
+  index: number,
+  kind: 'request' | 'response',
+): TraceSpan | undefined {
+  const body = kind === 'request' ? fixture.requestBody : fixture.responseBody
+  if (body === undefined) return undefined
+
+  const bodyAttr = kind === 'request' ? 'coral.http.request.body' : 'coral.http.response.body'
+  const truncatedAttr =
+    kind === 'request' ? 'coral.http.request.body.truncated' : 'coral.http.response.body.truncated'
+  const truncated =
+    kind === 'request' ? fixture.requestBodyTruncated : fixture.responseBodyTruncated
+  const startOffsetMs = 7_000 + index * 37 + (kind === 'request' ? 1 : 2)
+  const attrs: Record<string, unknown> = {
+    target: 'coral.http.body',
+    'coral.http.body.direction': kind,
+    [bodyAttr]: JSON.stringify(body),
+    [truncatedAttr]: Boolean(truncated),
+  }
+
+  return create(TraceSpanSchema, {
+    traceId,
+    spanId: `${parentSpanId}-${kind}-body`,
+    parentSpanId,
+    name: `coral.http.${kind}.body`,
+    kind: 'internal',
+    status: TraceStatus.OK,
+    startTimeUnixNanos: nanos(startOffsetMs),
+    endTimeUnixNanos: nanos(startOffsetMs),
+    durationNanos: '0',
+    attributesJson: JSON.stringify(attrs),
+    eventsJson: '[]',
+    linksJson: '[]',
+    resourceJson: JSON.stringify({ 'service.name': 'coral' }),
+    scopeName: 'coral',
+  })
+}
+
+function spansForFixture(traceId: string, fixture: SpanFixture, index: number): TraceSpan[] {
+  const span = httpSpan(traceId, fixture, index)
+  return [
+    span,
+    bodySpan(traceId, span.spanId, fixture, index, 'request'),
+    bodySpan(traceId, span.spanId, fixture, index, 'response'),
+  ].filter((candidate): candidate is TraceSpan => candidate !== undefined)
+}
+
+const selectedTraceSpans = detailSpans.flatMap((fixture, index) =>
+  spansForFixture(traceIdForIndex(selectedTraceIndex), fixture, index + 1),
+)
+
+export const tenTraceList: TraceSummary[] = traceFixtures.map((fixture, index) =>
+  traceSummary(index, fixture),
+)
 export const selectedTrace = tenTraceList[selectedTraceIndex]
 
 export const traceListResponse: ListTracesResponse = create(ListTracesResponseSchema, {
@@ -428,5 +542,5 @@ export const emptyTraceListResponse: ListTracesResponse = create(ListTracesRespo
 
 export const selectedTraceDetailResponse: GetTraceResponse = create(GetTraceResponseSchema, {
   summary: selectedTrace,
-  spans: detailSpans.map((fixture, index) => httpSpan(selectedTrace.traceId, fixture, index + 1)),
+  spans: selectedTraceSpans,
 })

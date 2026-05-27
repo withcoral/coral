@@ -23,6 +23,19 @@ Use:
 
 - variables for non-secret configuration such as API base URLs
 - secrets for API keys, tokens, and client secrets
+- `credential.methods` on secret inputs when setup should offer OAuth or a manual token choice
+
+## Authentication Setup
+
+- Keep credential collection separate from runtime auth. `inputs` stores values; `auth`, request headers, query params, or body fields decide where values are sent.
+- Use `type: source_config` when the user should provide a stored secret directly through an environment variable or prompt.
+- Use `type: oauth` when the provider should issue the source secret through an OAuth authorization-code flow during `coral source add --interactive`.
+- OAuth methods require `flow.type: authorization_code` and an explicit `flow.pkce` of `required` or `disabled`.
+- OAuth redirect URIs must use `http://127.0.0.1` or `http://localhost`. Use `redirect_uri_port_mode: random` with no port or port `0` when the provider accepts variable loopback ports. Use `fixed` with a non-zero port when the OAuth app must pre-register the exact URI.
+- For public clients, declare `client.id.default`, `client.id.input`, or both. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
+- Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
+- If the provider supports pasted tokens too, put the OAuth method first and add a `source_config` fallback.
+- Do not rely on automatic token refresh; call out short-lived access tokens as a limitation.
 
 ## Description and Input Hints
 
@@ -42,6 +55,7 @@ Additional hint guidance:
 
 - Base URL inputs should clarify default behavior and self-hosted alternatives.
 - Secret inputs should name token type and any format constraints (for example token prefixes).
+- OAuth-backed secret hints should name the required scopes, client ID/secret expectations, and redirect URI registration requirement.
 - For encoded credentials, include a short shell example (for example `printf ... | base64`).
 - Prefer official docs links and stable settings pages over brittle click-path instructions.
 
@@ -52,6 +66,16 @@ Additional hint guidance:
 - Keep table names stable and SQL-friendly.
 - Preserve provider semantics when filter behavior matters.
 - Add `test_queries` once you know which simple query or queries should confirm the source basically works.
+
+## Search and Retrieval
+
+- Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
+- Use `functions` with `kind: search` for provider-native search endpoints that accept query text and return provider-ranked candidates.
+- Add `search_limits` to every `kind: search` function.
+- Keep search function arguments close to the provider API, and use `bind.arg` when the SQL argument name should differ from the request argument name.
+- Search result columns should include stable identifiers and useful candidate metadata such as title, URL, score, rank, or timestamps when the provider returns them.
+- Do not model provider-native search as a table filter. Use `mode: contains` only for ordinary substring filters on normal list/detail tables. Provider-ranked retrieval belongs in a `kind: search` function.
+- If a search result is not a complete entity, make sure the returned identifier can be used with ordinary detail tables or required filters.
 
 ## Response Extraction
 
@@ -90,7 +114,9 @@ coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
 coral source test my_source
 coral sql "SELECT table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY table_name LIMIT 50 OFFSET 0"
-coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
+coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
+coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
+coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 ```
 
 If the source is named or lives in the Coral repo, add representative `test_queries` for a basic smoke/connection check and run:

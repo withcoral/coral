@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::ImportSourceRequest;
+use coral_api::v1::{ImportSourceRequest, import_source_response};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
@@ -41,10 +41,11 @@ fn write_fixture_manifest(root: &Path) -> PathBuf {
 name: local_messages
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: events
     description: Fixture events
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -57,6 +58,7 @@ tables:
         type: Utf8
   - name: messages
     description: Fixture messages
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -69,6 +71,7 @@ tables:
         type: Utf8
   - name: sessions
     description: Fixture sessions
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -79,9 +82,6 @@ tables:
         type: Utf8
       - name: text
         type: Utf8
-    filters:
-      - name: sessionId
-        required: true
 "#,
         data_dir.display(),
         data_dir.display(),
@@ -165,15 +165,26 @@ fn json_object(value: &Value) -> Map<String, Value> {
 }
 
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
-    source_client
+    let mut stream = source_client
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
             manifest_yaml,
             variables: Vec::new(),
             secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
         }))
         .await
-        .expect("add source");
+        .expect("add source")
+        .into_inner();
+    stream
+        .message()
+        .await
+        .expect("add source stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("add source response");
 }
 
 struct TestSession {
@@ -662,9 +673,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let required_columns = required_columns
         .structured_content
         .expect("structured content");
-    assert_eq!(required_columns["total"], 1);
-    assert_eq!(required_columns["columns"][0]["column_name"], "sessionId");
-    assert_eq!(required_columns["columns"][0]["is_required_filter"], true);
+    assert_eq!(required_columns["total"], 0);
     assert_matches_output_schema(list_columns_tool, &required_columns);
 
     let filtered_columns = client

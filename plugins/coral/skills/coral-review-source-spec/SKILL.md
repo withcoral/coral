@@ -18,7 +18,7 @@ Review the source as product surface. Do not spend the review mainly restating C
    - `CONTRIBUTING.md`, especially "Source contributions".
    - The repo `AGENTS.md` and any nearer `AGENTS.md`.
    - Similar existing sources in `sources/core/` and the community example in `sources/community/hn/`.
-3. Compare against existing source patterns, not a generic API-wrapper ideal. Look at nearby sources with similar shape: public no-auth APIs, token APIs, GraphQL APIs, search-heavy APIs, log/time-series APIs, or generated large API sources.
+3. Compare against existing source patterns, not a generic API-wrapper ideal. Look at nearby sources with similar shape: public no-auth APIs, token APIs, OAuth-backed APIs, GraphQL APIs, search-heavy APIs, log/time-series APIs, or generated large API sources.
 4. Produce a code-review style result: findings first, ordered by severity, with file and line references. Include open questions only after findings. If there are no substantive issues, say so and mention residual risks or review gaps.
 
 ## Review Checklist
@@ -41,6 +41,10 @@ These checks should be based on the authoritative API docs for the API the sourc
 - Treat credential-like inputs as secrets, regardless of read-only scope or optional auth mode. Inputs named or described as `API_KEY`, `TOKEN`, `ACCESS_TOKEN`, `PASSWORD`, `SECRET`, `APPLICATION_KEY`, `READ_KEY`, `ADMIN_KEY`, private keys, bearer values, or authorization header values must be `kind: secret`; endpoint/base URL/site/region/domain/org/account/user/email values may be `kind: variable`.
 - Do not make a credential a variable with an empty default to simulate optional authentication. For the current source-spec surface, require the secret or call out the missing optional-auth design explicitly; never expose a token just to support anonymous installs.
 - Auth docs mention required token type, scopes or permissions, and where to get credentials.
+- If a secret declares `credential.methods`, each method matches the provider's supported setup path. OAuth methods use authorization-code flow, an explicit `pkce` value, loopback redirect URI, correct endpoint URLs, appropriate client ID/default/input behavior, required `client.id.input` when the token endpoint needs client-secret authentication, correct client-secret transport when needed, and least-privilege scopes.
+- OAuth methods do not replace runtime auth. The stored secret is still referenced by `auth`, request headers, query params, or body fields where the provider expects it.
+- OAuth setup docs tell users whether they need their own OAuth client, which redirect URI to register, and which scopes to grant. If access tokens are short-lived, the source or docs call out that automatic token refresh is not implemented.
+- When both OAuth and pasted-token setup are supported, the method ordering and labels make the preferred path obvious, usually OAuth first and `source_config` fallback second.
 - Non-trivial sources include README or manifest guides with setup, schema orientation, and example queries.
 - Behavior changes, setup changes, source semantics, and examples are documented in the same PR.
 
@@ -50,7 +54,7 @@ These checks should be based on the authoritative API docs for the API the sourc
 - High-cardinality or expensive endpoints require filters or have conservative `fetch_limit_default` values.
 - Required filters are explicit and described in table `description` or `guide`.
 - Guides tell users how to start, which IDs to join through, and any provider-specific timestamp or query syntax traps.
-- Search-like operations use search filters or table functions when that is clearer than pretending the endpoint is a normal list table.
+- Provider endpoints that accept query text and return ranked candidates use `kind: search` table functions with `search_limits`, stable result identifiers, and useful candidate metadata. Non-retrieval table functions keep the default kind for parameterized operations such as scoped child collections, time-range logs, metrics queries, or detail operations. Ordinary table filters are for exact lookup, scoping, or provider-side filtering; `mode: contains` is only substring matching. Flag provider-native search modeled as a filter and require a `kind: search` function.
 - Table and column names are snake_case, stable, and obvious. Avoid leaking odd provider operation names unless the source is intentionally generated.
 
 ### HTTP and API Semantics

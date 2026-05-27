@@ -38,6 +38,7 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
+use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
@@ -261,7 +262,9 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
+        let credential_config = CredentialStorageConfig::load(&layout)?;
+        let credential_store =
+            CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let source_manager = SourceManager::new(
             config_store.clone(),
@@ -270,10 +273,17 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
+        let http_body_capture_max_bytes = telemetry_config
+            .trace_history
+            .http_body_recording_max_bytes();
+        let query_runtime_context = env
+            .query_runtime_context()
+            .with_http_body_capture_max_bytes(http_body_capture_max_bytes);
+
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            env.query_runtime_context(),
+            query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
         );
@@ -617,7 +627,8 @@ mod tests {
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        ExecuteSqlRequest, ImportSourceRequest, ListSourcesRequest, ListTracesRequest, Workspace,
+        ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
+        ListTracesRequest, Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -860,6 +871,102 @@ enabled = false
     }
 
     #[tokio::test]
+    async fn embedded_ui_server_streams_import_source_over_grpc_web() {
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri();
+        let path = format!("{endpoint}/coral.v1.SourceService/ImportSource");
+        let client = reqwest::Client::new();
+
+        let response = client
+            .post(&path)
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(grpc_web_body(&ImportSourceRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml: r#"
+name: stream_test
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: "https://example.com"
+tables:
+  - name: messages
+    description: Messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#
+                .to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
+            }))
+            .send()
+            .await
+            .expect("gRPC-Web streaming request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = response.bytes().await.expect("gRPC-Web streaming body");
+        let body = body.as_ref();
+        assert!(body.len() >= 5, "expected framed gRPC-Web response body");
+        assert_eq!(body[0], 0, "expected first frame to be a data frame");
+        let len = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
+        let frame = body.get(5..5 + len).expect("complete gRPC-Web data frame");
+        let trailer_offset = 5 + len;
+        assert!(
+            body.len() >= trailer_offset + 5,
+            "expected final gRPC-Web trailer frame"
+        );
+        assert_eq!(
+            body[trailer_offset], 0x80,
+            "expected final frame to be uncompressed trailers"
+        );
+        let trailer_len = u32::from_be_bytes([
+            body[trailer_offset + 1],
+            body[trailer_offset + 2],
+            body[trailer_offset + 3],
+            body[trailer_offset + 4],
+        ]) as usize;
+        let trailer_end = trailer_offset + 5 + trailer_len;
+        let trailers = body
+            .get(trailer_offset + 5..trailer_end)
+            .expect("complete gRPC-Web trailer frame");
+        assert_eq!(
+            body.len(),
+            trailer_end,
+            "expected trailers to be the final gRPC-Web frame"
+        );
+        let trailers = std::str::from_utf8(trailers).expect("trailers are UTF-8");
+        assert!(
+            trailers.lines().any(|line| {
+                line.strip_prefix("grpc-status:")
+                    .is_some_and(|status| status.trim() == "0")
+            }),
+            "expected successful gRPC-Web trailer status, got {trailers:?}"
+        );
+        let event = <ImportSourceResponse as prost::Message>::decode(frame)
+            .expect("decode import source response")
+            .event
+            .expect("stream event");
+        match event {
+            import_source_response::Event::Source(source) => {
+                assert_eq!(source.name, "stream_test");
+            }
+            other => panic!("unexpected stream event: {other:?}"),
+        }
+
+        running.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
     async fn embedded_ui_server_serves_static_assets_alongside_grpc_web() {
         let temp = TempDir::new().expect("temp dir");
         let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
@@ -988,6 +1095,7 @@ enabled = false
             credential_manager,
             QueryRuntimeContext {
                 home_dir: Some(fake_home.clone()),
+                ..QueryRuntimeContext::default()
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
@@ -1011,17 +1119,18 @@ enabled = false
         let mut query_client = QueryServiceClient::new(channel)
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
 
-        source_client
+        let mut import_stream = source_client
             .import_source(Request::new(ImportSourceRequest {
                 workspace: Some(default_workspace()),
                 manifest_yaml: r#"
 name: tilde_demo
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: messages
     description: Fixture messages
+    format: jsonl
     source:
       location: file://~/fixture-data/
       glob: "**/*.jsonl"
@@ -1034,9 +1143,21 @@ tables:
                 .to_string(),
                 variables: Vec::new(),
                 secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
             }))
             .await
-            .expect("create source");
+            .expect("create source")
+            .into_inner();
+        let imported = import_stream
+            .message()
+            .await
+            .expect("import source stream")
+            .and_then(|response| match response.event {
+                Some(import_source_response::Event::Source(source)) => Some(source),
+                _ => None,
+            })
+            .expect("import source response");
+        assert_eq!(imported.name, "tilde_demo");
 
         let response = query_client
             .execute_sql(Request::new(ExecuteSqlRequest {
@@ -1074,7 +1195,7 @@ tables:
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -1146,10 +1267,11 @@ tables:
         manifest.push_str("name: wide_demo\n");
         manifest.push_str("version: 0.1.0\n");
         manifest.push_str("dsl_version: 3\n");
-        manifest.push_str("backend: jsonl\n");
+        manifest.push_str("backend: file\n");
         manifest.push_str("tables:\n");
         manifest.push_str("  - name: wide\n");
         manifest.push_str("    description: Wide fixture\n");
+        manifest.push_str("    format: jsonl\n");
         manifest.push_str("    source:\n");
         writeln!(manifest, "      location: {location}").expect("write to String");
         manifest.push_str("      glob: \"**/*.jsonl\"\n");
@@ -1172,7 +1294,7 @@ tables:
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
-            QueryRuntimeContext { home_dir: None },
+            QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
@@ -1195,15 +1317,27 @@ tables:
         let mut query_client = QueryServiceClient::new(channel)
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
 
-        source_client
+        let mut import_stream = source_client
             .import_source(Request::new(ImportSourceRequest {
                 workspace: Some(default_workspace()),
                 manifest_yaml: manifest,
                 variables: Vec::new(),
                 secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
             }))
             .await
-            .expect("import wide source");
+            .expect("import wide source")
+            .into_inner();
+        let imported = import_stream
+            .message()
+            .await
+            .expect("import wide source stream")
+            .and_then(|response| match response.event {
+                Some(import_source_response::Event::Source(source)) => Some(source),
+                _ => None,
+            })
+            .expect("import wide source response");
+        assert_eq!(imported.name, "wide_demo");
 
         let status = query_client
             .execute_sql(Request::new(ExecuteSqlRequest {

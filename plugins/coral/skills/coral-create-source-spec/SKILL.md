@@ -54,7 +54,9 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - base URL or file location
    - auth
    - variables and secrets
+   - credential retrieval methods for secrets, including OAuth when the provider supports browser-based setup
    - tables
+   - table functions for source-scoped parameterized endpoints
    - filters
    - response extraction
    - pagination
@@ -64,10 +66,13 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 5. Validate the source in the right mode:
    - standalone specs: `coral source add --file <path>` and inspect with `coral sql`
    - `coral source add` is non-interactive by default: each input `key` is read from the matching environment variable. Export required variables and secrets before running, or pass `--interactive` to be prompted.
+   - for OAuth credential methods, run `coral source add --interactive --file <path>` with no environment value for the target secret so Coral offers the authored credential choices
    - repo sources or already-named sources: `coral source test <name>`
 6. Inspect the exposed shape:
    - inspect `coral.tables` for visible tables, descriptions, guides, and required filters; keep metadata queries bounded with `LIMIT`/`OFFSET`
+   - inspect `coral.table_functions` for source-scoped functions, arguments, result columns, kind, and search limits
    - inspect `coral.columns` for canonical column metadata, including `is_virtual` and `is_required_filter`; filter by one table or page large column sets
+   - inspect `coral.filters` for normalized table filter names, types, modes, required flags, and descriptions
    - inspect `coral.inputs` to verify variables, secrets, defaults, hints, and required flags
 7. Query representative tables with `coral sql`.
 8. If you are relying on `coral source test`, make sure `test_queries` gives you a basic smoke/connection check for the source.
@@ -79,8 +84,17 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Use the source manifest schema as both inspiration for authoring and validation of structure: https://github.com/withcoral/coral/blob/main/crates/coral-spec/src/schema/source_manifest.schema.json
 - Use source variables for non-secret configuration.
 - Use source secrets for credentials.
+- For OAuth-backed services, model browser-based setup with `inputs.<TOKEN>.credential.methods[]` using `type: oauth`; keep the runtime `auth` or request header pointing at the same secret input.
+- OAuth credential methods currently mean authorization-code flow with a loopback `http://127.0.0.1` or `http://localhost` redirect URI. Set `flow.pkce` explicitly to `required` or `disabled`, choose `redirect_uri_port_mode: random` for provider apps that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI.
+- If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
+- Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
+- Do not assume automatic token refresh. If the provider returns short-lived access tokens, call that out as a limitation unless the source has another supported long-lived credential path.
 - Keep table names stable and SQL-friendly.
 - Mark filters as required only when the API truly requires them.
+- Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
+- Use `kind: search` table functions for provider endpoints that accept query text and return ranked candidates.
+- Do not model provider search as a table filter. Use `mode: contains` only for ordinary provider-side substring filters. Provider-ranked retrieval belongs in a `kind: search` function.
+- Include `search_limits` on every `kind: search` function and expose stable result identifiers for follow-up detail queries.
 - Prefer explicit pagination when the API shape is known.
 - Verify pagination with actual row fetches, not only `COUNT(*)`.
 - Add or update `test_queries` when you want `coral source test` to perform a basic smoke/connection check.
@@ -121,6 +135,11 @@ Specific guidance:
   - name the exact credential type (API key, PAT, application key, etc.)
   - include format constraints when relevant (for example, token prefixes)
   - include least-privilege scope guidance
+- For OAuth methods:
+  - use a user-facing `label` such as `Connect with GitHub`
+  - describe the browser-based setup in `description`
+  - list required OAuth scopes in the secret hint or method description
+  - mention whether users need to register a fixed loopback redirect URI or provide their own OAuth client ID/secret
 - For derived secrets (for example Basic auth blobs):
   - include a short shell example (for example a Base64 command)
 - Prefer stable documentation links.
@@ -140,7 +159,9 @@ coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
 coral source test my_source
 coral sql "SELECT schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY schema_name, table_name LIMIT 50 OFFSET 0"
-coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
+coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
+coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
+coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 coral sql "SELECT key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' ORDER BY key"
 ```
 
@@ -158,8 +179,10 @@ For HTTP-backed sources:
 
 - define `backend: http`
 - define `base_url`
-- define auth headers
+- define auth headers or other runtime auth fields
+- define `credential.methods` on secret inputs when setup should offer OAuth or another retrieval choice
 - define request path, query, and body only where needed
+- define source-scoped table functions for provider-native operations that require invocation arguments
 - define response `rows_path`
 - define pagination explicitly when the provider pattern is known
 - define typed columns
@@ -170,11 +193,55 @@ Read `references/http-source-checklist.md` when you need table-shape and paginat
 If your HTTP source uses an Authorization header with a prefix (e.g. `Authorization: Bearer <token>`), you can use a secret input for the token and define the header as a template:
 
 ```yaml
+inputs:
+  FOOBAR_API_TOKEN:
+    kind: secret
+    hint: Bearer token for the Foobar API.
 auth:
+  type: HeaderAuth
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{input.FOOBAR_API_KEY}}
+      template: Bearer {{input.FOOBAR_API_TOKEN}}
+```
+
+For an OAuth-backed HTTP source, add the retrieval method to that same secret input:
+
+```yaml
+inputs:
+  FOOBAR_API_TOKEN:
+    kind: secret
+    hint: Access token for the Foobar API. Use OAuth setup or paste a token with read access.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Foobar
+          description: Open a browser and authorize Coral to read Foobar data.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://foobar.example.com/oauth/authorize
+              token_url: https://foobar.example.com/oauth/token
+            client:
+              id:
+                input: FOOBAR_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read
+        - type: source_config
+          label: Paste token
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.FOOBAR_API_TOKEN}}
 ```
 
 ## Local Data Sources

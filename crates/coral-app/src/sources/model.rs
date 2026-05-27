@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use coral_spec::ManifestInputSpec;
 use serde::{Deserialize, Serialize};
 
+use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 
 /// App-owned description of a source candidate that can be installed.
@@ -16,6 +17,7 @@ pub(crate) struct CandidateSource {
     pub(crate) inputs: Vec<ManifestInputSpec>,
     pub(crate) installed: bool,
     pub(crate) origin: SourceOrigin,
+    pub(crate) credential_storage: Option<CredentialStorageKind>,
 }
 
 /// App-owned model for one source installed in a workspace.
@@ -35,8 +37,29 @@ pub(crate) struct InstalledSource {
     /// Logical secret keys referenced by this source.
     #[serde(default)]
     pub(crate) secrets: Vec<String>,
+    /// Storage backend that owns this source's credential material.
+    ///
+    /// `None` means a legacy pre-keychain install, which is treated as file
+    /// storage until the source is removed and re-added.
+    #[serde(default)]
+    pub(crate) credential_storage: Option<CredentialStorageKind>,
     /// Where this installed source came from.
     pub(crate) origin: SourceOrigin,
+}
+
+impl InstalledSource {
+    pub(crate) fn effective_credential_storage(&self) -> CredentialStorageKind {
+        self.credential_storage
+            .unwrap_or(CredentialStorageKind::File)
+    }
+
+    pub(crate) fn credential_storage_for_material(&self) -> Option<CredentialStorageKind> {
+        if self.secrets.is_empty() {
+            None
+        } else {
+            Some(self.effective_credential_storage())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

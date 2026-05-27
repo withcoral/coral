@@ -17,7 +17,8 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceCredentialStorage,
+    SourceInfo, SourceOrigin,
 };
 use tonic::Code;
 
@@ -95,10 +96,10 @@ async fn source_list_renders_configured_sources() {
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
-            "Source  Version  Origin",
-            "------  -------  --------",
-            "github  1.0.0    bundled",
-            "jira    2.0.0    imported",
+            "Source  Version  Origin    Secrets",
+            "------  -------  --------  ----------------",
+            "github  1.0.0    bundled   file (plaintext)",
+            "jira    2.0.0    imported  file (plaintext)",
         ],
         "expected configured source list"
     );
@@ -747,6 +748,10 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
         stderr.contains("GITHUB_TOKEN"),
         "expected missing env var to name GITHUB_TOKEN: {stderr}"
     );
+    assert!(
+        stderr.contains("coral source add --interactive github"),
+        "expected exact interactive recovery command: {stderr}"
+    );
 
     server.shutdown().await;
 }
@@ -783,6 +788,7 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
                     inputs: Vec::new(),
                     installed: false,
                     origin: SourceOrigin::Bundled as i32,
+                    credential_storage: SourceCredentialStorage::Unspecified as i32,
                 }],
             }),
     )

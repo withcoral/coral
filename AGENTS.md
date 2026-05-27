@@ -19,6 +19,13 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
+- UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
+- `make rust-checks` is the Rust-only local gate and should keep using
+  `--all-features`; the embedded UI feature is a normal CLI build surface.
+- The built UI artifact is produced by repo/CI orchestration (`make ui-build`
+  or the `UI build` workflow job), not by `crates/coral-cli/build.rs`. Local
+  Rust builds may compile without `ui/dist`, because UI development normally
+  serves assets from Vite while the CLI provides the loopback API server.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime
@@ -34,14 +41,25 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
-- Source-only changes under `sources/community/**` do not need to update the
-  aggregate community source catalog page; keep docs freshness strict for
-  generator changes, docs changes, and bundled sources under `sources/core/**`.
+- Changes to `scripts/install.sh` must keep the `Validate` workflow's
+  install-script matrix in sync with every OS/architecture target that the
+  installer supports.
+- `make docs-check` intentionally skips the aggregate community source catalog.
+  Any PR may leave that generated page stale so unrelated changes do not fail
+  on aggregate community catalog drift; keep docs freshness strict for bundled
+  sources under `sources/core/**`, `docs/docs.json`, and the changelog.
+- Keep checked-in generated files marked in `.gitattributes` with
+  `linguist-generated` so GitHub collapses them by default in PR diffs.
 - Source inputs that carry credentials must be `kind: secret`, never
   `kind: variable`. This includes API keys, bearer tokens, access tokens,
   passwords, private keys, authorization header values, and admin/read keys,
   even when the credential is read-only or the source also supports anonymous
   access.
+- When source credential retrieval or auth guidance changes, keep the source
+  spec docs and maintained Coral source-spec skills aligned in the same change.
+  OAuth source-spec behavior needs both reader-facing docs and agent-facing
+  author/review guidance because `credential.methods` controls setup while
+  `auth` still controls runtime requests.
 - Keep maintained Coral agent skills in `plugins/coral/skills`. External
   distribution repos or packages should mirror from that directory rather than
   becoming a separate source of truth. Use

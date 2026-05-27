@@ -1,0 +1,209 @@
+name: groq_ai
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Groq AI community source for querying GroqCloud OpenAI-compatible model metadata.
+base_url: https://api.groq.com/openai/v1
+inputs:
+  GROQ_API_KEY:
+    kind: secret
+    hint: |
+      GroqCloud API key.
+
+      Create or copy an API key from:
+      https://console.groq.com/keys
+
+      The key is sent as a Bearer token to Groq's OpenAI-compatible API.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.GROQ_API_KEY}}"
+test_queries:
+  - SELECT * FROM groq_ai.models LIMIT 5
+  - "SELECT content FROM groq_ai.chat_completions WHERE model = 'llama-3.3-70b-versatile' AND prompt = 'Reply with exactly: Coral Groq works' LIMIT 1"
+  - "SELECT content FROM groq_ai.chat_completions WHERE model = 'llama-3.3-70b-versatile' AND prompt = 'What is Python?' LIMIT 1"
+  - "SELECT id, owned_by, active FROM groq_ai.model WHERE model_id = 'groq/compound-mini' LIMIT 1"
+tables:
+  - name: models
+    description: Active GroqCloud models available through the Models API.
+    request:
+      method: GET
+      path: /models
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Model ID used in Groq API calls.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: Owning organization or provider.
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the model is active.
+      - name: context_window
+        type: Int64
+        nullable: true
+        description: Context window size when returned by the API.
+      - name: max_completion_tokens
+        type: Int64
+        nullable: true
+        description: Maximum completion tokens when returned by the API.
+      - name: public_apps
+        type: Json
+        nullable: true
+        description: Public app metadata when returned by the API.
+  - name: chat_completions
+    description: Run one Groq chat completion using required SQL filters for model and prompt.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: max_completion_tokens
+        required: false
+    request:
+      method: POST
+      path: /chat/completions
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - messages
+            - "0"
+            - role
+          from: literal
+          value: user
+        - path:
+            - messages
+            - "0"
+            - content
+          from: filter
+          key: prompt
+        - path:
+            - max_completion_tokens
+          from: filter_int
+          key: max_completion_tokens
+    response:
+      rows_path:
+        - choices
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model ID supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: max_completion_tokens
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Maximum completion tokens supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: max_completion_tokens
+      - name: index
+        type: Int64
+        nullable: true
+        description: Choice index.
+      - name: finish_reason
+        type: Utf8
+        nullable: true
+        description: Why the model stopped.
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Assistant response text.
+        expr:
+          kind: path
+          path:
+            - message
+            - content
+      - name: message_role
+        type: Utf8
+        nullable: true
+        description: Assistant message role.
+        expr:
+          kind: path
+          path:
+            - message
+            - role
+  - name: model
+    description: Metadata for a specific Groq model ID.
+    filters:
+      - name: model_id
+        required: true
+    request:
+      method: GET
+      path: /models/{{filter.model_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model ID supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Model ID.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: Owning organization or provider.
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the model is active.
+      - name: context_window
+        type: Int64
+        nullable: true
+        description: Context window size when returned by the API.
+      - name: max_completion_tokens
+        type: Int64
+        nullable: true
+        description: Maximum completion tokens when returned by the API.
+      - name: public_apps
+        type: Json
+        nullable: true
+        description: Public app metadata when returned by the API.

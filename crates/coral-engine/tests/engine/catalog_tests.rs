@@ -20,10 +20,11 @@ fn users_manifest(dir: &std::path::Path) -> Value {
         "name": "alpha",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "users",
             "description": "Alpha users",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -42,10 +43,11 @@ fn teams_manifest(dir: &std::path::Path) -> Value {
         "name": "beta",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "teams",
             "description": "Beta teams",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -317,7 +319,7 @@ fn http_manifest_with_function() -> Value {
                     "name": "query",
                     "type": "Utf8",
                     "description": "Provider-native placeholder search text",
-                    "mode": "search"
+                    "mode": "contains"
                 }],
                 "search_limits": {
                     "default_top_k": 10,
@@ -411,7 +413,7 @@ fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
         "name": "jsonl_inputs",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "inputs": {
             "DATASET": {
                 "kind": "variable",
@@ -426,6 +428,7 @@ fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
         "tables": [{
             "name": "events",
             "description": "Input metadata regression fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -576,7 +579,7 @@ async fn coral_filters_lists_filter_metadata() {
             &sources,
             test_runtime(),
             "SELECT table_name, filter_name, filter_mode, is_required, data_type, description \
-             FROM coral.filters WHERE schema_name = 'searchy' AND filter_mode = 'search'",
+             FROM coral.filters WHERE schema_name = 'searchy' AND filter_mode = 'contains'",
         )
         .await
         .expect("filters catalog query should succeed"),
@@ -587,7 +590,7 @@ async fn coral_filters_lists_filter_metadata() {
         vec![json!({
             "table_name": "placeholder",
             "filter_name": "query",
-            "filter_mode": "search",
+            "filter_mode": "contains",
             "is_required": false,
             "data_type": "Utf8",
             "description": "Provider-native placeholder search text",
@@ -617,7 +620,7 @@ async fn coral_columns_exposes_filter_mode_for_virtual_filters() {
             "column_name": "query",
             "is_virtual": true,
             "is_required_filter": false,
-            "filter_mode": "search",
+            "filter_mode": "contains",
         })]
     );
 }
