@@ -112,7 +112,7 @@ tables:
         - name: alertlevel
           from: filter
           key: alert_level
-        - name: status
+        - name: reviewstatus
           from: filter
           key: status
         - name: orderby
