@@ -11,6 +11,7 @@ use crate::RequestAuthenticator;
 use crate::backends::http::fetch::fetch_rows;
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
+use crate::backends::http::trace::HttpBodyCapture;
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate};
 
@@ -28,6 +29,7 @@ pub(crate) struct HttpSourceClient {
     pub(super) request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     pub(super) rate_limit: RateLimitSpec,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
+    pub(super) body_capture: HttpBodyCapture,
 }
 
 impl std::fmt::Debug for HttpSourceClient {
@@ -38,6 +40,7 @@ impl std::fmt::Debug for HttpSourceClient {
             .field("auth", &self.auth)
             .field("request_headers", &self.request_headers)
             .field("rate_limit", &self.rate_limit)
+            .field("body_capture", &self.body_capture)
             .finish_non_exhaustive()
     }
 }
@@ -54,6 +57,7 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+        body_capture_max_bytes: Option<usize>,
     ) -> Result<Self> {
         let resolved_inputs =
             coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
@@ -81,6 +85,7 @@ impl HttpSourceClient {
             request_authenticators: request_authenticators.clone(),
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
+            body_capture: HttpBodyCapture::new(body_capture_max_bytes),
         })
     }
 

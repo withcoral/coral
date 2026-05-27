@@ -1,5 +1,6 @@
 //! Internal credential-set identity and lifecycle helpers.
 
+pub(crate) mod config;
 pub(crate) mod oauth;
 mod store;
 
@@ -14,7 +15,63 @@ pub(crate) use store::{CredentialStore, CredentialsError};
 
 /// Opaque credential material captured for best-effort rollback.
 #[derive(Clone)]
-pub(crate) struct CredentialMaterialSnapshot(Option<Vec<u8>>);
+pub(crate) struct CredentialMaterialSnapshot {
+    storage: CredentialStorageKind,
+    material: Option<Vec<u8>>,
+}
+
+impl CredentialMaterialSnapshot {
+    fn new(storage: CredentialStorageKind, material: Option<Vec<u8>>) -> Self {
+        Self { storage, material }
+    }
+
+    fn storage(&self) -> CredentialStorageKind {
+        self.storage
+    }
+
+    fn material(&self) -> Option<&[u8]> {
+        self.material.as_deref()
+    }
+}
+
+/// Durable credential material storage backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CredentialStorageKind {
+    File,
+    Keychain,
+}
+
+impl CredentialStorageKind {
+    pub(crate) fn as_config_value(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Keychain => "keychain",
+        }
+    }
+}
+
+impl fmt::Display for CredentialStorageKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_config_value().fmt(f)
+    }
+}
+
+/// Configured storage preference for newly installed sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CredentialStoragePreference {
+    #[default]
+    Auto,
+    File,
+    Keychain,
+}
+
+/// Result of replacing credential material.
+pub(crate) struct CredentialWriteOutcome {
+    pub(crate) visible_keys: Vec<String>,
+    pub(crate) storage: CredentialStorageKind,
+}
 
 pub(crate) const CORAL_INTERNAL_KEY_PREFIX: &str = "__coral";
 pub(crate) const OAUTH_INTERNAL_KEY_PREFIX: &str = "__coral_oauth.";
@@ -35,7 +92,7 @@ impl CredentialSetId {
         Self(format!("source.{}", source_name.as_str()))
     }
 
-    pub(super) fn source_name(&self) -> Result<SourceName, AppError> {
+    pub(crate) fn source_name(&self) -> Result<SourceName, AppError> {
         let Some(source_name) = self.0.strip_prefix("source.") else {
             return Err(AppError::FailedPrecondition(format!(
                 "credential set '{}' is not source-backed",
@@ -67,28 +124,35 @@ impl CredentialManager {
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
         secrets: &BTreeMap<String, String>,
-    ) -> Result<Vec<String>, AppError> {
+    ) -> Result<CredentialWriteOutcome, AppError> {
         self.store
-            .replace_material(workspace_name, credential_set_id, secrets)?;
-        Ok(visible_material_keys(secrets))
+            .replace_material(workspace_name, credential_set_id, storage, secrets)?;
+        Ok(CredentialWriteOutcome {
+            visible_keys: visible_material_keys(secrets),
+            storage,
+        })
     }
 
     pub(crate) fn read_material(
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        self.store.read_material(workspace_name, credential_set_id)
+        self.store
+            .read_material(workspace_name, credential_set_id, storage)
     }
 
     pub(crate) fn snapshot_material(
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
     ) -> Result<CredentialMaterialSnapshot, AppError> {
         self.store
-            .snapshot_material(workspace_name, credential_set_id)
+            .snapshot_material(workspace_name, credential_set_id, storage)
     }
 
     pub(crate) fn restore_material(
@@ -105,9 +169,14 @@ impl CredentialManager {
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
     ) -> Result<(), AppError> {
         self.store
-            .remove_material(workspace_name, credential_set_id)
+            .remove_material(workspace_name, credential_set_id, storage)
+    }
+
+    pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, AppError> {
+        self.store.default_write_storage().map_err(Into::into)
     }
 }
 

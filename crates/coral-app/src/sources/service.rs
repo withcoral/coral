@@ -16,9 +16,10 @@ use coral_api::v1::{
     OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialRetrieval, OAuthCredentialScope,
     OAuthCredentialScopes, OauthCredentialClientSecretTransport, OauthCredentialPkceMode,
     OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
-    SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod, SourceInfo,
-    SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput,
-    SourceVariable, SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
+    SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
+    SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
+    SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
@@ -31,6 +32,7 @@ use coral_spec::{
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
+use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
@@ -491,6 +493,7 @@ fn create_bundled_source_with_o_auth_response_from_import_response(
 }
 
 fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSource) -> Source {
+    let credential_storage = source.credential_storage_for_material();
     Source {
         workspace: Some(workspace_to_proto(workspace_name)),
         name: source.name.as_str().to_string(),
@@ -509,6 +512,7 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
             .map(|(key, value)| SourceVariable { key, value })
             .collect(),
         origin: proto_source_origin(source.origin) as i32,
+        credential_storage: proto_source_credential_storage(credential_storage) as i32,
     }
 }
 
@@ -516,6 +520,16 @@ fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
     match origin {
         SourceOrigin::Bundled => ProtoSourceOrigin::Bundled,
         SourceOrigin::Imported => ProtoSourceOrigin::Imported,
+    }
+}
+
+fn proto_source_credential_storage(
+    storage: Option<CredentialStorageKind>,
+) -> ProtoSourceCredentialStorage {
+    match storage {
+        Some(CredentialStorageKind::File) => ProtoSourceCredentialStorage::File,
+        Some(CredentialStorageKind::Keychain) => ProtoSourceCredentialStorage::Keychain,
+        None => ProtoSourceCredentialStorage::Unspecified,
     }
 }
 
@@ -531,6 +545,7 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
             .collect(),
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
+        credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
     }
 }
 

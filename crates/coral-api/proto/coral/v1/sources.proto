@@ -15,6 +15,17 @@ enum SourceOrigin {
   SOURCE_ORIGIN_IMPORTED = 2;
 }
 
+// Where an installed source's credential material is stored.
+enum SourceCredentialStorage {
+  // Credential storage was not specified, either because the source is not installed
+  // or because the installed source has no stored credential material.
+  SOURCE_CREDENTIAL_STORAGE_UNSPECIFIED = 0;
+  // Credential material is stored in Coral's local plaintext secrets file.
+  SOURCE_CREDENTIAL_STORAGE_FILE = 1;
+  // Credential material is stored in the operating-system credential store.
+  SOURCE_CREDENTIAL_STORAGE_KEYCHAIN = 2;
+}
+
 // One configured non-secret source variable.
 message SourceVariable {
   // Logical variable key expected by the source manifest.
@@ -50,6 +61,8 @@ message Source {
   repeated SourceVariable variables = 5;
   // Where this installed source came from.
   SourceOrigin origin = 6;
+  // Where this installed source's credential material is stored.
+  SourceCredentialStorage credential_storage = 7;
 }
 
 // One manifest-declared source input prompt.
@@ -224,6 +237,8 @@ message SourceInfo {
   bool installed = 5;
   // Where this source came from.
   SourceOrigin origin = 6;
+  // Where credential material is stored when this source is installed.
+  SourceCredentialStorage credential_storage = 7;
 }
 
 // Lists all bundled sources available for one workspace.

@@ -36,6 +36,15 @@ To disable trace history:
 enabled = false
 ```
 
+HTTP request and response body previews are not recorded by default. To enable local body recording:
+
+```toml
+[trace_history]
+record_http_bodies = true
+```
+
+Recorded HTTP body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. Body preview spans are never exported to OTLP, even if a broad `[otel].trace_filter` would otherwise match `coral.http.body`.
+
 ## Configuration reference
 
 External OpenTelemetry export settings live under `[otel]` in `config.toml`. Coral-owned trace history settings live under `[trace_history]`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
@@ -47,7 +56,7 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | `endpoint`                     | string  | unset                                                                  | OTLP/HTTP base URL. When unset, no signals are exported to an external collector. |
 | `headers`                      | string  | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
 | `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
-| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
 
 ### `[trace_history]`
@@ -56,6 +65,8 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
 | `enabled`             | boolean | `true`  | Enables trace history without requiring an OTLP collector.                        |
 | `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
+| `record_http_bodies`  | boolean | `false` | Records HTTP request and response bodies in local traces when local tracing is enabled. |
+| `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace.                 |
 
 Example with auth headers and a hosted endpoint:
 
@@ -105,11 +116,11 @@ Tracing events are bridged into OTLP logs via `opentelemetry-appender-tracing`. 
 
 Three query instruments are exported on a 5-second periodic reader:
 
-| Metric                   | Kind      | Unit        | Attributes        | Description                               |
-| ------------------------ | --------- | ----------- | ----------------- | ----------------------------------------- |
-| `coral.query.count`      | Counter   | `{queries}` | `status=ok\|error` | Total queries executed.                   |
-| `coral.query.duration`   | Histogram | `s`         | `status=ok\|error` | Query execution latency in seconds.       |
-| `coral.query.rows`       | Histogram | `{rows}`    | `status=ok`       | Rows returned per successful query.       |
+| Metric                   | Kind      | Unit        | Attributes                                      | Description                                            |
+| ------------------------ | --------- | ----------- | ----------------------------------------------- | ------------------------------------------------------ |
+| `coral.query.count`      | Counter   | `{queries}` | `status=ok\|error`, `operation=execute_sql\|explain_sql` | Total SQL execution and explain operations requested.  |
+| `coral.query.duration`   | Histogram | `s`         | `status=ok\|error`, `operation=execute_sql\|explain_sql` | SQL execution and explain latency in seconds.          |
+| `coral.query.rows`       | Histogram | `{rows}`    | `status=ok`, `operation=execute_sql`            | Rows returned per successful SQL execution.            |
 
 ## Distributed tracing
 
