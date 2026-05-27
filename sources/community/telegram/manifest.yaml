@@ -75,10 +75,11 @@ tables:
         expr: {kind: path, path: [supports_inline_queries]}
 
   - name: updates
-    description: Retrieve incoming updates for the bot using long polling.
+    description: Retrieve incoming message updates for the bot using long polling.
     guide: |
-      Retrieves new messages, posts, channel posts, or callback actions.
-      Note: Telegram clears read updates. Ping the bot chat before querying.
+      Retrieves new incoming messages sent directly to the bot or in groups where the bot is a member.
+      Updates remain in the queue until acknowledged. To acknowledge and clear updates from the queue,
+      query this table with an `offset` filter equal to the highest `update_id` received + 1 (e.g. `WHERE offset = <last_update_id> + 1`).
     filters:
       - name: offset
         type: Int64
@@ -91,13 +92,13 @@ tables:
       path: /getUpdates
       body:
         - path: [offset]
-          from: filter
+          from: filter_int
           key: offset
         - path: [limit]
-          from: filter
+          from: filter_int
           key: limit
         - path: [timeout]
-          from: filter
+          from: filter_int
           key: timeout
     response:
       rows_path: [result]
@@ -259,10 +260,13 @@ tables:
   - name: chat_administrators
     description: List of administrators in a group, supergroup, or channel.
     guide: |
-      Required filter: `chat_id`.
+      Required filter: `chat_id`. Optional filter: `return_bots`.
     filters:
       - name: chat_id
         required: true
+      - name: return_bots
+        type: Boolean
+        required: false
     request:
       method: POST
       path: /getChatAdministrators
@@ -270,6 +274,9 @@ tables:
         - path: [chat_id]
           from: filter
           key: chat_id
+        - path: [return_bots]
+          from: filter_bool
+          key: return_bots
     response:
       rows_path: [result]
       ok_path: [ok]
@@ -323,6 +330,11 @@ tables:
         virtual: true
         description: Requested chat identifier.
         expr: {kind: from_filter, key: chat_id}
+      - name: return_bots
+        type: Boolean
+        virtual: true
+        description: Set to true to include bot administrators in the list.
+        expr: {kind: from_filter, key: return_bots}
 
   - name: chat_member
     description: Get information about a specific member of a chat.
@@ -341,7 +353,7 @@ tables:
           from: filter
           key: chat_id
         - path: [user_id]
-          from: filter
+          from: filter_int
           key: user_id
     response:
       rows_path: [result]

@@ -2,7 +2,7 @@
 
 [Telegram Bot API](https://core.telegram.org/bots/api) is an HTTP-based interface for developers that allows you to interact with the Telegram messaging platform via bots.
 
-This community source allows querying bot user details, updates/incoming messages, chat profiles, members, and administrators using Coral SQL.
+This community source allows querying bot user details, incoming message updates, chat profiles, members, and administrators using Coral SQL.
 
 ---
 
@@ -39,7 +39,7 @@ coral source test telegram
 | Table | Description | Required Filters |
 |---|---|---|
 | `telegram.me` | Get basic information about the bot itself (ID, username, permissions). | None |
-| `telegram.updates` | Retrieve incoming updates (messages, callback queries, posts) for the bot. | None |
+| `telegram.updates` | Retrieve incoming message updates for the bot. | None |
 | `telegram.chats` | Get detailed information about a specific chat (profile, title, bio). | `chat_id` |
 | `telegram.chat_administrators` | List administrators of a group, supergroup, or channel. | `chat_id` |
 | `telegram.chat_member` | Look up info about a specific chat member. | `chat_id`, `user_id` |
@@ -49,10 +49,13 @@ coral source test telegram
 
 ## Key API Limitations
 
-### ⚠️ Destructive Update Queue
-Telegram's `/getUpdates` endpoint functions as a queue that is **consumed destructively**. 
-Once Coral queries `telegram.updates`, the returned updates are acknowledged and flushed from Telegram's cache. If you run the query twice in a row, the second query will return empty results `[]` unless new messages are sent to the bot in the interim. 
-* **Tip**: Send a test message to your bot in Telegram immediately before querying `telegram.updates` to ensure data is returned.
+### ⚠️ Updates Polling and Acknowledgment (Offset)
+Telegram's `/getUpdates` endpoint returns updates in a queue. By default, querying the `telegram.updates` table without an `offset` filter will repeatedly return the same pending updates (up to 24 hours old).
+To acknowledge and clear read updates from the queue, query the table specifying an `offset` filter greater than the highest `update_id` already received:
+```sql
+SELECT * FROM telegram.updates WHERE offset = <highest_update_id> + 1;
+```
+This confirms receipt to Telegram and clears all updates with an ID less than or equal to that offset.
 
 ### ⚠️ No Historical Messages
 The Telegram Bot API does **not** support querying or searching the historical log of messages in a chat. Bots can only observe messages in real-time as they arrive via the `telegram.updates` queue.
@@ -90,6 +93,14 @@ WHERE chat_id = '@telegram';
 SELECT user_id, username, status, is_anonymous 
 FROM telegram.chat_administrators 
 WHERE chat_id = -1001234567890;
+```
+
+### List Administrators of a Group (Including Other Bots)
+By default, Telegram omits bot administrators other than the current bot from the administrators list. To include them, query the table specifying the optional `return_bots = true` filter:
+```sql
+SELECT user_id, username, status, is_anonymous, return_bots
+FROM telegram.chat_administrators 
+WHERE chat_id = -1001234567890 AND return_bots = true;
 ```
 
 ### Get Chat Member Status & Count
