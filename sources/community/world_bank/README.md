@@ -17,7 +17,7 @@ Query macroeconomic and development indicators from the [World Bank Open Data AP
 ## Install
 
 ```
-coral source add sources/community/world_bank/manifest.yaml
+coral source add --file sources/community/world_bank/manifest.yaml
 ```
 
 ## Example Queries
