@@ -2,7 +2,7 @@ name: spacex
 version: 0.1.0
 dsl_version: 3
 backend: http
-description: Query public SpaceX launch, rocket, launchpad, and crew data as SQL.
+description: Query the public, unofficial SpaceXData launch, rocket, launchpad, and crew dataset as SQL.
 base_url: https://api.spacexdata.com/v4
 test_queries:
   - SELECT id, name, date_utc, success FROM spacex.launches LIMIT 1
@@ -11,15 +11,66 @@ test_queries:
   - SELECT id, name, agency, status FROM spacex.crew LIMIT 1
 tables:
   - name: launches
-    description: SpaceX launches, including mission metadata, dates, related rocket and launchpad IDs, links, and payload references.
-    fetch_limit_default: 100
+    description: SpaceXData launches, including mission metadata, dates, related rocket and launchpad IDs, links, and payload references.
+    fetch_limit_default: 1000
+    filters:
+      - name: upcoming
+        type: Boolean
+        description: Filter by upcoming launch flag.
+      - name: success
+        type: Boolean
+        description: Filter by launch success flag.
+      - name: rocket_id
+        type: Utf8
+        description: Filter by related rocket ID.
+      - name: launchpad_id
+        type: Utf8
+        description: Filter by related launchpad ID.
+      - name: flight_number
+        type: Int64
+        description: Filter by SpaceX flight number.
     request:
-      method: GET
-      path: /launches
+      method: POST
+      path: /launches/query
+      body:
+        - path: [query]
+          from: literal
+          value: {}
+        - path: [query, upcoming]
+          from: filter_bool
+          key: upcoming
+        - path: [query, success]
+          from: filter_bool
+          key: success
+        - path: [query, rocket]
+          from: filter
+          key: rocket_id
+        - path: [query, launchpad]
+          from: filter
+          key: launchpad_id
+        - path: [query, flight_number]
+          from: filter_int
+          key: flight_number
+        - path: [options, sort, date_unix]
+          from: literal
+          value: desc
+        - path: [options, page]
+          from: state
+          key: page
     response:
-      rows_path: []
+      rows_path:
+        - docs
     pagination:
-      mode: none
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        body_path:
+          - options
+          - limit
     columns:
       - name: id
         type: Utf8
