@@ -87,10 +87,9 @@ WHERE workspace_id = 'workspace_id';
 - Coral manifest schema validation: passed
 - `git diff --check`: passed
 - `make lint-sources`: passed
-- Live API tests: not rerun after the auth input rename; require a fresh
-  three-minute Airbyte access token
+- Live API tests: passed against an Airbyte Cloud workspace
 
-Previous Coral evidence before the auth input rename:
+Live Coral evidence:
 
 ```text
 ✓ airbyte_cloud connected successfully
@@ -103,12 +102,15 @@ airbyte_cloud (5 tables)
 ├─ sources
 └─ workspaces
 Query tests
-2 declared · 2 passed · 0 failed
+3 declared · 3 passed · 0 failed
 
 ✓ SELECT workspace_id, name FROM airbyte_cloud.workspaces LIMIT 1
   1 row
 
 ✓ SELECT connection_id, name, status FROM airbyte_cloud.connections LIMIT 1
+  0 rows
+
+✓ SELECT job_id, status, start_time, last_updated_at, duration FROM airbyte_cloud.jobs LIMIT 1
   0 rows
 ```
 
