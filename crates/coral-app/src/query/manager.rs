@@ -244,6 +244,7 @@ impl QueryManager {
         let provider_input_resolver = extensions.source_input_resolver.take();
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
+            self.config_store.clone(),
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
@@ -659,16 +660,32 @@ tables:
             })],
         );
         let source_name = SourceName::parse("secured_messages").expect("source name");
+        let workspace_name = WorkspaceName::default();
         let credential_set_id = CredentialSetId::for_source(&source_name);
         fixture
             .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["API_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::File),
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist source");
+        fixture
+            .manager
             .credential_manager
-            .material_transaction(&WorkspaceName::default(), &credential_set_id)
-            .expect("credential material transaction")
-            .replace_material(&BTreeMap::from([(
-                "API_TOKEN".to_string(),
-                "stored-token".to_string(),
-            )]))
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
+            )
             .expect("write credential material");
         let source_spec = parse_source_manifest_yaml(
             r#"
@@ -699,7 +716,7 @@ tables:
         let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
         let runtime = fixture
             .manager
-            .runtime_config(&WorkspaceName::default(), std::slice::from_ref(&source));
+            .runtime_config(&workspace_name, std::slice::from_ref(&source));
         let input_resolver = runtime
             .extensions
             .source_input_resolver

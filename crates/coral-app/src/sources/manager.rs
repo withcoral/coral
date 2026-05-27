@@ -8,8 +8,8 @@ use crate::credentials::oauth::{
     material_key_belongs_to_input,
 };
 use crate::credentials::{
-    CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialSnapshot, CredentialSetId,
-    CredentialStorageKind, CredentialsError,
+    CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
+    CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::{
@@ -428,15 +428,12 @@ impl SourceManager {
         let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
+        let credential_guard = self
+            .credential_manager
+            .material_guard(workspace_name, &credential_set_id)?;
         let credential_storage = stored.credential_storage_for_material();
         let credential_material = credential_storage
-            .map(|storage| {
-                self.credential_manager.snapshot_material(
-                    workspace_name,
-                    &credential_set_id,
-                    storage,
-                )
-            })
+            .map(|storage| credential_guard.snapshot_material(storage))
             .transpose()?;
         let previous = SourceRollbackState {
             source: stored,
@@ -449,23 +446,37 @@ impl SourceManager {
             credential_material,
         };
         if let Some(credential_storage) = credential_storage
-            && let Err(error) = self.credential_manager.remove_material(
-                workspace_name,
-                &credential_set_id,
-                credential_storage,
-            )
+            && let Err(error) = credential_guard.remove_material(credential_storage)
         {
-            self.restore_source_rollback_state(workspace_name, source_name, Some(previous), None);
+            self.restore_source_rollback_state(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
             return Err(error);
         }
         if source_dir.exists()
             && let Err(error) = std::fs::remove_dir_all(&source_dir)
         {
-            self.restore_source_rollback_state(workspace_name, source_name, Some(previous), None);
+            self.restore_source_rollback_state(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
             return Err(error.into());
         }
         if let Err(error) = self.config_store.remove_source(workspace_name, source_name) {
-            self.restore_source_rollback_state(workspace_name, source_name, Some(previous), None);
+            self.restore_source_rollback_state(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
             return Err(error);
         }
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
@@ -492,11 +503,22 @@ impl SourceManager {
         request: PersistSourceRequest<'_>,
     ) -> Result<InstalledSource, AppError> {
         let source_name = request.candidate.name.clone();
-        let previous = self.load_source_rollback_state(workspace_name, &source_name)?;
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let credential_guard = self
+            .credential_manager
+            .material_guard(workspace_name, &credential_set_id)?;
+        let previous =
+            self.load_source_rollback_state(workspace_name, &source_name, &credential_guard)?;
         if let Err(error) =
             self.persist_manifest_artifact(workspace_name, &source_name, request.manifest_yaml)
         {
-            self.restore_source_rollback_state(workspace_name, &source_name, previous, None);
+            self.restore_source_rollback_state(
+                workspace_name,
+                &source_name,
+                previous,
+                None,
+                &credential_guard,
+            );
             return Err(error);
         }
 
@@ -505,53 +527,50 @@ impl SourceManager {
             secrets,
             replaced_oauth_inputs,
         } = request.bindings;
-        let (visible_secret_keys, credential_storage) = if let Some(requested_storage) =
-            request.credential_storage
-        {
-            let credential_set_id = CredentialSetId::for_source(&source_name);
-            let expected_secret_keys = request
-                .candidate
-                .inputs
-                .iter()
-                .filter(|input| input.kind == ManifestInputKind::Secret)
-                .map(|input| input.key.clone())
-                .collect::<BTreeSet<_>>();
-            let credential_write = match self.credential_manager.update_material_or_empty_on_parse(
-                workspace_name,
-                &credential_set_id,
-                requested_storage,
-                |mut credential_material| {
-                    credential_material.retain(|key, _| {
-                        material_key_belongs_to_source_secret(key, &expected_secret_keys)
-                    });
-                    for input_key in &replaced_oauth_inputs {
-                        credential_material
-                            .retain(|key, _| !material_key_belongs_to_input(key, input_key));
+        let (visible_secret_keys, credential_storage) =
+            if let Some(requested_storage) = request.credential_storage {
+                let expected_secret_keys = request
+                    .candidate
+                    .inputs
+                    .iter()
+                    .filter(|input| input.kind == ManifestInputKind::Secret)
+                    .map(|input| input.key.clone())
+                    .collect::<BTreeSet<_>>();
+                let credential_write = match credential_guard.update_material_or_empty_on_parse(
+                    requested_storage,
+                    |mut credential_material| {
+                        credential_material.retain(|key, _| {
+                            material_key_belongs_to_source_secret(key, &expected_secret_keys)
+                        });
+                        for input_key in &replaced_oauth_inputs {
+                            credential_material
+                                .retain(|key, _| !material_key_belongs_to_input(key, input_key));
+                        }
+                        credential_material.extend(secrets.clone());
+                        Ok(credential_material)
+                    },
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        self.restore_source_rollback_state(
+                            workspace_name,
+                            &source_name,
+                            previous,
+                            Some(requested_storage),
+                            &credential_guard,
+                        );
+                        return Err(error);
                     }
-                    credential_material.extend(secrets.clone());
-                    Ok(credential_material)
-                },
-            ) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    self.restore_source_rollback_state(
-                        workspace_name,
-                        &source_name,
-                        previous,
-                        Some(requested_storage),
-                    );
-                    return Err(error);
-                }
-            };
-            let credential_storage = if credential_write.visible_keys.is_empty() {
-                None
+                };
+                let credential_storage = if credential_write.visible_keys.is_empty() {
+                    None
+                } else {
+                    Some(credential_write.storage)
+                };
+                (credential_write.visible_keys, credential_storage)
             } else {
-                Some(credential_write.storage)
+                (Vec::new(), None)
             };
-            (credential_write.visible_keys, credential_storage)
-        } else {
-            (Vec::new(), None)
-        };
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
@@ -574,6 +593,7 @@ impl SourceManager {
                 &source_name,
                 previous,
                 credential_storage,
+                &credential_guard,
             );
             return Err(error);
         }
@@ -820,22 +840,16 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
+        credential_material: &CredentialMaterialGuard<'_>,
     ) -> Result<Option<SourceRollbackState>, AppError> {
         let source = match self.config_store.get_source(workspace_name, source_name) {
             Ok(source) => source,
             Err(AppError::SourceNotFound(_)) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let credential_set_id = CredentialSetId::for_source(source_name);
         let credential_material = source
             .credential_storage_for_material()
-            .map(|credential_storage| {
-                self.credential_manager.snapshot_material(
-                    workspace_name,
-                    &credential_set_id,
-                    credential_storage,
-                )
-            })
+            .map(|credential_storage| credential_material.snapshot_material(credential_storage))
             .transpose()?;
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
@@ -855,6 +869,7 @@ impl SourceManager {
         source_name: &SourceName,
         previous: Option<SourceRollbackState>,
         new_material_storage: Option<CredentialStorageKind>,
+        credential_material: &CredentialMaterialGuard<'_>,
     ) {
         if let Some(previous) = previous {
             let manifest_path = self.layout.manifest_file(workspace_name, source_name);
@@ -876,24 +891,15 @@ impl SourceManager {
                 }
                 None => {}
             }
-            let credential_set_id = CredentialSetId::for_source(source_name);
             match previous.credential_material {
-                Some(credential_material) => {
-                    if let Err(e) = self.credential_manager.restore_material(
-                        workspace_name,
-                        &credential_set_id,
-                        &credential_material,
-                    ) {
+                Some(snapshot) => {
+                    if let Err(e) = credential_material.restore_material(&snapshot) {
                         warn!("rollback: failed to restore source credential material: {e}");
                     }
                 }
                 None => {
                     if let Some(storage) = new_material_storage
-                        && let Err(e) = self.credential_manager.remove_material(
-                            workspace_name,
-                            &credential_set_id,
-                            storage,
-                        )
+                        && let Err(e) = credential_material.remove_material(storage)
                     {
                         warn!("rollback: failed to remove new source credential material: {e}");
                     }
@@ -912,13 +918,8 @@ impl SourceManager {
             {
                 warn!("rollback: failed to remove source directory: {e}");
             }
-            let credential_set_id = CredentialSetId::for_source(source_name);
             if let Some(storage) = new_material_storage
-                && let Err(e) = self.credential_manager.remove_material(
-                    workspace_name,
-                    &credential_set_id,
-                    storage,
-                )
+                && let Err(e) = credential_material.remove_material(storage)
             {
                 warn!("rollback: failed to remove source credential material: {e}");
             }
@@ -1963,6 +1964,7 @@ tables:
             .replace_material(
                 &workspace_name,
                 &credential_set_id,
+                CredentialStorageKind::File,
                 &BTreeMap::from([
                     ("API_TOKEN".to_string(), "refreshed-token".to_string()),
                     (
@@ -1980,7 +1982,11 @@ tables:
         drop(std::fs::remove_dir_all(&config_temp_path));
 
         let material = credential_manager
-            .read_material(&workspace_name, &credential_set_id)
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
             .expect("read material");
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),

@@ -137,61 +137,8 @@ impl CredentialManager {
         storage: CredentialStorageKind,
         secrets: &BTreeMap<String, String>,
     ) -> Result<CredentialWriteOutcome, AppError> {
-        let _refresh_file_lock = self
-            .store
-            .credential_refresh_lock(workspace_name, credential_set_id)?;
-        self.store
-            .replace_material(workspace_name, credential_set_id, storage, secrets)?;
-        Ok(CredentialWriteOutcome {
-            visible_keys: visible_material_keys(secrets),
-            storage,
-        })
-    }
-
-    pub(crate) fn update_material_or_empty_on_parse<F>(
-        &self,
-        workspace_name: &WorkspaceName,
-        credential_set_id: &CredentialSetId,
-        storage: CredentialStorageKind,
-        update: F,
-    ) -> Result<CredentialWriteOutcome, AppError>
-    where
-        F: Fn(BTreeMap<String, String>) -> Result<BTreeMap<String, String>, AppError>,
-    {
-        let _refresh_file_lock = self
-            .store
-            .credential_refresh_lock(workspace_name, credential_set_id)?;
-        self.store
-            .update_material(workspace_name, credential_set_id, storage, |material| {
-                let updated = update(material)?;
-                let visible_keys = visible_material_keys(&updated);
-                Ok((
-                    updated,
-                    CredentialWriteOutcome {
-                        visible_keys,
-                        storage,
-                    },
-                ))
-            })
-            .or_else(|error| match error {
-                AppError::Credentials(CredentialsError::Parse(_))
-                    if storage == CredentialStorageKind::File =>
-                {
-                    let updated = update(BTreeMap::new())?;
-                    let visible_keys = visible_material_keys(&updated);
-                    self.store.replace_material(
-                        workspace_name,
-                        credential_set_id,
-                        storage,
-                        &updated,
-                    )?;
-                    Ok(CredentialWriteOutcome {
-                        visible_keys,
-                        storage,
-                    })
-                }
-                other => Err(other),
-            })
+        self.material_guard(workspace_name, credential_set_id)?
+            .replace_material(storage, secrets)
     }
 
     pub(crate) fn read_material(
@@ -233,44 +180,23 @@ impl CredentialManager {
         Ok(material)
     }
 
-    pub(crate) fn snapshot_material(
-        &self,
-        workspace_name: &WorkspaceName,
-        credential_set_id: &CredentialSetId,
-        storage: CredentialStorageKind,
-    ) -> Result<CredentialMaterialSnapshot, AppError> {
-        self.store
-            .snapshot_material(workspace_name, credential_set_id, storage)
-    }
-
-    pub(crate) fn restore_material(
-        &self,
-        workspace_name: &WorkspaceName,
-        credential_set_id: &CredentialSetId,
-        snapshot: &CredentialMaterialSnapshot,
-    ) -> Result<(), AppError> {
-        let _refresh_file_lock = self
-            .store
-            .credential_refresh_lock(workspace_name, credential_set_id)?;
-        self.store
-            .restore_material(workspace_name, credential_set_id, snapshot)
-    }
-
-    pub(crate) fn remove_material(
-        &self,
-        workspace_name: &WorkspaceName,
-        credential_set_id: &CredentialSetId,
-        storage: CredentialStorageKind,
-    ) -> Result<(), AppError> {
-        let _refresh_file_lock = self
-            .store
-            .credential_refresh_lock(workspace_name, credential_set_id)?;
-        self.store
-            .remove_material(workspace_name, credential_set_id, storage)
-    }
-
     pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, AppError> {
         self.store.default_write_storage().map_err(Into::into)
+    }
+
+    pub(crate) fn material_guard<'a>(
+        &'a self,
+        workspace_name: &'a WorkspaceName,
+        credential_set_id: &'a CredentialSetId,
+    ) -> Result<CredentialMaterialGuard<'a>, AppError> {
+        Ok(CredentialMaterialGuard {
+            manager: self,
+            workspace_name,
+            credential_set_id,
+            _refresh_file_lock: self
+                .store
+                .credential_refresh_lock(workspace_name, credential_set_id)?,
+        })
     }
 
     async fn refresh_and_persist_oauth_material(
@@ -354,6 +280,104 @@ impl CredentialManager {
             store.credential_refresh_lock(&workspace_name, &credential_set_id)
         })
         .await?
+    }
+}
+
+pub(crate) struct CredentialMaterialGuard<'a> {
+    manager: &'a CredentialManager,
+    workspace_name: &'a WorkspaceName,
+    credential_set_id: &'a CredentialSetId,
+    _refresh_file_lock: FileLock,
+}
+
+impl CredentialMaterialGuard<'_> {
+    #[cfg(test)]
+    pub(crate) fn replace_material(
+        &self,
+        storage: CredentialStorageKind,
+        secrets: &BTreeMap<String, String>,
+    ) -> Result<CredentialWriteOutcome, AppError> {
+        self.manager.store.replace_material(
+            self.workspace_name,
+            self.credential_set_id,
+            storage,
+            secrets,
+        )?;
+        Ok(CredentialWriteOutcome {
+            visible_keys: visible_material_keys(secrets),
+            storage,
+        })
+    }
+
+    pub(crate) fn update_material_or_empty_on_parse<F>(
+        &self,
+        storage: CredentialStorageKind,
+        update: F,
+    ) -> Result<CredentialWriteOutcome, AppError>
+    where
+        F: Fn(BTreeMap<String, String>) -> Result<BTreeMap<String, String>, AppError>,
+    {
+        self.manager
+            .store
+            .update_material(
+                self.workspace_name,
+                self.credential_set_id,
+                storage,
+                |material| {
+                    let updated = update(material)?;
+                    let visible_keys = visible_material_keys(&updated);
+                    Ok((
+                        updated,
+                        CredentialWriteOutcome {
+                            visible_keys,
+                            storage,
+                        },
+                    ))
+                },
+            )
+            .or_else(|error| match error {
+                AppError::Credentials(CredentialsError::Parse(_))
+                    if storage == CredentialStorageKind::File =>
+                {
+                    let updated = update(BTreeMap::new())?;
+                    let visible_keys = visible_material_keys(&updated);
+                    self.manager.store.replace_material(
+                        self.workspace_name,
+                        self.credential_set_id,
+                        storage,
+                        &updated,
+                    )?;
+                    Ok(CredentialWriteOutcome {
+                        visible_keys,
+                        storage,
+                    })
+                }
+                other => Err(other),
+            })
+    }
+
+    pub(crate) fn snapshot_material(
+        &self,
+        storage: CredentialStorageKind,
+    ) -> Result<CredentialMaterialSnapshot, AppError> {
+        self.manager
+            .store
+            .snapshot_material(self.workspace_name, self.credential_set_id, storage)
+    }
+
+    pub(crate) fn restore_material(
+        &self,
+        snapshot: &CredentialMaterialSnapshot,
+    ) -> Result<(), AppError> {
+        self.manager
+            .store
+            .restore_material(self.workspace_name, self.credential_set_id, snapshot)
+    }
+
+    pub(crate) fn remove_material(&self, storage: CredentialStorageKind) -> Result<(), AppError> {
+        self.manager
+            .store
+            .remove_material(self.workspace_name, self.credential_set_id, storage)
     }
 }
 

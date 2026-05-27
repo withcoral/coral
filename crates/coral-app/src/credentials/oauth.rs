@@ -1428,10 +1428,9 @@ mod tests {
 
     use super::{
         AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthSessionCommon,
-        RefreshOAuthCredentialRequest,
-        StartOAuthCredentialRequest, basic_client_authorization, join_scope_values,
-        material_key_belongs_to_input, oauth_metadata_prefix, parse_token_response, pkce_challenge,
-        receive_callback, request_device_code,
+        RefreshOAuthCredentialRequest, StartOAuthCredentialRequest, basic_client_authorization,
+        join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
+        parse_token_response, pkce_challenge, receive_callback, request_device_code,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
