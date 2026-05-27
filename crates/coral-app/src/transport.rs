@@ -5,8 +5,8 @@ use std::future::Future;
 use coral_api::{
     CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
-        CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
-        ColumnSearchResult as ProtoColumnSearchResult,
+        CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult,
+        CatalogSourceSummary, Column, ColumnSearchResult as ProtoColumnSearchResult,
         DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
         QueryTestResult, QueryTestSuccess, Source, Table,
         TableColumnSearchResult as ProtoTableColumnSearchResult, TableFunction,
@@ -290,6 +290,16 @@ pub(crate) fn catalog_item_to_proto(
                 function,
             ))),
         },
+    }
+}
+
+pub(crate) fn catalog_source_summary_to_proto(
+    source: coral_engine::SourceInfo,
+) -> CatalogSourceSummary {
+    CatalogSourceSummary {
+        schema_name: source.schema_name,
+        description: source.description,
+        onboarding_instructions: source.onboarding_instructions.unwrap_or_default(),
     }
 }
 

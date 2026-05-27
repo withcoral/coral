@@ -48,6 +48,8 @@ async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
     assert_eq!(pagination.limit, 2);
     assert_eq!(pagination.offset, 0);
     assert!(!pagination.has_more);
+    assert_eq!(response.sources.len(), 1);
+    assert_eq!(response.sources[0].schema_name, "searchy");
     assert_eq!(response.items.len(), 2);
     let function = match response.items[0]
         .item

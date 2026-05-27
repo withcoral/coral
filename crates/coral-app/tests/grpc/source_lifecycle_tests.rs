@@ -125,6 +125,28 @@ async fn import_source_surfaces_onboarding_context() {
         rows[0]["onboarding_instructions"],
         "Use local_messages.messages for conversation rows before events."
     );
+
+    let catalog = harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "local_messages".to_string(),
+            kind: 0,
+            pagination: Some(PaginationRequest {
+                limit: 0,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("list catalog with source summaries")
+        .into_inner();
+    assert_eq!(catalog.sources.len(), 1);
+    assert_eq!(catalog.sources[0].schema_name, "local_messages");
+    assert_eq!(catalog.sources[0].description, "Local fixture source");
+    assert_eq!(
+        catalog.sources[0].onboarding_instructions,
+        "Use local_messages.messages for conversation rows before events."
+    );
 }
 
 #[tokio::test]

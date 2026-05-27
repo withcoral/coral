@@ -36,9 +36,22 @@ pub struct TableInfo {
     pub required_filters: Vec<String>,
 }
 
+/// Describes one active source in a queryable catalog snapshot.
+#[derive(Debug, Clone)]
+pub struct SourceInfo {
+    /// SQL schema name.
+    pub schema_name: String,
+    /// User-facing source description.
+    pub description: String,
+    /// Source-authored guidance for agents discovering source-specific context.
+    pub onboarding_instructions: Option<String>,
+}
+
 /// Describes the queryable catalog exposed by one runtime snapshot.
 #[derive(Debug, Clone)]
 pub struct CatalogInfo {
+    /// Active sources that contributed to the catalog snapshot.
+    pub sources: Vec<SourceInfo>,
     /// Queryable tables.
     pub tables: Vec<TableInfo>,
     /// Source-scoped table functions.

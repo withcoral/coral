@@ -1,6 +1,6 @@
 use coral_api::v1::{
-    ColumnSearchResult, DescribeTableResponse, ListCatalogResponse, ListColumnsResponse,
-    SearchCatalogResponse, SearchColumnsResponse, Source, Table as ProtoTable,
+    CatalogSourceSummary, ColumnSearchResult, DescribeTableResponse, ListCatalogResponse,
+    ListColumnsResponse, SearchCatalogResponse, SearchColumnsResponse, Table as ProtoTable,
     TableColumnSearchResult, TableFunction as ProtoTableFunction,
     TableFunctionArgument as ProtoTableFunctionArgument,
     TableFunctionResultColumn as ProtoTableFunctionResultColumn, TableSummary as ProtoTableSummary,
@@ -105,7 +105,9 @@ pub(crate) fn search_catalog_value(
         .iter()
         .filter_map(|result| catalog_search_result_value(result, detail))
         .collect::<Vec<_>>();
-    paged_collection_value("items", items, &pagination)
+    let mut value = paged_collection_value("items", items, &pagination);
+    insert_sources(&mut value, &response.sources);
+    value
 }
 
 pub(crate) fn list_catalog_value(
@@ -118,24 +120,29 @@ pub(crate) fn list_catalog_value(
         .iter()
         .filter_map(|item| catalog_item_value(item, detail))
         .collect::<Vec<_>>();
-    paged_collection_value("items", items, &pagination)
+    let mut value = paged_collection_value("items", items, &pagination);
+    insert_sources(&mut value, &response.sources);
+    value
 }
 
 pub(crate) fn catalog_resource_content(
-    sources: &[Source],
     response: &ListCatalogResponse,
 ) -> Result<String, serde_json::Error> {
-    let mut value = list_catalog_value(response, CatalogToolDetail::Summary);
-    if let Value::Object(object) = &mut value {
-        object.insert(
-            "sources".to_string(),
-            serde_json::to_value(catalog_source_values(sources))?,
-        );
-    }
+    let value = list_catalog_value(response, CatalogToolDetail::Summary);
     serde_json::to_string_pretty(&value)
 }
 
-fn catalog_source_values(sources: &[Source]) -> Vec<CatalogSourceValue<'_>> {
+fn insert_sources(value: &mut Value, sources: &[CatalogSourceSummary]) {
+    if let Value::Object(object) = value {
+        object.insert(
+            "sources".to_string(),
+            serde_json::to_value(catalog_source_values(sources))
+                .expect("catalog source values serialize"),
+        );
+    }
+}
+
+fn catalog_source_values(sources: &[CatalogSourceSummary]) -> Vec<CatalogSourceValue<'_>> {
     let mut values = sources
         .iter()
         .map(CatalogSourceValue::from)
@@ -152,10 +159,10 @@ struct CatalogSourceValue<'a> {
     onboarding_instructions: Option<&'a str>,
 }
 
-impl<'a> From<&'a Source> for CatalogSourceValue<'a> {
-    fn from(source: &'a Source) -> Self {
+impl<'a> From<&'a CatalogSourceSummary> for CatalogSourceValue<'a> {
+    fn from(source: &'a CatalogSourceSummary) -> Self {
         Self {
-            schema_name: &source.name,
+            schema_name: &source.schema_name,
             description: &source.description,
             onboarding_instructions: non_empty_optional(&source.onboarding_instructions),
         }

@@ -1,13 +1,13 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
 use coral_api::v1::{
-    CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
-    ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, PaginationRequest, SearchCatalogRequest, SearchColumnsRequest, Source,
+    CatalogItemKind as ProtoCatalogItemKind, CatalogSourceSummary, DescribeTableRequest,
+    DescribeTableResponse, ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, PaginationRequest, SearchCatalogRequest, SearchColumnsRequest,
     SubmitFeedbackRequest, TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
+    AppClient, CatalogClient, FeedbackClient, QueryClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
 };
 use rmcp::{
@@ -87,7 +87,6 @@ impl ToolCallOutcome {
 
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
-    source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
     feedback: FeedbackClient,
@@ -97,23 +96,11 @@ pub(crate) struct CoralMcpServer {
 impl CoralMcpServer {
     pub(crate) fn new(app: &AppClient, options: McpOptions) -> Self {
         Self {
-            source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
             feedback: app.feedback_client(),
             options,
         }
-    }
-
-    async fn load_sources(&self) -> Result<Vec<Source>, tonic::Status> {
-        let mut source_client = self.source.clone();
-        Ok(source_client
-            .list_sources(Request::new(ListSourcesRequest {
-                workspace: Some(default_workspace()),
-            }))
-            .await?
-            .into_inner()
-            .sources)
     }
 
     async fn load_catalog(
@@ -177,7 +164,14 @@ impl CoralMcpServer {
 
     async fn load_guide_catalog(
         &self,
-    ) -> Result<(Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
+    ) -> Result<
+        (
+            Vec<CatalogSourceSummary>,
+            Vec<ProtoTableSummary>,
+            Vec<String>,
+        ),
+        tonic::Status,
+    > {
         self.load_all_catalog()
             .await
             .map(guide_catalog_from_response)
@@ -197,14 +191,6 @@ impl CoralMcpServer {
             }))
             .await?
             .into_inner())
-    }
-
-    async fn load_sources_and_guide_catalog(
-        &self,
-    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
-        let (sources, (tables, table_function_schema_names)) =
-            tokio::try_join!(self.load_sources(), self.load_guide_catalog())?;
-        Ok((sources, tables, table_function_schema_names))
     }
 
     async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
@@ -551,7 +537,7 @@ impl ServerHandler for CoralMcpServer {
             match request.uri.as_str() {
                 "coral://guide" => {
                     let (sources, tables, table_function_schema_names) = self
-                        .load_sources_and_guide_catalog()
+                        .load_guide_catalog()
                         .await
                         .map_err(|status| status_to_error_data(&status))?;
                     Ok(ReadResourceResult::new(vec![
@@ -576,10 +562,11 @@ impl ServerHandler for CoralMcpServer {
                     ]))
                 }
                 "coral://catalog" => {
-                    let (sources, catalog) =
-                        tokio::try_join!(self.load_sources(), self.load_all_catalog(),)
-                            .map_err(|status| status_to_error_data(&status))?;
-                    let text = catalog_resource_content(&sources, &catalog)
+                    let catalog = self
+                        .load_all_catalog()
+                        .await
+                        .map_err(|status| status_to_error_data(&status))?;
+                    let text = catalog_resource_content(&catalog)
                         .map_err(|error| internal_status(&error))
                         .map_err(|status| status_to_error_data(&status))?;
                     Ok(ReadResourceResult::new(vec![
@@ -630,7 +617,12 @@ fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogIte
 
 fn guide_catalog_from_response(
     response: ListCatalogResponse,
-) -> (Vec<ProtoTableSummary>, Vec<String>) {
+) -> (
+    Vec<CatalogSourceSummary>,
+    Vec<ProtoTableSummary>,
+    Vec<String>,
+) {
+    let sources = response.sources;
     let mut tables = Vec::new();
     let mut table_function_schema_names = Vec::new();
     for item in response.items {
@@ -642,5 +634,5 @@ fn guide_catalog_from_response(
             None => {}
         }
     }
-    (tables, table_function_schema_names)
+    (sources, tables, table_function_schema_names)
 }

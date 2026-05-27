@@ -68,8 +68,8 @@ pub use composition::{
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
     QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    SourceInfo, SourceValidationReport, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

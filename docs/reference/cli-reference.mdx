@@ -207,7 +207,7 @@ coral mcp-stdio
 
 This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
 
-The MCP `tools/list` and `resources/list` responses are static capability metadata. Live source and catalog state is loaded only when a client calls a catalog tool, reads `coral://guide`, `coral://catalog`, or `coral://tables`, or queries the `coral.*` metadata tables. Query `coral.sources` for source descriptions and source-authored onboarding context.
+The MCP `tools/list` and `resources/list` responses are static capability metadata. Live source and catalog state is loaded only when a client calls a catalog tool, reads `coral://guide`, `coral://catalog`, or `coral://tables`, or queries the `coral.*` metadata tables. `list_catalog`, `search_catalog`, `coral://catalog`, `coral://guide`, and `coral.sources` expose source descriptions and source-authored onboarding context.
 
 Successful MCP `sql` tool calls return structured content with `rows`, `row_count`, and `columns`. `row_count` is the number of rows returned by that SQL statement, not a total beyond a `LIMIT`; `columns` reports the returned Arrow field names, data types, and nullability.
 
@@ -225,7 +225,7 @@ This server exposes:
 | Resource | `coral://catalog` | Source context plus database table and table-function summaries |
 | Resource | `coral://tables`  | Database table summaries         |
 
-`search_catalog` ranks strong identifier matches before weaker prose matches before applying pagination, so exact table and function name hits appear ahead of description or guide-only matches.
+`list_catalog` and `search_catalog` structured output include response-level `sources` entries with `schema_name`, `description`, and optional `onboarding_instructions`. `search_catalog` ranks strong identifier matches before weaker prose matches before applying pagination, so exact table and function name hits appear ahead of description or guide-only matches.
 
 ## `coral completion <SHELL>`
 

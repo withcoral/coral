@@ -1,14 +1,14 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use coral_api::v1::{Source, TableSummary};
+use coral_api::v1::{CatalogSourceSummary, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde::Serialize;
 use serde_json::Value;
 
 use super::values::queryable_table_summary_values;
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Read `coral://catalog` when you need a compact all-source table and table-function index. Use source context from `coral://guide` or `coral.sources` before probing provider identity, auth scope, or source-specific search semantics. Use `list_catalog` and `search_catalog` as catalog helpers, use `search_columns` when you know a field but not the table, use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.sources`, `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Read `coral://catalog` when you need a compact all-source index with source context, tables, and table functions. Use source context from `list_catalog`, `search_catalog`, `coral://catalog`, `coral://guide`, or `coral.sources` before probing provider identity, auth scope, or source-specific search semantics. Use `list_catalog` and `search_catalog` as catalog helpers, use `search_columns` when you know a field but not the table, use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.sources`, `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -37,7 +37,7 @@ pub(crate) fn catalog_resource() -> Resource {
 }
 
 pub(crate) fn guide_resource_content(
-    sources: &[Source],
+    sources: &[CatalogSourceSummary],
     tables: &[TableSummary],
     table_function_schema_names: &[String],
 ) -> String {
@@ -66,7 +66,7 @@ pub(crate) fn guide_resource_content(
         .iter()
         .filter_map(|source| {
             let instructions = source.onboarding_instructions.trim();
-            (!instructions.is_empty()).then_some((source.name.as_str(), instructions))
+            (!instructions.is_empty()).then_some((source.schema_name.as_str(), instructions))
         })
         .collect::<Vec<_>>();
     onboarding_sources.sort_by(|left, right| left.0.cmp(right.0));
@@ -133,22 +133,14 @@ fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::{Source, SourceCredentialStorage, TableSummary, Workspace};
+    use coral_api::v1::{CatalogSourceSummary, TableSummary, Workspace};
 
     use super::{guide_resource_content, initial_instructions};
     use crate::surface::values::format_schema_table_equivalent;
 
-    fn source(name: &str) -> Source {
-        Source {
-            workspace: Some(Workspace {
-                name: "default".to_string(),
-            }),
-            name: name.to_string(),
-            version: String::new(),
-            secrets: Vec::new(),
-            variables: Vec::new(),
-            origin: 0,
-            credential_storage: SourceCredentialStorage::Unspecified as i32,
+    fn source(name: &str) -> CatalogSourceSummary {
+        CatalogSourceSummary {
+            schema_name: name.to_string(),
             description: String::new(),
             onboarding_instructions: String::new(),
         }

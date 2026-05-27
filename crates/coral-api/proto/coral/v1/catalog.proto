@@ -138,6 +138,16 @@ message CatalogItem {
   }
 }
 
+// Source metadata for the workspace catalog snapshot.
+message CatalogSourceSummary {
+  // The schema name used for SQL qualification.
+  string schema_name = 1;
+  // User-facing source description.
+  string description = 2;
+  // Source-authored guidance for agents discovering source-specific context.
+  string onboarding_instructions = 3;
+}
+
 // Lists queryable catalog items in one workspace.
 message ListCatalogRequest {
   // Workspace whose current queryable catalog should be listed.
@@ -156,6 +166,8 @@ message ListCatalogResponse {
   repeated CatalogItem items = 1;
   // Page metadata for the catalog list.
   PaginationResponse pagination = 2;
+  // Source summaries for the catalog snapshot before item pagination.
+  repeated CatalogSourceSummary sources = 3;
 }
 
 // Searches queryable catalog metadata.
@@ -188,6 +200,8 @@ message SearchCatalogResponse {
   repeated CatalogSearchResult items = 1;
   // Page metadata for the catalog search.
   PaginationResponse pagination = 2;
+  // Source summaries for the catalog snapshot before item pagination.
+  repeated CatalogSourceSummary sources = 3;
 }
 
 // Fetches one query-visible table.

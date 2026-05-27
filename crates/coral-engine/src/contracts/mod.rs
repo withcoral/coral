@@ -6,7 +6,7 @@ mod query;
 mod query_error;
 
 pub use catalog::{
-    CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+    CatalogInfo, ColumnInfo, SourceInfo, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
 };
 pub use error::{CoreError, StatusCode, StructuredQueryError};

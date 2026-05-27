@@ -86,7 +86,7 @@ pub(crate) fn sql_tool() -> Tool {
 pub(crate) fn list_catalog_tool() -> Tool {
     Tool::new(
         "list_catalog",
-        "List compact database catalog summaries for currently configured sources. Prefer search_catalog when you know the entity or task; use detail='full' only for small result sets that need guides, function result columns, or full argument metadata.",
+        "List source context and compact database catalog summaries for currently configured sources. Prefer search_catalog when you know the entity or task; use detail='full' only for small result sets that need guides, function result columns, or full argument metadata.",
         json_object_schema(&json!({
             "type": "object",
             "properties": {
@@ -488,7 +488,7 @@ fn sql_tool_description() -> &'static str {
 }
 
 fn search_catalog_description() -> &'static str {
-    "Search compact database catalog summaries for currently configured sources with a Rust regex. Strong identifier matches are ranked first. Use this before list_catalog when you know the entity or task; use detail='full' only for small result sets."
+    "Search source context and compact database catalog summaries for currently configured sources with a Rust regex. Strong identifier matches are ranked first. Use this before list_catalog when you know the entity or task; use detail='full' only for small result sets."
 }
 
 fn sql_output_schema() -> Arc<Map<String, Value>> {
@@ -529,9 +529,13 @@ fn sql_output_schema() -> Arc<Map<String, Value>> {
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
+        "required": ["sources", "items", "total", "limit", "offset", "has_more"],
         "additionalProperties": false,
         "properties": {
+            "sources": {
+                "type": "array",
+                "items": catalog_source_output_schema()
+            },
             "items": {
                 "type": "array",
                 "items": {
@@ -560,6 +564,19 @@ fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
             }
         }
     }))
+}
+
+fn catalog_source_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["schema_name", "description"],
+        "additionalProperties": false,
+        "properties": {
+            "schema_name": { "type": "string" },
+            "description": { "type": "string" },
+            "onboarding_instructions": { "type": "string" }
+        }
+    })
 }
 
 fn catalog_table_item_output_schema() -> Value {
@@ -670,9 +687,13 @@ fn table_function_argument_output_schema() -> Value {
 fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
+        "required": ["sources", "items", "total", "limit", "offset", "has_more"],
         "additionalProperties": false,
         "properties": {
+            "sources": {
+                "type": "array",
+                "items": catalog_source_output_schema()
+            },
             "items": {
                 "type": "array",
                 "items": {

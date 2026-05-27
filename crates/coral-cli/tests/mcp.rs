@@ -357,8 +357,8 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
     assert_eq!(tables_json["tables"][0]["name"], "local_messages.events");
     assert_eq!(
         server.list_sources_requests().len(),
-        2,
-        "guide and catalog resources should fetch live source metadata when read"
+        0,
+        "guide and catalog resources should receive source metadata through list_catalog"
     );
     assert_eq!(
         server.list_catalog_requests().len(),
@@ -664,6 +664,7 @@ async fn assert_list_catalog_tool(
     assert_eq!(structured_catalog["limit"], 50);
     assert_eq!(structured_catalog["offset"], 0);
     assert_eq!(structured_catalog["has_more"], false);
+    assert_eq!(structured_catalog["sources"][0]["schema_name"], "github");
     assert_eq!(
         structured_catalog["items"][0]["name"],
         "local_messages.events"
@@ -739,6 +740,7 @@ async fn assert_search_catalog_tool(
     )
     .await?;
     assert_eq!(search["total"], 1);
+    assert_eq!(search["sources"][0]["schema_name"], "github");
     assert_eq!(search["items"][0]["name"], "local_messages.messages");
     assert_eq!(
         search["items"][0]["sql_reference"],

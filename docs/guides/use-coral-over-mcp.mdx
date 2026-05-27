@@ -32,22 +32,24 @@ Successful `sql` calls return structured content with `rows`, `row_count`, and `
 
 Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
 
-Read `coral://catalog` once when the agent needs a compact all-source index that includes source-authored context and table functions, especially before broad discovery. Use `search_catalog` instead when the task already names a focused entity, schema, or table/function candidate.
+Read `coral://catalog` once when the agent needs a compact all-source index that includes source-authored context and table functions, especially before broad discovery. Use `search_catalog` instead when the task already names a focused entity, schema, or table/function candidate. The `list_catalog` and `search_catalog` tools also return a response-level `sources` array with source-authored context, so agents using direct catalog tools do not need a separate `coral.sources` query just to find onboarding guidance.
 
 ### Discovery tools
 
-**`list_catalog`**: paginated list of compact database table and parameterized table-function summaries.
+**`list_catalog`**: source context plus a paginated list of compact database table and parameterized table-function summaries.
 
 - Arguments: optional `schema`, `kind`, `detail`, `limit`, `offset`. Omit `kind` (or pass `null`) to include both `"table"` and `"table_function"` items.
+- Returns `sources` with `schema_name`, `description`, and optional `onboarding_instructions`, followed by the paged `items`.
 - The default `detail: "summary"` omits bulky guides and table-function result-column lists. Use `detail: "full"` only with a narrow `schema`, `kind`, and `limit` when that metadata is required.
 - `limit` accepts `1` through `50`.
 - For tables, use `sql_reference` in `FROM` and `JOIN` clauses.
 - For table functions, use `sql_call_example` and fill in the required arguments.
 - Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 
-**`search_catalog`**: deterministic regex matching over database catalog metadata.
+**`search_catalog`**: source context plus deterministic regex matching over database catalog metadata.
 
 - Arguments: required `pattern` plus optional `schema`, `kind`, `detail`, `ignore_case`, `limit`, `offset`.
+- Returns the same response-level `sources` context as `list_catalog`, plus the paged search `items`.
 - Results are ranked before pagination. Matches on exact catalog identifiers such as table or function names appear ahead of weaker prose matches in descriptions, guides, arguments, or result columns.
 - The default `detail: "summary"` is intended for normal agent discovery. Use `detail: "full"` only for small result sets.
 - `limit` accepts `1` through `50`.
@@ -71,7 +73,7 @@ Read `coral://catalog` once when the agent needs a compact all-source index that
 
 ### Richer metadata via SQL
 
-For deeper introspection, query `coral.sources`, `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog`, `coral://catalog`, or `coral://tables`. Use `coral.sources` for source-authored context before probing provider identity, auth scope, or provider-specific search semantics. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
+For deeper introspection, query `coral.sources`, `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog`, `search_catalog`, `coral://catalog`, or `coral://tables`. `list_catalog`, `search_catalog`, `coral://catalog`, `coral://guide`, and `coral.sources` all expose source-authored context before probing provider identity, auth scope, or provider-specific search semantics. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
 
 ### Searching a provider's data
 

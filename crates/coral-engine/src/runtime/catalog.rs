@@ -17,8 +17,8 @@ use crate::backends::common::{
 use crate::backends::{RegisteredSource, RegisteredTableFunction};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
-    ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
-    TableInfo,
+    ColumnInfo, SourceInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// Schema name for source metadata tables such as `coral.sources` and `coral.tables`.
@@ -224,6 +224,21 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
         (&left.schema_name, &left.table_name).cmp(&(&right.schema_name, &right.table_name))
     });
     tables
+}
+
+/// Collect typed active-source metadata for the queryable catalog snapshot.
+#[must_use]
+pub(crate) fn collect_sources(active_sources: &[RegisteredSource]) -> Vec<SourceInfo> {
+    let mut sources = active_sources
+        .iter()
+        .map(|source| SourceInfo {
+            schema_name: source.schema_name.clone(),
+            description: source.description.clone(),
+            onboarding_instructions: source.onboarding_instructions.clone(),
+        })
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| left.schema_name.cmp(&right.schema_name));
+    sources
 }
 
 /// Collect typed source-scoped table function metadata for the active source set.

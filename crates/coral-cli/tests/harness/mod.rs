@@ -17,8 +17,8 @@ use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
-    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CatalogItem, CatalogSearchResult, CatalogSourceSummary, Column, ColumnSearchResult,
+    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
     DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
@@ -562,6 +562,11 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
         }),
     );
     ListCatalogResponse {
+        sources: vec![CatalogSourceSummary {
+            schema_name: mock_source().name,
+            description: String::new(),
+            onboarding_instructions: String::new(),
+        }],
         items,
         pagination: Some(pagination),
     }
@@ -708,6 +713,11 @@ impl CatalogService for MockCatalogService {
             }),
         );
         Ok(Response::new(SearchCatalogResponse {
+            sources: vec![CatalogSourceSummary {
+                schema_name: mock_source().name,
+                description: String::new(),
+                onboarding_instructions: String::new(),
+            }],
             items,
             pagination: Some(pagination),
         }))

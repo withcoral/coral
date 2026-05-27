@@ -482,6 +482,11 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect("list catalog");
     let catalog = catalog.structured_content.expect("structured catalog");
+    assert_eq!(catalog["sources"][0]["schema_name"], "local_messages");
+    assert_eq!(
+        catalog["sources"][0]["onboarding_instructions"],
+        "Use local_messages.messages for conversation rows before checking events."
+    );
     assert_eq!(catalog["total"], 3);
     assert_eq!(catalog["items"][0]["kind"], "table");
     assert_eq!(catalog["items"][0]["name"], "local_messages.events");
@@ -570,6 +575,11 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect("search catalog");
     let search = search.structured_content.expect("structured content");
+    assert_eq!(search["sources"][0]["schema_name"], "local_messages");
+    assert_eq!(
+        search["sources"][0]["onboarding_instructions"],
+        "Use local_messages.messages for conversation rows before checking events."
+    );
     assert_eq!(search["total"], 1);
     assert_eq!(search["items"][0]["name"], "local_messages.messages");
     assert_eq!(

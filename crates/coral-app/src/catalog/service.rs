@@ -16,9 +16,10 @@ use crate::catalog::discovery::{
 };
 use crate::query::manager::QueryManager;
 use crate::transport::{
-    catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
-    describe_table_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
-    query_status, table_column_search_result_to_proto, workspace_name_from_proto,
+    catalog_item_to_proto, catalog_search_result_to_proto, catalog_source_summary_to_proto,
+    column_search_result_to_proto, describe_table_response_to_proto, grpc_span, instrument_grpc,
+    pagination_to_proto, query_status, table_column_search_result_to_proto,
+    workspace_name_from_proto,
 };
 
 #[derive(Clone)]
@@ -48,10 +49,11 @@ impl CatalogServiceApi for CatalogService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
-            let page = catalog
+            let result = catalog
                 .list_catalog(&workspace_name, schema_name, kind, pagination)
                 .await
                 .map_err(query_status)?;
+            let page = result.page;
             let pagination = pagination_to_proto(
                 page.total,
                 page.limit,
@@ -60,6 +62,11 @@ impl CatalogServiceApi for CatalogService {
                 page.next_offset,
             );
             Ok(Response::new(ListCatalogResponse {
+                sources: result
+                    .sources
+                    .into_iter()
+                    .map(catalog_source_summary_to_proto)
+                    .collect(),
                 items: page
                     .items
                     .into_iter()
@@ -84,7 +91,7 @@ impl CatalogServiceApi for CatalogService {
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let pagination = search_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
-            let page = catalog
+            let result = catalog
                 .search_catalog(
                     &workspace_name,
                     &request.pattern,
@@ -95,6 +102,7 @@ impl CatalogServiceApi for CatalogService {
                 )
                 .await
                 .map_err(query_status)?;
+            let page = result.page;
             let pagination = pagination_to_proto(
                 page.total,
                 page.limit,
@@ -103,6 +111,11 @@ impl CatalogServiceApi for CatalogService {
                 page.next_offset,
             );
             Ok(Response::new(SearchCatalogResponse {
+                sources: result
+                    .sources
+                    .into_iter()
+                    .map(catalog_source_summary_to_proto)
+                    .collect(),
                 items: page
                     .items
                     .into_iter()

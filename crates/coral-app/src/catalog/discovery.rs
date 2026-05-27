@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_engine::{ColumnInfo, TableFunctionInfo, TableInfo};
+use coral_engine::{CatalogInfo, ColumnInfo, SourceInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
@@ -33,6 +33,18 @@ pub(crate) struct Page<T> {
     pub(crate) offset: u32,
     pub(crate) has_more: bool,
     pub(crate) next_offset: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ListCatalogResult {
+    pub(crate) sources: Vec<SourceInfo>,
+    pub(crate) page: Page<CatalogItem>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SearchCatalogResultSet {
+    pub(crate) sources: Vec<SourceInfo>,
+    pub(crate) page: Page<CatalogSearchResult>,
 }
 
 #[derive(Clone, Debug)]
@@ -177,40 +189,17 @@ impl CatalogDiscovery {
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
-    ) -> Result<Page<CatalogItem>, QueryManagerError> {
-        let items = self
-            .catalog_items(workspace_name, schema_name, kind)
-            .await?;
-        Ok(page_items(items, pagination))
-    }
-
-    async fn catalog_items(
-        &self,
-        workspace_name: &WorkspaceName,
-        schema_name: Option<&str>,
-        kind: Option<CatalogItemKind>,
-    ) -> Result<Vec<CatalogItem>, QueryManagerError> {
-        let catalog = self
+    ) -> Result<ListCatalogResult, QueryManagerError> {
+        let mut catalog = self
             .queries
             .list_catalog(workspace_name, schema_name)
             .await?;
-        let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
-        if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
-            items.extend(catalog.tables.into_iter().map(|mut table| {
-                table.columns.clear();
-                CatalogItem::Table(table)
-            }));
-        }
-        if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
-            items.extend(
-                catalog
-                    .table_functions
-                    .into_iter()
-                    .map(CatalogItem::TableFunction),
-            );
-        }
-        items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
-        Ok(items)
+        let sources = std::mem::take(&mut catalog.sources);
+        let items = catalog_items_from_info(catalog, kind);
+        Ok(ListCatalogResult {
+            sources,
+            page: page_items(items, pagination),
+        })
     }
 
     pub(crate) async fn search_catalog(
@@ -221,11 +210,14 @@ impl CatalogDiscovery {
         kind: Option<CatalogItemKind>,
         ignore_case: bool,
         pagination: Pagination,
-    ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
+    ) -> Result<SearchCatalogResultSet, QueryManagerError> {
         let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
-        let mut matches = self
-            .catalog_items(workspace_name, schema_name, kind)
-            .await?
+        let mut catalog = self
+            .queries
+            .list_catalog(workspace_name, schema_name)
+            .await?;
+        let sources = std::mem::take(&mut catalog.sources);
+        let mut matches = catalog_items_from_info(catalog, kind)
             .into_iter()
             .filter_map(|item| {
                 let matched_fields = catalog_item_matched_fields(&item, &regex);
@@ -236,7 +228,10 @@ impl CatalogDiscovery {
             })
             .collect::<Vec<_>>();
         sort_catalog_search_results(&mut matches, &regex);
-        Ok(page_items(matches, pagination))
+        Ok(SearchCatalogResultSet {
+            sources,
+            page: page_items(matches, pagination),
+        })
     }
 
     pub(crate) async fn describe_table(
@@ -370,6 +365,29 @@ impl CatalogDiscovery {
         });
         Ok(page_items(matches, query.pagination))
     }
+}
+
+fn catalog_items_from_info(
+    catalog: CatalogInfo,
+    kind: Option<CatalogItemKind>,
+) -> Vec<CatalogItem> {
+    let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
+    if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
+        items.extend(catalog.tables.into_iter().map(|mut table| {
+            table.columns.clear();
+            CatalogItem::Table(table)
+        }));
+    }
+    if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
+        items.extend(
+            catalog
+                .table_functions
+                .into_iter()
+                .map(CatalogItem::TableFunction),
+        );
+    }
+    items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
+    items
 }
 
 fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {

@@ -27,7 +27,7 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 3. Read summary results or `coral://catalog` for `sql_reference`, `sql_call_example`, and `required_filters`; request `detail: "full"` only for a small catalog result set that needs guides or table-function result columns.
 4. Use `search_columns` when you know a field, column, or data type but not the exact table; this avoids probing several tables with `describe_table` and `list_columns`.
 5. For a candidate table, call `describe_table` first; it includes up to 50 compact column summaries. Call `list_columns` only for needed columns using `pattern`, `required_only`, and pagination.
-6. Query `coral.sources`, `coral.columns`, `coral.table_functions`, `coral.filters`, or `coral.inputs` only for deeper multi-table introspection, source-authored context, filter modes, source configuration, or full table-function JSON.
+6. Query `coral.sources`, `coral.columns`, `coral.table_functions`, `coral.filters`, or `coral.inputs` only for deeper multi-table introspection, filter modes, source configuration, or full table-function JSON after the catalog tool/resource summaries are insufficient.
 7. Use `coral://guide` for query patterns, `coral://catalog` for source context plus table and table-function summaries, and `coral://tables` only when a table-only summary is enough.
 8. Query with `sql`: select useful columns, include required filters or function arguments, and add `LIMIT` unless complete output is requested.
 9. Summarize evidence, gaps, and next action. If editing code, use the Coral result to guide changes.
@@ -37,7 +37,7 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 - Use each table's `sql_reference`; write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 - Use each table function's `sql_call_example`, filling in required arguments before querying it.
 - Use the `sql` result's `row_count` and `columns` before issuing extra count or schema-discovery calls. Treat `row_count` as rows returned by the statement, not total rows beyond a `LIMIT`.
-- Read source-authored context from `coral://guide` or `coral.sources` before probing provider identity, auth scope, or provider-specific search qualifiers.
+- Read source-authored context from `list_catalog`, `search_catalog`, `coral://catalog`, `coral://guide`, or `coral.sources` before probing provider identity, auth scope, or provider-specific search qualifiers.
 - Keep metadata discovery bounded: prefer compact catalog summaries, focused `search_catalog` patterns, `search_columns` for cross-table field discovery, `describe_table`, and filtered `list_columns`; `search_catalog` ranks strong identifier matches first, so inspect early hits before broadening the search. Add `LIMIT` when reading broad metadata directly.
 - Virtual columns are filter-only and return `NULL`; check `is_virtual`.
 - Required filters must appear in `WHERE`; inspect `required_filters` and `is_required_filter`.
