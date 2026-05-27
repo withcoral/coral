@@ -111,8 +111,8 @@ message SourceCredentialMethod {
   oneof method {
     // Secret value is supplied through the source configuration path.
     SourceConfigCredentialMethod source_config = 3;
-    // Coral retrieves the secret through an OAuth authorization-code flow.
-    OAuthAuthorizationCodeCredentialMethod oauth_authorization_code = 4;
+    // Coral retrieves the secret through an OAuth flow.
+    OAuthCredentialMethod oauth = 4;
   }
 }
 
@@ -120,8 +120,8 @@ message SourceCredentialMethod {
 message SourceConfigCredentialMethod {
 }
 
-// OAuth authorization-code credential retrieval configuration.
-message OAuthAuthorizationCodeCredentialMethod {
+// OAuth credential retrieval configuration.
+message OAuthCredentialMethod {
   // Loopback callback URI Coral binds during the OAuth session.
   string redirect_uri = 1;
   // Provider OAuth endpoints.
@@ -134,6 +134,19 @@ message OAuthAuthorizationCodeCredentialMethod {
   OauthCredentialPkceMode pkce = 5;
   // Loopback callback port binding mode.
   OauthCredentialRedirectUriPortMode redirect_uri_port_mode = 6;
+  // OAuth flow kind.
+  OauthCredentialFlowType flow = 8;
+}
+
+// Supported OAuth credential flow kinds.
+enum OauthCredentialFlowType {
+  // Flow kind is unspecified. Producers should set an explicit flow. Clients
+  // may interpret omitted legacy values as authorization-code credentials.
+  OAUTH_CREDENTIAL_FLOW_TYPE_UNSPECIFIED = 0;
+  // OAuth authorization-code flow.
+  OAUTH_CREDENTIAL_FLOW_TYPE_AUTHORIZATION_CODE = 1;
+  // OAuth device authorization flow.
+  OAUTH_CREDENTIAL_FLOW_TYPE_DEVICE_CODE = 2;
 }
 
 // Supported OAuth PKCE modes.
@@ -163,6 +176,8 @@ message OAuthCredentialEndpoints {
   string authorization_url = 1;
   // Provider token endpoint URL.
   string token_url = 2;
+  // Provider device authorization endpoint URL.
+  string device_authorization_url = 3;
 }
 
 // OAuth client configuration.
@@ -360,6 +375,12 @@ message OAuthCredentialAuthorization {
   string authorization_url = 2;
   // Seconds until the OAuth retrieval expires.
   uint64 expires_in_seconds = 3;
+  // Device-flow user code the user must enter at the provider URL.
+  string user_code = 4;
+  // Device-flow provider verification URL.
+  string verification_uri = 5;
+  // Device-flow provider verification URL with the user code embedded, when provided.
+  string verification_uri_complete = 6;
 }
 
 // Safe completion metadata emitted after OAuth credential retrieval.

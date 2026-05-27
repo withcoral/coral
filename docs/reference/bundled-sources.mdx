@@ -180,7 +180,26 @@ Cloud; for GitHub Enterprise Server, use
 
 `GITHUB_TOKEN` (required)
 
-If you're already authenticated in GitHub CLI, run
+For GitHub Cloud, choose "Connect with GitHub device code" for the
+simplest setup. It signs in through GitHub and does not require you
+to create an OAuth app or enter a client secret.
+
+If you want to use your own GitHub OAuth app, set
+GITHUB_OAUTH_CLIENT_ID to the app's Client ID. To create an app,
+follow GitHub's guide:
+https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app.
+Enable device flow on the app before using the device-code option.
+For the browser "Connect with GitHub OAuth app" option, set the
+app's Authorization callback URL to
+`http://127.0.0.1:53682/oauth/callback` and set
+GITHUB_OAUTH_CLIENT_SECRET to the app's Client secret.
+
+The OAuth options request `repo`, `read:org`, `read:user`, and
+`user:email` scopes. Use the token method instead if you need a
+narrower or more elevated scope set, or if you are connecting
+to GitHub Enterprise Server.
+
+For token auth, if you're already authenticated in GitHub CLI, run
 `gh auth token`, or create a new personal access token (PAT).
 Grant read access to the repositories and organizations you plan
 to query; some admin tables require elevated scopes.
