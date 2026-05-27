@@ -1,0 +1,623 @@
+name: buildkite
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query organizations, pipelines, builds, and agents from Buildkite
+  via the Buildkite REST API v2.
+base_url: https://api.buildkite.com/v2
+
+inputs:
+  BUILDKITE_TOKEN:
+    kind: secret
+    hint: |
+      Buildkite API access token. Create one at
+      https://buildkite.com/user/api-access-tokens with the following
+      scopes: read_organizations, read_pipelines, read_builds,
+      read_agents. The token is sent as Authorization: Bearer.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.BUILDKITE_TOKEN}}
+
+test_queries:
+  - SELECT slug, name, created_at FROM buildkite.organizations LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # organizations — orgs accessible by the token
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: organizations
+    description: >-
+      Buildkite organizations accessible by the API token. Each row is
+      one organization. Use slug as org_slug in pipelines, builds,
+      org_builds, and agents.
+    guide: |
+      No required filters. Use `slug` as `org_slug` in all other tables.
+      Start here to discover your organization slug before querying
+      pipelines or builds.
+    request:
+      method: GET
+      path: /organizations
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: >-
+          Organization slug. Use as org_slug in pipelines, builds,
+          org_builds, and agents tables.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: URL of the organization in the Buildkite web interface.
+        expr:
+          kind: path
+          path:
+            - web_url
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the organization was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # pipelines — pipelines in an organization
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: pipelines
+    description: >-
+      Pipelines in a Buildkite organization. Each row is one pipeline.
+      Use slug as pipeline_slug in the builds table.
+    guide: |
+      Requires `org_slug`. Use `slug` as `pipeline_slug` in the builds
+      table. Join with `buildkite.builds` on `org_slug` and
+      `pipeline_slug = slug` for build analytics.
+    filters:
+      - name: org_slug
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.org_slug}}/pipelines
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Pipeline slug. Use as pipeline_slug in the builds table.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Pipeline display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Pipeline description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: repository
+        type: Utf8
+        nullable: true
+        description: Repository URL the pipeline is connected to.
+        expr:
+          kind: path
+          path:
+            - repository
+      - name: default_branch
+        type: Utf8
+        nullable: true
+        description: Default branch for the pipeline.
+        expr:
+          kind: path
+          path:
+            - default_branch
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: URL of the pipeline in the Buildkite web interface.
+        expr:
+          kind: path
+          path:
+            - web_url
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the pipeline was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Organization slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: org_slug
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # builds — builds for a specific pipeline
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: builds
+    description: >-
+      Builds for a specific pipeline in a Buildkite organization. Each
+      row is one build. Use state to filter by build outcome.
+    guide: |
+      Requires `org_slug` and `pipeline_slug`. Use `state` to filter
+      results locally: passed, failed, running, scheduled, blocked,
+      canceled, or skipped. Use `created_at` and `finished_at` for
+      build cycle-time analytics. Join with `buildkite.pipelines` on
+      `org_slug` and `pipeline_slug = slug`.
+    filters:
+      - name: org_slug
+        required: true
+      - name: pipeline_slug
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.org_slug}}/pipelines/{{filter.pipeline_slug}}/builds
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: number
+        type: Int64
+        nullable: false
+        description: Build number within the pipeline.
+        expr:
+          kind: path
+          path:
+            - number
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Build state: running, scheduled, passed, failed, blocked,
+          canceled, or skipped.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Branch the build ran against.
+        expr:
+          kind: path
+          path:
+            - branch
+      - name: commit
+        type: Utf8
+        nullable: true
+        description: Git commit SHA for the build.
+        expr:
+          kind: path
+          path:
+            - commit
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Commit message for the build.
+        expr:
+          kind: path
+          path:
+            - message
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: URL of the build in the Buildkite web interface.
+        expr:
+          kind: path
+          path:
+            - web_url
+      - name: pipeline_slug
+        type: Utf8
+        nullable: true
+        description: Slug of the pipeline this build belongs to (from pipeline.slug).
+        expr:
+          kind: path
+          path:
+            - pipeline
+            - slug
+      - name: pipeline_name
+        type: Utf8
+        nullable: true
+        description: Display name of the pipeline (from pipeline.name).
+        expr:
+          kind: path
+          path:
+            - pipeline
+            - name
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: Name of the user who created the build (from creator.name).
+        expr:
+          kind: path
+          path:
+            - creator
+            - name
+      - name: creator_email
+        type: Utf8
+        nullable: true
+        description: Email of the user who created the build (from creator.email).
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the build was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the build started running.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - started_at
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the build finished.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - finished_at
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Organization slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: org_slug
+      - name: pipeline_slug_filter
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Pipeline slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: pipeline_slug
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # org_builds — builds across all pipelines in an organization
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: org_builds
+    description: >-
+      Builds across all pipelines in a Buildkite organization. Each row
+      is one build. Use when you need a cross-pipeline view without
+      knowing specific pipeline slugs.
+    guide: |
+      Requires `org_slug` only. Returns builds across all pipelines,
+      newest first. Use `pipeline_slug` and `pipeline_name` columns to
+      identify which pipeline each build belongs to. For pipeline-specific
+      queries, prefer `buildkite.builds` which is more targeted.
+    filters:
+      - name: org_slug
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.org_slug}}/builds
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: number
+        type: Int64
+        nullable: false
+        description: Build number within the pipeline.
+        expr:
+          kind: path
+          path:
+            - number
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Build state: running, scheduled, passed, failed, blocked,
+          canceled, or skipped.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Branch the build ran against.
+        expr:
+          kind: path
+          path:
+            - branch
+      - name: commit
+        type: Utf8
+        nullable: true
+        description: Git commit SHA for the build.
+        expr:
+          kind: path
+          path:
+            - commit
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Commit message for the build.
+        expr:
+          kind: path
+          path:
+            - message
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: URL of the build in the Buildkite web interface.
+        expr:
+          kind: path
+          path:
+            - web_url
+      - name: pipeline_slug
+        type: Utf8
+        nullable: true
+        description: Slug of the pipeline this build belongs to (from pipeline.slug).
+        expr:
+          kind: path
+          path:
+            - pipeline
+            - slug
+      - name: pipeline_name
+        type: Utf8
+        nullable: true
+        description: Display name of the pipeline (from pipeline.name).
+        expr:
+          kind: path
+          path:
+            - pipeline
+            - name
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: Name of the user who created the build (from creator.name).
+        expr:
+          kind: path
+          path:
+            - creator
+            - name
+      - name: creator_email
+        type: Utf8
+        nullable: true
+        description: Email of the user who created the build (from creator.email).
+        expr:
+          kind: path
+          path:
+            - creator
+            - email
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the build was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the build started running.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - started_at
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the build finished.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - finished_at
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Organization slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: org_slug
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # agents — agents connected to an organization
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: agents
+    description: >-
+      Agents connected to a Buildkite organization. Each row is one
+      agent. Use connection_state to monitor agent availability.
+    guide: |
+      Requires `org_slug`. Use `connection_state` to filter connected
+      vs disconnected agents. `hostname` identifies the machine running
+      the agent. Use for infrastructure monitoring and capacity planning.
+    filters:
+      - name: org_slug
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.org_slug}}/agents
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Agent ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Agent name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: connection_state
+        type: Utf8
+        nullable: true
+        description: "Agent connection state: connected, disconnected, or lost."
+        expr:
+          kind: path
+          path:
+            - connection_state
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Hostname of the machine running the agent.
+        expr:
+          kind: path
+          path:
+            - hostname
+      - name: ip_address
+        type: Utf8
+        nullable: true
+        description: IP address of the machine running the agent.
+        expr:
+          kind: path
+          path:
+            - ip_address
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Buildkite agent version.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: os
+        type: Utf8
+        nullable: true
+        description: Operating system of the machine running the agent.
+        expr:
+          kind: path
+          path:
+            - os
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the agent was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Organization slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: org_slug
