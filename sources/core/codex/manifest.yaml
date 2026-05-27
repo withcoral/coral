@@ -1,0 +1,48 @@
+name: codex
+version: 0.1.0
+dsl_version: 3
+backend: file
+description: >-
+  Query local Codex session event logs from ~/.codex/sessions.
+test_queries:
+  - SELECT * FROM codex.events LIMIT 1
+tables:
+  - name: events
+    description: Codex session JSONL events partitioned by session date.
+    format: jsonl
+    guide: |
+      Reads current Codex session JSONL files under
+      `~/.codex/sessions/<year>/<month>/<day>/`.
+
+      Filter on `year`, `month`, and `day` to prune files before scanning.
+      Use JSON functions such as `json_get_str(payload, 'cwd')` and
+      `json_get_str(payload, 'model_provider')` for nested event payloads.
+    source:
+      location: file://~/.codex/sessions/
+      glob: "20??/**/*.jsonl"
+      partitions:
+        - name: year
+          type: Int64
+          path:
+            kind: segment
+            index: 0
+        - name: month
+          type: Int64
+          path:
+            kind: segment
+            index: 1
+        - name: day
+          type: Int64
+          path:
+            kind: segment
+            index: 2
+    columns:
+      - name: timestamp
+        type: Utf8
+        description: Event timestamp as recorded in the session log.
+      - name: type
+        type: Utf8
+        description: Codex event type.
+      - name: payload
+        type: Json
+        description: Event-specific JSON payload.

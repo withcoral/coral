@@ -19,7 +19,6 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
-| Tool     | `feedback`       | Store a local blocked-agent feedback report and upload an anonymous copy to Coral when enabled |
 | Resource | `coral://guide`  | Database workflow guide for agents                     |
 | Resource | `coral://tables` | JSON summaries of database tables and required filters  |
 
@@ -59,19 +58,9 @@ For deeper introspection, query `coral.tables`, `coral.columns`, `coral.filters`
 
 Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
 
-### Optional feedback tool
-
-Start Coral as `coral mcp-stdio --enable-feedback` to expose the `feedback` tool. Agents can call it when they get blocked or repeat a pattern that isn't working.
-
-Coral stores the report locally (what the agent was trying to do, what it tried, and where it got stuck) and uploads an anonymous copy to Coral's hosted feedback service in the background. No user identifiers are attached to the hosted copy, and reports are used to improve Coral's performance. If hosted upload fails, the local report is still stored.
-
-<Note>
-Only enable this tool if you are comfortable sending the feedback text to Coral.
-</Note>
-
 ## Client setup
 
-Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`. To include the optional feedback tool, use `coral mcp-stdio --enable-feedback`.
+Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`.
 
 <Tabs>
 <Tab title="npx add-mcp">
