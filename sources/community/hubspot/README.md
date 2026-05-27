@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0
 **Backend:** HTTP (HubSpot CRM API v3)
-**Tables:** 6
+**Tables:** 15
 **Base URL:** `https://api.hubapi.com`
 
 Query HubSpot CRM contacts, companies, deals, tickets, and owners from HubSpot
@@ -173,3 +173,27 @@ coral source test hubspot
 Follow [CONTRIBUTING.md](../../../CONTRIBUTING.md): discuss on the issue first,
 sign the CLA if this is your first contribution, run `make lint-sources`, and
 open a focused PR titled `feat(sources/community/hubspot): add hubspot community source`.
+
+### RevOps & Sales Analytics
+
+```sql
+-- Which sales reps made the most calls this month?
+SELECT o.firstname, o.lastname, COUNT(c.id) as total_calls, SUM(CAST(c.duration AS INTEGER)) as total_duration
+FROM hubspot.calls c
+JOIN hubspot.owners o ON c.hubspot_owner_id = o.id
+WHERE c.activity_at >= '2024-01-01'
+GROUP BY o.firstname, o.lastname
+ORDER BY total_calls DESC;
+```
+
+**Example Output:**
+
+```
+$ coral query "SELECT title, duration, activity_at FROM hubspot.calls LIMIT 3"
+
+ title                 | duration | activity_at                
+-----------------------+----------+----------------------------
+ Discovery Call        | 1800     | 2024-03-01T14:30:00Z 
+ Follow-up Demo        | 2700     | 2024-03-02T10:00:00Z 
+ Pricing Negotiation   | 900      | 2024-03-05T16:15:00Z 
+```
