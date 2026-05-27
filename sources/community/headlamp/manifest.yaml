@@ -1,0 +1,60 @@
+name: headlamp
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Kubernetes cluster metadata through the Headlamp backend API.
+base_url: "{{input.HEADLAMP_BASE_URL}}/api"
+
+inputs:
+  HEADLAMP_BASE_URL:
+    kind: variable
+    hint: |
+      Headlamp base URL without trailing slash and without `/api`,
+      for example `https://headlamp.example.com` or `http://localhost:4466`.
+  HEADLAMP_AUTH_TOKEN:
+    kind: secret
+    hint: |
+      Bearer authentication token with access to Headlamp cluster resources.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.HEADLAMP_AUTH_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT name FROM headlamp.clusters LIMIT 1
+
+tables:
+  - name: clusters
+    description: Kubernetes clusters visible through Headlamp.
+    request:
+      method: GET
+      path: /clusters
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Cluster name.
+        expr: {kind: path, path: [name]}
+      - name: server
+        type: Utf8
+        nullable: true
+        description: Kubernetes API server URL.
+        expr: {kind: path, path: [server]}
+      - name: auth_provider
+        type: Utf8
+        nullable: true
+        description: Authentication provider name.
+        expr: {kind: path, path: [authProvider]}
