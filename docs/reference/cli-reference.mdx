@@ -41,6 +41,9 @@ List sources currently installed.
 coral source list
 ```
 
+The output includes the source's secret storage route: `keychain` or
+`file (plaintext)`.
+
 ### `coral source info <NAME>`
 
 Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`.
@@ -79,6 +82,12 @@ coral source add --interactive github
 ```
 
 If the source is already installed, running this command again replaces its stored credentials with the new values you provide. After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
+
+Sources use OS credential storage by default when Coral can write, read, and
+delete a keychain probe item. If the keychain is unavailable in `auto` mode,
+Coral stores the source secrets in plaintext file storage and shows
+`file (plaintext)` in source output. Sources with no stored secret material show
+`none`.
 
 ### `coral source add --file <PATH>`
 

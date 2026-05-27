@@ -1,8 +1,8 @@
 # Hacker News (hn)
 
-**Version:** 0.1.1
+**Version:** 0.2.0
 **Backend:** HTTP
-**Tables:** 4
+**Tables:** 8
 **Base URL:** `https://hn.algolia.com/api/v1`
 
 Query Hacker News stories, comments, users, and items via the public [Algolia HN API](https://hn.algolia.com/api). No authentication required.
@@ -19,6 +19,10 @@ coral source add --file sources/community/hn/manifest.yaml
 | `search_by_date` | Full-text search ordered newest-first | `query`, `tags`, `numeric_filters` |
 | `items` | Fetch a single item by ID with full comment thread | `id` (required) |
 | `users` | Fetch a user profile by username | `username` (required) |
+| `front_page` | Fetch stories currently on the front page | `query`, `numeric_filters` |
+| `ask_hn` | Fetch Ask HN posts (newest first) | `query`, `numeric_filters` |
+| `show_hn` | Fetch Show HN posts (newest first) | `query`, `numeric_filters` |
+| `jobs` | Fetch Job posts (newest first) | `query`, `numeric_filters` |
 
 ---
 
@@ -143,6 +147,20 @@ coral sql "
     AND tags = 'story'
     AND numeric_filters = 'points>200'
   LIMIT 10
+"
+
+# Front page stories
+coral sql "
+  SELECT title, author, points, url
+  FROM hn.front_page
+  LIMIT 10
+"
+
+# Latest Ask HN posts
+coral sql "
+  SELECT title, author, points, created_at
+  FROM hn.ask_hn
+  LIMIT 5
 "
 
 # Recent stories since a date (compute the epoch cutoff for your window)
