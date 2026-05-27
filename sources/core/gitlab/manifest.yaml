@@ -17,16 +17,41 @@ inputs:
   GITLAB_TOKEN:
     kind: secret
     hint: |
-      Create a personal access token (PAT) with the `read_api` scope;
-      some admin tables require elevated scopes.
+      Use GitLab OAuth or create a personal access token (PAT) with
+      the `read_api` scope; some admin tables require elevated scopes.
       See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitLab.com OAuth
+          description: Use GitLab.com OAuth authorization code with PKCE.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://gitlab.com/oauth/authorize
+              token_url: https://gitlab.com/oauth/token
+            client:
+              id:
+                default: b96d8711f4201c7c4ce86765e0c2a1a07db768c90a2934346859b64f066cc4f1
+                input: GITLAB_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read_api
+        - type: source_config
+          label: Paste token
 base_url: '{{input.GITLAB_API_BASE}}'
 auth:
   type: HeaderAuth
   headers:
-    - name: PRIVATE-TOKEN
+    - name: Authorization
       from: template
-      template: '{{input.GITLAB_TOKEN}}'
+      template: Bearer {{input.GITLAB_TOKEN}}
 test_queries:
   - SELECT * FROM gitlab.all_projects LIMIT 1
 tables:
