@@ -56,7 +56,7 @@ The free tier allows for **10,000 requests per day**, **5,000 per hour**, and **
 
 ```sql
 SELECT
-  current_observed_at,
+  current_valid_at,
   current_temperature_2m,
   current_weather_code
 FROM open_meteo.forecast

@@ -7,7 +7,7 @@ base_url: https://api.open-meteo.com/v1
 
 test_queries:
   - >
-    SELECT latitude, longitude, timezone, current_temperature_2m
+    SELECT latitude, longitude, timezone, current_valid_at, current_interval_seconds, current_temperature_2m
     FROM open_meteo.forecast
     WHERE latitude = 52.52 AND longitude = 13.41 AND current = 'temperature_2m,wind_speed_10m'
     LIMIT 1
@@ -157,10 +157,14 @@ tables:
         type: Float64
         description: Elevation in meters.
         expr: {kind: path, path: [elevation]}
-      - name: current_observed_at
+      - name: current_valid_at
         type: Utf8
-        description: Current weather observation timestamp.
+        description: Current weather validity timestamp (model-derived).
         expr: {kind: path, path: [current, time]}
+      - name: current_interval_seconds
+        type: Int64
+        description: Current weather data validity interval in seconds.
+        expr: {kind: path, path: [current, interval]}
       - name: current_temperature_2m
         type: Float64
         description: Current air temperature at 2 meters.
