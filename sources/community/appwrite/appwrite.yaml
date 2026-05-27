@@ -2,6 +2,11 @@ name: appwrite
 version: 0.1.0
 dsl_version: 3
 backend: http
+description: >
+  Query Appwrite project data — users, teams, databases, serverless
+  functions, and storage buckets — via the Appwrite REST API.
+  Covers identity management, team membership, database inventory,
+  function runtime configuration, and storage bucket metadata.
 
 inputs:
   APPWRITE_ENDPOINT:
@@ -28,8 +33,8 @@ auth:
       template: "{{input.APPWRITE_PROJECT_ID}}"
 
 test_queries:
-  - SELECT "$id", name, email FROM appwrite.users LIMIT 1
-  - SELECT "$id", name, enabled FROM appwrite.functions LIMIT 1
+  - SELECT id, name, email FROM appwrite.users LIMIT 1
+  - SELECT id, name, enabled FROM appwrite.functions LIMIT 1
 
 tables:
   - name: users
@@ -48,11 +53,11 @@ tables:
         query_param: limit
       offset_param: offset
     columns:
-      - name: $id
+      - name: id
         type: Utf8
-      - name: $createdAt
+      - name: created_at
         type: Utf8
-      - name: $updatedAt
+      - name: updated_at
         type: Utf8
       - name: name
         type: Utf8
@@ -60,15 +65,15 @@ tables:
         type: Utf8
       - name: phone
         type: Utf8
-      - name: emailVerification
+      - name: email_verification
         type: Boolean
-      - name: phoneVerification
+      - name: phone_verification
         type: Boolean
       - name: status
         type: Boolean
       - name: labels
         type: Utf8
-      - name: accessedAt
+      - name: accessed_at
         type: Utf8
 
   - name: teams
@@ -87,11 +92,11 @@ tables:
         query_param: limit
       offset_param: offset
     columns:
-      - name: $id
+      - name: id
         type: Utf8
-      - name: $createdAt
+      - name: created_at
         type: Utf8
-      - name: $updatedAt
+      - name: updated_at
         type: Utf8
       - name: name
         type: Utf8
@@ -114,11 +119,11 @@ tables:
         query_param: limit
       offset_param: offset
     columns:
-      - name: $id
+      - name: id
         type: Utf8
-      - name: $createdAt
+      - name: created_at
         type: Utf8
-      - name: $updatedAt
+      - name: updated_at
         type: Utf8
       - name: name
         type: Utf8
@@ -141,11 +146,11 @@ tables:
         query_param: limit
       offset_param: offset
     columns:
-      - name: $id
+      - name: id
         type: Utf8
-      - name: $createdAt
+      - name: created_at
         type: Utf8
-      - name: $updatedAt
+      - name: updated_at
         type: Utf8
       - name: name
         type: Utf8
@@ -157,9 +162,9 @@ tables:
         type: Utf8
       - name: schedule
         type: Utf8
-      - name: scheduleNext
+      - name: schedule_next
         type: Utf8
-      - name: schedulePrevious
+      - name: schedule_previous
         type: Utf8
       - name: timeout
         type: Int64
@@ -184,17 +189,17 @@ tables:
         query_param: limit
       offset_param: offset
     columns:
-      - name: $id
+      - name: id
         type: Utf8
-      - name: $createdAt
+      - name: created_at
         type: Utf8
-      - name: $updatedAt
+      - name: updated_at
         type: Utf8
       - name: name
         type: Utf8
       - name: enabled
         type: Boolean
-      - name: maximumFileSize
+      - name: maximum_file_size
         type: Int64
       - name: encryption
         type: Boolean
