@@ -183,7 +183,8 @@ fn add_feature_override_args(mut cmd: clap::Command) -> clap::Command {
                         "Enable experimental `{key}` feature for this process"
                     ))
                     .action(ArgAction::SetTrue)
-                    .global(true),
+                    .global(true)
+                    .hide(true),
             )
             .arg(
                 Arg::new(feature.disable_flag())
@@ -192,7 +193,8 @@ fn add_feature_override_args(mut cmd: clap::Command) -> clap::Command {
                         "Disable experimental `{key}` feature for this process"
                     ))
                     .action(ArgAction::SetTrue)
-                    .global(true),
+                    .global(true)
+                    .hide(true),
             )
             .group(
                 ArgGroup::new(feature.key())
@@ -869,7 +871,7 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::{Cli, RequiredRuntime, command_enables_stderr_logs};
 
@@ -941,6 +943,24 @@ mod tests {
             .expect("global feature override should parse before subcommand");
 
         assert!(matches!(cli.command, super::Command::McpStdio(_)));
+    }
+
+    #[test]
+    fn global_feature_overrides_are_hidden_from_help() {
+        let mut help = Vec::new();
+        Cli::command()
+            .write_long_help(&mut help)
+            .expect("help should render");
+        let help = String::from_utf8(help).expect("help should be utf8");
+
+        assert!(
+            !help.contains("--enable-feedback"),
+            "feature override flags should not be visible in help: {help}"
+        );
+        assert!(
+            !help.contains("--disable-feedback"),
+            "feature override flags should not be visible in help: {help}"
+        );
     }
 
     #[test]
