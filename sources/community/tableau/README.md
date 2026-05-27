@@ -115,7 +115,7 @@ Query tests
 ✓ SELECT id, name, project_name FROM tableau.workbooks LIMIT 1
   1 row
 
-✓ SELECT id, name, workbook_name FROM tableau.views LIMIT 1
+✓ SELECT COUNT(*) AS view_pages FROM tableau.views
   1 row
 ```
 

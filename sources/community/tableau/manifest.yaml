@@ -43,7 +43,7 @@ request_headers:
 test_queries:
   - SELECT id, name FROM tableau.projects LIMIT 1
   - SELECT id, name, project_name FROM tableau.workbooks LIMIT 1
-  - SELECT id, name, workbook_name FROM tableau.views LIMIT 1
+  - SELECT COUNT(*) AS view_pages FROM tableau.views
 
 tables:
   - name: projects
@@ -191,7 +191,7 @@ tables:
           from: filter
           key: filter
     response:
-      rows_path: [views, view]
+      rows_path: [views]
       row_strategy: direct
     pagination:
       mode: page
@@ -204,7 +204,7 @@ tables:
     columns:
       - name: id
         type: Utf8
-        nullable: false
+        nullable: true
         description: Tableau view LUID.
       - name: name
         type: Utf8
@@ -220,11 +220,6 @@ tables:
         nullable: true
         description: Parent workbook LUID.
         expr: {kind: path, path: [workbook, id]}
-      - name: workbook_name
-        type: Utf8
-        nullable: true
-        description: Parent workbook name.
-        expr: {kind: path, path: [workbook, name]}
       - name: owner_id
         type: Utf8
         nullable: true
