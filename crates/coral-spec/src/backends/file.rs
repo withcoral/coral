@@ -17,11 +17,13 @@ use std::fmt;
 use url::Url;
 
 use crate::common::parse_manifest_data_type;
-use crate::inputs::collect_source_inputs_value;
+use crate::inputs::{
+    collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
+};
 use crate::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputKind, ManifestInputSpec,
-    ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
-    TemplatePart, validate_columns, validate_table_names, validate_test_queries,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec, ParsedTemplate,
+    Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace, TemplatePart,
+    validate_columns, validate_table_names, validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -33,16 +35,17 @@ pub struct FileSourceManifest {
 }
 
 impl FileSourceManifest {
+    /// Returns all source secrets declared by this manifest.
+    pub fn declared_secret_names(&self) -> BTreeSet<String> {
+        declared_secret_input_names(&self.declared_inputs)
+    }
+
     /// Returns the source secrets required by this manifest.
     ///
     /// Required declared inputs with `kind: secret` must be available before a
     /// source can compile or authenticate.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        self.declared_inputs
-            .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret && input.required)
-            .map(|input| input.key.clone())
-            .collect()
+        required_secret_input_names(&self.declared_inputs)
     }
 }
 

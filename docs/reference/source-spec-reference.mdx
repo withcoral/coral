@@ -571,6 +571,14 @@ Use `from: one_of` when a source supports multiple credential shapes. Coral
 uses the first value that is present and non-empty:
 
 ```yaml
+inputs:
+  API_KEY:
+    kind: secret
+    required: false
+  OAUTH_ACCESS_TOKEN:
+    kind: secret
+    required: false
+
 auth:
   type: HeaderAuth
   headers:

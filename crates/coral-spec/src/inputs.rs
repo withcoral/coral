@@ -253,6 +253,22 @@ pub(crate) fn collect_source_inputs_value(root: &Value) -> Result<Vec<ManifestIn
     Ok(inputs)
 }
 
+pub(crate) fn declared_secret_input_names(inputs: &[ManifestInputSpec]) -> BTreeSet<String> {
+    inputs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Secret)
+        .map(|input| input.key.clone())
+        .collect()
+}
+
+pub(crate) fn required_secret_input_names(inputs: &[ManifestInputSpec]) -> BTreeSet<String> {
+    inputs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Secret && input.required)
+        .map(|input| input.key.clone())
+        .collect()
+}
+
 fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
     let root = root
         .as_object()
@@ -960,11 +976,18 @@ fn validate_input_key(label: &str, value: &str) -> Result<()> {
 }
 
 fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
-    let declared: BTreeSet<String> = inputs.iter().map(|input| input.key.clone()).collect();
+    let declared: BTreeMap<String, ManifestInputKind> = inputs
+        .iter()
+        .map(|input| (input.key.clone(), input.kind))
+        .collect();
     validate_value(root, true, &declared)
 }
 
-fn validate_value(value: &Value, is_root: bool, declared: &BTreeSet<String>) -> Result<()> {
+fn validate_value(
+    value: &Value,
+    is_root: bool,
+    declared: &BTreeMap<String, ManifestInputKind>,
+) -> Result<()> {
     match value {
         Value::Object(map) => {
             validate_mapping(map, declared)?;
@@ -986,7 +1009,10 @@ fn validate_value(value: &Value, is_root: bool, declared: &BTreeSet<String>) -> 
     Ok(())
 }
 
-fn validate_mapping(map: &Map<String, Value>, declared: &BTreeSet<String>) -> Result<()> {
+fn validate_mapping(
+    map: &Map<String, Value>,
+    declared: &BTreeMap<String, ManifestInputKind>,
+) -> Result<()> {
     let Some(source_kind @ ("input" | "bearer")) = map.get("from").and_then(Value::as_str) else {
         return Ok(());
     };
@@ -996,9 +1022,14 @@ fn validate_mapping(map: &Map<String, Value>, declared: &BTreeSet<String>) -> Re
             "manifest '{source_kind}' value source is missing key"
         ))
     })?;
-    if !declared.contains(key) {
+    let Some(kind) = declared.get(key) else {
         return Err(ManifestError::validation(format!(
             "manifest input '{key}' is referenced but not declared under top-level inputs"
+        )));
+    };
+    if source_kind == "bearer" && *kind != ManifestInputKind::Secret {
+        return Err(ManifestError::validation(format!(
+            "manifest bearer value source '{key}' must reference a secret input"
         )));
     }
     if map.contains_key("default") {
@@ -1009,11 +1040,11 @@ fn validate_mapping(map: &Map<String, Value>, declared: &BTreeSet<String>) -> Re
     Ok(())
 }
 
-fn validate_template(template: &str, declared: &BTreeSet<String>) -> Result<()> {
+fn validate_template(template: &str, declared: &BTreeMap<String, ManifestInputKind>) -> Result<()> {
     let template = ParsedTemplate::parse(template)?;
     for token in template.tokens() {
         for key in token.input_keys() {
-            if !declared.contains(key) {
+            if !declared.contains_key(key) {
                 return Err(ManifestError::validation(format!(
                     "manifest input '{key}' is referenced but not declared under top-level inputs"
                 )));
@@ -1788,6 +1819,33 @@ tables: []
         let inputs = collect(manifest).expect("bearer key should resolve as an input key");
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].key, "OAUTH_TOKEN");
+    }
+
+    #[test]
+    fn from_bearer_value_source_requires_secret_input() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  HEADER_VALUE:
+    kind: variable
+    default: not-secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: HEADER_VALUE
+tables: []
+";
+        let error = collect(manifest).expect_err("bearer key must point at a secret input");
+        let message = error.to_string();
+        assert!(
+            message.contains("bearer value source 'HEADER_VALUE' must reference a secret input"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]
