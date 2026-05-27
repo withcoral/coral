@@ -1,6 +1,6 @@
 ---
 source: xtask/src/render.rs
-assertion_line: 440
+assertion_line: 455
 expression: "index_page(&[demo, minimal])"
 ---
 ---
@@ -30,7 +30,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 Supported sources fall into two categories.
 
 - **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.
-- **File-backed** — Coral reads local Parquet or JSONL files directly.
+- **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.
 
 ## Upgrading bundled sources
 

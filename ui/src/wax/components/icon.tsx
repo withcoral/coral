@@ -25,8 +25,10 @@ export type IconName =
   | 'CircleAlert'
   | 'Coral'
   | 'Loader'
+  | 'PanelLeft'
   | 'Search'
   | 'X'
+
 export interface IconProps {
   className?: string
   color?: IconColor

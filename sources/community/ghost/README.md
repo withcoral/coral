@@ -97,10 +97,10 @@ Ghost `posts` and `pages` return nested lists of tags and authors as structured 
 ```sql
 -- List posts and extract their first tag name
 coral sql "
-  SELECT 
+  SELECT
     title,
-    json_get_str(tags, 0, 'name') as primary_tag 
-  FROM ghost.posts 
+    json_get_str(tags, 0, 'name') as primary_tag
+  FROM ghost.posts
   LIMIT 5
 "
 ```
