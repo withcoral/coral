@@ -40,6 +40,7 @@ impl GrpcHarness {
     }
 
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
+        ensure_file_credentials_config(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(&config_dir)
             .start()
@@ -169,6 +170,22 @@ impl GrpcHarness {
     }
 }
 
+fn ensure_file_credentials_config(config_dir: &Path) {
+    std::fs::create_dir_all(config_dir).expect("create config dir");
+    let config_file = config_dir.join("config.toml");
+    let raw = std::fs::read_to_string(&config_file).unwrap_or_default();
+    if raw.contains("[credentials]") {
+        return;
+    }
+    let separator = if raw.is_empty() || raw.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let updated = format!("{raw}{separator}\n[credentials]\nstorage = \"file\"\n");
+    std::fs::write(config_file, updated).expect("write test credential config");
+}
+
 impl FailingHttpFixture {
     pub(crate) async fn new() -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -249,23 +266,26 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [
             {
                 "name": "events",
                 "description": "Fixture events",
+                "format": "jsonl",
                 "source": table_source.clone(),
                 "columns": table_columns.clone(),
             },
             {
                 "name": "messages",
                 "description": "Fixture messages",
+                "format": "jsonl",
                 "source": table_source.clone(),
                 "columns": table_columns.clone(),
             },
             {
                 "name": "sessions",
                 "description": "Fixture sessions",
+                "format": "jsonl",
                 "source": table_source,
                 "columns": table_columns,
             },
@@ -424,11 +444,12 @@ pub(crate) fn fixture_manifest_with_test_queries_yaml(
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "test_queries": test_queries,
         "tables": [{
             "name": "messages",
             "description": "Fixture messages",
+            "format": "jsonl",
             "source": {
                 "location": format!("file://{}/", data_dir.display()),
                 "glob": "**/*.jsonl",

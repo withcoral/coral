@@ -4,6 +4,7 @@ import classNames from 'classnames'
 import * as Button from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+import * as ScrollArea from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import { getTrace } from '@/lib/coral-traces-client'
 import { TraceStatus, type GetTraceResponse, type TraceSpan } from '@/generated/coral/v1/traces_pb'
@@ -42,6 +43,15 @@ const NOISY_INTERNAL_SPAN_MAX_MS = 1
 
 function clampDetailPanelRatio(ratio: number) {
   return Math.max(DETAIL_PANEL_MIN_RATIO, Math.min(DETAIL_PANEL_MAX_RATIO, ratio))
+}
+
+function focusSpanRow(spanId: string) {
+  const escapedSpanId = spanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  const row = document.querySelector<HTMLElement>(`[data-span-row-id="${escapedSpanId}"]`)
+  if (!row) return
+  row.scrollIntoView({ block: 'nearest' })
+  const focusTarget = row.querySelector<HTMLElement>('[role="button"]')
+  focusTarget?.focus({ preventScroll: true })
 }
 
 export interface ExtraDetailTab {
@@ -330,6 +340,7 @@ function WaterfallRow({
   onHover,
   reserveToggleSpace,
   row,
+  showMeta,
 }: {
   collapsed: boolean
   expanded: boolean
@@ -339,11 +350,12 @@ function WaterfallRow({
   onHover: (spanId: string | null) => void
   reserveToggleSpace: boolean
   row: TimelineRow
+  showMeta: boolean
 }) {
   const { childCount, depth, span } = row
   const tone = spanTone(span)
   const label = spanDisplayLabel(span)
-  const meta = spanDisplayMeta(span, label)
+  const meta = showMeta ? spanDisplayMeta(span, label) : ''
   const isNoisyInternalSpan =
     tone === 'span' &&
     span.kind === 'internal' &&
@@ -511,12 +523,7 @@ function TimelineWaterfall({
       const nextSpanId = navigableSpanIds[renderedHttpSpanIndex + direction]
       if (!nextSpanId) return
       onExpandedHttpSpanIdChange(nextSpanId)
-      window.requestAnimationFrame(() => {
-        const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-        document
-          .querySelector(`[data-span-row-id="${escapedSpanId}"]`)
-          ?.scrollIntoView({ block: 'nearest' })
-      })
+      window.requestAnimationFrame(() => focusSpanRow(nextSpanId))
     },
     [renderedHttpSpanIndex, navigableSpanIds, onExpandedHttpSpanIdChange],
   )
@@ -581,9 +588,9 @@ function TimelineWaterfall({
   return (
     <div className={s.waterfallRoot} ref={rootRef}>
       <div className={s.waterfallTimelinePane}>
-        <WaterfallTickRow durationMs={durationMs} />
-        <div className={s.waterfallRowsViewport} role="tree">
-          <div className={s.waterfallRowsGrid}>
+        <ScrollArea.Container className={s.waterfallRowsViewport} constrainWidth>
+          <div className={s.waterfallRowsGrid} role="tree">
+            <WaterfallTickRow durationMs={durationMs} />
             <div className={s.waterfallLabelsColumn}>
               {rows.map((row) => (
                 <WaterfallRow
@@ -598,6 +605,7 @@ function TimelineWaterfall({
                   }
                   reserveToggleSpace={proMode}
                   row={row}
+                  showMeta={proMode}
                 />
               ))}
             </div>
@@ -618,7 +626,7 @@ function TimelineWaterfall({
               ))}
             </div>
           </div>
-        </div>
+        </ScrollArea.Container>
       </div>
       {renderedHttpSpan && (
         <>
@@ -649,6 +657,7 @@ function TimelineWaterfall({
             }}
           >
             <HttpSpanDetail
+              bodySpans={spans}
               canSelectNextSpan={renderedHttpSpanIndex < navigableSpanIds.length - 1}
               canSelectPreviousSpan={renderedHttpSpanIndex > 0}
               onClose={() => onExpandedHttpSpanIdChange(null)}
@@ -723,14 +732,27 @@ export function TraceDetail({
       const nextSpanId = currentIndex >= 0 ? navigableSpanIds[currentIndex + direction] : null
       if (!nextSpanId) return
       setExpandedHttpSpanId(nextSpanId)
-      window.requestAnimationFrame(() => {
-        const escapedSpanId = nextSpanId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-        document
-          .querySelector(`[data-span-row-id="${escapedSpanId}"]`)
-          ?.scrollIntoView({ block: 'nearest' })
-      })
+      window.requestAnimationFrame(() => focusSpanRow(nextSpanId))
     },
     [expandedHttpSpanId, navigableSpanIds],
+  )
+
+  const handleNewerTraceShortcut = useCallback(
+    (event: KeyboardEvent) => {
+      if (!newerTraceId) return
+      event.preventDefault()
+      onSelectTrace?.(newerTraceId)
+    },
+    [newerTraceId, onSelectTrace],
+  )
+
+  const handleOlderTraceShortcut = useCallback(
+    (event: KeyboardEvent) => {
+      if (!olderTraceId) return
+      event.preventDefault()
+      onSelectTrace?.(olderTraceId)
+    },
+    [olderTraceId, onSelectTrace],
   )
 
   const handleEscapeShortcut = useCallback(
@@ -745,32 +767,44 @@ export function TraceDetail({
     [expandedHttpSpanId, onClose],
   )
 
-  const handlePreviousSpanShortcut = useCallback(
-    (event: KeyboardEvent) => {
-      if (!expandedHttpSpanId) return
-      if (
-        event.target instanceof HTMLElement &&
-        event.target.closest('[data-span-inspector="true"]')
-      )
-        return
-      event.preventDefault()
-      selectAdjacentSpan(-1)
+  const focusFirstSpan = useCallback(
+    (direction: -1 | 1) => {
+      if (navigableSpanIds.length === 0) return false
+      const firstSpanId =
+        direction === 1 ? navigableSpanIds[0] : navigableSpanIds[navigableSpanIds.length - 1]
+      setExpandedHttpSpanId(firstSpanId)
+      window.requestAnimationFrame(() => focusSpanRow(firstSpanId))
+      return true
     },
-    [expandedHttpSpanId, selectAdjacentSpan],
+    [navigableSpanIds],
   )
 
-  const handleNextSpanShortcut = useCallback(
-    (event: KeyboardEvent) => {
-      if (!expandedHttpSpanId) return
+  const handleSpanArrowShortcut = useCallback(
+    (direction: -1 | 1) => (event: KeyboardEvent) => {
+      const target = event.target
       if (
-        event.target instanceof HTMLElement &&
-        event.target.closest('[data-span-inspector="true"]')
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))
       )
         return
+      if (!expandedHttpSpanId) {
+        if (!focusFirstSpan(direction)) return
+        event.preventDefault()
+        return
+      }
       event.preventDefault()
-      selectAdjacentSpan(1)
+      selectAdjacentSpan(direction)
     },
-    [expandedHttpSpanId, selectAdjacentSpan],
+    [expandedHttpSpanId, focusFirstSpan, selectAdjacentSpan],
+  )
+
+  const handlePreviousSpanShortcut = useMemo(
+    () => handleSpanArrowShortcut(-1),
+    [handleSpanArrowShortcut],
+  )
+  const handleNextSpanShortcut = useMemo(
+    () => handleSpanArrowShortcut(1),
+    [handleSpanArrowShortcut],
   )
   const summary = detail?.summary
   const httpSpans = useMemo(() => detail?.spans.filter(isHttpSpan) ?? [], [detail?.spans])
@@ -831,22 +865,36 @@ export function TraceDetail({
           <span className={s.statusBadge} data-tone={statusTone(summary.status)}>
             {statusLabel(summary.status)}
           </span>
-          <Button.IconButton
-            disabled={!newerTraceId}
-            name="ArrowUp"
-            onClick={() => newerTraceId && onSelectTrace?.(newerTraceId)}
-            size="32"
-            tooltipText="Newer query"
-            variant="bare"
-          />
-          <Button.IconButton
-            disabled={!olderTraceId}
-            name="ArrowDown"
-            onClick={() => olderTraceId && onSelectTrace?.(olderTraceId)}
-            size="32"
-            tooltipText="Older query"
-            variant="bare"
-          />
+          <KeyboardShortcut
+            handler={handleNewerTraceShortcut}
+            shortcut="$mod+ArrowUp"
+            tooltipContent="Newer query"
+            tooltipSide="bottom"
+          >
+            <Button.IconButton
+              ariaLabel="Newer query"
+              disabled={!newerTraceId}
+              name="ArrowUp"
+              onClick={() => newerTraceId && onSelectTrace?.(newerTraceId)}
+              size="32"
+              variant="bare"
+            />
+          </KeyboardShortcut>
+          <KeyboardShortcut
+            handler={handleOlderTraceShortcut}
+            shortcut="$mod+ArrowDown"
+            tooltipContent="Older query"
+            tooltipSide="bottom"
+          >
+            <Button.IconButton
+              ariaLabel="Older query"
+              disabled={!olderTraceId}
+              name="ArrowDown"
+              onClick={() => olderTraceId && onSelectTrace?.(olderTraceId)}
+              size="32"
+              variant="bare"
+            />
+          </KeyboardShortcut>
           <KeyboardShortcut
             handler={handleEscapeShortcut}
             shortcut="Escape"

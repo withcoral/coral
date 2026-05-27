@@ -187,6 +187,17 @@ impl SourceValidationReport {
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// Optional positive byte cap for pre-export HTTP body preview capture.
+    pub http_body_capture_max_bytes: Option<usize>,
+}
+
+impl QueryRuntimeContext {
+    /// Adds app-owned local trace body capture byte cap to this runtime context.
+    #[must_use]
+    pub fn with_http_body_capture_max_bytes(mut self, max_bytes: Option<usize>) -> Self {
+        self.http_body_capture_max_bytes = max_bytes.filter(|bytes| *bytes > 0);
+        self
+    }
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.

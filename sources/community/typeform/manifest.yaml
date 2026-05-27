@@ -1,0 +1,653 @@
+name: typeform
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query forms, workspaces, themes, responses, and webhooks from Typeform.
+inputs:
+  TYPEFORM_API_BASE:
+    kind: variable
+    default: https://api.typeform.com
+    hint: |
+      Base URL for the Typeform API. Keep the default for most accounts.
+      EU data-center accounts should use `https://api.eu.typeform.com`
+      or `https://api.typeform.eu`.
+      See [Typeform base URL docs](https://www.typeform.com/developers/get-started/).
+  TYPEFORM_PERSONAL_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Your Typeform Personal Access Token. Generate one in your Typeform
+      account under Settings > Personal Tokens. The token is sent as
+      `Authorization: Bearer <token>`. This source requires the following
+      read scopes: `forms:read`, `workspaces:read`, `themes:read`,
+      `responses:read`, and `webhooks:read`.
+      See [Typeform scopes](https://www.typeform.com/developers/get-started/scopes/).
+base_url: "{{input.TYPEFORM_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.TYPEFORM_PERSONAL_ACCESS_TOKEN}}
+test_queries:
+  - SELECT * FROM typeform.forms LIMIT 1
+  - SELECT * FROM typeform.workspaces LIMIT 1
+tables:
+  - name: forms
+    description: Forms in the Typeform account
+    guide: |
+      Each row is one form in the account. Use `id` as the `form_id`
+      filter when querying `typeform.responses` or `typeform.webhooks`.
+      Filter by `workspace_id` to scope results to a single workspace,
+      or use `search` for substring matches on form titles.
+      `is_public` indicates whether the form accepts public submissions.
+      `display_url` is the public URL for the form.
+    filters:
+      - name: workspace_id
+        required: false
+      - name: search
+        required: false
+    request:
+      method: GET
+      path: /forms
+      query:
+        - name: workspace_id
+          from: filter
+          key: workspace_id
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 200
+        max: 200
+        query_param: page_size
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Form ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Form title
+        expr:
+          kind: path
+          path:
+            - title
+      - name: is_public
+        type: Boolean
+        nullable: true
+        description: Whether the form is publicly accessible for submissions
+        expr:
+          kind: path
+          path:
+            - settings
+            - is_public
+      - name: display_url
+        type: Utf8
+        nullable: true
+        description: Public URL to view and submit the form
+        expr:
+          kind: path
+          path:
+            - _links
+            - display
+      - name: self_url
+        type: Utf8
+        nullable: true
+        description: API URL for this form
+        expr:
+          kind: path
+          path:
+            - self
+            - href
+      - name: theme_url
+        type: Utf8
+        nullable: true
+        description: API URL of the theme applied to this form
+        expr:
+          kind: path
+          path:
+            - theme
+            - href
+      - name: last_updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the form was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_updated_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the form was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+  - name: workspaces
+    description: Workspaces in the Typeform account
+    guide: |
+      Each row is one workspace. Use `id` to filter `typeform.forms` by
+      `workspace_id`. The `forms` column is a JSON array containing the
+      form count and API link for the workspace. Use `search` for
+      substring matches on workspace names.
+    filters:
+      - name: search
+        required: false
+    request:
+      method: GET
+      path: /workspaces
+      query:
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 200
+        max: 200
+        query_param: page_size
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Workspace ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Workspace name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: Organization account ID
+        expr:
+          kind: path
+          path:
+            - account_id
+      - name: shared
+        type: Boolean
+        nullable: true
+        description: Whether this workspace is shared with a team
+        expr:
+          kind: path
+          path:
+            - shared
+      - name: forms
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of form references for this workspace. Each object
+          contains a count (number of forms) and href (API link). Use
+          json_get_int to extract the count.
+        expr:
+          kind: path
+          path:
+            - forms
+  - name: themes
+    description: Themes available in the Typeform account
+    guide: |
+      Each row is one theme. Themes define the visual appearance of
+      forms — colors, fonts, and background settings. Use this table
+      to audit which themes are in use or to compare styling across
+      forms. `visibility` indicates whether the theme is private,
+      public, or a Typeform default.
+    request:
+      method: GET
+      path: /themes
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 200
+        max: 200
+        query_param: page_size
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Theme ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Theme name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Theme visibility (private, public, or default)
+        expr:
+          kind: path
+          path:
+            - visibility
+      - name: has_transparent_button
+        type: Boolean
+        nullable: true
+        description: Whether buttons in the theme are transparent
+        expr:
+          kind: path
+          path:
+            - has_transparent_button
+      - name: color_question
+        type: Utf8
+        nullable: true
+        description: Hex color for questions
+        expr:
+          kind: path
+          path:
+            - colors
+            - question
+      - name: color_answer
+        type: Utf8
+        nullable: true
+        description: Hex color for answers
+        expr:
+          kind: path
+          path:
+            - colors
+            - answer
+      - name: color_button
+        type: Utf8
+        nullable: true
+        description: Hex color for buttons
+        expr:
+          kind: path
+          path:
+            - colors
+            - button
+      - name: color_background
+        type: Utf8
+        nullable: true
+        description: Hex color for the background
+        expr:
+          kind: path
+          path:
+            - colors
+            - background
+      - name: font
+        type: Utf8
+        nullable: true
+        description: Font family used in form fields
+        expr:
+          kind: path
+          path:
+            - fields
+            - font
+      - name: font_size
+        type: Utf8
+        nullable: true
+        description: Font size for form fields (small, medium, large)
+        expr:
+          kind: path
+          path:
+            - fields
+            - font_size
+      - name: background_href
+        type: Utf8
+        nullable: true
+        description: URL of the background image
+        expr:
+          kind: path
+          path:
+            - background
+            - href
+      - name: background_layout
+        type: Utf8
+        nullable: true
+        description: Background image layout (fullscreen, repeat, no-repeat)
+        expr:
+          kind: path
+          path:
+            - background
+            - layout
+      - name: background_brightness
+        type: Float64
+        nullable: true
+        description: Background brightness from -1 (dark) to 1 (bright)
+        expr:
+          kind: path
+          path:
+            - background
+            - brightness
+  - name: responses
+    description: Responses submitted for a specific form
+    guide: |
+      Requires `form_id` from `typeform.forms`. Each row is one
+      response submission. Use `since` and `until` (ISO 8601 timestamps)
+      to restrict results to a time window. Use `query` for full-text
+      search across response answers.
+
+      The `answers` column contains a JSON array with each answer keyed
+      by the field ID and type. Use `json_get_str`, `json_get_int`, or
+      other JSON functions to extract individual answer values.
+
+      This table fetches up to 1000 responses per request (the Typeform
+      API maximum). For forms with more than 1000 responses, use
+      `before` or `after` filters with the `token` value from the last
+      returned row to page through the full result set. You can also
+      narrow results with `since` / `until` time-window filters.
+    filters:
+      - name: form_id
+        required: true
+      - name: since
+        required: false
+      - name: until
+        required: false
+      - name: before
+        required: false
+      - name: after
+        required: false
+      - name: query
+        required: false
+    request:
+      method: GET
+      path: /forms/{{filter.form_id}}/responses
+      query:
+        - name: page_size
+          from: literal
+          value: "1000"
+        - name: since
+          from: filter
+          key: since
+        - name: until
+          from: filter
+          key: until
+        - name: before
+          from: filter
+          key: before
+        - name: after
+          from: filter
+          key: after
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: response_id
+        type: Utf8
+        nullable: false
+        description: Unique response identifier
+        expr:
+          kind: path
+          path:
+            - response_id
+      - name: form_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Form ID from the required filter
+        expr:
+          kind: from_filter
+          key: form_id
+      - name: landing_id
+        type: Utf8
+        nullable: true
+        description: Landing ID for the response session
+        expr:
+          kind: path
+          path:
+            - landing_id
+      - name: token
+        type: Utf8
+        nullable: true
+        description: Response token used for cursor-based pagination
+        expr:
+          kind: path
+          path:
+            - token
+      - name: landed_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the respondent first opened the form
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - landed_at
+      - name: submitted_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the response was submitted
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - submitted_at
+      - name: answers
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of answers. Each object contains a field reference
+          (id, type, ref) and the answer value. Use json_get_str or
+          json_get_int to extract individual answers.
+        expr:
+          kind: path
+          path:
+            - answers
+      - name: calculated_score
+        type: Int64
+        nullable: true
+        description: Calculated quiz score (only present for quiz-type forms)
+        expr:
+          kind: path
+          path:
+            - calculated
+            - score
+      - name: hidden
+        type: Json
+        nullable: true
+        description: >-
+          JSON object of hidden fields passed to the form via URL
+          parameters. Use json_get_str to extract specific hidden values.
+        expr:
+          kind: path
+          path:
+            - hidden
+      - name: variables
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of form variables and their computed values for
+          this response.
+        expr:
+          kind: path
+          path:
+            - variables
+      - name: browser
+        type: Utf8
+        nullable: true
+        description: Browser used by the respondent
+        expr:
+          kind: path
+          path:
+            - metadata
+            - browser
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: Platform used by the respondent (desktop, mobile, tablet)
+        expr:
+          kind: path
+          path:
+            - metadata
+            - platform
+      - name: referer
+        type: Utf8
+        nullable: true
+        description: Referer URL where the respondent accessed the form
+        expr:
+          kind: path
+          path:
+            - metadata
+            - referer
+      - name: network_id
+        type: Utf8
+        nullable: true
+        description: Network ID of the respondent
+        expr:
+          kind: path
+          path:
+            - metadata
+            - network_id
+  - name: webhooks
+    description: Webhook subscriptions configured for a specific form
+    guide: |
+      Requires `form_id` from `typeform.forms`. Each row is one webhook
+      subscription. Use `enabled` to check which webhooks are active.
+      `tag` is the unique webhook identifier within a form. The
+      `verify_ssl` column shows whether Typeform validates TLS
+      certificates when delivering payloads.
+
+      Note: the `secret` column is intentionally omitted — webhook
+      signing secrets are sensitive credentials.
+    filters:
+      - name: form_id
+        required: true
+    request:
+      method: GET
+      path: /forms/{{filter.form_id}}/webhooks
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Webhook ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: form_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Form ID from the required filter
+        expr:
+          kind: from_filter
+          key: form_id
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: Unique name assigned to this webhook
+        expr:
+          kind: path
+          path:
+            - tag
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Destination URL for webhook payloads
+        expr:
+          kind: path
+          path:
+            - url
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the webhook is active
+        expr:
+          kind: path
+          path:
+            - enabled
+      - name: verify_ssl
+        type: Boolean
+        nullable: true
+        description: Whether Typeform verifies TLS certificates on delivery
+        expr:
+          kind: path
+          path:
+            - verify_ssl
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the webhook was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the webhook was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
