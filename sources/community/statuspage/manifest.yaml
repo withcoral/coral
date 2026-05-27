@@ -34,6 +34,14 @@ request_headers:
     from: literal
     value: application/json
 
+# Statuspage returns HTTP 420 (legacy) or 429 (current) when the rate limit is exceeded.
+# Both codes carry a Retry-After header indicating seconds to wait.
+# Coral handles 429 natively; extra_statuses adds 420 for legacy responses.
+# See: https://developer.statuspage.io/#section/Rate-Limiting
+rate_limit:
+  extra_statuses: [420]
+  retry_after_header: Retry-After
+
 test_queries:
   - SELECT * FROM statuspage.incidents LIMIT 1
   - SELECT * FROM statuspage.all_incidents LIMIT 1
@@ -518,7 +526,8 @@ tables:
         nullable: true
         description: >-
           If true, this row is a component group header, not an individual component.
-          Group header rows have no status value — status will be NULL.
+          Group header rows may have status set to 'operational' or NULL depending
+          on account configuration.
         expr:
           kind: path
           path:

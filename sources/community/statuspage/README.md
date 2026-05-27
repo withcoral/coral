@@ -15,6 +15,8 @@ Requires a `STATUSPAGE_API_KEY` and a `STATUSPAGE_PAGE_ID`.
 - The API key is a long hex string (e.g. `89a229ce1a8dbcf9ff30430fbe...`)
 - The page ID is a short alphanumeric ID (e.g. `gytm4qzbx9t6`) — not the subdomain
 
+> **Security note:** Statuspage API keys are page-level management credentials that carry full read and write access to your status page — including creating and resolving incidents and updating component statuses. This source only performs GET requests, but the key itself is not scoped to read-only. Use a dedicated key for Coral integrations where possible, and rotate it if it is ever exposed. Statuspage does not currently support read-only API key scoping.
+
 ```bash
 STATUSPAGE_API_KEY=<token> STATUSPAGE_PAGE_ID=<page_id> \
   coral source add --file sources/community/statuspage/manifest.yaml
@@ -271,7 +273,7 @@ All scheduled maintenance windows. Queries `/incidents/scheduled`.
 | `name` | `Utf8` | Component display name |
 | `status` | `Utf8` | `operational`, `degraded_performance`, `partial_outage`, `major_outage`, or `under_maintenance` |
 | `description` | `Utf8` | Optional description of the component |
-| `group` | `Boolean` | If `true`, this row is a component group header — `status` will be `NULL` |
+| `group` | `Boolean` | If `true`, this row is a component group header — `status` may be `operational` or `NULL` |
 | `created_at` | `Timestamp` | When the component was created |
 | `updated_at` | `Timestamp` | Most recent status change time |
 | `position` | `Int64` | Display order on the status page |
@@ -298,8 +300,8 @@ All tables use page-based pagination with a page size of 100 (`per_page=100`). F
 
 - The `incidents` table queries `/incidents/unresolved` — it never returns resolved incidents. Use `all_incidents` for resolved and historical data.
 - The `scheduled_maintenances` table queries `/incidents/scheduled`. Status values (`scheduled`, `in_progress`, `verifying`, `completed`) are distinct from realtime incident statuses.
-- The `components` table includes group header rows (`group = true`) with `NULL` status. Add `WHERE group != true` or `WHERE status IS NOT NULL` to exclude them.
+- The `components` table includes group header rows (`group = true`). These rows may have `status = 'operational'` or `NULL` depending on account configuration. Add `WHERE group != true` to exclude them reliably.
 - `incident_updates__body` joins all update message bodies in the order the API returns them (newest-first). Each update is separated by a newline character.
-- The Statuspage Management API is rate-limited to **1 request/second** per token.
+- The Statuspage Management API is rate-limited to **1 request/second** per token (60-second rolling window). Exceeding the limit returns HTTP `420` (legacy) or `429` (current), both carrying a `Retry-After` header. The source spec declares a `rate_limit` block so Coral automatically backs off and retries on both codes.
 - The `all_incidents` table caps automatic pagination at **10 pages (1,000 incidents)** to avoid unbounded fetches against long-running pages. Use an explicit SQL `LIMIT` to fetch fewer, or raise the cap by adjusting `max_pages` in the source spec for your use case.
 - HTTP 404 from any table is treated as a real error, not an empty result. A 404 means your `STATUSPAGE_PAGE_ID` is invalid or the API key does not have access to the page — check your inputs with `coral source test statuspage`.
