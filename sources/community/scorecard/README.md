@@ -21,7 +21,7 @@ The [Open Source Security Foundation (OpenSSF) Scorecard](https://github.com/oss
 
 Each check produces a score from **0** (lowest) to **10** (highest). Score **-1** means the check is not applicable (e.g. no releases to sign). Scores are a heuristic signal — checks also carry separate risk levels in the upstream Scorecard project.
 
-> **Note:** The Scorecard API serves precomputed results for repositories already indexed by OpenSSF. Repositories not yet tracked return a 404. See the [Scorecard REST API docs](https://github.com/ossf/scorecard#scorecard-rest-api) for details on coverage.
+> **Note:** The Scorecard API serves precomputed results for repositories already indexed by OpenSSF. Querying an unindexed repository returns zero rows (the underlying API 404 is handled gracefully). See the [Scorecard REST API docs](https://github.com/ossf/scorecard#scorecard-rest-api) for details on coverage.
 
 ## Tables
 
@@ -114,7 +114,7 @@ The OpenSSF Scorecard API is free and publicly accessible. No API key is require
 
 ## Limitations
 
-- Only covers public GitHub repositories **already indexed by OpenSSF Scorecard**. Repositories not in the index return a 404 rather than an empty result.
+- Only covers public GitHub repositories **already indexed by OpenSSF Scorecard**. Querying an unindexed repository returns zero rows — the underlying API 404 is converted to an empty result by `allow_404_empty: true`.
 - Scores are updated **weekly** — they reflect the state of the repo at last scan time.
 - `Branch-Protection` may return -1 due to GitHub token limitations in the Scorecard service.
 - The set of checks varies by repository — not all 18 checks apply to every project.
