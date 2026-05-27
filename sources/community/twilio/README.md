@@ -18,8 +18,6 @@ Requires two inputs:
 
 Authentication uses HTTP Basic Auth (`Account SID` as username, `Auth Token` as password) per the [Twilio API authentication docs](https://www.twilio.com/docs/iam/api-keys).
 
-> **Tip:** For production environments, Twilio recommends using API Keys instead of your primary Auth Token. API Key SID and Secret work identically as Basic Auth credentials.
-
 ## Available Tables
 
 ### Messaging
@@ -27,7 +25,6 @@ Authentication uses HTTP Basic Auth (`Account SID` as username, `Auth Token` as 
 | Table | Required Filter | Description |
 |---|---|---|
 | `messages` | None | All SMS, MMS, and WhatsApp messages — body, from/to, status, direction, price, segments, error codes. Filterable by phone number and date range. |
-| `message_feedback` | `message_sid` | Carrier delivery confirmation for a specific message. |
 
 ### Voice
 
@@ -54,13 +51,6 @@ Authentication uses HTTP Basic Auth (`Account SID` as username, `Auth Token` as 
 | `account` | None | Singleton — the authenticated Twilio account details (SID, type, status). |
 | `phone_numbers` | None | Provisioned number inventory — E.164 number, capabilities (SMS/voice/MMS/fax), webhook URLs, emergency address. |
 | `applications` | None | TwiML Applications — reusable webhook configurations for voice and SMS routing. |
-
-### Debugging & Monitoring
-
-| Table | Required Filter | Description |
-|---|---|---|
-| `alerts` | None | Debugging alerts from Twilio Monitor — error codes, log levels, webhook failures, response bodies. |
-| `notifications` | None | Event logs from call/message processing — errors, warnings, notices with request/response details. |
 
 ## Quick Start
 
@@ -196,26 +186,6 @@ SELECT friendly_name, current_size, max_size, average_wait_time
 FROM twilio.queues;
 ```
 
-### Error Debugging
-
-```sql
--- Recent error alerts
-SELECT sid, error_code, log_level, alert_text, request_url, date_created
-FROM twilio.alerts
-WHERE log_level = 'error'
-LIMIT 25;
-
--- Webhook failure analysis
-SELECT error_code, request_url, response_body, date_created
-FROM twilio.alerts
-WHERE request_url IS NOT NULL;
-
--- Notification errors from calls
-SELECT sid, call_sid, error_code, log, message_text, request_url
-FROM twilio.notifications
-WHERE log = '0';
-```
-
 ### Multi-Table Joins
 
 ```sql
@@ -245,7 +215,7 @@ Use `LIMIT` clauses on large tables (`messages`, `calls`, `recordings`) and date
 
 ## Pagination
 
-All list endpoints use Twilio's **`next_page_uri`** pagination pattern. The API returns a `next_page_uri` field in each response, which contains the URL for the next page. Default page size is 50; maximum is 1,000 (configurable via `PageSize`).
+All list endpoints use offset-based pagination via the `Page` and `PageSize` query parameters. Default page size is 50; maximum is 1,000.
 
 ## Join Reference
 
@@ -259,9 +229,6 @@ recordings.conference_sid        → conferences.sid
 transcriptions.recording_sid     → recordings.sid
 phone_numbers.voice_application_sid → applications.sid
 phone_numbers.sms_application_sid   → applications.sid
-notifications.call_sid           → calls.sid
-alerts.resource_sid              → calls.sid / messages.sid / phone_numbers.sid
-message_feedback.message_sid     → messages.sid
 ```
 
 ## Twilio Error Code Reference
