@@ -52,8 +52,12 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: '{{input.LINEAR_API_KEY || concat("Bearer ", input.LINEAR_OAUTH_ACCESS_TOKEN)}}'
+      from: one_of
+      values:
+        - from: input
+          key: LINEAR_API_KEY
+        - from: bearer
+          key: LINEAR_OAUTH_ACCESS_TOKEN
 test_queries:
   - SELECT * FROM linear.users LIMIT 1
 functions:

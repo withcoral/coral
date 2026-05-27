@@ -872,11 +872,15 @@ async fn get_source_info_returns_available_bundled_metadata() {
     };
     let credential = linear_oauth_token.credential.as_ref().expect("credential");
     assert_eq!(credential.methods.len(), 1);
-    let ProtoCredentialMethod::OauthAuthorizationCode(oauth) =
+    let ProtoCredentialMethod::Oauth(oauth) =
         credential.methods[0].method.as_ref().expect("method")
     else {
         panic!("expected oauth method");
     };
+    assert_eq!(
+        coral_api::v1::OauthCredentialFlowType::try_from(oauth.flow).expect("oauth flow"),
+        coral_api::v1::OauthCredentialFlowType::AuthorizationCode
+    );
     assert_eq!(
         oauth
             .client
