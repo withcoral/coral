@@ -26,7 +26,7 @@ tables:
           path:
             - timestamp
       - name: latitude
-        type: Utf8
+        type: Float64
         nullable: false
         description: Current latitude of the ISS.
         expr:
@@ -35,7 +35,7 @@ tables:
             - iss_position
             - latitude
       - name: longitude
-        type: Utf8
+        type: Float64
         nullable: false
         description: Current longitude of the ISS.
         expr:
