@@ -321,7 +321,8 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn std::error::Error>> {
+async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client_with_args(&server, &["--enable-feedback"]).await?;
 
@@ -432,7 +433,7 @@ feedback = false
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_enable_feedback_flag_overrides_config_disabled()
+async fn mcp_stdio_enable_feedback_override_overrides_config_disabled()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     write_config(
@@ -448,6 +449,30 @@ feedback = false
     assert!(
         tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
         "feedback tool should be listed when --enable-feedback is set"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_disable_feedback_override_overrides_config_enabled()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r"
+[features]
+feedback = true
+",
+    )?;
+    let client = start_mcp_client_with_args(&server, &["--disable-feedback"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().all(|tool| tool.name.as_ref() != "feedback"),
+        "feedback tool should not be listed when --disable-feedback is set"
     );
 
     client.cancel().await?;

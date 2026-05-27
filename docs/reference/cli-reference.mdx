@@ -3,6 +3,21 @@ title: "CLI reference"
 description: "Reference for Coral CLI commands and options."
 ---
 
+## Global feature flags
+
+Experimental runtime features can be overridden for a single process with
+top-level flags:
+
+```shellscript
+coral --enable-<FEATURE> <COMMAND>
+coral --disable-<FEATURE> <COMMAND>
+coral --enable-feedback mcp-stdio
+coral --disable-feedback mcp-stdio
+```
+
+These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
+`coral features disable <FEATURE>` to persist a preference.
+
 ## `coral sql`
 
 Run one SQL query and exit.
@@ -145,7 +160,8 @@ coral features list
 
 ### `coral features enable <FEATURE>`
 
-Persistently enable an experimental runtime feature.
+Persistently enables an experimental runtime feature. The default for each
+feature is listed in [Configuration](/reference/configuration#runtime-features).
 
 ```shellscript
 coral features enable feedback
@@ -153,10 +169,7 @@ coral features enable feedback
 
 ### `coral features disable <FEATURE>`
 
-Disable updates `config.toml` so the feature is not enabled for future runs.
-For features disabled by default, such as `feedback`, Coral removes the opt-in
-and falls back to the built-in default. The default for each feature is listed
-in [Configuration](/reference/configuration#runtime-features).
+Persistently disables an experimental runtime feature.
 
 ```shellscript
 coral features disable feedback

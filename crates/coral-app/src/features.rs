@@ -41,6 +41,18 @@ impl Feature {
     pub fn description(self) -> &'static str {
         spec_for_feature(self).description
     }
+
+    /// Returns the long flag name for process-local enable overrides.
+    #[must_use]
+    pub fn enable_flag(self) -> &'static str {
+        spec_for_feature(self).enable_flag
+    }
+
+    /// Returns the long flag name for process-local disable overrides.
+    #[must_use]
+    pub fn disable_flag(self) -> &'static str {
+        spec_for_feature(self).disable_flag
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,6 +61,8 @@ struct FeatureSpec {
     key: &'static str,
     default_enabled: bool,
     description: &'static str,
+    enable_flag: &'static str,
+    disable_flag: &'static str,
 }
 
 const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
@@ -56,6 +70,8 @@ const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
     key: "feedback",
     default_enabled: false,
     description: "Expose the optional MCP feedback tool.",
+    enable_flag: "enable-feedback",
+    disable_flag: "disable-feedback",
 }];
 
 /// How a feature's value is configured in Coral's local config.
@@ -127,10 +143,6 @@ impl Features {
         self.enabled.get(&feature).copied().unwrap_or(false)
     }
 
-    fn feedback_enabled(&self, explicit_enable: bool) -> bool {
-        explicit_enable || self.enabled(Feature::Feedback)
-    }
-
     fn from_raw_overrides(raw: &RawFeatureOverrides) -> Self {
         let mut features = Self::default();
         for (key, value) in raw.iter() {
@@ -153,20 +165,31 @@ impl Features {
         }
         features
     }
+
+    fn apply_overrides(&mut self, overrides: &FeatureOverrides) {
+        for (feature, enabled) in overrides.iter() {
+            self.enabled.insert(feature, enabled);
+        }
+    }
 }
 
-/// Resolves whether the MCP feedback tool should be enabled for this process.
-///
-/// Explicit process flags can enable feedback for one run, but cannot disable a
-/// persistent opt-in from local config.
-///
-/// # Errors
-///
-/// Returns [`AppError`] if the local config path cannot be discovered or
-/// `config.toml` exists but cannot be read or parsed.
-pub fn resolve_feedback_enabled(explicit_enable: bool) -> Result<bool, AppError> {
-    let features = FeatureStore::discover(None)?.load()?;
-    Ok(features.feedback_enabled(explicit_enable))
+/// Process-local runtime feature overrides.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeatureOverrides {
+    enabled: BTreeMap<Feature, bool>,
+}
+
+impl FeatureOverrides {
+    /// Sets a process-local override for a known feature.
+    pub fn set(&mut self, feature: Feature, enabled: bool) {
+        self.enabled.insert(feature, enabled);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (Feature, bool)> + '_ {
+        self.enabled
+            .iter()
+            .map(|(feature, enabled)| (*feature, *enabled))
+    }
 }
 
 /// Loader for runtime features from Coral's local config.
@@ -197,6 +220,18 @@ impl FeatureStore {
         Ok(Features::from_raw_overrides(&raw))
     }
 
+    /// Loads effective runtime feature state, applying process-local overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if `config.toml` exists but cannot be read or parsed.
+    pub fn load_with_overrides(&self, overrides: &FeatureOverrides) -> Result<Features, AppError> {
+        let raw = crate::state::load_raw_feature_overrides(&self.layout)?;
+        let mut features = Features::from_raw_overrides(&raw);
+        features.apply_overrides(overrides);
+        Ok(features)
+    }
+
     /// Lists every known feature with configured and effective status.
     ///
     /// # Errors
@@ -205,12 +240,22 @@ impl FeatureStore {
     pub fn statuses(&self) -> Result<Vec<FeatureStatus>, AppError> {
         let raw = crate::state::load_raw_feature_overrides(&self.layout)?;
         let features = Features::from_raw_overrides(&raw);
-        let mut statuses = FEATURE_SPECS
-            .iter()
-            .map(|spec| status_from_raw(spec, &raw, &features))
-            .collect::<Vec<_>>();
-        statuses.sort_by_key(|status| status.key);
-        Ok(statuses)
+        Ok(statuses_from_raw(&raw, &features))
+    }
+
+    /// Lists every known feature, applying process-local overrides to effective state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if `config.toml` exists but cannot be read or parsed.
+    pub fn statuses_with_overrides(
+        &self,
+        overrides: &FeatureOverrides,
+    ) -> Result<Vec<FeatureStatus>, AppError> {
+        let raw = crate::state::load_raw_feature_overrides(&self.layout)?;
+        let mut features = Features::from_raw_overrides(&raw);
+        features.apply_overrides(overrides);
+        Ok(statuses_from_raw(&raw, &features))
     }
 
     /// Persists a local opt-in override for a known feature key.
@@ -223,18 +268,14 @@ impl FeatureStore {
         crate::state::set_raw_feature_override(&self.layout, spec.key, true)
     }
 
-    /// Persists a local opt-out for a known feature key, clearing default-false overrides.
+    /// Persists a local opt-out for a known feature key.
     ///
     /// # Errors
     ///
     /// Returns [`AppError`] if the key is unknown or the local config cannot be updated.
     pub fn disable(&self, key: &str) -> Result<(), AppError> {
         let spec = spec_for_key(key).ok_or_else(|| unknown_feature_error(key))?;
-        if spec.default_enabled {
-            crate::state::set_raw_feature_override(&self.layout, spec.key, false)
-        } else {
-            crate::state::clear_raw_feature_override(&self.layout, spec.key)
-        }
+        crate::state::set_raw_feature_override(&self.layout, spec.key, false)
     }
 }
 
@@ -263,6 +304,15 @@ fn status_from_raw(
         enabled: features.enabled(spec.feature),
         description: spec.description,
     }
+}
+
+fn statuses_from_raw(raw: &RawFeatureOverrides, features: &Features) -> Vec<FeatureStatus> {
+    let mut statuses = FEATURE_SPECS
+        .iter()
+        .map(|spec| status_from_raw(spec, raw, features))
+        .collect::<Vec<_>>();
+    statuses.sort_by_key(|status| status.key);
+    statuses
 }
 
 fn unknown_feature_error(key: &str) -> AppError {
@@ -304,10 +354,14 @@ mod tests {
     }
 
     #[test]
-    fn explicit_feedback_enable_overrides_default_disabled_feature() {
-        let features = Features::default();
+    fn process_overrides_enable_default_disabled_feature() {
+        let mut overrides = FeatureOverrides::default();
+        overrides.set(Feature::Feedback, true);
+        let mut features = Features::default();
 
-        assert!(features.feedback_enabled(true));
+        features.apply_overrides(&overrides);
+
+        assert!(features.enabled(Feature::Feedback));
     }
 
     #[test]
@@ -327,11 +381,15 @@ mod tests {
     }
 
     #[test]
-    fn explicit_feedback_enable_overrides_config_disabled_feature() {
-        let raw = raw([("feedback", RawFeatureValue::Bool(false))]);
-        let features = Features::from_raw_overrides(&raw);
+    fn process_overrides_disable_config_enabled_feature() {
+        let mut overrides = FeatureOverrides::default();
+        overrides.set(Feature::Feedback, false);
+        let raw = raw([("feedback", RawFeatureValue::Bool(true))]);
+        let mut features = Features::from_raw_overrides(&raw);
 
-        assert!(features.feedback_enabled(true));
+        features.apply_overrides(&overrides);
+
+        assert!(!features.enabled(Feature::Feedback));
     }
 
     #[test]

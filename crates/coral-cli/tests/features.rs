@@ -99,6 +99,35 @@ fn features_list_shows_feedback_status_without_state_creation() {
 }
 
 #[test]
+fn features_list_applies_global_process_override_without_state_creation() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("missing-config");
+
+    let assert = coral_cmd(&config_dir)
+        .args(["--enable-feedback", "features", "list"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("feedback"),
+        "missing feedback row: {stdout}"
+    );
+    assert!(
+        stdout.contains("default"),
+        "config status should remain default: {stdout}"
+    );
+    assert!(
+        stdout.contains("true"),
+        "process override should enable feature in effective state: {stdout}"
+    );
+    assert!(
+        !config_dir.exists(),
+        "read-only feature listing should not create state"
+    );
+}
+
+#[test]
 fn features_enable_creates_config_with_feedback_enabled() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
@@ -121,7 +150,7 @@ fn features_enable_creates_config_with_feedback_enabled() {
 }
 
 #[test]
-fn features_disable_after_enable_clears_default_false_override() {
+fn features_disable_after_enable_persists_false_override() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
 
@@ -139,8 +168,8 @@ fn features_disable_after_enable_clears_default_false_override() {
 
     let raw = read_config(&config_dir);
     assert!(
-        !raw.contains("feedback ="),
-        "default-false disable should clear feedback override: {raw}"
+        raw.contains("feedback = false"),
+        "disable should persist explicit feedback opt-out: {raw}"
     );
 
     let assert = coral_cmd(&config_dir)
@@ -153,14 +182,14 @@ fn features_disable_after_enable_clears_default_false_override() {
         "missing feedback row: {stdout}"
     );
     assert!(
-        stdout.contains("default"),
-        "missing default status: {stdout}"
+        stdout.contains("disabled"),
+        "missing disabled configured status: {stdout}"
     );
     assert!(stdout.contains("false"), "missing disabled state: {stdout}");
 }
 
 #[test]
-fn features_disable_missing_config_is_noop_without_state_creation() {
+fn features_disable_missing_config_creates_false_override() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("missing-config");
 
@@ -169,9 +198,11 @@ fn features_disable_missing_config_is_noop_without_state_creation() {
         .assert()
         .success();
 
+    let raw = read_config(&config_dir);
+    assert!(raw.contains("version = 1"), "missing config version: {raw}");
     assert!(
-        !config_dir.exists(),
-        "disabling a default-false feature should not create state when config is absent"
+        raw.contains("feedback = false"),
+        "disable should persist explicit feedback opt-out: {raw}"
     );
 }
 
@@ -224,8 +255,8 @@ feedback = true
         "lost unknown key: {raw}"
     );
     assert!(
-        !raw.contains("feedback ="),
-        "feedback override should be cleared: {raw}"
+        raw.contains("feedback = false"),
+        "feedback override should be persisted as disabled: {raw}"
     );
 }
 

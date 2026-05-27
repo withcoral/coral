@@ -239,28 +239,6 @@ pub(crate) fn set_raw_feature_override(
     write_config_document(layout, &doc)
 }
 
-pub(crate) fn clear_raw_feature_override(
-    layout: &AppStateLayout,
-    key: &str,
-) -> Result<(), AppError> {
-    if !layout.config_file().exists() {
-        return Ok(());
-    }
-
-    let _lock = FileLock::exclusive(layout.state_lock())?;
-    if !layout.config_file().exists() {
-        return Ok(());
-    }
-
-    let mut doc = read_config_document(layout)?;
-    ensure_feature_table(&doc)?;
-    let Some(table) = doc.get_mut("features").and_then(Item::as_table_mut) else {
-        return Ok(());
-    };
-    table.remove(key);
-    write_config_document(layout, &doc)
-}
-
 fn raw_feature_overrides_from_document(doc: &DocumentMut) -> RawFeatureOverrides {
     let Some(features) = doc.get("features") else {
         return RawFeatureOverrides::default();
@@ -538,8 +516,7 @@ mod tests {
     use crate::credentials::CredentialStorageKind;
     use super::{
         AppConfig, PersistedAppConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
-        clear_raw_feature_override, load_raw_feature_overrides, render_config,
-        set_raw_feature_override,
+        load_raw_feature_overrides, render_config, set_raw_feature_override,
     };
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
@@ -955,21 +932,7 @@ enabled = true
     }
 
     #[test]
-    fn clear_raw_feature_override_missing_config_is_noop_without_creating_state() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("missing-config");
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-
-        clear_raw_feature_override(&layout, "feedback").expect("clear feature");
-
-        assert!(
-            !config_dir.exists(),
-            "clearing absent default-false override should not create config state"
-        );
-    }
-
-    #[test]
-    fn set_and_clear_feature_override_preserve_unrelated_feature_entries() {
+    fn set_raw_feature_override_preserves_unrelated_feature_entries() {
         let temp = TempDir::new().expect("temp dir");
         let layout = test_layout(&temp);
         write_config(
@@ -981,9 +944,9 @@ feedback = true
 "#,
         );
 
-        clear_raw_feature_override(&layout, "feedback").expect("clear feature");
+        set_raw_feature_override(&layout, "feedback", false).expect("set feature");
         let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
-        assert!(!raw.contains("feedback ="));
+        assert!(raw.contains("feedback = false"));
         assert!(raw.contains("future_flag = \"yes\""));
 
         set_raw_feature_override(&layout, "feedback", true).expect("set feature");
