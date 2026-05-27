@@ -3,47 +3,63 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 
-description: Medium article discovery and metadata source.
+description: Medium RSS feed article retrieval and metadata source.
 
 base_url: https://medium.com
 
 test_queries:
-  - SELECT * FROM medium.articles LIMIT 1
+  - SELECT title, url FROM medium.feed_articles LIMIT 1
 
 tables:
-  - name: articles
+  - name: feed_articles
+
     description: |
-      Fetch Medium article metadata including title, author,
-      publication, and article URL.
+      Fetch publicly available Medium article metadata from RSS feeds.
 
     fetch_limit_default: 25
 
     request:
       method: GET
-      path: /
+      path: /feed/tag/technology
 
-    response: {}
+      headers:
+        - name: Accept
+          value: application/rss+xml
+
+    response:
+      format: xml
+      rows_path: rss.channel.item
 
     pagination:
       mode: none
 
     columns:
       - name: title
+        path: title
         type: Utf8
         nullable: true
         description: Medium article title.
 
       - name: author
+        path: creator
         type: Utf8
         nullable: true
         description: Author of the Medium article.
 
       - name: url
+        path: link
         type: Utf8
         nullable: true
         description: URL of the Medium article.
 
       - name: publication
+        path: category
         type: Utf8
         nullable: true
-        description: Medium publication name.
+        description: Medium publication or category.
+
+      - name: published_at
+        path: pubDate
+        type: Utf8
+        nullable: true
+        description: Publication timestamp of the article.
