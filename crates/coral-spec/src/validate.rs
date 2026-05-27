@@ -536,6 +536,20 @@ fn validate_value_source(
         ValueSourceSpec::Template { template } => {
             validate_template(template, known_filters, context)?;
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for (index, value) in values.iter().enumerate() {
+                validate_value_source(
+                    value,
+                    known_filters,
+                    &format!("{context} one_of values[{index}]"),
+                )?;
+            }
+        }
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
@@ -673,6 +687,20 @@ fn validate_arg_value_source(
         ValueSourceSpec::Template { template } => {
             validate_arg_template(template, request_arg_names, context)?;
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for (index, value) in values.iter().enumerate() {
+                validate_arg_value_source(
+                    value,
+                    request_arg_names,
+                    &format!("{context} one_of values[{index}]"),
+                )?;
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -684,22 +712,6 @@ fn validate_arg_template(
     context: &str,
 ) -> Result<()> {
     for token in template.tokens() {
-        if token.is_expression() {
-            for key in token.arg_keys() {
-                if !request_arg_names.contains(key) {
-                    return Err(ManifestError::validation(format!(
-                        "{context} references unknown request arg '{key}' in template '{}'",
-                        template.raw()
-                    )));
-                }
-            }
-            if let Some(key) = token.filter_keys().into_iter().next() {
-                return Err(ManifestError::validation(format!(
-                    "{context} uses unsupported function request template token 'filter.{key}'"
-                )));
-            }
-            continue;
-        }
         match token.namespace() {
             TemplateNamespace::Arg => {
                 if !request_arg_names.contains(token.key()) {
@@ -846,22 +858,6 @@ pub(crate) fn validate_template(
     context: &str,
 ) -> Result<()> {
     for token in template.tokens() {
-        if token.is_expression() {
-            for key in token.filter_keys() {
-                if !known_filters.contains(key) {
-                    return Err(ManifestError::validation(format!(
-                        "{context} references unknown filter '{key}' in template '{}'",
-                        template.raw()
-                    )));
-                }
-            }
-            if let Some(key) = token.arg_keys().into_iter().next() {
-                return Err(ManifestError::validation(format!(
-                    "{context} uses function argument token 'arg.{key}' outside a function request"
-                )));
-            }
-            continue;
-        }
         match token.namespace() {
             TemplateNamespace::Filter => {
                 if !known_filters.contains(token.key()) {
@@ -1280,7 +1276,7 @@ mod tests {
     fn validate_http_table_rejects_function_arg_template_tokens() {
         let request = RequestSpec {
             path: ParsedTemplate::parse("/search/{{arg.q}}").expect("template"),
-            ..RequestSpec::default()
+            ..base_request()
         };
 
         let error = validate_http_table(
@@ -1304,10 +1300,23 @@ mod tests {
     }
 
     #[test]
-    fn validate_http_table_rejects_function_arg_expression_tokens() {
+    fn validate_http_table_rejects_function_arg_one_of_value_sources() {
         let request = RequestSpec {
-            path: ParsedTemplate::parse(r"/search/{{arg.q || input.API_KEY}}").expect("template"),
-            ..RequestSpec::default()
+            query: vec![QueryParamSpec {
+                name: "value".to_string(),
+                value: ValueSourceSpec::OneOf {
+                    values: vec![
+                        ValueSourceSpec::Input {
+                            key: "API_KEY".to_string(),
+                        },
+                        ValueSourceSpec::Arg {
+                            key: "q".to_string(),
+                            default: None,
+                        },
+                    ],
+                },
+            }],
+            ..base_request()
         };
 
         let error = validate_http_table(
@@ -1321,21 +1330,33 @@ mod tests {
             None,
             &[],
         )
-        .expect_err("table request expression templates should reject function arguments");
+        .expect_err("table request one_of values should reject function arguments");
 
         assert!(
             error
                 .to_string()
-                .contains("uses function argument token 'arg.q' outside a function request")
+                .contains("uses function argument 'q' outside a function request")
         );
     }
 
     #[test]
-    fn validate_http_table_rejects_unknown_filter_expression_tokens() {
+    fn validate_http_table_rejects_unknown_filter_one_of_value_sources() {
         let request = RequestSpec {
-            path: ParsedTemplate::parse(r"/search/{{filter.missing || input.API_KEY}}")
-                .expect("template"),
-            ..RequestSpec::default()
+            query: vec![QueryParamSpec {
+                name: "value".to_string(),
+                value: ValueSourceSpec::OneOf {
+                    values: vec![
+                        ValueSourceSpec::Input {
+                            key: "API_KEY".to_string(),
+                        },
+                        ValueSourceSpec::Filter {
+                            key: "missing".to_string(),
+                            default: None,
+                        },
+                    ],
+                },
+            }],
+            ..base_request()
         };
 
         let error = validate_http_table(
@@ -1349,7 +1370,7 @@ mod tests {
             None,
             &[],
         )
-        .expect_err("table request expression templates should reject unknown filters");
+        .expect_err("table request one_of values should reject unknown filters");
 
         assert!(
             error
@@ -1425,23 +1446,39 @@ mod tests {
     }
 
     #[test]
-    fn validate_http_function_accepts_arg_expression_tokens() {
-        let function = function_with_request_value(ValueSourceSpec::Template {
-            template: ParsedTemplate::parse(r"{{arg.q || input.API_KEY}}").expect("template"),
+    fn validate_http_function_accepts_arg_one_of_value_sources() {
+        let function = function_with_request_value(ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Arg {
+                    key: "q".to_string(),
+                    default: None,
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+            ],
         });
 
         validate_http_function("demo", &function)
-            .expect("function request expression should accept declared args");
+            .expect("function request one_of should accept declared args");
     }
 
     #[test]
-    fn validate_http_function_rejects_unknown_arg_expression_tokens() {
-        let function = function_with_request_value(ValueSourceSpec::Template {
-            template: ParsedTemplate::parse(r"{{arg.missing || input.API_KEY}}").expect("template"),
+    fn validate_http_function_rejects_unknown_arg_one_of_value_sources() {
+        let function = function_with_request_value(ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Arg {
+                    key: "missing".to_string(),
+                    default: None,
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+            ],
         });
 
         let error = validate_http_function("demo", &function)
-            .expect_err("function request expression should reject unknown args");
+            .expect_err("function request one_of should reject unknown args");
 
         assert!(
             error

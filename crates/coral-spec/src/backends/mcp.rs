@@ -715,6 +715,17 @@ fn validate_table_tool_arg_value_source(
             }
             Ok(())
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for value in values {
+                validate_table_tool_arg_value_source(source_name, table_name, arg_name, value)?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -770,8 +781,20 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
             }
             Ok(())
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for value in values {
+                validate_source_scoped_value_source(value, context)?;
+            }
+            Ok(())
+        }
         ValueSourceSpec::Literal { .. }
         | ValueSourceSpec::Input { .. }
+        | ValueSourceSpec::Bearer { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }
 }

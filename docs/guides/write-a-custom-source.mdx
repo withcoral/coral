@@ -188,8 +188,8 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.API_TOKEN}}
+      from: bearer
+      key: API_TOKEN
 tables:
   - name: messages
     description: Messages from the API
@@ -251,9 +251,13 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.DEMO_API_TOKEN}}
+      from: bearer
+      key: DEMO_API_TOKEN
 ```
+
+When an API supports either a complete pasted API-key header or an OAuth access
+token, use `from: one_of` and put the pasted header first, then a `from: bearer`
+fallback for the raw OAuth token.
 
 ### OAuth client and redirect options
 

@@ -33,17 +33,11 @@ impl ParsedTemplate {
                 )));
             };
             let token = raw_token.trim();
-            let (raw_key, default_value) = match split_default(token) {
-                Some((key, default)) if !is_expression_token(key) => {
+            let (raw_key, default_value) = split_default(token)
+                .map_or((token, None), |(key, default)| {
                     (key.trim(), Some(default.to_string()))
-                }
-                _ => (token, None),
-            };
-            let is_expression = is_expression_token(raw_key);
+                });
             let (namespace, key) = match raw_key.split_once('.') {
-                _ if is_expression => {
-                    (TemplateNamespace::Other(raw_key.to_string()), String::new())
-                }
                 Some((namespace, key)) => (TemplateNamespace::parse(namespace), key.to_string()),
                 None => (TemplateNamespace::Other(raw_key.to_string()), String::new()),
             };
@@ -166,21 +160,8 @@ impl TemplateToken {
         self.default_value.as_deref()
     }
 
-    #[must_use]
-    /// Returns whether this token uses expression syntax.
-    pub fn is_expression(&self) -> bool {
-        is_expression_token(self.raw_key.as_str())
-    }
-
     /// Returns the input keys referenced by this token.
-    ///
-    /// For simple tokens this is either the single `input.KEY` reference or
-    /// empty. Expression tokens support the small auth-template expression
-    /// syntax used by the renderer: fallbacks with `||` and `concat(...)`.
     pub fn input_keys(&self) -> Vec<&str> {
-        if self.is_expression() {
-            return expression_keys(self.raw_key.as_str(), "input.");
-        }
         if self.namespace == TemplateNamespace::Input {
             return vec![self.key.as_str()];
         }
@@ -189,9 +170,7 @@ impl TemplateToken {
 
     /// Returns the filter keys referenced by this token.
     pub fn filter_keys(&self) -> Vec<&str> {
-        if self.is_expression() {
-            expression_keys(self.raw_key.as_str(), "filter.")
-        } else if self.namespace == TemplateNamespace::Filter {
+        if self.namespace == TemplateNamespace::Filter {
             vec![self.key.as_str()]
         } else {
             Vec::new()
@@ -200,20 +179,7 @@ impl TemplateToken {
 
     /// Returns the state keys referenced by this token.
     pub fn state_keys(&self) -> Vec<&str> {
-        if self.is_expression() {
-            expression_keys(self.raw_key.as_str(), "state.")
-        } else if self.namespace == TemplateNamespace::State {
-            vec![self.key.as_str()]
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Returns the source function argument keys referenced by this token.
-    pub fn arg_keys(&self) -> Vec<&str> {
-        if self.is_expression() {
-            expression_keys(self.raw_key.as_str(), "arg.")
-        } else if self.namespace == TemplateNamespace::Arg {
+        if self.namespace == TemplateNamespace::State {
             vec![self.key.as_str()]
         } else {
             Vec::new()
@@ -253,140 +219,24 @@ impl TemplateNamespace {
     }
 }
 
-fn is_expression_token(raw: &str) -> bool {
-    let trimmed = raw.trim();
-    has_top_level_delimiter(trimmed, "||") || trimmed.starts_with("concat(")
-}
-
 fn split_default(raw: &str) -> Option<(&str, &str)> {
-    let mut depth = 0usize;
-    let mut in_quote: Option<char> = None;
-    let mut escaped = false;
-
     for (index, ch) in raw.char_indices() {
-        if let Some(quote) = in_quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_quote = None;
-            }
+        if ch != '|' {
             continue;
         }
-
-        match ch {
-            '"' | '\'' => in_quote = Some(ch),
-            '(' => depth = depth.saturating_add(1),
-            ')' => depth = depth.saturating_sub(1),
-            '|' if depth == 0 => {
-                let prev_is_pipe = raw
-                    .get(..index)
-                    .and_then(|prefix| prefix.chars().next_back())
-                    == Some('|');
-                let next_is_pipe = raw
-                    .get(index + ch.len_utf8()..)
-                    .and_then(|suffix| suffix.chars().next())
-                    == Some('|');
-                if !prev_is_pipe && !next_is_pipe {
-                    return raw.get(..index).zip(raw.get(index + ch.len_utf8()..));
-                }
-            }
-            _ => {}
+        let prev_is_pipe = raw
+            .get(..index)
+            .and_then(|prefix| prefix.chars().next_back())
+            == Some('|');
+        let next_is_pipe = raw
+            .get(index + ch.len_utf8()..)
+            .and_then(|suffix| suffix.chars().next())
+            == Some('|');
+        if !prev_is_pipe && !next_is_pipe {
+            return raw.get(..index).zip(raw.get(index + ch.len_utf8()..));
         }
     }
     None
-}
-
-fn has_top_level_delimiter(raw: &str, delimiter: &str) -> bool {
-    let mut depth = 0usize;
-    let mut in_quote: Option<char> = None;
-    let mut escaped = false;
-
-    for (index, ch) in raw.char_indices() {
-        if let Some(quote) = in_quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_quote = None;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' | '\'' => in_quote = Some(ch),
-            '(' => depth = depth.saturating_add(1),
-            ')' => depth = depth.saturating_sub(1),
-            _ if depth == 0
-                && raw
-                    .get(index..)
-                    .is_some_and(|rest| rest.starts_with(delimiter)) =>
-            {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-fn expression_keys<'a>(raw: &'a str, prefix: &str) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    let mut cursor = 0;
-    let bytes = raw.as_bytes();
-    let mut in_quote: Option<u8> = None;
-    while cursor < bytes.len() {
-        let Some(&byte) = bytes.get(cursor) else {
-            break;
-        };
-        if let Some(quote) = in_quote {
-            if byte == b'\\' {
-                cursor = cursor.saturating_add(2);
-                continue;
-            }
-            if byte == quote {
-                in_quote = None;
-            }
-            cursor += 1;
-            continue;
-        }
-        if byte == b'\'' || byte == b'"' {
-            in_quote = Some(byte);
-            cursor += 1;
-            continue;
-        }
-        let rest = raw.get(cursor..).unwrap_or_default();
-        if reference_starts_at(raw, cursor, prefix)
-            && let Some(after_prefix) = rest.strip_prefix(prefix)
-        {
-            let key_len = after_prefix
-                .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
-                .unwrap_or(after_prefix.len());
-            if key_len > 0
-                && let Some(key) = after_prefix.get(..key_len)
-            {
-                out.push(key);
-            }
-            cursor += prefix.len() + key_len;
-            continue;
-        }
-        cursor += 1;
-    }
-    out
-}
-
-fn reference_starts_at(raw: &str, cursor: usize, prefix: &str) -> bool {
-    if !raw
-        .get(cursor..)
-        .is_some_and(|rest| rest.starts_with(prefix))
-    {
-        return false;
-    }
-    raw.get(..cursor)
-        .and_then(|prefix| prefix.chars().next_back())
-        .is_none_or(|ch| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
 }
 
 #[cfg(test)]
@@ -454,42 +304,10 @@ mod tests {
     }
 
     #[test]
-    fn token_reports_expression_input_keys() {
-        let template =
-            ParsedTemplate::parse(r#"{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}"#)
-                .expect("template");
-        let token = template.tokens().next().expect("token");
-        assert!(token.is_expression());
-        assert_eq!(token.input_keys(), vec!["API_KEY", "OAUTH_TOKEN"]);
-    }
-
-    #[test]
-    fn token_reports_expression_filter_and_state_keys() {
-        let template = ParsedTemplate::parse(r#"{{concat(filter.team, "-", state.cursor)}}"#)
-            .expect("template");
-        let token = template.tokens().next().expect("token");
-        assert!(token.is_expression());
-        assert_eq!(token.filter_keys(), vec!["team"]);
-        assert_eq!(token.state_keys(), vec!["cursor"]);
-    }
-
-    #[test]
-    fn token_reports_expression_arg_keys() {
-        let template =
-            ParsedTemplate::parse(r#"{{arg.query || concat("Bearer ", input.OAUTH_TOKEN)}}"#)
-                .expect("template");
-        let token = template.tokens().next().expect("token");
-        assert!(token.is_expression());
-        assert_eq!(token.arg_keys(), vec!["query"]);
-        assert_eq!(token.input_keys(), vec!["OAUTH_TOKEN"]);
-    }
-
-    #[test]
     fn default_values_can_contain_fallback_operator() {
         let template = ParsedTemplate::parse("{{input.API_KEY|foo||bar}}").expect("template");
         let token = template.tokens().next().expect("token");
 
-        assert!(!token.is_expression());
         assert_eq!(token.namespace(), &TemplateNamespace::Input);
         assert_eq!(token.key(), "API_KEY");
         assert_eq!(token.default_value(), Some("foo||bar"));
@@ -497,13 +315,13 @@ mod tests {
     }
 
     #[test]
-    fn expression_references_require_namespace_boundary() {
-        let template = ParsedTemplate::parse(r"{{filter.input.API_KEY || input.OAUTH_TOKEN}}")
-            .expect("template");
+    fn fallback_operator_is_not_a_template_default_separator() {
+        let template =
+            ParsedTemplate::parse("{{input.API_KEY || input.OAUTH_TOKEN}}").expect("template");
         let token = template.tokens().next().expect("token");
 
-        assert!(token.is_expression());
-        assert_eq!(token.filter_keys(), vec!["input.API_KEY"]);
-        assert_eq!(token.input_keys(), vec!["OAUTH_TOKEN"]);
+        assert_eq!(token.namespace(), &TemplateNamespace::Input);
+        assert_eq!(token.key(), "API_KEY || input.OAUTH_TOKEN");
+        assert_eq!(token.default_value(), None);
     }
 }

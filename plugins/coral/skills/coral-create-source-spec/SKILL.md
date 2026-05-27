@@ -190,7 +190,7 @@ For HTTP-backed sources:
 
 Read `references/http-source-checklist.md` when you need table-shape and pagination guidance.
 
-If your HTTP source uses an Authorization header with a prefix (e.g. `Authorization: Bearer <token>`), you can use a secret input for the token and define the header as a template:
+If your HTTP source uses an Authorization header with a prefix (e.g. `Authorization: Bearer <token>`), use a secret input for the raw token and define the header with `from: bearer`:
 
 ```yaml
 inputs:
@@ -201,8 +201,8 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.FOOBAR_API_TOKEN}}
+      from: bearer
+      key: FOOBAR_API_TOKEN
 ```
 
 For an OAuth-backed HTTP source, add the retrieval method to that same secret input:
@@ -240,8 +240,23 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.FOOBAR_API_TOKEN}}
+      from: bearer
+      key: FOOBAR_API_TOKEN
+```
+
+When a provider accepts either a full pasted API-key header or an OAuth access token, use `from: one_of` and put the complete header value first, then a `from: bearer` OAuth fallback:
+
+```yaml
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: FOOBAR_API_KEY
+        - from: bearer
+          key: FOOBAR_OAUTH_ACCESS_TOKEN
 ```
 
 ## Local Data Sources

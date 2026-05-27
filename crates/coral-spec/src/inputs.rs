@@ -3,10 +3,10 @@
 //! Sources that need interactive configuration declare their inputs under a
 //! top-level `inputs` map. Each entry fixes the input's kind (`variable` or
 //! `secret`), an optional default, and an optional hint. References elsewhere
-//! in the manifest use `{{input.KEY}}` templates or `from: input` value
-//! sources; the declared kind determines whether the value is resolved from
-//! the variable or secret store. Manifests that take no interactive inputs
-//! may omit the block entirely.
+//! in the manifest use `{{input.KEY}}` templates, `from: input`, or typed
+//! wrappers such as `from: bearer`; the declared kind determines whether the
+//! value is resolved from the variable or secret store. Manifests that take no
+//! interactive inputs may omit the block entirely.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -987,14 +987,15 @@ fn validate_value(value: &Value, is_root: bool, declared: &BTreeSet<String>) -> 
 }
 
 fn validate_mapping(map: &Map<String, Value>, declared: &BTreeSet<String>) -> Result<()> {
-    if map.get("from").and_then(Value::as_str) != Some("input") {
+    let Some(source_kind @ ("input" | "bearer")) = map.get("from").and_then(Value::as_str) else {
         return Ok(());
-    }
+    };
 
-    let key = map
-        .get("key")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ManifestError::validation("manifest 'input' value source is missing key"))?;
+    let key = map.get("key").and_then(Value::as_str).ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest '{source_kind}' value source is missing key"
+        ))
+    })?;
     if !declared.contains(key) {
         return Err(ManifestError::validation(format!(
             "manifest input '{key}' is referenced but not declared under top-level inputs"
@@ -1707,8 +1708,8 @@ tables: []
     }
 
     #[test]
-    fn expression_template_input_references_resolve_against_declarations() {
-        let manifest = r#"
+    fn one_of_value_source_input_references_resolve_against_declarations() {
+        let manifest = r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -1724,17 +1725,21 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: '{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}'
+      from: one_of
+      values:
+        - from: input
+          key: API_KEY
+        - from: bearer
+          key: OAUTH_TOKEN
 tables: []
-"#;
+";
         let inputs = collect(manifest).expect("inputs");
         assert_eq!(inputs.len(), 2);
     }
 
     #[test]
-    fn expression_template_undeclared_input_references_are_rejected() {
-        let manifest = r#"
+    fn one_of_value_source_undeclared_input_references_are_rejected() {
+        let manifest = r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -1746,10 +1751,14 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: '{{input.API_KEY || concat("Bearer ", input.OAUTH_TOKEN)}}'
+      from: one_of
+      values:
+        - from: input
+          key: API_KEY
+        - from: bearer
+          key: OAUTH_TOKEN
 tables: []
-"#;
+";
         let error = collect(manifest).expect_err("undeclared input");
         assert!(
             error
@@ -1759,7 +1768,7 @@ tables: []
     }
 
     #[test]
-    fn expression_template_input_references_are_boundary_aware() {
+    fn from_bearer_value_source_resolves_against_declarations() {
         let manifest = r"
 name: demo
 version: 1.0.0
@@ -1772,11 +1781,11 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: '{{filter.input.API_KEY || input.OAUTH_TOKEN}}'
+      from: bearer
+      key: OAUTH_TOKEN
 tables: []
 ";
-        let inputs = collect(manifest).expect("filter key should not be read as an input key");
+        let inputs = collect(manifest).expect("bearer key should resolve as an input key");
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].key, "OAUTH_TOKEN");
     }
