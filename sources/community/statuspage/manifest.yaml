@@ -466,8 +466,10 @@ tables:
       Each row is one component on the status page. `status` reflects the
       current operational state — filter WHERE status != 'operational' to find
       anything degraded. `group = true` marks a component group header row —
-      these have no `status` value and will appear as NULL. `only_show_if_degraded
-      = true` means the component is hidden from the public page when healthy.
+      these rows may have status set to 'operational' or NULL depending on
+      account configuration; use WHERE group != true to exclude them reliably
+      rather than filtering on status alone. `only_show_if_degraded = true`
+      means the component is hidden from the public page when healthy.
       `group_id` links to the parent component group's `id`. Use `position` for
       display-order sorting matching the public status page.
     request:
