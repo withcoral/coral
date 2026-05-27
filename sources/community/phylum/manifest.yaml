@@ -1,0 +1,587 @@
+name: phylum
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query groups, projects, package versions, package risk scores, issues, and
+  authors from Phylum.
+inputs:
+  PHYLUM_API_BASE:
+    kind: variable
+    default: https://api.phylum.io/api/v0
+    hint: |
+      Base URL for the Phylum API. Keep the default for Phylum Cloud.
+      Do not include a trailing slash.
+      See https://swagger.phylum.io for the current API reference.
+  PHYLUM_API_KEY:
+    kind: secret
+    hint: |
+      Phylum API token. Generate one in the Phylum web UI, or run
+      `phylum auth token` if you use the Phylum CLI. The token is sent as
+      `Authorization: Bearer <token>`.
+      See https://docs.phylum.io/knowledge_base/api-keys.
+base_url: "{{input.PHYLUM_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.PHYLUM_API_KEY}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT group_name, role FROM phylum.groups LIMIT 5
+  - SELECT id, name, group_name, repository_url FROM phylum.projects LIMIT 5
+tables:
+  - name: groups
+    description: Groups that the authenticated Phylum user is a member of.
+    guide: |
+      Use this table to discover Phylum groups and group roles visible to the
+      token. The `group_name` value can be useful context when joining project
+      rows or deciding which project names belong to a team.
+    request:
+      method: GET
+      path: /groups/
+    response:
+      rows_path:
+        - groups
+      row_strategy: direct
+      error_path:
+        - error
+        - description
+    pagination:
+      mode: none
+    columns:
+      - name: group_id
+        type: Utf8
+        nullable: false
+        description: Phylum group identifier.
+        expr:
+          kind: path
+          path:
+            - group_id
+      - name: group_name
+        type: Utf8
+        nullable: false
+        description: Human-readable group name.
+        expr:
+          kind: path
+          path:
+            - group_name
+      - name: role
+        type: Utf8
+        nullable: false
+        description: Role of the authenticated user in this group.
+        expr:
+          kind: path
+          path:
+            - role
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Timestamp when the group was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: last_modified
+        type: Timestamp
+        nullable: false
+        description: Timestamp when the group was last modified.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_modified
+
+  - name: projects
+    description: Summaries for Phylum projects visible to the authenticated user.
+    guide: |
+      Each row is a project summary from Phylum. Use `id` for project-scoped
+      follow-up queries outside this v1 source, and join `repository_url`
+      against GitHub repository metadata when correlating package risk with
+      source ownership.
+    request:
+      method: GET
+      path: /data/projects/overview
+    response:
+      row_strategy: direct
+      error_path:
+        - error
+        - description
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Phylum project identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Timestamp when the project was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: Timestamp when the project was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: ecosystems
+        type: Json
+        nullable: true
+        description: Ecosystems detected in the project's latest job.
+        expr:
+          kind: path
+          path:
+            - ecosystems
+      - name: organization_name
+        type: Utf8
+        nullable: true
+        description: Organization name for organization-owned group projects.
+        expr:
+          kind: path
+          path:
+            - organization_name
+      - name: group_name
+        type: Utf8
+        nullable: true
+        description: Group name for group-owned projects.
+        expr:
+          kind: path
+          path:
+            - group_name
+      - name: repository_url
+        type: Utf8
+        nullable: true
+        description: Repository URL associated with the project, when configured.
+        expr:
+          kind: path
+          path:
+            - repository_url
+      - name: default_label
+        type: Utf8
+        nullable: true
+        description: Default project label.
+        expr:
+          kind: path
+          path:
+            - default_label
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Phylum project summary object.
+        expr:
+          kind: current_row
+
+  - name: package_versions
+    description: Known versions for a package in a Phylum-supported ecosystem.
+    guide: |
+      Requires `package_registry` and `package_name`. Supported registries are
+      `npm`, `pypi`, `maven`, `rubygems`, `nuget`, `cargo`, and `golang`.
+      Use `search` to narrow version matches and `limit` to bound provider
+      results when needed.
+    filters:
+      - name: package_registry
+        required: true
+      - name: package_name
+        required: true
+      - name: search
+        required: false
+      - name: limit
+        required: false
+    request:
+      method: GET
+      path: /data/packages/{{filter.package_registry}}/{{filter.package_name}}/versions
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: limit
+          from: filter
+          key: limit
+    response:
+      row_strategy: direct
+      error_path:
+        - error
+        - description
+    pagination:
+      mode: none
+    columns:
+      - name: version
+        type: Utf8
+        nullable: false
+        description: Package version.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: total_risk_score
+        type: Float64
+        nullable: true
+        description: Phylum total risk score for this package version.
+        expr:
+          kind: path
+          path:
+            - total_risk_score
+      - name: published_date
+        type: Timestamp
+        nullable: true
+        description: Timestamp when this package version was published.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published_date
+      - name: package_registry
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested package registry filter.
+        expr:
+          kind: from_filter
+          key: package_registry
+      - name: package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested package name filter.
+        expr:
+          kind: from_filter
+          key: package_name
+
+  - name: packages
+    description: Package details, risk scores, issues, dependencies, and metadata.
+    guide: |
+      Requires `package_registry`, `package_name`, and `package_version`.
+      Use this table after identifying a package from a lockfile, GitHub
+      dependency manifest, or `phylum.package_versions`. Scoped package names
+      may need URL encoding according to the upstream Phylum API behavior.
+    filters:
+      - name: package_registry
+        required: true
+      - name: package_name
+        required: true
+      - name: package_version
+        required: true
+    request:
+      method: GET
+      path: /data/packages/{{filter.package_registry}}/{{filter.package_name}}/{{filter.package_version}}
+    response:
+      row_strategy: direct
+      error_path:
+        - error
+        - description
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Phylum-specific package version identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: purl
+        type: Utf8
+        nullable: false
+        description: Package URL for this package version.
+        expr:
+          kind: path
+          path:
+            - purl
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Package name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: version
+        type: Utf8
+        nullable: false
+        description: Package version.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: registry
+        type: Utf8
+        nullable: false
+        description: Package registry or ecosystem.
+        expr:
+          kind: path
+          path:
+            - registry
+      - name: published_date
+        type: Timestamp
+        nullable: true
+        description: Timestamp when this package version was published.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - publishedDate
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Package description from the package registry.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: repo_url
+        type: Utf8
+        nullable: true
+        description: Source repository URL, when known.
+        expr:
+          kind: path
+          path:
+            - repoUrl
+      - name: license
+        type: Utf8
+        nullable: true
+        description: Package license, when known.
+        expr:
+          kind: path
+          path:
+            - license
+      - name: complete
+        type: Boolean
+        nullable: false
+        description: Whether Phylum has completed processing this package version.
+        expr:
+          kind: path
+          path:
+            - complete
+      - name: latest_version
+        type: Utf8
+        nullable: true
+        description: Latest version reported by the package registry.
+        expr:
+          kind: path
+          path:
+            - latestVersion
+      - name: risk_total
+        type: Float64
+        nullable: true
+        description: Overall Phylum risk score.
+        expr:
+          kind: path
+          path:
+            - riskScores
+            - total
+      - name: risk_vulnerability
+        type: Float64
+        nullable: true
+        description: Phylum vulnerability risk score.
+        expr:
+          kind: path
+          path:
+            - riskScores
+            - vulnerability
+      - name: risk_malicious_code
+        type: Float64
+        nullable: true
+        description: Phylum malicious-code risk score.
+        expr:
+          kind: path
+          path:
+            - riskScores
+            - malicious_code
+      - name: risk_author
+        type: Float64
+        nullable: true
+        description: Phylum author risk score.
+        expr:
+          kind: path
+          path:
+            - riskScores
+            - author
+      - name: risk_engineering
+        type: Float64
+        nullable: true
+        description: Phylum engineering risk score.
+        expr:
+          kind: path
+          path:
+            - riskScores
+            - engineering
+      - name: risk_license
+        type: Float64
+        nullable: true
+        description: Phylum license risk score.
+        expr:
+          kind: path
+          path:
+            - riskScores
+            - license
+      - name: issues
+        type: Json
+        nullable: false
+        description: Known package issues reported by Phylum.
+        expr:
+          kind: path
+          path:
+            - issues
+      - name: dependencies
+        type: Json
+        nullable: false
+        description: Declared dependency metadata for this package version.
+        expr:
+          kind: path
+          path:
+            - dependencies
+      - name: versions
+        type: Json
+        nullable: false
+        description: Known version metadata for this package.
+        expr:
+          kind: path
+          path:
+            - versions
+      - name: downloads
+        type: Json
+        nullable: true
+        description: Download-count metadata when available.
+        expr:
+          kind: path
+          path:
+            - downloads
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Phylum package detail object.
+        expr:
+          kind: current_row
+      - name: package_registry
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested package registry filter.
+        expr:
+          kind: from_filter
+          key: package_registry
+      - name: package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested package name filter.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: package_version
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested package version filter.
+        expr:
+          kind: from_filter
+          key: package_version
+
+  - name: package_authors
+    description: Maintainers and contributors for one package version.
+    guide: |
+      Requires `package_registry`, `package_name`, and `package_version`.
+      Maintainers and contributors are returned as JSON arrays because Phylum
+      exposes both collections in one response object.
+    filters:
+      - name: package_registry
+        required: true
+      - name: package_name
+        required: true
+      - name: package_version
+        required: true
+    request:
+      method: GET
+      path: /data/packages/{{filter.package_registry}}/{{filter.package_name}}/{{filter.package_version}}/authors
+    response:
+      row_strategy: direct
+      error_path:
+        - error
+        - description
+    pagination:
+      mode: none
+    columns:
+      - name: maintainers
+        type: Json
+        nullable: false
+        description: Maintainer records with username and email where available.
+        expr:
+          kind: path
+          path:
+            - maintainers
+      - name: contributors
+        type: Json
+        nullable: false
+        description: Contributor records with name, email, avatar, and profile URL.
+        expr:
+          kind: path
+          path:
+            - contributors
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Phylum package authors response.
+        expr:
+          kind: current_row
+      - name: package_registry
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested package registry filter.
+        expr:
+          kind: from_filter
+          key: package_registry
+      - name: package_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested package name filter.
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: package_version
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested package version filter.
+        expr:
+          kind: from_filter
+          key: package_version
