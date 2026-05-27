@@ -70,7 +70,7 @@ tables:
         required: false
         description: |
           The order to sort connections. Supported values:
-          LAST_MODIFIED_ASCENDING, FIRST_NAME_ASCENDING, LAST_NAME_ASCENDING.
+          LAST_MODIFIED_ASCENDING, LAST_MODIFIED_DESCENDING, FIRST_NAME_ASCENDING, LAST_NAME_ASCENDING.
     request:
       method: GET
       path: /v1/people/me/connections

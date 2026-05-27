@@ -101,7 +101,7 @@ WHERE raw_email_addresses IS NOT NULL;
 Contacts (connections) of the authenticated user. Maps to `GET /v1/people/me/connections`. 
 
 Optional filters:
-* `sort_order`: The sort order of connections. Supported values: `LAST_MODIFIED_ASCENDING`, `FIRST_NAME_ASCENDING`, `LAST_NAME_ASCENDING`.
+* `sort_order`: The sort order of connections. Supported values: `LAST_MODIFIED_ASCENDING`, `LAST_MODIFIED_DESCENDING`, `FIRST_NAME_ASCENDING`, `LAST_NAME_ASCENDING`.
 
 Paginates using `pageToken` and `pageSize` up to 1000 items per page.
 
