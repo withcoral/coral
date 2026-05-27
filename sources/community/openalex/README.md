@@ -10,9 +10,15 @@ coral source add --file sources/community/openalex/manifest.yaml
 
 ## Setup
 
-Get a free API key at [openalex.org/users/me](https://openalex.org/users/me).
-An API key gives you higher rate limits (10 req/s vs 1 req/s for anonymous
-access). The key is passed as the `api_key` query parameter on every request.
+OpenAlex requires a free API key for reliable access. Get one at [openalex.org/users/me](https://openalex.org/users/me).
+The key provides higher rate limits (10 req/s vs 1 req/s) and replaces the deprecated `mailto` pool.
+
+Provide the key during setup:
+
+```bash
+coral source add --file sources/community/openalex/manifest.yaml --interactive
+```
+*(When prompted for `OPENALEX_API_KEY`, paste your key.)*
 
 ## Tables
 
@@ -39,9 +45,7 @@ Every table supports:
 ```sql
 -- Search for works about "CRISPR" published in 2024, sorted by citations
 SELECT title, publication_year, cited_by_count, is_oa
-FROM openalex.search_works(q => 'CRISPR')
-WHERE filter_value = 'publication_year:2024'
-  AND sort_value = 'cited_by_count:desc'
+FROM openalex.search_works(q => 'CRISPR', filter => 'publication_year:2024', sort => 'cited_by_count:desc')
 LIMIT 5;
 
 /*

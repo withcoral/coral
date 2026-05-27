@@ -487,6 +487,14 @@ tables:
         expr:
           kind: from_filter
           key: sort_value
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query matching.
+        expr:
+          kind: from_filter
+          key: search
 
   # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # sources â€“ journals, repositories, conferences
@@ -675,6 +683,14 @@ tables:
         expr:
           kind: from_filter
           key: sort_value
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query matching.
+        expr:
+          kind: from_filter
+          key: search
 
 
   # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -870,6 +886,14 @@ tables:
         expr:
           kind: from_filter
           key: sort_value
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query matching.
+        expr:
+          kind: from_filter
+          key: search
 
   # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # topics â€“ research topics and their taxonomy
@@ -1039,6 +1063,14 @@ tables:
         expr:
           kind: from_filter
           key: sort_value
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query matching.
+        expr:
+          kind: from_filter
+          key: search
 
 
 functions:
