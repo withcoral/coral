@@ -8,9 +8,9 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
-    SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    ValidateSourceResponse, create_bundled_source_with_o_auth_response, import_source_response,
-    query_test_result, source_input_spec::Input as ProtoSourceInput,
+    SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
+    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
+    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
@@ -350,6 +350,12 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     println!("{}", style(&source.name).bold());
     println!("  Status:      {status}");
     println!("  Origin:      {}", source_origin_label(source.origin));
+    if source.installed {
+        println!(
+            "  Secrets:     {}",
+            source_credential_storage_label(source.credential_storage)
+        );
+    }
     println!("  Version:     {}", source.version);
     if !source.description.is_empty() {
         println!("  Description: {}", source.description);
@@ -579,6 +585,15 @@ pub(crate) fn source_origin_label(origin: i32) -> &'static str {
     }
 }
 
+pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
+    match SourceCredentialStorage::try_from(storage) {
+        Ok(SourceCredentialStorage::Unspecified) => "none",
+        Ok(SourceCredentialStorage::File) => "file (plaintext)",
+        Ok(SourceCredentialStorage::Keychain) => "keychain",
+        Err(_) => "unknown",
+    }
+}
+
 pub(crate) async fn validate_and_print(
     app: &AppClient,
     source_name: &str,
@@ -712,6 +727,10 @@ pub(crate) fn print_validation_pretty(
         "  {} {}",
         style("✓").green(),
         style(format!("{} connected successfully", source.name)).bold()
+    );
+    println!(
+        "  Secrets: {}",
+        source_credential_storage_label(source.credential_storage)
     );
 
     // Group tables by schema, sorted.
