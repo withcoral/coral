@@ -1,0 +1,2624 @@
+name: zendesk
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Zendesk Support API data — tickets, users, organizations, groups,
+  ticket comments, ticket metrics, satisfaction ratings, SLA policies,
+  macros, triggers, automations, views, brands, ticket fields, ticket forms,
+  and tags — via the Zendesk REST API v2 with API token authentication.
+  Enables SQL-based querying of your entire customer support operation
+  including agent performance, SLA compliance, CSAT scores, and
+  workflow automation rules.
+
+inputs:
+  ZENDESK_SUBDOMAIN:
+    kind: variable
+    hint: >-
+      Your Zendesk subdomain. If your Zendesk URL is
+      https://mycompany.zendesk.com, enter "mycompany".
+  ZENDESK_EMAIL:
+    kind: variable
+    hint: >-
+      The email address of the Zendesk admin or agent account.
+      Used with the API token for authentication.
+  ZENDESK_API_TOKEN:
+    kind: secret
+    hint: >-
+      Zendesk API token. Generate one at Admin Center > Apps and
+      Integrations > Zendesk API > Settings > Token Access > Add API Token.
+      See https://developer.zendesk.com/api-reference/introduction/security-and-auth/
+
+base_url: https://{{input.ZENDESK_SUBDOMAIN}}.zendesk.com/api/v2
+
+auth:
+  type: BasicAuth
+  username:
+    from: template
+    template: "{{input.ZENDESK_EMAIL}}/token"
+  password:
+    from: input
+    key: ZENDESK_API_TOKEN
+
+rate_limit:
+  remaining_header: X-Rate-Limit-Remaining
+  reset_header: Retry-After
+
+test_queries:
+  - SELECT id, subject, status, priority FROM zendesk.tickets LIMIT 1
+  - SELECT id, name, email, role FROM zendesk.users LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 1: tickets
+  # The core of any Zendesk instance. Every support interaction is a ticket.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: tickets
+    description: >
+      Lists all tickets in your Zendesk Support instance. Tickets are the
+      core objects of Zendesk — each represents a customer support request
+      with a subject, description, status, priority, type, assignee,
+      requester, group assignment, tags, and timestamps. Use this table
+      as the primary starting point for support analytics, SLA auditing,
+      and agent workload analysis. The ticket `id` is used as a required
+      filter for drill-down tables like `ticket_comments` and `ticket_metrics`.
+    guide: >
+      Start with `SELECT id, subject, status, priority, type, created_at
+      FROM zendesk.tickets`. Use `status` to filter by new/open/pending/hold/solved/closed.
+      Use `priority` (low/normal/high/urgent) for escalation tracking.
+      Join `assignee_id` to `zendesk.users` for agent names. Join `group_id`
+      to `zendesk.groups` for team assignment. Join `organization_id` to
+      `zendesk.organizations` for company context. Use `id` as a filter
+      for `zendesk.ticket_comments` and `zendesk.ticket_metrics`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /tickets.json
+      query:
+        - name: sort_by
+          from: literal
+          value: created_at
+        - name: sort_order
+          from: literal
+          value: desc
+    response:
+      rows_path:
+        - tickets
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: >
+          Unique ticket identifier. Use as a required filter for
+          `ticket_comments` and `ticket_metrics` tables.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: The subject line of the ticket.
+        expr:
+          kind: path
+          path:
+            - subject
+      - name: description
+        type: Utf8
+        nullable: true
+        description: >
+          The first comment on the ticket — typically the customer's
+          initial message or the description entered by the agent.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: status
+        type: Utf8
+        nullable: false
+        description: >
+          Current ticket status. One of: new, open, pending, hold,
+          solved, closed. Use for workflow analytics and SLA auditing.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: >
+          Ticket priority level. One of: low, normal, high, urgent.
+          Null if no priority has been set. Critical for SLA policy
+          matching and escalation tracking.
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >
+          Ticket type classification. One of: problem, incident,
+          question, task. Null if not set. Problems can have many
+          linked incidents.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: requester_id
+        type: Int64
+        nullable: false
+        description: >
+          The user ID of the person who requested the ticket (the customer).
+          Join to `zendesk.users.id` for requester details.
+        expr:
+          kind: path
+          path:
+            - requester_id
+      - name: submitter_id
+        type: Int64
+        nullable: true
+        description: >
+          The user ID of the person who submitted the ticket. Usually
+          the same as requester_id unless an agent submitted on behalf
+          of a customer.
+        expr:
+          kind: path
+          path:
+            - submitter_id
+      - name: assignee_id
+        type: Int64
+        nullable: true
+        description: >
+          The agent currently assigned to the ticket. Join to
+          `zendesk.users.id` for agent name and email. Null if unassigned.
+        expr:
+          kind: path
+          path:
+            - assignee_id
+      - name: group_id
+        type: Int64
+        nullable: true
+        description: >
+          The group (team) the ticket is assigned to. Join to
+          `zendesk.groups.id` for group name. Used for routing
+          and workload distribution analysis.
+        expr:
+          kind: path
+          path:
+            - group_id
+      - name: organization_id
+        type: Int64
+        nullable: true
+        description: >
+          The organization of the ticket requester. Join to
+          `zendesk.organizations.id` for company context. Null
+          if the requester has no organization.
+        expr:
+          kind: path
+          path:
+            - organization_id
+      - name: brand_id
+        type: Int64
+        nullable: true
+        description: >
+          The brand associated with this ticket. Join to
+          `zendesk.brands.id` for brand name and subdomain.
+          Relevant for multi-brand Zendesk instances.
+        expr:
+          kind: path
+          path:
+            - brand_id
+      - name: tags
+        type: Json
+        nullable: true
+        description: >
+          Array of tags applied to the ticket. Tags drive triggers,
+          automations, views, and reporting. Stored as a JSON array
+          of strings.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: channel
+        type: Utf8
+        nullable: true
+        description: >
+          The channel through which the ticket was created. Examples:
+          web, email, api, chat, twitter, facebook. Derived from the
+          `via.channel` field.
+        expr:
+          kind: path
+          path:
+            - via
+            - channel
+      - name: satisfaction_rating_score
+        type: Utf8
+        nullable: true
+        description: >
+          The CSAT satisfaction score for this ticket. Values: good,
+          bad, or offered. Extracted from the nested satisfaction_rating
+          object. Null if not rated.
+        expr:
+          kind: path
+          path:
+            - satisfaction_rating
+            - score
+      - name: satisfaction_rating_comment
+        type: Utf8
+        nullable: true
+        description: >
+          Free-text comment left by the customer alongside the CSAT
+          rating. Invaluable for qualitative feedback analysis.
+        expr:
+          kind: path
+          path:
+            - satisfaction_rating
+            - comment
+      - name: is_public
+        type: Boolean
+        nullable: true
+        description: Whether the ticket is visible to end-users in the Help Center.
+        expr:
+          kind: path
+          path:
+            - is_public
+      - name: has_incidents
+        type: Boolean
+        nullable: true
+        description: >
+          Whether this ticket (of type "problem") has linked incidents.
+          Only relevant when `type` is "problem".
+        expr:
+          kind: path
+          path:
+            - has_incidents
+      - name: problem_id
+        type: Int64
+        nullable: true
+        description: >
+          If this ticket is an incident, the ID of the problem ticket
+          it is linked to. Null if not an incident or not linked.
+        expr:
+          kind: path
+          path:
+            - problem_id
+      - name: due_at
+        type: Utf8
+        nullable: true
+        description: >
+          Due date for task-type tickets. ISO 8601 format. Null for
+          non-task tickets or when no due date is set.
+        expr:
+          kind: path
+          path:
+            - due_at
+      - name: ticket_form_id
+        type: Int64
+        nullable: true
+        description: >
+          The ticket form used for this ticket. Join to
+          `zendesk.ticket_forms.id` for form details.
+        expr:
+          kind: path
+          path:
+            - ticket_form_id
+      - name: custom_status_id
+        type: Int64
+        nullable: true
+        description: >
+          The custom ticket status ID, if custom statuses are enabled.
+          Provides more granular status information beyond the standard
+          status field.
+        expr:
+          kind: path
+          path:
+            - custom_status_id
+      - name: allow_channelback
+        type: Boolean
+        nullable: true
+        description: >
+          Whether channelback is enabled for the ticket, allowing
+          the agent to reply in the original channel (e.g., Facebook,
+          Twitter).
+        expr:
+          kind: path
+          path:
+            - allow_channelback
+      - name: allow_attachments
+        type: Boolean
+        nullable: true
+        description: Whether attachments are permitted on the ticket.
+        expr:
+          kind: path
+          path:
+            - allow_attachments
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the ticket was created. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the ticket was last updated. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 2: users
+  # All end-users, agents, and admins in Zendesk.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: users
+    description: >
+      Lists all users in the Zendesk instance — including end-users
+      (customers), agents, and admins. Each user has a role, organization
+      membership, timezone, locale, and activity timestamps. This table
+      is the identity backbone for all ticket-related joins: requester_id,
+      assignee_id, and submitter_id on tickets all reference user IDs.
+    guide: >
+      Start with `SELECT id, name, email, role, active FROM zendesk.users`.
+      Filter by `role` (end-user, agent, admin) for segmentation. Join
+      `organization_id` to `zendesk.organizations`. Join `default_group_id`
+      to `zendesk.groups` for agent team assignment. Use `suspended`
+      and `active` for account hygiene audits.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /users.json
+    response:
+      rows_path:
+        - users
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: >
+          Unique user identifier. Referenced by `requester_id`,
+          `assignee_id`, and `submitter_id` on tickets.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The user's full name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: >
+          The user's primary email address. Use as a join key
+          to other systems (Stripe, Intercom, HubSpot, GitHub).
+        expr:
+          kind: path
+          path:
+            - email
+      - name: role
+        type: Utf8
+        nullable: false
+        description: >
+          User role. One of: end-user, agent, admin. Determines
+          permissions and access levels.
+        expr:
+          kind: path
+          path:
+            - role
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: The user's phone number.
+        expr:
+          kind: path
+          path:
+            - phone
+      - name: organization_id
+        type: Int64
+        nullable: true
+        description: >
+          The user's default organization. Join to
+          `zendesk.organizations.id` for company details.
+        expr:
+          kind: path
+          path:
+            - organization_id
+      - name: default_group_id
+        type: Int64
+        nullable: true
+        description: >
+          For agents, their default group assignment. Join to
+          `zendesk.groups.id`. Null for end-users.
+        expr:
+          kind: path
+          path:
+            - default_group_id
+      - name: custom_role_id
+        type: Int64
+        nullable: true
+        description: >
+          Custom role ID for agents with non-standard permissions.
+          Null for end-users and agents using built-in roles.
+        expr:
+          kind: path
+          path:
+            - custom_role_id
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: The user's IANA timezone (e.g., "America/New_York").
+        expr:
+          kind: path
+          path:
+            - time_zone
+      - name: locale
+        type: Utf8
+        nullable: true
+        description: The user's locale (e.g., "en-US").
+        expr:
+          kind: path
+          path:
+            - locale
+      - name: active
+        type: Boolean
+        nullable: true
+        description: >
+          Whether the user account is active. False for deactivated
+          accounts. Useful for user hygiene audits.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: suspended
+        type: Boolean
+        nullable: true
+        description: >
+          Whether the user is suspended. Suspended users cannot
+          sign in or submit tickets.
+        expr:
+          kind: path
+          path:
+            - suspended
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: >
+          Whether the user's primary identity (email) is verified.
+          Unverified users may be fraudulent or bot-created.
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: shared
+        type: Boolean
+        nullable: true
+        description: Whether the user is shared from another Zendesk account.
+        expr:
+          kind: path
+          path:
+            - shared
+      - name: shared_agent
+        type: Boolean
+        nullable: true
+        description: Whether the user is a shared agent from another account.
+        expr:
+          kind: path
+          path:
+            - shared_agent
+      - name: restricted_agent
+        type: Boolean
+        nullable: true
+        description: >
+          Whether the agent has restricted permissions (can only
+          see tickets in their groups).
+        expr:
+          kind: path
+          path:
+            - restricted_agent
+      - name: only_private_comments
+        type: Boolean
+        nullable: true
+        description: >
+          If true, the user can only create private (internal)
+          comments on tickets.
+        expr:
+          kind: path
+          path:
+            - only_private_comments
+      - name: ticket_restriction
+        type: Utf8
+        nullable: true
+        description: >
+          Specifies which tickets the user has access to. Values:
+          organization, groups, assigned, requested, null.
+        expr:
+          kind: path
+          path:
+            - ticket_restriction
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: Free-text notes stored on the user profile by agents.
+        expr:
+          kind: path
+          path:
+            - notes
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Additional details stored on the user profile.
+        expr:
+          kind: path
+          path:
+            - details
+      - name: tags
+        type: Json
+        nullable: true
+        description: Array of tags applied to the user.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: alias
+        type: Utf8
+        nullable: true
+        description: >
+          An alias displayed to end-users instead of the agent's
+          real name. Only for agents.
+        expr:
+          kind: path
+          path:
+            - alias
+      - name: last_login_at
+        type: Timestamp
+        nullable: true
+        description: When the user last signed in. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_login_at
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the user was created. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the user was last updated. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 3: organizations
+  # Companies and accounts in Zendesk.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: organizations
+    description: >
+      Lists all organizations (companies/accounts) in Zendesk. Organizations
+      group end-users together — typically by company. They carry domain
+      mapping for automatic user assignment, shared tickets settings, tags,
+      and custom fields. Use this table for B2B support analytics: ticket
+      volume per organization, SLA compliance by customer, and account
+      health monitoring.
+    guide: >
+      Start with `SELECT id, name, domain_names, shared_tickets FROM
+      zendesk.organizations`. Join `organization_id` on `zendesk.users`
+      and `zendesk.tickets` for cross-referencing. Use `domain_names`
+      to correlate with other tools (e.g., HubSpot companies by domain).
+      Use `tags` and `notes` for account segmentation.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /organizations.json
+    response:
+      rows_path:
+        - organizations
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: >
+          Unique organization identifier. Referenced by `organization_id`
+          on users and tickets.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The organization's display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: domain_names
+        type: Json
+        nullable: true
+        description: >
+          Array of email domains associated with this organization.
+          Users with matching email domains can be auto-assigned.
+          Stored as a JSON array of strings.
+        expr:
+          kind: path
+          path:
+            - domain_names
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Free-text details about the organization.
+        expr:
+          kind: path
+          path:
+            - details
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: Free-text notes about the organization.
+        expr:
+          kind: path
+          path:
+            - notes
+      - name: group_id
+        type: Int64
+        nullable: true
+        description: >
+          Default group for tickets from this organization. Join to
+          `zendesk.groups.id`.
+        expr:
+          kind: path
+          path:
+            - group_id
+      - name: shared_tickets
+        type: Boolean
+        nullable: true
+        description: >
+          Whether end-users in this organization can see each other's
+          tickets. Critical for B2B support workflows.
+        expr:
+          kind: path
+          path:
+            - shared_tickets
+      - name: shared_comments
+        type: Boolean
+        nullable: true
+        description: >
+          Whether end-users in this organization can add comments
+          to each other's tickets.
+        expr:
+          kind: path
+          path:
+            - shared_comments
+      - name: tags
+        type: Json
+        nullable: true
+        description: Array of tags applied to the organization.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: >
+          An external identifier for the organization, often from a
+          CRM or billing system (e.g., Stripe customer ID, Salesforce
+          account ID).
+        expr:
+          kind: path
+          path:
+            - external_id
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the organization was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the organization was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 4: groups
+  # Agent teams for ticket routing.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: groups
+    description: >
+      Lists all agent groups in Zendesk. Groups organize agents into teams
+      (e.g., "Tier 1 Support", "Billing", "Engineering Escalation").
+      Every ticket must be assigned to a group, making this table essential
+      for understanding ticket routing, workload distribution, and
+      escalation paths.
+    guide: >
+      Start with `SELECT id, name, is_default, created_at FROM zendesk.groups`.
+      Join `group_id` on `zendesk.tickets` to analyze ticket volume per group.
+      Join `default_group_id` on `zendesk.users` to see agent-to-group mapping.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /groups.json
+    response:
+      rows_path:
+        - groups
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: >
+          Unique group identifier. Referenced by `group_id` on tickets
+          and `default_group_id` on users.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The display name of the group (e.g., "Tier 1 Support").
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: A description of the group's purpose.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: >
+          Whether this is the default group for new tickets. Only
+          one group can be the default.
+        expr:
+          kind: path
+          path:
+            - default
+      - name: is_deleted
+        type: Boolean
+        nullable: true
+        description: Whether the group has been soft-deleted.
+        expr:
+          kind: path
+          path:
+            - deleted
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the group was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the group was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 5: ticket_comments
+  # The full conversation thread on a ticket.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: ticket_comments
+    description: >
+      Lists all comments (messages) on a specific ticket. Comments form
+      the conversation thread between customers and agents. Each comment
+      has a body, public/private flag, author, attachments metadata, and
+      creation channel (email, web, API, etc.). Requires a `ticket_id`
+      filter. Use this table for conversation analysis, response time
+      auditing, and agent communication quality review.
+    guide: >
+      Requires `ticket_id` filter. Use `SELECT id, author_id, body,
+      public, channel, created_at FROM zendesk.ticket_comments
+      WHERE ticket_id = 12345`. Join `author_id` to `zendesk.users`
+      for author name. Filter by `public` = true for customer-visible
+      messages only, or false for internal notes.
+    filters:
+      - name: ticket_id
+        required: true
+    request:
+      method: GET
+      path: /tickets/{{filter.ticket_id}}/comments.json
+    response:
+      rows_path:
+        - comments
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique comment identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: author_id
+        type: Int64
+        nullable: false
+        description: >
+          The user who authored this comment. Join to `zendesk.users.id`
+          for the author's name, email, and role.
+        expr:
+          kind: path
+          path:
+            - author_id
+      - name: body
+        type: Utf8
+        nullable: true
+        description: >
+          The plain-text body of the comment. For rich-text content,
+          use `html_body`.
+        expr:
+          kind: path
+          path:
+            - body
+      - name: html_body
+        type: Utf8
+        nullable: true
+        description: >
+          The HTML-formatted body of the comment. Contains formatting,
+          links, and inline images.
+        expr:
+          kind: path
+          path:
+            - html_body
+      - name: plain_body
+        type: Utf8
+        nullable: true
+        description: The plain-text (stripped) version of the comment body.
+        expr:
+          kind: path
+          path:
+            - plain_body
+      - name: public
+        type: Boolean
+        nullable: false
+        description: >
+          Whether this comment is visible to end-users (true) or an
+          internal note only visible to agents (false). Critical for
+          distinguishing customer-facing vs. internal communication.
+        expr:
+          kind: path
+          path:
+            - public
+      - name: channel
+        type: Utf8
+        nullable: true
+        description: >
+          The channel through which this comment was submitted.
+          Examples: web, email, api, chat, twitter, facebook_post.
+          Derived from `via.channel`.
+        expr:
+          kind: path
+          path:
+            - via
+            - channel
+      - name: attachment_count
+        type: Int64
+        nullable: true
+        description: >
+          Number of file attachments on this comment. Useful for
+          identifying comments with screenshots, logs, or documents.
+        expr:
+          kind: array_length
+          expr:
+            kind: path
+            path:
+              - attachments
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the comment was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: ticket_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the ticket_id filter value.
+        expr:
+          kind: from_filter
+          key: ticket_id
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 6: ticket_metrics
+  # SLA and performance metrics per ticket.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: ticket_metrics
+    description: >
+      Lists time-based performance metrics for all tickets. Each row
+      contains resolution times, reply times, requester wait times,
+      agent wait times, and on-hold times — each broken down into both
+      calendar minutes and business-hours minutes. Also includes counts
+      for group station changes, assignee station changes, reopens,
+      and total replies. This is the primary table for SLA compliance
+      analysis, agent performance benchmarking, and support ops dashboards.
+    guide: >
+      Start with `SELECT ticket_id, reply_time_business, first_resolution_time_business,
+      full_resolution_time_business, reopens, replies FROM zendesk.ticket_metrics`.
+      Join `ticket_id` to `zendesk.tickets` for ticket context. Use
+      business-hours columns (*_business) for SLA compliance; use
+      calendar-hours columns (*_calendar) for raw wall-clock analysis.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /ticket_metrics.json
+    response:
+      rows_path:
+        - ticket_metrics
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique metric record identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: ticket_id
+        type: Int64
+        nullable: false
+        description: >
+          The ticket this metric belongs to. Join to `zendesk.tickets.id`.
+        expr:
+          kind: path
+          path:
+            - ticket_id
+      - name: group_stations
+        type: Int64
+        nullable: true
+        description: >
+          Number of times the ticket was moved between groups.
+          High values indicate routing issues or escalation complexity.
+        expr:
+          kind: path
+          path:
+            - group_stations
+      - name: assignee_stations
+        type: Int64
+        nullable: true
+        description: >
+          Number of times the ticket was reassigned between agents.
+          High values may indicate unclear ownership or complex issues.
+        expr:
+          kind: path
+          path:
+            - assignee_stations
+      - name: reopens
+        type: Int64
+        nullable: true
+        description: >
+          Number of times the ticket was reopened after being solved.
+          High reopens suggest premature resolution or recurring issues.
+        expr:
+          kind: path
+          path:
+            - reopens
+      - name: replies
+        type: Int64
+        nullable: true
+        description: >
+          Total number of public agent replies on the ticket.
+          Use for response volume and communication effort analysis.
+        expr:
+          kind: path
+          path:
+            - replies
+      - name: reply_time_business
+        type: Int64
+        nullable: true
+        description: >
+          Time to first agent reply in business-hours minutes.
+          The primary SLA metric for first response time.
+        expr:
+          kind: path
+          path:
+            - reply_time_in_minutes
+            - business
+      - name: reply_time_calendar
+        type: Int64
+        nullable: true
+        description: Time to first agent reply in calendar minutes.
+        expr:
+          kind: path
+          path:
+            - reply_time_in_minutes
+            - calendar
+      - name: first_resolution_time_business
+        type: Int64
+        nullable: true
+        description: >
+          Time from creation to first solve in business-hours minutes.
+          Excludes time the ticket was reopened.
+        expr:
+          kind: path
+          path:
+            - first_resolution_time_in_minutes
+            - business
+      - name: first_resolution_time_calendar
+        type: Int64
+        nullable: true
+        description: Time from creation to first solve in calendar minutes.
+        expr:
+          kind: path
+          path:
+            - first_resolution_time_in_minutes
+            - calendar
+      - name: full_resolution_time_business
+        type: Int64
+        nullable: true
+        description: >
+          Total time from creation to final solve in business-hours
+          minutes, including all reopens.
+        expr:
+          kind: path
+          path:
+            - full_resolution_time_in_minutes
+            - business
+      - name: full_resolution_time_calendar
+        type: Int64
+        nullable: true
+        description: Total time from creation to final solve in calendar minutes.
+        expr:
+          kind: path
+          path:
+            - full_resolution_time_in_minutes
+            - calendar
+      - name: requester_wait_time_business
+        type: Int64
+        nullable: true
+        description: >
+          Total time the requester waited for an agent response
+          in business-hours minutes. Measures customer experience.
+        expr:
+          kind: path
+          path:
+            - requester_wait_time_in_minutes
+            - business
+      - name: requester_wait_time_calendar
+        type: Int64
+        nullable: true
+        description: Total requester wait time in calendar minutes.
+        expr:
+          kind: path
+          path:
+            - requester_wait_time_in_minutes
+            - calendar
+      - name: agent_wait_time_business
+        type: Int64
+        nullable: true
+        description: >
+          Total time the agent waited for a requester response in
+          business-hours minutes. Measures customer responsiveness.
+        expr:
+          kind: path
+          path:
+            - agent_wait_time_in_minutes
+            - business
+      - name: agent_wait_time_calendar
+        type: Int64
+        nullable: true
+        description: Total agent wait time in calendar minutes.
+        expr:
+          kind: path
+          path:
+            - agent_wait_time_in_minutes
+            - calendar
+      - name: on_hold_time_business
+        type: Int64
+        nullable: true
+        description: >
+          Total time the ticket was on hold in business-hours minutes.
+          On-hold time is typically excluded from SLA calculations.
+        expr:
+          kind: path
+          path:
+            - on_hold_time_in_minutes
+            - business
+      - name: on_hold_time_calendar
+        type: Int64
+        nullable: true
+        description: Total on-hold time in calendar minutes.
+        expr:
+          kind: path
+          path:
+            - on_hold_time_in_minutes
+            - calendar
+      - name: solved_at
+        type: Timestamp
+        nullable: true
+        description: When the ticket was last solved. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - solved_at
+      - name: assigned_at
+        type: Timestamp
+        nullable: true
+        description: When the ticket was last assigned. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - assigned_at
+      - name: initially_assigned_at
+        type: Timestamp
+        nullable: true
+        description: When the ticket was first assigned. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - initially_assigned_at
+      - name: latest_comment_added_at
+        type: Timestamp
+        nullable: true
+        description: When the latest comment was added. ISO 8601 timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - latest_comment_added_at
+      - name: status_updated_at
+        type: Timestamp
+        nullable: true
+        description: When the ticket status was last changed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - status_updated_at
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the metric record was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the metric record was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 7: satisfaction_ratings
+  # Customer satisfaction (CSAT) scores.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: satisfaction_ratings
+    description: >
+      Lists all customer satisfaction (CSAT) ratings. Each rating is tied
+      to a ticket and contains a score (good/bad), an optional free-text
+      comment from the customer, and the reason for the rating. This table
+      is the source of truth for CSAT analytics, quality assurance, and
+      customer sentiment tracking.
+    guide: >
+      Start with `SELECT id, ticket_id, score, comment, reason,
+      created_at FROM zendesk.satisfaction_ratings`. Join `ticket_id`
+      to `zendesk.tickets` for ticket context. Join `requester_id` and
+      `assignee_id` to `zendesk.users` for customer and agent details.
+      Filter by `score` = 'bad' to investigate negative experiences.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /satisfaction_ratings.json
+    response:
+      rows_path:
+        - satisfaction_ratings
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique satisfaction rating identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: ticket_id
+        type: Int64
+        nullable: false
+        description: >
+          The ticket this rating belongs to. Join to `zendesk.tickets.id`.
+        expr:
+          kind: path
+          path:
+            - ticket_id
+      - name: requester_id
+        type: Int64
+        nullable: true
+        description: >
+          The user who submitted the rating (the customer). Join to
+          `zendesk.users.id`.
+        expr:
+          kind: path
+          path:
+            - requester_id
+      - name: assignee_id
+        type: Int64
+        nullable: true
+        description: >
+          The agent who was assigned to the ticket when the rating
+          was given. Join to `zendesk.users.id` for agent performance.
+        expr:
+          kind: path
+          path:
+            - assignee_id
+      - name: group_id
+        type: Int64
+        nullable: true
+        description: >
+          The group the ticket belonged to when rated. Join to
+          `zendesk.groups.id` for team-level CSAT analysis.
+        expr:
+          kind: path
+          path:
+            - group_id
+      - name: score
+        type: Utf8
+        nullable: false
+        description: >
+          The satisfaction score. Values: "good", "bad", "offered"
+          (sent but not yet answered). Core CSAT metric.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: >
+          Free-text comment from the customer explaining their rating.
+          Invaluable for qualitative feedback analysis.
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: reason
+        type: Utf8
+        nullable: true
+        description: >
+          A predefined reason category for the rating (if configured).
+          Used for structured feedback analysis.
+        expr:
+          kind: path
+          path:
+            - reason
+      - name: reason_code
+        type: Int64
+        nullable: true
+        description: The numeric code of the rating reason category.
+        expr:
+          kind: path
+          path:
+            - reason_code
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the satisfaction rating was submitted.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the satisfaction rating was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 8: sla_policies
+  # Service Level Agreement configurations.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: sla_policies
+    description: >
+      Lists all SLA (Service Level Agreement) policies configured in the
+      Zendesk instance. Each SLA policy defines target response and
+      resolution times based on ticket conditions (priority, tags, groups,
+      etc.). Contains the policy title, description, filter conditions,
+      and detailed metric targets. Use this table to understand what SLA
+      commitments are in place and audit whether they are properly configured.
+    guide: >
+      Start with `SELECT id, title, description, position FROM
+      zendesk.sla_policies`. SLA policies are evaluated in order by
+      `position` — the first matching policy applies. Use the `filter`
+      and `policy_metrics` columns (JSON) for detailed condition and
+      target inspection.
+    request:
+      method: GET
+      path: /slas/policies.json
+    response:
+      rows_path:
+        - sla_policies
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique SLA policy identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: >
+          The display name of the SLA policy (e.g., "Urgent Priority SLA",
+          "Enterprise Customer SLA").
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: A description of what the SLA policy covers and when it applies.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: position
+        type: Int64
+        nullable: true
+        description: >
+          The evaluation order of this policy. Lower numbers are evaluated
+          first. The first matching policy wins.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: filter
+        type: Json
+        nullable: true
+        description: >
+          The conditions (as a JSON object) that determine which tickets
+          this SLA policy applies to. Contains `all` and `any` condition
+          arrays with fields like priority, group, tags, etc.
+        expr:
+          kind: path
+          path:
+            - filter
+      - name: policy_metrics
+        type: Json
+        nullable: true
+        description: >
+          Array of SLA metric targets (as JSON). Each target specifies a
+          metric type (first_reply_time, next_reply_time, requester_wait_time),
+          a priority level, and the target time in minutes for both business
+          and calendar hours.
+        expr:
+          kind: path
+          path:
+            - policy_metrics
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the SLA policy was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the SLA policy was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 9: macros
+  # Pre-built ticket actions for agent efficiency.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: macros
+    description: >
+      Lists all macros in the Zendesk instance. Macros are predefined
+      actions that agents can apply to tickets with a single click —
+      setting status, adding tags, assigning groups, inserting canned
+      responses, and more. This table is essential for workflow
+      optimization analysis, identifying underused macros, and auditing
+      agent efficiency tools.
+    guide: >
+      Start with `SELECT id, title, active, restriction, usage_7d,
+      created_at FROM zendesk.macros`. Filter by `active` = true for
+      currently available macros. Use `usage_7d` to find the most and
+      least used macros. Use `restriction` to see group-specific macros.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /macros.json
+      query:
+        - name: access
+          from: literal
+          value: shared
+    response:
+      rows_path:
+        - macros
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique macro identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: The display name of the macro.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: An optional description of what the macro does.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: active
+        type: Boolean
+        nullable: false
+        description: Whether the macro is currently active and available to agents.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: actions
+        type: Json
+        nullable: true
+        description: >
+          The actions the macro performs (as a JSON array). Each action
+          specifies a field and value (e.g., set status to "solved",
+          add tag "escalated", assign to group "Tier 2").
+        expr:
+          kind: path
+          path:
+            - actions
+      - name: restriction
+        type: Json
+        nullable: true
+        description: >
+          Access restriction for the macro (as JSON). Contains the
+          restriction type (Group, User) and the IDs of groups/users
+          who can use it. Null for unrestricted macros.
+        expr:
+          kind: path
+          path:
+            - restriction
+      - name: usage_7d
+        type: Int64
+        nullable: true
+        description: >
+          Number of times this macro was used in the last 7 days.
+          Key metric for identifying valuable vs. dead macros.
+        expr:
+          kind: path
+          path:
+            - usage_7d
+      - name: usage_30d
+        type: Int64
+        nullable: true
+        description: Number of times this macro was used in the last 30 days.
+        expr:
+          kind: path
+          path:
+            - usage_30d
+      - name: position
+        type: Int64
+        nullable: true
+        description: The display order position of the macro in the agent interface.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the macro was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the macro was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 10: triggers
+  # Automated business rules that fire on ticket events.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: triggers
+    description: >
+      Lists all triggers in the Zendesk instance. Triggers are event-driven
+      automation rules that execute when a ticket is created or updated.
+      Each trigger has conditions (all/any) and actions (assign group,
+      add tags, send notification, set priority, etc.). This table is
+      critical for auditing automation workflows, troubleshooting unexpected
+      ticket behavior, and optimizing routing rules.
+    guide: >
+      Start with `SELECT id, title, active, position, created_at FROM
+      zendesk.triggers`. Triggers fire in order by `position`. Use
+      `conditions` and `actions` (JSON) to inspect the logic of each
+      trigger. Filter `active` = false to find disabled triggers that
+      may need cleanup.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /triggers.json
+    response:
+      rows_path:
+        - triggers
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique trigger identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: The display name of the trigger.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: An optional description of the trigger's purpose.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: active
+        type: Boolean
+        nullable: false
+        description: Whether the trigger is currently active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: position
+        type: Int64
+        nullable: true
+        description: >
+          Execution order. Lower positions fire first. Critical for
+          understanding trigger interaction and override behavior.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: conditions
+        type: Json
+        nullable: true
+        description: >
+          The trigger's conditions (as JSON). Contains `all` (AND) and
+          `any` (OR) condition arrays. Each condition specifies a field,
+          operator, and value.
+        expr:
+          kind: path
+          path:
+            - conditions
+      - name: actions
+        type: Json
+        nullable: true
+        description: >
+          The actions the trigger performs (as JSON array). Each action
+          specifies a field and value — e.g., set group, add tag, send
+          email notification, change priority.
+        expr:
+          kind: path
+          path:
+            - actions
+      - name: category_id
+        type: Utf8
+        nullable: true
+        description: The category this trigger belongs to, if categorized.
+        expr:
+          kind: path
+          path:
+            - category_id
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the trigger was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the trigger was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 11: automations
+  # Time-based business rules that fire on schedule.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: automations
+    description: >
+      Lists all automations in the Zendesk instance. Unlike triggers
+      (which fire on ticket events), automations run on a time-based
+      schedule and evaluate ticket conditions periodically. Common use
+      cases include auto-closing tickets after inactivity, sending
+      follow-up reminders, escalating stale tickets, and notifying
+      managers about SLA breaches. This table is essential for auditing
+      time-based workflow rules.
+    guide: >
+      Start with `SELECT id, title, active, position, created_at FROM
+      zendesk.automations`. Use `conditions` and `actions` (JSON) to
+      inspect each automation's logic. Key difference from triggers:
+      automations use time-based conditions like "Hours since status
+      category changed" rather than event-based conditions.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /automations.json
+    response:
+      rows_path:
+        - automations
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique automation identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: The display name of the automation.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: active
+        type: Boolean
+        nullable: false
+        description: Whether the automation is currently active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: position
+        type: Int64
+        nullable: true
+        description: Execution order for the automation.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: conditions
+        type: Json
+        nullable: true
+        description: >
+          The automation's conditions (as JSON). Contains `all` and `any`
+          condition arrays. Time-based conditions reference hours-since
+          fields (e.g., "hours since status changed > 48").
+        expr:
+          kind: path
+          path:
+            - conditions
+      - name: actions
+        type: Json
+        nullable: true
+        description: >
+          The actions the automation performs (as JSON array). Typical
+          actions include changing status, sending notifications, adding
+          tags, and assigning to escalation groups.
+        expr:
+          kind: path
+          path:
+            - actions
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the automation was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the automation was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 12: views
+  # Saved ticket queries (shared and personal).
+  # ──────────────────────────────────────────────────────────────────────
+  - name: views
+    description: >
+      Lists all views in the Zendesk instance. Views are saved ticket
+      queries that appear in the agent sidebar — they filter and sort
+      tickets by conditions (status, group, assignee, tags, etc.).
+      Views power the agent's daily workflow, so understanding which
+      views exist and how they are configured is essential for workflow
+      optimization and support ops management.
+    guide: >
+      Start with `SELECT id, title, active, restriction, created_at
+      FROM zendesk.views`. Filter by `active` = true for currently
+      visible views. Use `conditions` (JSON) to inspect the filter
+      criteria. Use `restriction` to see group-specific or user-specific
+      views.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /views.json
+    response:
+      rows_path:
+        - views
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique view identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: >
+          The display name of the view as it appears in the agent sidebar
+          (e.g., "My Open Tickets", "Unassigned", "Urgent Escalations").
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: An optional description of the view's purpose.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: active
+        type: Boolean
+        nullable: false
+        description: Whether the view is active and visible to agents.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: position
+        type: Int64
+        nullable: true
+        description: Display order of the view in the sidebar.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: conditions
+        type: Json
+        nullable: true
+        description: >
+          The filter conditions for the view (as JSON). Contains `all`
+          and `any` condition arrays, each with field/operator/value.
+        expr:
+          kind: path
+          path:
+            - conditions
+      - name: restriction
+        type: Json
+        nullable: true
+        description: >
+          Access restriction for the view (as JSON). Specifies which
+          groups or users can see it. Null for globally shared views.
+        expr:
+          kind: path
+          path:
+            - restriction
+      - name: output
+        type: Json
+        nullable: true
+        description: >
+          The output configuration (as JSON). Defines which columns
+          are displayed and the sort order when an agent opens the view.
+        expr:
+          kind: path
+          path:
+            - output
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the view was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the view was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 13: brands
+  # Multi-brand configuration for Zendesk instances.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: brands
+    description: >
+      Lists all brands configured in the Zendesk instance. Brands allow
+      a single Zendesk account to support multiple product lines or
+      customer segments, each with its own Help Center URL, subdomain,
+      and default email. Tickets are associated with a brand via
+      `brand_id`. This table is essential for multi-brand analytics
+      and ensuring correct routing.
+    guide: >
+      Start with `SELECT id, name, subdomain, brand_url, active,
+      is_default FROM zendesk.brands`. Join `brand_id` on
+      `zendesk.tickets` for per-brand ticket volume analysis.
+      Use `host_mapping` for custom domain configurations.
+    request:
+      method: GET
+      path: /brands.json
+    response:
+      rows_path:
+        - brands
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique brand identifier. Referenced by `brand_id` on tickets.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The display name of the brand.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: subdomain
+        type: Utf8
+        nullable: true
+        description: The Zendesk subdomain for this brand.
+        expr:
+          kind: path
+          path:
+            - subdomain
+      - name: brand_url
+        type: Utf8
+        nullable: true
+        description: >
+          The full URL of the brand's Help Center
+          (e.g., "https://mybrand.zendesk.com").
+        expr:
+          kind: path
+          path:
+            - brand_url
+      - name: host_mapping
+        type: Utf8
+        nullable: true
+        description: >
+          Custom host mapping (e.g., "support.mycompany.com"). Null if
+          using the default Zendesk subdomain.
+        expr:
+          kind: path
+          path:
+            - host_mapping
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the brand is currently active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether this is the default brand.
+        expr:
+          kind: path
+          path:
+            - default
+      - name: has_help_center
+        type: Boolean
+        nullable: true
+        description: Whether a Help Center is enabled for this brand.
+        expr:
+          kind: path
+          path:
+            - has_help_center
+      - name: signature_template
+        type: Utf8
+        nullable: true
+        description: The default agent signature template for this brand.
+        expr:
+          kind: path
+          path:
+            - signature_template
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the brand was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the brand was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 14: ticket_fields
+  # Custom and system fields on tickets.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: ticket_fields
+    description: >
+      Lists all ticket fields — both system fields (subject, status,
+      priority, type) and custom fields defined by admins. Each field
+      has a type (text, dropdown, checkbox, date, number, etc.), title,
+      description, and configuration options. Use this table to understand
+      the data model of your tickets, audit custom field usage, and
+      ensure consistent field configuration across forms.
+    guide: >
+      Start with `SELECT id, title, type, active, required FROM
+      zendesk.ticket_fields`. Filter by `active` = true for currently
+      used fields. Use `custom_field_options` (JSON) to inspect dropdown
+      values and tags for custom dropdown fields.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /ticket_fields.json
+    response:
+      rows_path:
+        - ticket_fields
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique ticket field identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: >
+          The display title of the field as shown to agents
+          (e.g., "Priority", "Product Area", "Severity Level").
+        expr:
+          kind: path
+          path:
+            - title
+      - name: title_in_portal
+        type: Utf8
+        nullable: true
+        description: >
+          The title shown to end-users in the Help Center portal.
+          May differ from the agent-facing title.
+        expr:
+          kind: path
+          path:
+            - title_in_portal
+      - name: type
+        type: Utf8
+        nullable: false
+        description: >
+          The field type. Values include: text, textarea, checkbox,
+          date, integer, decimal, regexp, tagger (dropdown),
+          multiselect, tickettype, priority, status, group, assignee,
+          subject, description, custom_status.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: description
+        type: Utf8
+        nullable: true
+        description: An optional description of the field's purpose.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: active
+        type: Boolean
+        nullable: false
+        description: Whether the field is currently active and visible.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: required
+        type: Boolean
+        nullable: true
+        description: >
+          Whether the field is required for ticket submission.
+          Required fields must be filled before the ticket can be saved.
+        expr:
+          kind: path
+          path:
+            - required
+      - name: required_in_portal
+        type: Boolean
+        nullable: true
+        description: Whether the field is required in the Help Center portal.
+        expr:
+          kind: path
+          path:
+            - required_in_portal
+      - name: visible_in_portal
+        type: Boolean
+        nullable: true
+        description: Whether the field is visible in the Help Center portal.
+        expr:
+          kind: path
+          path:
+            - visible_in_portal
+      - name: editable_in_portal
+        type: Boolean
+        nullable: true
+        description: Whether end-users can edit the field in the portal.
+        expr:
+          kind: path
+          path:
+            - editable_in_portal
+      - name: removable
+        type: Boolean
+        nullable: true
+        description: Whether the field can be removed (system fields are not removable).
+        expr:
+          kind: path
+          path:
+            - removable
+      - name: agent_description
+        type: Utf8
+        nullable: true
+        description: Description shown to agents in the ticket interface.
+        expr:
+          kind: path
+          path:
+            - agent_description
+      - name: position
+        type: Int64
+        nullable: true
+        description: Display order position on the ticket form.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: >
+          For dropdown (tagger) fields, the tag associated with
+          the currently selected option.
+        expr:
+          kind: path
+          path:
+            - tag
+      - name: regexp_for_validation
+        type: Utf8
+        nullable: true
+        description: >
+          Regex pattern used for field validation (for regexp-type fields).
+        expr:
+          kind: path
+          path:
+            - regexp_for_validation
+      - name: custom_field_options
+        type: Json
+        nullable: true
+        description: >
+          For dropdown/tagger fields: the list of available options
+          (as JSON array). Each option has a name, value, and tag.
+        expr:
+          kind: path
+          path:
+            - custom_field_options
+      - name: system_field_options
+        type: Json
+        nullable: true
+        description: >
+          For system dropdown fields (priority, type, status): the
+          available options (as JSON array).
+        expr:
+          kind: path
+          path:
+            - system_field_options
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the ticket field was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the ticket field was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 15: ticket_forms
+  # Form templates for ticket submission.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: ticket_forms
+    description: >
+      Lists all ticket forms in the Zendesk instance. Ticket forms define
+      which fields are presented when agents or end-users create or view
+      a ticket. Different forms can be used for different request types
+      (e.g., "Bug Report" vs. "Feature Request" vs. "Billing Inquiry").
+      Each form references a set of ticket field IDs. Use this table to
+      audit form configuration and ensure proper field coverage.
+    guide: >
+      Start with `SELECT id, name, display_name, active, is_default,
+      in_all_brands FROM zendesk.ticket_forms`. Use `ticket_field_ids`
+      (JSON array) to see which fields are included in each form. Join
+      `ticket_form_id` on `zendesk.tickets` for form-based analytics.
+    request:
+      method: GET
+      path: /ticket_forms.json
+    response:
+      rows_path:
+        - ticket_forms
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: >
+          Unique ticket form identifier. Referenced by `ticket_form_id`
+          on tickets.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The internal name of the ticket form.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: >
+          The display name shown to end-users and agents when selecting
+          the form.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: active
+        type: Boolean
+        nullable: false
+        description: Whether the ticket form is currently active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether this is the default ticket form.
+        expr:
+          kind: path
+          path:
+            - default
+      - name: in_all_brands
+        type: Boolean
+        nullable: true
+        description: >
+          Whether this form is available across all brands. False if
+          restricted to specific brands.
+        expr:
+          kind: path
+          path:
+            - in_all_brands
+      - name: end_user_visible
+        type: Boolean
+        nullable: true
+        description: Whether end-users can see and select this form.
+        expr:
+          kind: path
+          path:
+            - end_user_visible
+      - name: position
+        type: Int64
+        nullable: true
+        description: Display order position when listing available forms.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: ticket_field_ids
+        type: Json
+        nullable: true
+        description: >
+          Ordered array of ticket field IDs included in this form
+          (as JSON array). Join each ID to `zendesk.ticket_fields.id`
+          for field details.
+        expr:
+          kind: path
+          path:
+            - ticket_field_ids
+      - name: restricted_brand_ids
+        type: Json
+        nullable: true
+        description: >
+          Array of brand IDs this form is restricted to (as JSON array).
+          Null if `in_all_brands` is true.
+        expr:
+          kind: path
+          path:
+            - restricted_brand_ids
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the ticket form was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the ticket form was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 16: tags
+  # All tags used across tickets, users, and organizations.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: tags
+    description: >
+      Lists all tags in the Zendesk instance along with their usage counts.
+      Tags are applied to tickets, users, and organizations to enable
+      filtering, triggers, automations, and reporting. This table provides
+      a global inventory of all tags and how frequently they are used —
+      essential for tag hygiene, identifying redundant tags, and
+      understanding the taxonomy of your support operation.
+    guide: >
+      Start with `SELECT name, count FROM zendesk.tags`. Use `count`
+      to identify the most-used tags (important for routing and reporting)
+      and least-used tags (candidates for cleanup). Cross-reference with
+      `tags` JSON arrays on tickets, users, and organizations.
+    request:
+      method: GET
+      path: /tags.json
+    response:
+      rows_path:
+        - tags
+    pagination:
+      mode: cursor_query
+      cursor_param: "page[after]"
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: >
+          The tag name (string). Tags are case-insensitive and stored
+          in lowercase. Used in triggers, automations, views, and macros.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: count
+        type: Int64
+        nullable: true
+        description: >
+          The number of objects (tickets, users, organizations) this
+          tag is currently applied to. High counts indicate important
+          operational tags.
+        expr:
+          kind: path
+          path:
+            - count
