@@ -6,14 +6,15 @@ description: >-
   Query scholarly works, authors, sources (journals/repositories), institutions,
   and topics from the OpenAlex academic database. Covers 250M+ works with
   citation counts, open-access status, authorship, topics, and more via the
-  free OpenAlex REST API. No authentication required; optionally provide an
-  email for higher rate limits (polite pool).
+  free OpenAlex REST API. Provide a free API key for authenticated access
+  and higher rate limits.
 inputs:
   OPENALEX_API_KEY:
     kind: secret
     hint: >-
-      Optional API key for OpenAlex. Using a key places you in the polite pool for higher
-      rate limits. Get a free key at https://openalex.org. Leave empty for anonymous access.
+      API key for OpenAlex. Get a free key at https://openalex.org/users/me.
+      An API key is required for higher rate limits (10 req/s vs 1 req/s
+      for anonymous access). The key is passed as the api_key query parameter.
 base_url: https://api.openalex.org
 request_headers:
   - name: Accept

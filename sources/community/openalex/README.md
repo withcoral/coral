@@ -4,11 +4,15 @@ Query the [OpenAlex](https://openalex.org) scholarly database — a free, open
 catalog of 250 M+ academic works, 90 M+ authors, 250 K+ sources, 100 K+
 institutions, and 4 500+ research topics.
 
+```bash
+coral source add --file sources/community/openalex/manifest.yaml
+```
+
 ## Setup
 
-No authentication is required. For higher rate limits (10 req/s instead of
-1 req/s), set the `OPENALEX_API_KEY` input to a free OpenAlex API key to join the
-[polite pool](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication#the-polite-pool).
+Get a free API key at [openalex.org/users/me](https://openalex.org/users/me).
+An API key gives you higher rate limits (10 req/s vs 1 req/s for anonymous
+access). The key is passed as the `api_key` query parameter on every request.
 
 ## Tables
 
@@ -27,7 +31,7 @@ Every table supports:
 | Filter   | Description                                                                        |
 | -------- | ---------------------------------------------------------------------------------- |
 | `search` | Full-text keyword search across names and titles.                                  |
-| `filter_value` | [Structured filtering](https://docs.openalex.org/how-to-use-the-api/get-lists-of-entities/filter-entity-lists) using OpenAlex filter syntax. |
+| `filter_value` | [Structured filtering](https://developers.openalex.org/guides/filtering) using OpenAlex filter syntax. |
 | `sort_value`   | Sort results (e.g. `cited_by_count:desc`, `publication_year:asc`).                 |
 
 ## Example queries
@@ -129,73 +133,64 @@ LIMIT 5;
 
 ## Links
 
-- [OpenAlex API documentation](https://docs.openalex.org/)
-- [OpenAlex filter reference](https://docs.openalex.org/how-to-use-the-api/get-lists-of-entities/filter-entity-lists)
-- [OpenAlex entity schemas](https://docs.openalex.org/api-entities)
+- [OpenAlex API documentation](https://developers.openalex.org/)
+- [OpenAlex filter reference](https://developers.openalex.org/guides/filtering)
+- [OpenAlex authentication](https://developers.openalex.org/guides/authentication)
 
 ## Local Testing
 
 ```bash
-coral source add --file sources/community/openalex/manifest.yaml
+OPENALEX_API_KEY=<key> coral source add --file sources/community/openalex/manifest.yaml
 # Added source openalex
-# 
+#
 #   ✓ openalex connected successfully
-# 
+#
 #     openalex (5 tables)
 #     ├─ authors
 #     ├─ institutions
 #     ├─ sources
 #     ├─ topics
 #     └─ works
-#     openalex (5 table functions)
-#     ├─ search_authors
-#     ├─ search_institutions
-#     ├─ search_sources
-#     ├─ search_topics
-#     └─ search_works
 #     Query tests
 #     3 declared · 3 passed · 0 failed
-# 
+#
 #     ✓ SELECT title, publication_year, cited_by_count FROM openalex.search_works(q => 'machine learning') LIMIT 1
 #       1 row
-# 
+#
 #     ✓ SELECT display_name, works_count, cited_by_count FROM openalex.search_authors(q => 'einstein') LIMIT 1
 #       1 row
-# 
+#
 #     ✓ SELECT display_name, works_count FROM openalex.topics LIMIT 1
 #       1 row
 
 coral source test openalex
 #   ✓ openalex connected successfully
-# 
+#
 #     openalex (5 tables)
 #     ├─ authors
 #     ├─ institutions
 #     ├─ sources
 #     ├─ topics
 #     └─ works
-#     openalex (5 table functions)
-#     ├─ search_authors
-#     ├─ search_institutions
-#     ├─ search_sources
-#     ├─ search_topics
-#     └─ search_works
 #     Query tests
 #     3 declared · 3 passed · 0 failed
-# 
+#
 #     ✓ SELECT title, publication_year, cited_by_count FROM openalex.search_works(q => 'machine learning') LIMIT 1
 #       1 row
-# 
+#
 #     ✓ SELECT display_name, works_count, cited_by_count FROM openalex.search_authors(q => 'einstein') LIMIT 1
 #       1 row
-# 
+#
 #     ✓ SELECT display_name, works_count FROM openalex.topics LIMIT 1
 #       1 row
 
-coral sql "SELECT display_name, works_count FROM openalex.topics LIMIT 1"
-# +-----------------------------------+-------------+
-# | display_name                      | works_count |
-# +-----------------------------------+-------------+
-# | Geochemistry and Geologic Mapping | 3956270     |
-# +-----------------------------------+-------------+
+coral sql "SELECT title, publication_year, cited_by_count FROM openalex.search_works(q => 'machine learning') LIMIT 3"
+# +------------------------------------------------------------------+------------------+----------------+
+# | title                                                            | publication_year | cited_by_count |
+# +------------------------------------------------------------------+------------------+----------------+
+# | Scikit-learn: Machine Learning in Python                         | 2012             | 63647          |
+# | Genetic algorithms in search, optimization, and machine learning | 1989             | 49332          |
+# | C4.5: Programs for Machine Learning                              | 1992             | 23695          |
+# +------------------------------------------------------------------+------------------+----------------+
 ```
+
