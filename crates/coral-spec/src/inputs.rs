@@ -75,17 +75,19 @@ pub struct ManifestCredentialMethod {
     pub oauth: Option<ManifestOAuthCredentialSpec>,
 }
 
-/// OAuth authorization-code credential retrieval configuration.
+/// OAuth credential retrieval configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestOAuthCredentialSpec {
     /// OAuth flow settings.
     pub flow: ManifestOAuthFlowSpec,
-    /// Loopback callback URI Coral binds during the OAuth session.
-    pub redirect_uri: String,
+    /// Loopback callback URI Coral binds during authorization-code sessions.
+    pub redirect_uri: Option<String>,
     /// Whether Coral binds the authored redirect URI port exactly or chooses a free port.
     pub redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode,
-    /// Provider authorization endpoint URL.
-    pub authorization_url: String,
+    /// Provider authorization endpoint URL for authorization-code sessions.
+    pub authorization_url: Option<String>,
+    /// Provider device authorization endpoint URL for device-code sessions.
+    pub device_authorization_url: Option<String>,
     /// Provider token endpoint URL.
     pub token_url: String,
     /// OAuth client configuration.
@@ -97,8 +99,11 @@ pub struct ManifestOAuthCredentialSpec {
 impl ManifestOAuthCredentialSpec {
     /// Resolve the local listener port behavior for this OAuth redirect URI.
     pub fn redirect_bind_port(&self) -> Result<ManifestOAuthRedirectBindPort> {
+        let redirect_uri = self.redirect_uri.as_deref().ok_or_else(|| {
+            ManifestError::validation("OAuth redirect URI is missing redirect_uri")
+        })?;
         redirect_bind_port(
-            &self.redirect_uri,
+            redirect_uri,
             self.redirect_uri_port_mode,
             "OAuth redirect URI",
         )
@@ -137,6 +142,8 @@ pub struct ManifestOAuthFlowSpec {
 pub enum ManifestOAuthFlowKind {
     /// OAuth 2.0 authorization-code grant.
     AuthorizationCode,
+    /// OAuth 2.0 device authorization grant.
+    DeviceCode,
 }
 
 /// Supported PKCE modes for OAuth credential retrieval.
@@ -454,13 +461,17 @@ fn parse_oauth(
             ))
         })
         .and_then(|flow| parse_oauth_flow(input_key, flow))?;
-    let redirect_uri = required_string(oauth, "redirect_uri", input_key, "oauth")?;
+    let redirect_uri = optional_string(oauth, "redirect_uri", input_key, "oauth")?;
     let redirect_uri_port_mode = oauth
         .get("redirect_uri_port_mode")
         .map(|value| parse_redirect_uri_port_mode(input_key, value))
         .transpose()?
-        .unwrap_or_else(|| default_redirect_uri_port_mode(&redirect_uri));
-    validate_loopback_redirect_uri(input_key, &redirect_uri, redirect_uri_port_mode)?;
+        .unwrap_or_else(|| {
+            redirect_uri.as_deref().map_or(
+                ManifestOAuthRedirectUriPortMode::Fixed,
+                default_redirect_uri_port_mode,
+            )
+        });
     let endpoints = oauth
         .get("endpoints")
         .and_then(Value::as_object)
@@ -470,8 +481,19 @@ fn parse_oauth(
             ))
         })?;
     let authorization_url =
-        required_string(endpoints, "authorization_url", input_key, "oauth.endpoints")?;
-    validate_url(input_key, "authorization_url", &authorization_url)?;
+        optional_string(endpoints, "authorization_url", input_key, "oauth.endpoints")?;
+    if let Some(url) = authorization_url.as_deref() {
+        validate_url(input_key, "authorization_url", url)?;
+    }
+    let device_authorization_url = optional_string(
+        endpoints,
+        "device_authorization_url",
+        input_key,
+        "oauth.endpoints",
+    )?;
+    if let Some(url) = device_authorization_url.as_deref() {
+        validate_url(input_key, "device_authorization_url", url)?;
+    }
     let token_url = required_string(endpoints, "token_url", input_key, "oauth.endpoints")?;
     validate_url(input_key, "token_url", &token_url)?;
     let client = oauth
@@ -486,11 +508,24 @@ fn parse_oauth(
         .get("scopes")
         .map(|scopes| parse_oauth_scopes(input_key, scopes))
         .transpose()?;
+    validate_oauth_flow_fields(
+        input_key,
+        &flow,
+        redirect_uri.as_deref(),
+        oauth.contains_key("redirect_uri_port_mode"),
+        authorization_url.as_deref(),
+        device_authorization_url.as_deref(),
+        client.secret.is_some(),
+    )?;
+    if let Some(redirect_uri) = redirect_uri.as_deref() {
+        validate_loopback_redirect_uri(input_key, redirect_uri, redirect_uri_port_mode)?;
+    }
     Ok(ManifestOAuthCredentialSpec {
         flow,
         redirect_uri,
         redirect_uri_port_mode,
         authorization_url,
+        device_authorization_url,
         token_url,
         client,
         scopes,
@@ -529,6 +564,7 @@ fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowS
     })?;
     let kind = match flow.get("type").and_then(Value::as_str) {
         Some("authorization_code") => ManifestOAuthFlowKind::AuthorizationCode,
+        Some("device_code") => ManifestOAuthFlowKind::DeviceCode,
         Some(other) => {
             return Err(ManifestError::validation(format!(
                 "manifest input '{input_key}' oauth.flow.type has unsupported value '{other}'"
@@ -540,15 +576,24 @@ fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowS
             )));
         }
     };
-    let pkce = match flow.get("pkce").and_then(Value::as_str) {
-        Some("required") => ManifestOAuthPkceMode::Required,
-        Some("disabled") => ManifestOAuthPkceMode::Disabled,
-        Some(other) => {
+    let pkce = match (kind, flow.get("pkce").and_then(Value::as_str)) {
+        (ManifestOAuthFlowKind::AuthorizationCode, Some("required")) => {
+            ManifestOAuthPkceMode::Required
+        }
+        (_, Some("disabled")) | (ManifestOAuthFlowKind::DeviceCode, None) => {
+            ManifestOAuthPkceMode::Disabled
+        }
+        (ManifestOAuthFlowKind::DeviceCode, Some("required")) => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.flow.pkce must be disabled for device_code"
+            )));
+        }
+        (_, Some(other)) => {
             return Err(ManifestError::validation(format!(
                 "manifest input '{input_key}' oauth.flow.pkce has unsupported value '{other}'"
             )));
         }
-        None => {
+        (ManifestOAuthFlowKind::AuthorizationCode, None) => {
             return Err(ManifestError::validation(format!(
                 "manifest input '{input_key}' oauth.flow is missing pkce"
             )));
@@ -713,6 +758,78 @@ fn required_string(
                 "manifest input '{input_key}' {context} is missing {key}"
             ))
         })
+}
+
+fn optional_string(
+    object: &Map<String, Value>,
+    key: &str,
+    input_key: &str,
+    context: &str,
+) -> Result<Option<String>> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .map(|value| Some(value.to_string()))
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' {context}.{key} must be a string"
+            ))
+        })
+}
+
+fn validate_oauth_flow_fields(
+    input_key: &str,
+    flow: &ManifestOAuthFlowSpec,
+    redirect_uri: Option<&str>,
+    has_redirect_uri_port_mode: bool,
+    authorization_url: Option<&str>,
+    device_authorization_url: Option<&str>,
+    has_client_secret: bool,
+) -> Result<()> {
+    match flow.kind {
+        ManifestOAuthFlowKind::AuthorizationCode => {
+            if redirect_uri.is_none() {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' authorization_code oauth method is missing redirect_uri"
+                )));
+            }
+            if authorization_url.is_none() {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' authorization_code oauth method is missing endpoints.authorization_url"
+                )));
+            }
+        }
+        ManifestOAuthFlowKind::DeviceCode => {
+            if redirect_uri.is_some() {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' device_code oauth method must not declare redirect_uri"
+                )));
+            }
+            if has_redirect_uri_port_mode {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' device_code oauth method must not declare redirect_uri_port_mode"
+                )));
+            }
+            if authorization_url.is_some() {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' device_code oauth method must not declare endpoints.authorization_url"
+                )));
+            }
+            if device_authorization_url.is_none() {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' device_code oauth method is missing endpoints.device_authorization_url"
+                )));
+            }
+            if has_client_secret {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' device_code oauth method must not declare client.secret"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_loopback_redirect_uri(
@@ -911,8 +1028,9 @@ mod tests {
 
     use super::{
         ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
-        ManifestOAuthClientSecretTransport, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
-        ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, collect_source_inputs_value,
+        ManifestOAuthClientSecretTransport, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
+        ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
+        ManifestOAuthScopeDelimiter, collect_source_inputs_value,
     };
     use crate::{ManifestError, Result};
 
@@ -1068,6 +1186,7 @@ tables: []
         let method = &inputs[0].credential.as_ref().expect("credential").methods[0];
         assert_eq!(method.kind, ManifestCredentialMethodKind::OAuth);
         let oauth = method.oauth.as_ref().expect("oauth");
+        assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::AuthorizationCode);
         assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Required);
         assert_eq!(
             oauth.redirect_uri_port_mode,
@@ -1076,6 +1195,14 @@ tables: []
         assert_eq!(
             oauth.redirect_bind_port().expect("bind port"),
             ManifestOAuthRedirectBindPort::Fixed(53682)
+        );
+        assert_eq!(
+            oauth.redirect_uri.as_deref(),
+            Some("http://127.0.0.1:53682/oauth/callback")
+        );
+        assert_eq!(
+            oauth.authorization_url.as_deref(),
+            Some("https://provider.example.com/oauth/authorize")
         );
         assert_eq!(oauth.client.id.default.as_deref(), Some("default-client"));
         assert_eq!(
@@ -1140,6 +1267,49 @@ tables: []
             oauth.redirect_bind_port().expect("bind port"),
             ManifestOAuthRedirectBindPort::Random
         );
+    }
+
+    #[test]
+    fn parses_oauth_device_code_flow() {
+        let inputs = collect(&manifest_with_input(
+            r"
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://provider.example.com/oauth/device/code
+              token_url: https://provider.example.com/oauth/token
+            client:
+              id:
+                input: OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+",
+        ))
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::DeviceCode);
+        assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Disabled);
+        assert!(oauth.redirect_uri.is_none());
+        assert!(oauth.authorization_url.is_none());
+        assert_eq!(
+            oauth.device_authorization_url.as_deref(),
+            Some("https://provider.example.com/oauth/device/code")
+        );
+        assert_eq!(oauth.client.id.input.as_deref(), Some("OAUTH_CLIENT_ID"));
     }
 
     #[test]
@@ -1303,7 +1473,10 @@ tables: []
             .oauth
             .as_ref()
             .expect("oauth");
-        assert_eq!(oauth.redirect_uri, "http://127.0.0.1:80/oauth/callback");
+        assert_eq!(
+            oauth.redirect_uri.as_deref(),
+            Some("http://127.0.0.1:80/oauth/callback")
+        );
         assert_eq!(
             oauth.redirect_bind_port().expect("bind port"),
             ManifestOAuthRedirectBindPort::Fixed(80)

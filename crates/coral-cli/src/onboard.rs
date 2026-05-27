@@ -362,6 +362,7 @@ mod tests {
             inputs: Vec::new(),
             installed: true,
             origin: 1,
+            credential_storage: 1,
         };
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("✓ "));
@@ -378,6 +379,7 @@ mod tests {
             inputs: Vec::new(),
             installed: false,
             origin: 1,
+            credential_storage: 0,
         };
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("  "));
@@ -393,6 +395,7 @@ mod tests {
             inputs: Vec::new(),
             installed: false,
             origin: 1,
+            credential_storage: 0,
         };
         let long = SourceInfo {
             name: "statusgator".to_string(),
@@ -401,6 +404,7 @@ mod tests {
             inputs: Vec::new(),
             installed: false,
             origin: 1,
+            credential_storage: 0,
         };
         let width = 11; // len of "statusgator"
         let short_item = format_source_list_item(&short, width);
