@@ -114,6 +114,6 @@ coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE sc
 
 - **Fetch Limits**: By default, the `notes` table is configured with a `fetch_limit_default: 100` to prevent excessive API load. Specify a higher SQL `LIMIT` intentionally to fetch more notes.
 - The Google Keep API v1 lists active notes by default but includes trashed notes if specified by custom filtering.
-- Pagination is handled using a cursor token through `pageToken` and page sizes configured using `pageSize` up to a maximum of 1000 notes per request.
+- Pagination is handled using a cursor token through `pageToken`. The source is configured with a maximum page size cap of 1000 notes per request via `pageSize`.
 - Attachments are exposed as a raw JSON array (`attachments`) on each note.
 
