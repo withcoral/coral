@@ -8,13 +8,47 @@
 
 ## Authentication
 
-Requires a `GITLAB_TOKEN` credential. Add the source and provide your token when prompted:
+Requires a `GITLAB_TOKEN` credential. You can connect with GitLab OAuth for
+GitLab.com, or paste a token.
+
+### OAuth
+
+Add the source interactively and choose `Connect with GitLab.com OAuth`:
 
 ```bash
-coral source add gitlab
+coral source add --interactive gitlab
 ```
 
-To rotate or update your token, run the same command again.
+To use your own GitLab OAuth application, configure it with:
+
+- Redirect URI: `http://127.0.0.1:53682/oauth/callback`
+- Scopes: `read_api`
+- Leave `Confidential` unchecked
+
+Then enter its Application ID when prompted for `GITLAB_OAUTH_CLIENT_ID`.
+
+The bundled OAuth flow targets GitLab.com. For self-hosted GitLab instances,
+use a token with `GITLAB_API_BASE` set to your instance URL.
+
+GitLab OAuth access tokens expire after two hours. Until Coral supports
+automatic refresh, rerun `coral source add --interactive gitlab` to refresh the
+stored token. See the
+[GitLab OAuth provider docs](https://docs.gitlab.com/integration/oauth_provider/).
+
+### Token
+
+Add the source and provide your token when prompted:
+
+```bash
+coral source add --interactive gitlab
+```
+
+To rotate or update your token, run the same command again. Non-interactive
+setup still works with environment variables:
+
+```bash
+GITLAB_TOKEN=glpat-... coral source add gitlab
+```
 
 ### Token scopes
 
