@@ -45,15 +45,17 @@ LIMIT 5;
 +----------------------------------+---------+---------------------------+-------------------+--------------------+
 | name                             | version | display_name              | input_token_limit | output_token_limit |
 +----------------------------------+---------+---------------------------+-------------------+--------------------+
-| gemini-2.5-flash                 | 001     | Gemini 2.5 Flash          | 1048576           | 65536              |
-| gemini-2.5-pro                   | 2.5     | Gemini 2.5 Pro            | 1048576           | 65536              |
-| gemini-2.0-flash                 | 2.0     | Gemini 2.0 Flash          | 1048576           | 8192               |
-| gemini-2.0-flash-001             | 2.0     | Gemini 2.0 Flash 001      | 1048576           | 8192               |
-| gemini-2.0-flash-lite-001        | 2.0     | Gemini 2.0 Flash-Lite 001 | 1048576           | 8192               |
+| models/gemini-2.5-flash                 | 001     | Gemini 2.5 Flash          | 1048576           | 65536              |
+| models/gemini-2.5-pro                   | 2.5     | Gemini 2.5 Pro            | 1048576           | 65536              |
+| models/gemini-2.0-flash                 | 2.0     | Gemini 2.0 Flash          | 1048576           | 8192               |
+| models/gemini-2.0-flash-001             | 2.0     | Gemini 2.0 Flash 001      | 1048576           | 8192               |
+| models/gemini-2.0-flash-lite-001        | 2.0     | Gemini 2.0 Flash-Lite 001 | 1048576           | 8192               |
 +----------------------------------+---------+---------------------------+-------------------+--------------------+
 */
 
 -- Generate text using gemini-flash-latest
+-- Note: When reusing a model name discovered from the `models` table,
+-- you must strip the `models/` prefix before passing it to `model`.
 SELECT response, prompt_token_count, candidates_token_count
 FROM gemini.generate
 WHERE model = 'gemini-flash-latest'

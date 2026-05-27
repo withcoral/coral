@@ -49,12 +49,8 @@ tables:
       - name: name
         type: Utf8
         nullable: false
-        description: The model name (e.g., gemini-flash-latest).
-        expr:
-          kind: replace
-          expr: {kind: path, path: [name]}
-          from: "models/"
-          to: ""
+        description: The model name (e.g., models/gemini-flash-latest).
+        expr: {kind: path, path: [name]}
       - name: version
         type: Utf8
         nullable: true
