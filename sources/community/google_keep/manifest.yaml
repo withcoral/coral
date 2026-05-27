@@ -67,7 +67,7 @@ tables:
       Exposes the user's notes and checklists from the Google Keep API.
       Includes standard text notes and checklists (list notes), update times, and attachments.
       Note: Google Keep API v1 does not support labels/tags, so notes cannot be queried by label.
-      
+
       By default, this table fetches up to 100 notes. Specify a higher SQL LIMIT (e.g. LIMIT 500)
       to retrieve more notes.
     filters:
