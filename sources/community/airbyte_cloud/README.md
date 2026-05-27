@@ -20,9 +20,9 @@ metadata Coral agents need.
 | Table | Description |
 | --- | --- |
 | `airbyte_cloud.workspaces` | Workspaces visible to the API token. |
-| `airbyte_cloud.sources` | Source connectors. Supports `workspace_id`. |
-| `airbyte_cloud.destinations` | Destination connectors. Supports `workspace_id`. |
-| `airbyte_cloud.connections` | Connection metadata. Supports `workspace_id` and `status`. |
+| `airbyte_cloud.sources` | Source connectors. Supports `workspace_id` through Airbyte's `workspaceIds` parameter. |
+| `airbyte_cloud.destinations` | Destination connectors. Supports `workspace_id` through Airbyte's `workspaceIds` parameter. |
+| `airbyte_cloud.connections` | Connection metadata. Supports `workspace_id` through Airbyte's `workspaceIds` parameter. Filter `status` locally in SQL. |
 | `airbyte_cloud.jobs` | Job history. Supports `connection_id` and `status`. |
 
 ## Examples
@@ -38,7 +38,7 @@ WHERE status = 'active';
 Inspect recent jobs for one connection:
 
 ```sql
-SELECT job_id, status, job_type, started_at, ended_at
+SELECT job_id, status, job_type, start_time, last_updated_at, rows_synced
 FROM airbyte_cloud.jobs
 WHERE connection_id = 'connection_id'
 LIMIT 25;
@@ -55,7 +55,11 @@ WHERE workspace_id = 'workspace_id';
 ## Notes
 
 - Airbyte Cloud list endpoints are modeled with `offset` and `limit`
-  pagination.
+  pagination, with page sizes capped at Airbyte's documented maximum of 100.
+- Workspace-scoped source, destination, and connection queries send the
+  documented `workspaceIds` request parameter.
+- Connection `status` is returned as a column and should be filtered locally in
+  SQL; Airbyte does not document a remote status filter for list connections.
 - The source omits source and destination configuration objects because they
   can contain credentials, host names, database names, or other sensitive
   connection parameters.
