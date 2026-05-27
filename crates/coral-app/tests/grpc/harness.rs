@@ -40,6 +40,7 @@ impl GrpcHarness {
     }
 
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
+        ensure_file_credentials_config(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(&config_dir)
             .start()
@@ -167,6 +168,22 @@ impl GrpcHarness {
         )
         .expect("query rows")
     }
+}
+
+fn ensure_file_credentials_config(config_dir: &Path) {
+    std::fs::create_dir_all(config_dir).expect("create config dir");
+    let config_file = config_dir.join("config.toml");
+    let raw = std::fs::read_to_string(&config_file).unwrap_or_default();
+    if raw.contains("[credentials]") {
+        return;
+    }
+    let separator = if raw.is_empty() || raw.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let updated = format!("{raw}{separator}\n[credentials]\nstorage = \"file\"\n");
+    std::fs::write(config_file, updated).expect("write test credential config");
 }
 
 impl FailingHttpFixture {

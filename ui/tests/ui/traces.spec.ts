@@ -68,6 +68,7 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
     'Expand one HTTP span and inspect the captured response body',
   )
   await page.getByRole('button', { name: /^GET github\.pull_requests\b/ }).click()
+  await page.getByRole('tab', { name: 'Response body' }).click()
 
   const spanInspector = page.locator('[data-span-inspector="true"]')
   await expect(spanInspector.getByText('GET github.pull_requests')).toBeVisible()
@@ -107,6 +108,7 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
     'Open a structured response body and confirm it is pretty printed',
   )
   await page.getByRole('button', { name: /^GET slack\.conversations\b/ }).click()
+  await page.getByRole('tab', { name: 'Response body' }).click()
 
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('"channels": [')).toBeVisible()
@@ -117,6 +119,7 @@ test('renders trace request and response bodies with JSON, GraphQL, and fallback
     'Verify raw text stays readable when parsing fails',
   )
   await page.getByRole('button', { name: /^GET github\.issue_previews\b/ }).click()
+  await page.getByRole('tab', { name: 'Response body' }).click()
 
   await expect(page.getByText('Response body')).toBeVisible()
   await expect(page.getByText('{"oops":')).toBeVisible()

@@ -1,0 +1,370 @@
+name: devto
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query articles, users, and tags from DEV.to.
+  No authentication required for public endpoints.
+base_url: https://dev.to/api
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/vnd.forem.api-v1+json
+
+test_queries:
+  - SELECT title, url FROM devto.articles WHERE tag = 'rust' LIMIT 1
+  - SELECT username, name, summary FROM devto.users_by_username WHERE username = 'ben' LIMIT 1
+  - SELECT name, bg_color_hex FROM devto.tags LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # articles — fetch articles from dev.to
+  # ──────────────────────────────────────────────────────────────────────
+  - name: articles
+    description: |
+      Fetch a list of articles from DEV.to.
+      Supports filtering by `tag`, `username`, `state` (rising, fresh, all), and `top` (number of days).
+      Note: combining `username` with `state` is only contracted with `state = 'all'`.
+    fetch_limit_default: 100
+    filters:
+      - name: tag
+      - name: username
+      - name: state
+      - name: top
+    request:
+      method: GET
+      path: /articles
+      query:
+        - name: tag
+          from: filter
+          key: tag
+        - name: username
+          from: filter
+          key: username
+        - name: state
+          from: filter
+          key: state
+        - name: top
+          from: filter
+          key: top
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 50
+      page_size:
+        default: 30
+        max: 1000
+        query_param: per_page
+    columns:
+      - name: tag
+        type: Utf8
+        virtual: true
+        nullable: true
+        description: Tag filter used in the query.
+        expr:
+          kind: from_filter
+          key: tag
+      - name: username
+        type: Utf8
+        virtual: true
+        nullable: true
+        description: Username filter used in the query.
+        expr:
+          kind: from_filter
+          key: username
+      - name: state
+        type: Utf8
+        virtual: true
+        nullable: true
+        description: State filter used in the query (rising, fresh, all).
+        expr:
+          kind: from_filter
+          key: state
+      - name: top
+        type: Int64
+        virtual: true
+        nullable: true
+        description: Top filter used in the query (days).
+        expr:
+          kind: from_filter
+          key: top
+      - name: id
+        type: Int64
+        nullable: false
+        description: Article ID.
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Title of the article.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Short description of the article.
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: URL slug.
+      - name: url
+        type: Utf8
+        nullable: false
+        description: Full URL to the article on DEV.to.
+      - name: canonical_url
+        type: Utf8
+        nullable: true
+        description: Original URL if crossposted.
+      - name: comments_count
+        type: Int64
+        nullable: false
+        description: Number of comments.
+      - name: public_reactions_count
+        type: Int64
+        nullable: false
+        description: Number of public reactions.
+      - name: positive_reactions_count
+        type: Int64
+        nullable: false
+        description: Number of positive reactions.
+      - name: reading_time_minutes
+        type: Int64
+        nullable: false
+        description: Estimated reading time in minutes.
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of tags.
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Publication timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: last_comment_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the last comment.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_comment_at
+      - name: author_user_id
+        type: Int64
+        nullable: true
+        description: User ID of the author.
+        expr:
+          kind: path
+          path:
+            - user
+            - user_id
+      - name: author_username
+        type: Utf8
+        nullable: true
+        description: Username of the author.
+        expr:
+          kind: path
+          path:
+            - user
+            - username
+      - name: author_name
+        type: Utf8
+        nullable: true
+        description: Display name of the author.
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: organization_name
+        type: Utf8
+        nullable: true
+        description: Name of the organization if posted under one.
+        expr:
+          kind: path
+          path:
+            - organization
+            - name
+      - name: cover_image
+        type: Utf8
+        nullable: true
+        description: URL of the article cover image.
+      - name: social_image
+        type: Utf8
+        nullable: true
+        description: URL of the social share image.
+      - name: path
+        type: Utf8
+        nullable: true
+        description: Relative path to the article on DEV.to (e.g. /username/slug).
+      - name: edited_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of last edit.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - edited_at
+      - name: published_timestamp
+        type: Utf8
+        nullable: true
+        description: ISO 8601 publication timestamp string.
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Language code of the article (e.g. en).
+      - name: readable_publish_date
+        type: Utf8
+        nullable: true
+        description: Human-readable publish date (e.g. May 26).
+      - name: type_of
+        type: Utf8
+        nullable: true
+        description: Type of the resource (always article).
+
+  # ──────────────────────────────────────────────────────────────────────
+  # users_by_id — lookup a user by ID
+  # ──────────────────────────────────────────────────────────────────────
+  - name: users_by_id
+    description: Lookup a specific DEV.to user by ID.
+    filters:
+      - name: id
+        required: true
+    request:
+      method: GET
+      path: /users/{{filter.id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns: &user_columns
+      - name: id
+        type: Int64
+        nullable: false
+        description: User ID.
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Username.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name.
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: User profile summary/bio.
+      - name: location
+        type: Utf8
+        nullable: true
+        description: User location.
+      - name: website_url
+        type: Utf8
+        nullable: true
+        description: User website URL.
+      - name: joined_at
+        type: Utf8
+        nullable: true
+        description: Date the user joined DEV.to (e.g. Dec 27, 2015).
+      - name: twitter_username
+        type: Utf8
+        nullable: true
+        description: Twitter handle.
+      - name: github_username
+        type: Utf8
+        nullable: true
+        description: GitHub handle.
+      - name: profile_image
+        type: Utf8
+        nullable: true
+        description: URL of the user profile image.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Public email address, if set.
+
+  # ──────────────────────────────────────────────────────────────────────
+  # users_by_username — lookup a user by username
+  # ──────────────────────────────────────────────────────────────────────
+  - name: users_by_username
+    description: Lookup a specific DEV.to user by username.
+    filters:
+      - name: username
+        required: true
+    request:
+      method: GET
+      path: /users/by_username
+      query:
+        - name: url
+          from: filter
+          key: username
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns: *user_columns
+
+  # ──────────────────────────────────────────────────────────────────────
+  # tags — list active tags
+  # ──────────────────────────────────────────────────────────────────────
+  - name: tags
+    description: |
+      List active tags on DEV.to.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /tags
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 10
+      page_size:
+        default: 30
+        max: 1000
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Tag ID.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Tag name.
+      - name: bg_color_hex
+        type: Utf8
+        nullable: true
+        description: Hex color code for the background of the tag.
+      - name: text_color_hex
+        type: Utf8
+        nullable: true
+        description: Hex color code for the text of the tag.
+      - name: short_summary
+        type: Utf8
+        nullable: true
+        description: A short description of the tag's purpose.

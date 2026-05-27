@@ -80,6 +80,7 @@ pub(crate) fn resolve_installed_manifest(
         )));
     }
     candidate.installed = true;
+    candidate.credential_storage = Some(source.effective_credential_storage());
     Ok(InstalledSourceManifest {
         source_spec,
         candidate,
@@ -108,6 +109,7 @@ fn candidate_from_manifest(
         inputs: manifest.declared_inputs().to_vec(),
         installed,
         origin,
+        credential_storage: None,
     })
 }
 

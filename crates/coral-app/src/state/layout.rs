@@ -54,6 +54,10 @@ impl AppStateLayout {
         &self.config_file
     }
 
+    pub(crate) fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
     pub(crate) fn state_lock(&self) -> &Path {
         &self.state_lock
     }

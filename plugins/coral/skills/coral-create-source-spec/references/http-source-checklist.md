@@ -23,6 +23,19 @@ Use:
 
 - variables for non-secret configuration such as API base URLs
 - secrets for API keys, tokens, and client secrets
+- `credential.methods` on secret inputs when setup should offer OAuth or a manual token choice
+
+## Authentication Setup
+
+- Keep credential collection separate from runtime auth. `inputs` stores values; `auth`, request headers, query params, or body fields decide where values are sent.
+- Use `type: source_config` when the user should provide a stored secret directly through an environment variable or prompt.
+- Use `type: oauth` when the provider should issue the source secret through an OAuth authorization-code flow during `coral source add --interactive`.
+- OAuth methods require `flow.type: authorization_code` and an explicit `flow.pkce` of `required` or `disabled`.
+- OAuth redirect URIs must use `http://127.0.0.1` or `http://localhost`. Use `redirect_uri_port_mode: random` with no port or port `0` when the provider accepts variable loopback ports. Use `fixed` with a non-zero port when the OAuth app must pre-register the exact URI.
+- For public clients, declare `client.id.default`, `client.id.input`, or both. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
+- Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
+- If the provider supports pasted tokens too, put the OAuth method first and add a `source_config` fallback.
+- Do not rely on automatic token refresh; call out short-lived access tokens as a limitation.
 
 ## Description and Input Hints
 
@@ -42,6 +55,7 @@ Additional hint guidance:
 
 - Base URL inputs should clarify default behavior and self-hosted alternatives.
 - Secret inputs should name token type and any format constraints (for example token prefixes).
+- OAuth-backed secret hints should name the required scopes, client ID/secret expectations, and redirect URI registration requirement.
 - For encoded credentials, include a short shell example (for example `printf ... | base64`).
 - Prefer official docs links and stable settings pages over brittle click-path instructions.
 
