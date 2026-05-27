@@ -1,0 +1,197 @@
+name: grafana
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Grafana dashboards, data sources, and organization folders through the Grafana HTTP REST API.
+base_url: "{{input.GRAFANA_BASE_URL}}/api"
+
+inputs:
+  GRAFANA_BASE_URL:
+    kind: variable
+    hint: |
+      Grafana instance base root URL with NO trailing slash and no /api suffix,
+      for example `https://grafana.example.com` or `http://localhost:3000`.
+  GRAFANA_SERVICE_ACCOUNT_TOKEN:
+    kind: secret
+    hint: |
+      Service Account Token obtained from Grafana Administration -> Service Accounts.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GRAFANA_SERVICE_ACCOUNT_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM grafana.datasources LIMIT 1
+
+tables:
+  - name: datasources
+    description: Configured data sources connected to Grafana.
+    request:
+      method: GET
+      path: /datasources
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Internal data source identifier.
+        expr: {kind: path, path: [id]}
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Unique data source identifier.
+        expr: {kind: path, path: [uid]}
+      - name: org_id
+        type: Int64
+        nullable: false
+        description: Organization identifier.
+        expr: {kind: path, path: [orgId]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Data source name.
+        expr: {kind: path, path: [name]}
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Data source plugin type.
+        expr: {kind: path, path: [type]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Data source target URL.
+        expr: {kind: path, path: [url]}
+      - name: access
+        type: Utf8
+        nullable: true
+        description: Access mode used for queries.
+        expr: {kind: path, path: [access]}
+      - name: basic_auth
+        type: Boolean
+        nullable: true
+        description: Whether Basic Authentication is enabled.
+        expr: {kind: path, path: [basicAuth]}
+      - name: is_default
+        type: Boolean
+        nullable: false
+        description: Whether the data source is the organization default.
+        expr: {kind: path, path: [isDefault]}
+      - name: read_only
+        type: Boolean
+        nullable: true
+        description: Whether the data source is read-only.
+        expr: {kind: path, path: [readOnly]}
+
+  - name: dashboards
+    description: Dashboards visible within the active Grafana organization.
+    filters:
+      - name: folder_uid
+        required: false
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: type
+          from: literal
+          value: dash-db
+        - name: folderUids
+          from: filter
+          key: folder_uid
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Internal dashboard identifier.
+        expr: {kind: path, path: [id]}
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Unique dashboard identifier.
+        expr: {kind: path, path: [uid]}
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Title header display name of the dashboard.
+        expr: {kind: path, path: [title]}
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Dashboard URI path.
+        expr: {kind: path, path: [uri]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Dashboard URL path.
+        expr: {kind: path, path: [url]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Dashboard search result type.
+        expr: {kind: path, path: [type]}
+      - name: is_starred
+        type: Boolean
+        nullable: false
+        description: Whether the dashboard is starred.
+        expr: {kind: path, path: [isStarred]}
+      - name: folder_id
+        type: Int64
+        nullable: true
+        description: Parent folder identifier.
+        expr: {kind: path, path: [folderId]}
+      - name: folder_uid
+        type: Utf8
+        nullable: true
+        description: Parent folder UID.
+        expr: {kind: path, path: [folderUid]}
+      - name: folder_title
+        type: Utf8
+        nullable: true
+        description: Parent folder title.
+        expr: {kind: path, path: [folderTitle]}
+
+  - name: folders
+    description: Dashboard folders within the active Grafana organization.
+    request:
+      method: GET
+      path: /folders
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Internal folder identifier.
+        expr: {kind: path, path: [id]}
+      - name: uid
+        type: Utf8
+        nullable: false
+        description: Unique folder identifier.
+        expr: {kind: path, path: [uid]}
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Folder title.
+        expr: {kind: path, path: [title]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Folder URL path.
+        expr: {kind: path, path: [url]}
