@@ -85,6 +85,38 @@ FROM tableau.users;
   tables work, because Tableau applies stronger permissions to user inventory.
 - Live API tests passed against a Tableau Cloud site. The source used a
   short-lived Tableau REST auth token generated from the sign-in endpoint.
+- For `tableau.views`, the tested Tableau Cloud REST response used a wrapper
+  object with rows under `views.view[]`, so the source maps
+  `rows_path: [views, view]`.
+
+Redacted `GET /api/3.25/sites/{site_id}/views?pageSize=1` response shape:
+
+```json
+{
+  "pagination": {
+    "pageNumber": "1",
+    "pageSize": "1",
+    "totalAvailable": "<redacted>"
+  },
+  "views": {
+    "view": [
+      {
+        "id": "<view-luid>",
+        "name": "<view-name>",
+        "contentUrl": "<content-url>",
+        "workbook": {
+          "id": "<workbook-luid>"
+        },
+        "owner": {
+          "id": "<owner-luid>"
+        },
+        "createdAt": "<timestamp>",
+        "updatedAt": "<timestamp>"
+      }
+    ]
+  }
+}
+```
 
 ## Validation
 

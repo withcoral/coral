@@ -204,7 +204,7 @@ tables:
     columns:
       - name: id
         type: Utf8
-        nullable: true
+        nullable: false
         description: Tableau view LUID.
       - name: name
         type: Utf8
