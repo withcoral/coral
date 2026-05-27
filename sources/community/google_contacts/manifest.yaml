@@ -77,7 +77,7 @@ tables:
       query:
         - name: personFields
           from: literal
-          value: names,emailAddresses,phoneNumbers,organizations,biographies,metadata
+          value: names,emailAddresses,phoneNumbers,organizations,biographies,metadata,memberships
         - name: sortOrder
           from: filter
           key: sort_order
@@ -125,7 +125,7 @@ tables:
       - name: display_name
         type: Utf8
         nullable: true
-        description: Primary display name for the contact
+        description: First returned display name for the contact. Use the raw names array for primary/type resolution.
         expr:
           kind: first_array_item_path
           path:
@@ -135,7 +135,7 @@ tables:
       - name: family_name
         type: Utf8
         nullable: true
-        description: Family name (last name) for the contact
+        description: First returned family name (last name) for the contact. Use the raw names array for primary/type resolution.
         expr:
           kind: first_array_item_path
           path:
@@ -145,7 +145,7 @@ tables:
       - name: given_name
         type: Utf8
         nullable: true
-        description: Given name (first name) for the contact
+        description: First returned given name (first name) for the contact. Use the raw names array for primary/type resolution.
         expr:
           kind: first_array_item_path
           path:
@@ -155,7 +155,7 @@ tables:
       - name: email
         type: Utf8
         nullable: true
-        description: Primary email address for the contact
+        description: First returned email address for the contact. Use raw_email_addresses or raw array for primary/type resolution.
         expr:
           kind: first_array_item_path
           path:
@@ -165,7 +165,7 @@ tables:
       - name: phone_number
         type: Utf8
         nullable: true
-        description: Primary phone number for the contact
+        description: First returned phone number for the contact. Use raw_phone_numbers or raw array for primary/type resolution.
         expr:
           kind: first_array_item_path
           path:
@@ -175,7 +175,7 @@ tables:
       - name: organization
         type: Utf8
         nullable: true
-        description: Primary organization/company name for the contact
+        description: First returned organization/company name for the contact. Use the raw organizations array for primary/type resolution.
         expr:
           kind: first_array_item_path
           path:
@@ -185,7 +185,7 @@ tables:
       - name: job_title
         type: Utf8
         nullable: true
-        description: Primary job title for the contact
+        description: First returned job title for the contact. Use the raw organizations array for primary/type resolution.
         expr:
           kind: first_array_item_path
           path:
@@ -240,6 +240,26 @@ tables:
           kind: path
           path:
             - phoneNumbers
+      - name: contact_groups
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of contact group resource names the contact belongs to
+        expr:
+          kind: join_array_path
+          path:
+            - memberships
+          item_path:
+            - contactGroupMembership
+            - contactGroupResourceName
+          separator: ","
+      - name: raw_memberships
+        type: Json
+        nullable: true
+        description: Raw JSON array of memberships (e.g. contact groups, domain memberships)
+        expr:
+          kind: path
+          path:
+            - memberships
       - name: raw
         type: Json
         nullable: false
@@ -258,7 +278,7 @@ tables:
       query:
         - name: groupFields
           from: literal
-          value: metadata,groupType,memberCount,name,formattedName
+          value: metadata,groupType,memberCount,name
     response:
       rows_path:
         - contactGroups
@@ -308,14 +328,6 @@ tables:
           kind: path
           path:
             - name
-      - name: formatted_name
-        type: Utf8
-        nullable: true
-        description: The formatted name for this group (localized or system defined)
-        expr:
-          kind: path
-          path:
-            - formattedName
       - name: group_type
         type: Utf8
         nullable: true
