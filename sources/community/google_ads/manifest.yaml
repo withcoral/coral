@@ -107,11 +107,6 @@ tables:
         - pageToken
       response_cursor_path:
         - nextPageToken
-      page_size:
-        default: 1000
-        max: 10000
-        body_path:
-          - pageSize
     columns:
       - name: id
         type: Utf8
@@ -197,11 +192,6 @@ tables:
         - pageToken
       response_cursor_path:
         - nextPageToken
-      page_size:
-        default: 1000
-        max: 10000
-        body_path:
-          - pageSize
     columns:
       - name: id
         type: Utf8
@@ -297,11 +287,6 @@ tables:
         - pageToken
       response_cursor_path:
         - nextPageToken
-      page_size:
-        default: 1000
-        max: 10000
-        body_path:
-          - pageSize
     columns:
       - name: id
         type: Utf8
@@ -408,11 +393,6 @@ tables:
         - pageToken
       response_cursor_path:
         - nextPageToken
-      page_size:
-        default: 1000
-        max: 10000
-        body_path:
-          - pageSize
     columns:
       - name: campaign_id
         type: Utf8
