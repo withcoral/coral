@@ -266,6 +266,26 @@ jobs:
             echo "__RELEASE_BODY__"
           } >> "$GITHUB_OUTPUT"
 
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.TAG_NAME }}
+          fetch-depth: 0
+          token: ${{ steps.github-app-token.outputs.token }}
+          persist-credentials: false
+
+      # Force push targets `docs` only — never `main`. Runs on both the
+      # `release` event and manual `workflow_dispatch` against a tag, so docs
+      # can be (re)pointed at a shipped tag by re-running this workflow.
+      - name: Point docs branch at released commit
+        env:
+          GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          released_commit="$(git rev-parse "${TAG_NAME}^{commit}")"
+          git push --force \
+            "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${released_commit}:refs/heads/docs"
+
       # Dispatch the tap workflow after publishing the release:
       # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event
       - name: Trigger Homebrew tap bump

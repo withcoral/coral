@@ -31,6 +31,9 @@ pub enum AppError {
     /// `config.toml` decoding failed.
     #[error(transparent)]
     TomlDecode(#[from] toml::de::Error),
+    /// `config.toml` parsing failed while preserving raw TOML structure.
+    #[error(transparent)]
+    TomlEditDecode(#[from] toml_edit::TomlError),
     /// `config.toml` encoding failed.
     #[error(transparent)]
     TomlEncode(#[from] toml::ser::Error),
@@ -186,6 +189,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::Io(_)
         | AppError::Yaml(_)
         | AppError::TomlDecode(_)
+        | AppError::TomlEditDecode(_)
         | AppError::TomlEncode(_)
         | AppError::Json(_)
         | AppError::Transport(_)
