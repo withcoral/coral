@@ -1,0 +1,251 @@
+name: gitea
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Gitea repositories, organizations, and user accounts through the Gitea REST API v1.
+base_url: "{{input.GITEA_BASE_URL}}/api/v1"
+
+inputs:
+  GITEA_BASE_URL:
+    kind: variable
+    hint: |
+      Gitea instance base root URL with NO trailing slash and no /api/v1 suffix,
+      for example `https://gitea.example.com` or `http://localhost:3000`.
+  GITEA_API_TOKEN:
+    kind: secret
+    hint: |
+      Personal Access Token obtained from Gitea User Settings -> Applications.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: token {{input.GITEA_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM gitea.repositories LIMIT 1
+
+tables:
+  - name: repositories
+    description: Repositories visible through the Gitea repository search API.
+    filters:
+      - name: query
+        required: false
+    request:
+      method: GET
+      path: /repos/search
+      query:
+        - name: q
+          from: filter
+          key: query
+        - name: limit
+          from: pagination
+          key: limit
+        - name: page
+          from: pagination
+          key: page
+    response:
+      row_strategy: direct
+      root_key: data
+    pagination:
+      mode: page
+      page_key: page
+      limit_key: limit
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Repository search query filter.
+        expr: {kind: from_filter, key: query}
+      - name: id
+        type: Int64
+        nullable: false
+        description: Internal database identifier of the repository.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the repository.
+        expr: {kind: path, path: [name]}
+      - name: full_name
+        type: Utf8
+        nullable: false
+        description: Full name of the repository including owner (owner/repo).
+        expr: {kind: path, path: [full_name]}
+      - name: owner_username
+        type: Utf8
+        nullable: false
+        description: Username of the repository owner.
+        expr: {kind: path, path: [owner, login]}
+      - name: private
+        type: Boolean
+        nullable: false
+        description: Whether the repository is private or public.
+        expr: {kind: path, path: [private]}
+      - name: empty
+        type: Boolean
+        nullable: true
+        description: Whether the repository has no commits or code content.
+        expr: {kind: path, path: [empty]}
+      - name: clone_url
+        type: Utf8
+        nullable: true
+        description: HTTP URL used to clone the repository.
+        expr: {kind: path, path: [clone_url]}
+      - name: ssh_url
+        type: Utf8
+        nullable: true
+        description: SSH target URL used to clone the repository.
+        expr: {kind: path, path: [ssh_url]}
+      - name: stars_count
+        type: Int64
+        nullable: true
+        description: Number of stars given to the repository.
+        expr: {kind: path, path: [stars_count]}
+      - name: forks_count
+        type: Int64
+        nullable: true
+        description: Number of times this repository has been forked.
+        expr: {kind: path, path: [forks_count]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp detailing when the repository was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+
+  - name: organizations
+    description: Organizations that the authenticated user belongs to.
+    request:
+      method: GET
+      path: /user/orgs
+      query:
+        - name: limit
+          from: pagination
+          key: limit
+        - name: page
+          from: pagination
+          key: page
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_key: page
+      limit_key: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Internal database identifier of the organization.
+        expr: {kind: path, path: [id]}
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Organization username/handle.
+        expr: {kind: path, path: [username]}
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Display name of the organization.
+        expr: {kind: path, path: [full_name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Organization description.
+        expr: {kind: path, path: [description]}
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Organization location.
+        expr: {kind: path, path: [location]}
+      - name: website
+        type: Utf8
+        nullable: true
+        description: Organization website URL.
+        expr: {kind: path, path: [website]}
+
+  - name: users
+    description: User accounts registered on the Gitea instance. Requires administrator privileges.
+    filters:
+      - name: query
+        required: false
+      - name: is_admin
+        required: false
+    request:
+      method: GET
+      path: /admin/users
+      query:
+        - name: q
+          from: filter
+          key: query
+        - name: admins
+          from: filter
+          key: is_admin
+        - name: limit
+          from: pagination
+          key: limit
+        - name: page
+          from: pagination
+          key: page
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_key: page
+      limit_key: limit
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: User search query filter.
+        expr: {kind: from_filter, key: query}
+      - name: is_admin_filter
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Filter limiting results to administrator accounts.
+        expr: {kind: from_filter, key: is_admin}
+      - name: id
+        type: Int64
+        nullable: false
+        description: Internal database identifier of the user account.
+        expr: {kind: path, path: [id]}
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Unique login handle for the user.
+        expr: {kind: path, path: [login]}
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Display name of the user.
+        expr: {kind: path, path: [full_name]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address configured on the profile.
+        expr: {kind: path, path: [email]}
+      - name: is_admin
+        type: Boolean
+        nullable: true
+        description: Whether this user has server-wide administrative rights.
+        expr: {kind: path, path: [is_admin]}
+      - name: last_login
+        type: Timestamp
+        nullable: true
+        description: Timestamp tracking when the user last authenticated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_login]}
