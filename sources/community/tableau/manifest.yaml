@@ -43,7 +43,7 @@ request_headers:
 test_queries:
   - SELECT id, name FROM tableau.projects LIMIT 1
   - SELECT id, name, project_name FROM tableau.workbooks LIMIT 1
-  - SELECT COUNT(*) AS view_pages FROM tableau.views
+  - SELECT id, name, workbook_id FROM tableau.views LIMIT 1
 
 tables:
   - name: projects
@@ -191,7 +191,7 @@ tables:
           from: filter
           key: filter
     response:
-      rows_path: [views]
+      rows_path: [views, view]
       row_strategy: direct
     pagination:
       mode: page
