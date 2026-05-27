@@ -6,14 +6,22 @@ configuration payloads that may contain credentials or host details.
 
 ## Authentication
 
-Create an Airbyte Cloud API token and provide:
+Create an Airbyte Cloud Application, then exchange its client credentials for a
+short-lived access token using Airbyte's `/applications/token` endpoint. Airbyte
+Cloud access tokens are valid for only three minutes, so refresh the token
+before adding or testing the source when it expires. The token inherits the
+permissions of the Airbyte user associated with the Application.
+
+See Airbyte's authentication and access-token docs:
+<https://reference.airbyte.com/reference/authentication.md> and
+<https://reference.airbyte.com/reference/createaccesstoken.md>.
 
 | Input | Description |
 | --- | --- |
-| `AIRBYTE_API_TOKEN` | Bearer token for the Airbyte API. |
+| `AIRBYTE_ACCESS_TOKEN` | Short-lived bearer token for the Airbyte API. |
 
-The token is modeled as a secret. Use the narrowest role that can read the
-metadata Coral agents need.
+The access token is modeled as a secret. Use the narrowest Airbyte user role
+that can read the metadata Coral agents need.
 
 ## Tables
 
@@ -38,7 +46,7 @@ WHERE status = 'active';
 Inspect recent jobs for one connection:
 
 ```sql
-SELECT job_id, status, job_type, start_time, last_updated_at, rows_synced
+SELECT job_id, status, job_type, start_time, last_updated_at, duration, rows_synced
 FROM airbyte_cloud.jobs
 WHERE connection_id = 'connection_id'
 LIMIT 25;
@@ -56,6 +64,10 @@ WHERE workspace_id = 'workspace_id';
 
 - Airbyte Cloud list endpoints are modeled with `offset` and `limit`
   pagination, with page sizes capped at Airbyte's documented maximum of 100.
+- Authenticate by creating an Airbyte Application and exchanging its client ID
+  and secret for a short-lived access token. Airbyte Cloud access tokens expire
+  after three minutes, so long-lived workflows need to refresh the token before
+  reinstalling or testing the source.
 - Workspace-scoped source, destination, and connection queries send the
   documented `workspaceIds` request parameter.
 - Connection `status` is returned as a column and should be filtered locally in
@@ -75,9 +87,10 @@ WHERE workspace_id = 'workspace_id';
 - Coral manifest schema validation: passed
 - `git diff --check`: passed
 - `make lint-sources`: passed
-- Live API tests: passed against an Airbyte Cloud workspace
+- Live API tests: not rerun after the auth input rename; require a fresh
+  three-minute Airbyte access token
 
-Live Coral evidence:
+Previous Coral evidence before the auth input rename:
 
 ```text
 ✓ airbyte_cloud connected successfully

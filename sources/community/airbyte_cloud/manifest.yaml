@@ -8,18 +8,19 @@ description: >-
 base_url: https://api.airbyte.com/v1
 
 inputs:
-  AIRBYTE_API_TOKEN:
+  AIRBYTE_ACCESS_TOKEN:
     kind: secret
     hint: |
-      Airbyte Cloud API bearer token. Use a token with read-only access where
-      possible.
+      Short-lived Airbyte Cloud access token from the Application token
+      exchange. Permissions come from the Airbyte user associated with the
+      Application.
 
 auth:
   type: HeaderAuth
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{input.AIRBYTE_API_TOKEN}}
+      template: Bearer {{input.AIRBYTE_ACCESS_TOKEN}}
 
 request_headers:
   - name: Accept
@@ -29,6 +30,7 @@ request_headers:
 test_queries:
   - SELECT workspace_id, name FROM airbyte_cloud.workspaces LIMIT 1
   - SELECT connection_id, name, status FROM airbyte_cloud.connections LIMIT 1
+  - SELECT job_id, status, start_time, last_updated_at, duration FROM airbyte_cloud.jobs LIMIT 1
 
 tables:
   - name: workspaces
@@ -116,16 +118,6 @@ tables:
         nullable: true
         description: Source connector type.
         expr: {kind: path, path: [sourceType]}
-      - name: created_at
-        type: Int64
-        nullable: true
-        description: Source creation time as returned by Airbyte.
-        expr: {kind: path, path: [createdAt]}
-      - name: updated_at
-        type: Int64
-        nullable: true
-        description: Source update time as returned by Airbyte.
-        expr: {kind: path, path: [updatedAt]}
       - name: workspace_filter
         type: Utf8
         nullable: true
@@ -181,16 +173,6 @@ tables:
         nullable: true
         description: Destination connector type.
         expr: {kind: path, path: [destinationType]}
-      - name: created_at
-        type: Int64
-        nullable: true
-        description: Destination creation time as returned by Airbyte.
-        expr: {kind: path, path: [createdAt]}
-      - name: updated_at
-        type: Int64
-        nullable: true
-        description: Destination update time as returned by Airbyte.
-        expr: {kind: path, path: [updatedAt]}
       - name: workspace_filter
         type: Utf8
         nullable: true
@@ -259,7 +241,22 @@ tables:
         type: Utf8
         nullable: true
         description: Connection schedule type.
-        expr: {kind: path, path: [scheduleType]}
+        expr: {kind: path, path: [schedule, scheduleType]}
+      - name: schedule_cron_expression
+        type: Utf8
+        nullable: true
+        description: Cron expression for cron-scheduled connections.
+        expr: {kind: path, path: [schedule, cronExpression]}
+      - name: schedule_basic_time_unit
+        type: Utf8
+        nullable: true
+        description: Time unit for basic scheduled connections.
+        expr: {kind: path, path: [schedule, basicSchedule, timeUnit]}
+      - name: schedule_basic_units
+        type: Int64
+        nullable: true
+        description: Number of units for basic scheduled connections.
+        expr: {kind: path, path: [schedule, basicSchedule, units]}
       - name: namespace_definition
         type: Utf8
         nullable: true
@@ -269,16 +266,6 @@ tables:
         type: Utf8
         nullable: true
         description: Destination stream prefix.
-      - name: created_at
-        type: Int64
-        nullable: true
-        description: Connection creation time as returned by Airbyte.
-        expr: {kind: path, path: [createdAt]}
-      - name: updated_at
-        type: Int64
-        nullable: true
-        description: Connection update time as returned by Airbyte.
-        expr: {kind: path, path: [updatedAt]}
       - name: workspace_filter
         type: Utf8
         nullable: true
@@ -337,19 +324,25 @@ tables:
         description: Job type.
         expr: {kind: path, path: [jobType]}
       - name: start_time
-        type: Int64
+        type: Timestamp
         nullable: true
-        description: Job start time as returned by Airbyte.
-        expr: {kind: path, path: [startTime]}
+        description: Job start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [startTime]}
       - name: last_updated_at
-        type: Int64
+        type: Timestamp
         nullable: true
-        description: Job last update time as returned by Airbyte.
-        expr: {kind: path, path: [lastUpdatedAt]}
-      - name: duration_seconds
-        type: Int64
+        description: Job last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastUpdatedAt]}
+      - name: duration
+        type: Utf8
         nullable: true
-        description: Job duration in seconds when returned by Airbyte.
+        description: Job duration as an ISO-8601 duration string.
         expr: {kind: path, path: [duration]}
       - name: bytes_synced
         type: Int64
