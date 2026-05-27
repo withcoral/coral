@@ -1,0 +1,83 @@
+name: advice_slip
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Generate random advice or search for specific advice using the Advice Slip API.
+base_url: https://api.adviceslip.com
+test_queries:
+  - SELECT id, advice FROM advice_slip.random_advice LIMIT 1
+  - SELECT id, advice, date FROM advice_slip.advices WHERE query = 'spiders' LIMIT 1
+tables:
+  - name: random_advice
+    description: Get a single random piece of advice.
+    request:
+      method: GET
+      path: /advice
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique ID of the advice slip.
+        expr:
+          kind: path
+          path:
+            - slip
+            - id
+      - name: advice
+        type: Utf8
+        nullable: false
+        description: The advice text.
+        expr:
+          kind: path
+          path:
+            - slip
+            - advice
+
+  - name: advices
+    description: Search for advice containing a specific keyword.
+    filters:
+      - name: query
+        required: true
+    request:
+      method: GET
+      path: /advice/search/{{filter.query}}
+    response:
+      rows_path:
+        - slips
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique ID of the advice slip.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: advice
+        type: Utf8
+        nullable: false
+        description: The advice text.
+        expr:
+          kind: path
+          path:
+            - advice
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Date the advice was added (YYYY-MM-DD).
+        expr:
+          kind: path
+          path:
+            - date
+      - name: query
+        type: Utf8
+        nullable: true
+        description: The query used to search for this advice.
+        expr:
+          kind: from_filter
+          key: query

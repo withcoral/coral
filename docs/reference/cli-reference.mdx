@@ -72,8 +72,8 @@ Pass `--interactive` to be prompted for variables and secrets instead. If a
 missing secret declares credential methods, Coral shows those choices in the
 source spec's authored order. `source_config` methods use the normal source
 input path and prompt for the secret value here; OAuth methods open or print an
-authorization URL, wait for the loopback callback, and store the
-resulting secret without printing token material.
+authorization URL or device verification URL, wait for provider completion, and
+store the resulting secret without printing token material.
 Environment variables still win, so a secret value already present in the
 environment bypasses the retrieval choice.
 

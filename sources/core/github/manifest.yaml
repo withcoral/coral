@@ -21,11 +21,83 @@ inputs:
   GITHUB_TOKEN:
     kind: secret
     hint: |
-      If you're already authenticated in GitHub CLI, run
+      For GitHub Cloud, choose "Connect with GitHub device code" for the
+      simplest setup. It signs in through GitHub and does not require you
+      to create an OAuth app or enter a client secret.
+
+      If you want to use your own GitHub OAuth app, set
+      GITHUB_OAUTH_CLIENT_ID to the app's Client ID. To create an app,
+      follow GitHub's guide:
+      https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app.
+      Enable device flow on the app before using the device-code option.
+      For the browser "Connect with GitHub OAuth app" option, set the
+      app's Authorization callback URL to
+      `http://127.0.0.1:53682/oauth/callback` and set
+      GITHUB_OAUTH_CLIENT_SECRET to the app's Client secret.
+
+      The OAuth options request `repo`, `read:org`, `read:user`, and
+      `user:email` scopes. Use the token method instead if you need a
+      narrower or more elevated scope set, or if you are connecting
+      to GitHub Enterprise Server.
+
+      For token auth, if you're already authenticated in GitHub CLI, run
       `gh auth token`, or create a new personal access token (PAT).
       Grant read access to the repositories and organizations you plan
       to query; some admin tables require elevated scopes.
       See [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitHub device code
+          description: Sign in to GitHub with a device code.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://github.com/login/device/code
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Iv23liJHis6Bs8NO1DAI
+                input: GITHUB_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+        - type: oauth
+          label: Connect with GitHub OAuth app
+          description: Sign in through a GitHub OAuth app in your browser.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://github.com/login/oauth/authorize
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Iv23liJHis6Bs8NO1DAI
+                input: GITHUB_OAUTH_CLIENT_ID
+              secret:
+                input: GITHUB_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+        - type: source_config
+          label: Paste token
+          description: Paste a GitHub token or provide GITHUB_TOKEN.
 auth:
   type: HeaderAuth
   headers:
