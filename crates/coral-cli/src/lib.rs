@@ -502,9 +502,11 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                         source.name,
                         source.version,
                         source_ops::source_origin_label(source.origin).to_string(),
+                        source_ops::source_credential_storage_label(source.credential_storage)
+                            .to_string(),
                     ]
                 });
-                print_text_table(["Source", "Version", "Origin"], rows);
+                print_text_table(["Source", "Version", "Origin", "Secrets"], rows);
             }
         }
         SourceCommand::Info { name, verbose } => {
@@ -673,7 +675,11 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
         }
         _ => unreachable!("clap enforces exactly one of name or file"),
     };
-    println!("Added source {}", response.name);
+    println!(
+        "Added source {} (secrets: {})",
+        response.name,
+        source_ops::source_credential_storage_label(response.credential_storage)
+    );
     source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
         .await
         .map_err(Into::into)
