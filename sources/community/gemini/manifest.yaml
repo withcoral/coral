@@ -37,13 +37,13 @@ tables:
       rows_path:
         - models
     pagination:
-      mode: page
-      page_param: pageToken
+      mode: cursor_query
+      cursor_param: pageToken
       page_size:
         default: 50
         max: 50
         query_param: pageSize
-      response_page_path:
+      response_cursor_path:
         - nextPageToken
     columns:
       - name: name
@@ -139,9 +139,6 @@ tables:
         - path: [systemInstruction, parts, "0", text]
           from: filter
           key: system
-        - path: [generationConfig, temperature]
-          from: filter_float
-          key: temperature
     response:
       row_strategy: direct
     pagination:
