@@ -17,9 +17,10 @@ This release is intended for single-user local use:
   Windows machine.
 - You choose which source specs to install, which credentials to provide, and
   which MCP clients or scripts may call Coral.
-- Coral stores configuration and source secrets under the local Coral config
-  directory, which defaults to the platform config directory and can be changed
-  with `CORAL_CONFIG_DIR`.
+- Coral stores configuration under the local Coral config directory, which
+  defaults to the platform config directory and can be changed with
+  `CORAL_CONFIG_DIR`. Source secrets default to OS credential storage when the
+  local keychain is usable, with plaintext file storage available as fallback.
 - CLI and MCP queries run through the same local runtime. The internal gRPC
   server binds to loopback, and the MCP server uses stdio transport.
 
@@ -34,8 +35,14 @@ whether a value is configured.
 Coral's current protections are aimed at accidental exposure within that local
 trust boundary:
 
-- Source secrets are stored separately from non-secret source variables, in
-  plaintext local files rather than in `config.toml`.
+- Source secrets are stored separately from non-secret source variables and are
+  never written into `config.toml`.
+- By default, sources use the operating-system credential store when Coral
+  can successfully write, read, and delete a probe item. On macOS this uses
+  Keychain; on Windows, Credential Manager; on Linux, Secret Service.
+- If keychain probing fails in `auto` mode, Coral stores source secrets in
+  plaintext local files and reports the route as `file (plaintext)` in source
+  output.
 - State files written by Coral use private file permissions on Unix systems.
   On Windows, Coral stores local state under
   `%APPDATA%\withcoral\coral\config` by default and relies on the user's
@@ -46,6 +53,27 @@ trust boundary:
   paths.
 - MCP clients can query installed sources, but they do not receive raw stored
   secret values through the discovery tables or resources.
+
+## Secret storage configuration
+
+Coral reads the credential storage preference from `config.toml`:
+
+```toml
+[credentials]
+storage = "auto"
+```
+
+Supported values:
+
+| Value | Behavior |
+| --- | --- |
+| `auto` | Default. Use keychain when the probe succeeds; otherwise use plaintext file storage. |
+| `keychain` | Require OS credential storage. If unavailable, source installation fails. |
+| `file` | Store source secrets in plaintext `secrets.env` files under Coral's config directory. |
+
+<Note>
+Changing the global preference does not rewrite existing credentials. To update those, remove and re-add the source you want to update.
+</Note>
 
 ## What you still need to trust
 
@@ -60,9 +88,10 @@ you configure; it does not make an otherwise untrusted local agent safe.
   token, so prefer read-only and least-privilege credentials.
 - A custom source spec can direct Coral to make HTTP requests or read local file
   locations declared by that spec. Only install source specs you trust.
-- Anyone who can read your local Coral config directory or control your user
-  account should be treated as able to read stored source secrets and use the
-  configured sources.
+- Anyone who can control your user account should be treated as able to use the
+  configured sources. If a source uses file-backed secret storage, anyone who
+  can read your local Coral config directory should also be treated as able to
+  read its stored source secrets.
 - Coral does not attempt to protect against a compromised machine, compromised
   MCP client, malicious shell environment, or malicious upstream API response.
 
@@ -71,6 +100,8 @@ you configure; it does not make an otherwise untrusted local agent safe.
 - Scope provider tokens to the minimum data your workflow needs.
 - Put Coral's config directory on a local disk protected by your operating
   system account controls.
+- Use `coral source list` or `coral source info <NAME>` to inspect whether a
+  source uses `keychain` or `file (plaintext)` secret storage.
 - Review custom source specs before installing them, especially `base_url`,
   `auth`, and file `location` fields.
 - Configure `coral mcp-stdio` only in MCP clients you are comfortable allowing
