@@ -21,16 +21,17 @@ use crate::{
     TableInfo,
 };
 
-/// Schema name for source metadata tables such as `coral.tables`.
+/// Schema name for source metadata tables such as `coral.sources` and `coral.tables`.
 pub(crate) const SYSTEM_SCHEMA: &str = "coral";
 
-/// Register `coral.tables` and `coral.columns` for the active source set.
+/// Register `coral.*` metadata tables for the active source set.
 ///
 /// # Errors
 ///
 /// Returns a `DataFusionError` if the catalog is missing or the metadata
 /// tables cannot be materialized.
 pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]) -> Result<()> {
+    let sources_table = build_sources_table(active_sources)?;
     let tables_table = build_tables_table(active_sources)?;
     let columns_table = build_columns_table(active_sources)?;
     let filters_table = build_filters_table(active_sources)?;
@@ -39,6 +40,7 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
+    meta_tables.insert("sources".to_string(), Arc::new(sources_table));
     meta_tables.insert("tables".to_string(), Arc::new(tables_table));
     meta_tables.insert("columns".to_string(), Arc::new(columns_table));
     meta_tables.insert("filters".to_string(), Arc::new(filters_table));
@@ -57,6 +59,32 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
     )?;
 
     Ok(())
+}
+
+fn build_sources_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("schema_name", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, false),
+        Field::new("onboarding_instructions", DataType::Utf8, true),
+    ]));
+
+    let mut rows = active_sources.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.schema_name.cmp(&right.schema_name));
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            utf8_column(rows.iter().map(|source| Some(source.schema_name.as_str()))),
+            utf8_column(rows.iter().map(|source| Some(source.description.as_str()))),
+            utf8_column(
+                rows.iter()
+                    .map(|source| source.onboarding_instructions.as_deref()),
+            ),
+        ],
+    )
+    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
+
+    MemTable::try_new(schema, vec![vec![batch]])
 }
 
 fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
@@ -584,6 +612,8 @@ mod tests {
     fn collect_table_functions_preserves_registered_function_schema() {
         let functions = collect_table_functions(&[RegisteredSource {
             schema_name: "source_schema".to_string(),
+            description: String::new(),
+            onboarding_instructions: None,
             tables: Vec::new(),
             table_functions: vec![RegisteredTableFunction {
                 schema_name: "function_schema".to_string(),

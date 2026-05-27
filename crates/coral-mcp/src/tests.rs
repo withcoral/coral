@@ -42,6 +42,10 @@ name: local_messages
 version: 0.1.0
 dsl_version: 3
 backend: file
+description: Fixture message source
+onboarding:
+  instructions: >-
+    Use local_messages.messages for conversation rows before checking events.
 tables:
   - name: events
     description: Fixture events
@@ -358,7 +362,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("tables and table functions")
+            .contains("source context")
     );
 
     let initial_guide = client
@@ -422,6 +426,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let catalog_resource_text = text_content(&catalog_resource);
     let catalog_resource_json = serde_json::from_str::<serde_json::Value>(catalog_resource_text)
         .expect("parse catalog resource");
+    assert_eq!(
+        catalog_resource_json["sources"][0]["schema_name"],
+        "local_messages"
+    );
+    assert_eq!(
+        catalog_resource_json["sources"][0]["onboarding_instructions"],
+        "Use local_messages.messages for conversation rows before checking events."
+    );
     assert_eq!(catalog_resource_json["total"], 3);
     assert_eq!(catalog_resource_json["items"][0]["kind"], "table");
     assert_eq!(
@@ -454,6 +466,11 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert!(updated_guide_text.contains("## Available Schemas"));
     assert!(updated_guide_text.contains("- coral: System catalog schema."));
     assert!(updated_guide_text.contains("- local_messages"));
+    assert!(updated_guide_text.contains("Source-authored context:"));
+    assert!(
+        updated_guide_text
+            .contains("- local_messages: Use local_messages.messages for conversation rows")
+    );
     assert!(updated_guide_text.contains("Prefer one SQL statement with `JOIN`, `CROSS JOIN`"));
     assert!(!updated_guide_text.contains("## Visible SQL Schemas"));
     assert!(updated_guide_text.contains(

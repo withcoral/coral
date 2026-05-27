@@ -63,6 +63,10 @@ message Source {
   SourceOrigin origin = 6;
   // Where this installed source's credential material is stored.
   SourceCredentialStorage credential_storage = 7;
+  // Human-readable source description from the manifest.
+  string description = 8;
+  // Source-authored agent onboarding and context discovery guidance.
+  string onboarding_instructions = 9;
 }
 
 // One manifest-declared source input prompt.
@@ -254,6 +258,8 @@ message SourceInfo {
   SourceOrigin origin = 6;
   // Where credential material is stored when this source is installed.
   SourceCredentialStorage credential_storage = 7;
+  // Source-authored agent onboarding and context discovery guidance.
+  string onboarding_instructions = 8;
 }
 
 // Lists all bundled sources available for one workspace.

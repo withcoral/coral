@@ -58,6 +58,8 @@ fn mock_source() -> Source {
         variables: Vec::new(),
         origin: SourceOrigin::Bundled as i32,
         credential_storage: SourceCredentialStorage::File as i32,
+        description: String::new(),
+        onboarding_instructions: String::new(),
     }
 }
 
@@ -290,6 +292,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::File as i32,
+                onboarding_instructions: String::new(),
             },
             SourceInfo {
                 name: "slack".to_string(),
@@ -299,6 +302,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::Unspecified as i32,
+                onboarding_instructions: String::new(),
             },
         ],
     }
@@ -333,6 +337,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            onboarding_instructions: String::new(),
         }),
         "slack" => Ok(SourceInfo {
             name: "slack".to_string(),
@@ -342,6 +347,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: false,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
+            onboarding_instructions: String::new(),
         }),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
@@ -351,6 +357,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            onboarding_instructions: String::new(),
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
@@ -452,6 +459,8 @@ impl Default for MockServerConfig {
                         variables: Vec::new(),
                         origin: SourceOrigin::Bundled as i32,
                         credential_storage: SourceCredentialStorage::File as i32,
+                        description: String::new(),
+                        onboarding_instructions: String::new(),
                     },
                     Source {
                         workspace: Some(workspace()),
@@ -461,6 +470,8 @@ impl Default for MockServerConfig {
                         variables: Vec::new(),
                         origin: SourceOrigin::Imported as i32,
                         credential_storage: SourceCredentialStorage::File as i32,
+                        description: String::new(),
+                        onboarding_instructions: String::new(),
                     },
                 ],
             }),

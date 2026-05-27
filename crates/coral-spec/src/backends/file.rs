@@ -20,8 +20,9 @@ use crate::common::parse_manifest_data_type;
 use crate::inputs::collect_source_inputs_value;
 use crate::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputKind, ManifestInputSpec,
-    ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
-    TemplatePart, validate_columns, validate_table_names, validate_test_queries,
+    ParsedTemplate, Result, SourceBackend, SourceManifestCommon, SourceOnboardingSpec, TableCommon,
+    TemplateNamespace, TemplatePart, normalize_onboarding_instructions, validate_columns,
+    validate_table_names, validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -122,6 +123,8 @@ struct RawFileSourceManifest {
     description: String,
     #[serde(default)]
     test_queries: Vec<String>,
+    #[serde(default)]
+    onboarding: Option<SourceOnboardingSpec>,
     backend: SourceBackend,
     #[serde(default)]
     inputs: Option<Value>,
@@ -616,14 +619,22 @@ impl FileSourceManifest {
             version,
             description,
             test_queries,
+            onboarding,
             backend: _backend,
             inputs: _inputs,
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
         validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let onboarding_instructions = normalize_onboarding_instructions(&name, onboarding)?;
+        let common = SourceManifestCommon::new(
+            dsl_version,
+            name,
+            version,
+            description,
+            onboarding_instructions,
+            test_queries,
+        );
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))

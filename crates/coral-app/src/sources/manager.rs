@@ -572,6 +572,8 @@ impl SourceManager {
         let stored = InstalledSource {
             name: source_name.clone(),
             version: persisted_version,
+            description: String::new(),
+            onboarding_instructions: None,
             variables: request.bindings.variables,
             secrets: visible_secret_keys,
             credential_storage,
@@ -589,9 +591,7 @@ impl SourceManager {
             );
             return Err(error);
         }
-        let mut resolved = stored;
-        resolved.version = Some(request.candidate.version.clone());
-        Ok(resolved)
+        Ok(apply_candidate_metadata(stored, request.candidate))
     }
 
     fn source_exists(
@@ -963,14 +963,11 @@ impl SourceManager {
     fn populate_source_version(
         &self,
         workspace_name: &WorkspaceName,
-        mut source: InstalledSource,
+        source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
-        source.version = Some(
-            resolve_installed_manifest(workspace_name, &source, &self.layout)?
-                .candidate
-                .version,
-        );
-        Ok(source)
+        let candidate =
+            resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate;
+        Ok(apply_candidate_metadata(source, &candidate))
     }
 
     fn populate_source_version_or_keep(
@@ -981,6 +978,18 @@ impl SourceManager {
         self.populate_source_version(workspace_name, source.clone())
             .unwrap_or(source)
     }
+}
+
+fn apply_candidate_metadata(
+    mut source: InstalledSource,
+    candidate: &CandidateSource,
+) -> InstalledSource {
+    source.version = Some(candidate.version.clone());
+    source.description.clone_from(&candidate.description);
+    source
+        .onboarding_instructions
+        .clone_from(&candidate.onboarding_instructions);
+    source
 }
 
 fn validate_bindings(

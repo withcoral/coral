@@ -471,6 +471,8 @@ mod tests {
                 InstalledSource {
                     name: source_name,
                     version: None,
+                    description: String::new(),
+                    onboarding_instructions: None,
                     variables: BTreeMap::new(),
                     secrets: vec!["GITHUB_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),

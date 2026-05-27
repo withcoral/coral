@@ -1,7 +1,8 @@
 use coral_api::v1::{
     ColumnSearchResult, DescribeTableResponse, ListCatalogResponse, ListColumnsResponse,
-    SearchCatalogResponse, SearchColumnsResponse, Table as ProtoTable, TableColumnSearchResult,
-    TableFunction as ProtoTableFunction, TableFunctionArgument as ProtoTableFunctionArgument,
+    SearchCatalogResponse, SearchColumnsResponse, Source, Table as ProtoTable,
+    TableColumnSearchResult, TableFunction as ProtoTableFunction,
+    TableFunctionArgument as ProtoTableFunctionArgument,
     TableFunctionResultColumn as ProtoTableFunctionResultColumn, TableSummary as ProtoTableSummary,
     catalog_item,
 };
@@ -121,9 +122,49 @@ pub(crate) fn list_catalog_value(
 }
 
 pub(crate) fn catalog_resource_content(
+    sources: &[Source],
     response: &ListCatalogResponse,
 ) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&list_catalog_value(response, CatalogToolDetail::Summary))
+    let mut value = list_catalog_value(response, CatalogToolDetail::Summary);
+    if let Value::Object(object) = &mut value {
+        object.insert(
+            "sources".to_string(),
+            serde_json::to_value(catalog_source_values(sources))?,
+        );
+    }
+    serde_json::to_string_pretty(&value)
+}
+
+fn catalog_source_values(sources: &[Source]) -> Vec<CatalogSourceValue<'_>> {
+    let mut values = sources
+        .iter()
+        .map(CatalogSourceValue::from)
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| left.schema_name.cmp(right.schema_name));
+    values
+}
+
+#[derive(Serialize)]
+struct CatalogSourceValue<'a> {
+    schema_name: &'a str,
+    description: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    onboarding_instructions: Option<&'a str>,
+}
+
+impl<'a> From<&'a Source> for CatalogSourceValue<'a> {
+    fn from(source: &'a Source) -> Self {
+        Self {
+            schema_name: &source.name,
+            description: &source.description,
+            onboarding_instructions: non_empty_optional(&source.onboarding_instructions),
+        }
+    }
+}
+
+fn non_empty_optional(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 fn catalog_item_value(

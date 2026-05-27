@@ -114,6 +114,8 @@ impl PersistedInstalledSource {
         InstalledSource {
             name: source_name,
             version: self.version,
+            description: String::new(),
+            onboarding_instructions: None,
             variables: self.variables,
             secrets: self.secrets,
             credential_storage: self.credential_storage,
@@ -531,6 +533,8 @@ mod tests {
         InstalledSource {
             name: SourceName::parse(name).expect("source"),
             version: Some("1.1.4".to_string()),
+            description: String::new(),
+            onboarding_instructions: None,
             variables: BTreeMap::from([(
                 "GITHUB_API_BASE".to_string(),
                 "https://api.github.com".to_string(),

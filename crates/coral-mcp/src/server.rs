@@ -576,11 +576,10 @@ impl ServerHandler for CoralMcpServer {
                     ]))
                 }
                 "coral://catalog" => {
-                    let catalog = self
-                        .load_all_catalog()
-                        .await
-                        .map_err(|status| status_to_error_data(&status))?;
-                    let text = catalog_resource_content(&catalog)
+                    let (sources, catalog) =
+                        tokio::try_join!(self.load_sources(), self.load_all_catalog(),)
+                            .map_err(|status| status_to_error_data(&status))?;
+                    let text = catalog_resource_content(&sources, &catalog)
                         .map_err(|error| internal_status(&error))
                         .map_err(|status| status_to_error_data(&status))?;
                     Ok(ReadResourceResult::new(vec![

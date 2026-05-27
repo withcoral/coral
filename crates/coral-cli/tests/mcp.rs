@@ -341,6 +341,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
     ));
 
     let catalog_json = read_json_resource(&client, "coral://catalog").await?;
+    assert_eq!(catalog_json["sources"][0]["schema_name"], "github");
     assert_eq!(catalog_json["total"], 3);
     assert_eq!(catalog_json["items"][0]["kind"], "table");
     assert_eq!(catalog_json["items"][0]["name"], "local_messages.events");
@@ -356,8 +357,8 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
     assert_eq!(tables_json["tables"][0]["name"], "local_messages.events");
     assert_eq!(
         server.list_sources_requests().len(),
-        1,
-        "guide resource should fetch live source metadata when read"
+        2,
+        "guide and catalog resources should fetch live source metadata when read"
     );
     assert_eq!(
         server.list_catalog_requests().len(),

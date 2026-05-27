@@ -77,6 +77,22 @@ impl ValidatedSourceManifest {
     }
 
     #[must_use]
+    /// Returns source-authored agent onboarding instructions, when present.
+    pub fn onboarding_instructions(&self) -> Option<&str> {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => {
+                manifest.common.onboarding_instructions.as_deref()
+            }
+            ValidatedManifestKind::File(manifest) => {
+                manifest.common.onboarding_instructions.as_deref()
+            }
+            ValidatedManifestKind::Mcp(manifest) => {
+                manifest.common.onboarding_instructions.as_deref()
+            }
+        }
+    }
+
+    #[must_use]
     /// Returns the optional top-level validation queries declared by the source spec.
     pub fn test_queries(&self) -> &[String] {
         match &self.inner {
@@ -212,6 +228,66 @@ tables:
         .expect("manifest should parse");
 
         assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn parse_source_manifest_preserves_onboarding_instructions() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+description: Demo source
+onboarding:
+  instructions: |
+    Use demo.messages for messages.
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect("manifest should parse");
+
+        assert_eq!(
+            manifest.onboarding_instructions(),
+            Some("Use demo.messages for messages.")
+        );
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_blank_onboarding_instructions() {
+        let error = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+onboarding:
+  instructions: "   "
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+"#,
+        )
+        .expect_err("blank onboarding instructions should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' onboarding.instructions must not be empty"
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
 | Tool     | `search_columns` | Search columns across database tables                   |
 | Resource | `coral://guide`   | Database workflow guide for agents                            |
-| Resource | `coral://catalog` | JSON summaries of database tables and table functions          |
+| Resource | `coral://catalog` | JSON source context plus database table and table-function summaries |
 | Resource | `coral://tables`  | JSON summaries of database tables and required filters         |
 
 Clients see the same database catalog and query results as `coral sql`. You set up sources with the CLI, then agents query Coral over MCP as SQL schemas and tables.
@@ -32,7 +32,7 @@ Successful `sql` calls return structured content with `rows`, `row_count`, and `
 
 Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
 
-Read `coral://catalog` once when the agent needs a compact all-source index that includes table functions, especially before broad discovery. Use `search_catalog` instead when the task already names a focused entity, schema, or table/function candidate.
+Read `coral://catalog` once when the agent needs a compact all-source index that includes source-authored context and table functions, especially before broad discovery. Use `search_catalog` instead when the task already names a focused entity, schema, or table/function candidate.
 
 ### Discovery tools
 
@@ -71,7 +71,7 @@ Read `coral://catalog` once when the agent needs a compact all-source index that
 
 ### Richer metadata via SQL
 
-For deeper introspection, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog`, `coral://catalog`, or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
+For deeper introspection, query `coral.sources`, `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog`, `coral://catalog`, or `coral://tables`. Use `coral.sources` for source-authored context before probing provider identity, auth scope, or provider-specific search semantics. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
 
 ### Searching a provider's data
 

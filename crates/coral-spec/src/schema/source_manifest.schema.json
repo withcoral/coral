@@ -98,6 +98,7 @@
       "properties": {
         "instructions": {
           "type": "string",
+          "minLength": 1,
           "description": "Freeform instructions for an AI agent to discover shared workspace context for this provider"
         }
       }

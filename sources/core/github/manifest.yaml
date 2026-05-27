@@ -5,6 +5,17 @@ backend: http
 description: >-
   Query repositories, issues, pull requests, workflows, organizations,
   users, teams, and API metadata from GitHub (Cloud or Enterprise).
+onboarding:
+  instructions: >-
+    github.user returns the authenticated GitHub principal, and github.user_teams
+    lists teams visible to that principal. Do not query those tables just to use
+    GitHub search's @me viewer qualifier. For open pull requests awaiting review
+    from the current viewer or their teams, start with github.search_issues(q =>
+    'is:pr is:open review-requested:@me archived:false'). Use
+    user-review-requested:@me only when the request explicitly asks for direct
+    user review requests, and use team-review-requested:ORG/TEAM only when the
+    task explicitly asks to split or target teams. Treat github.notifications as
+    inbox state, not authoritative current review-request state.
 base_url: "{{input.GITHUB_API_BASE}}"
 rate_limit:
   extra_statuses: [403]

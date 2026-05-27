@@ -78,6 +78,7 @@ These checks should be based on the authoritative API docs for the API the sourc
 
 - YAML is readable and follows existing manifest ordering: identity, inputs/auth/base URL, test queries, functions/tables.
 - Existing core sources use short table descriptions plus `guide` blocks for usage advice; prefer that split.
+- Source-level context belongs in top-level `onboarding.instructions`, especially authenticated-principal tables, provider search qualifiers, or stale-vs-authoritative data surfaces. Flag identity or auth-scope advice buried in one table guide when it should help the whole source.
 - README structure, when present, should resemble existing source READMEs: authentication, rate limits when relevant, table categories or schema overview, and examples.
 - Wording should be clear to a new user. Avoid internal Coral implementation terms unless they are part of the user-facing source-spec surface.
 

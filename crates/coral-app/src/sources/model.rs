@@ -14,6 +14,7 @@ pub(crate) struct CandidateSource {
     pub(crate) name: SourceName,
     pub(crate) description: String,
     pub(crate) version: String,
+    pub(crate) onboarding_instructions: Option<String>,
     pub(crate) inputs: Vec<ManifestInputSpec>,
     pub(crate) installed: bool,
     pub(crate) origin: SourceOrigin,
@@ -31,6 +32,13 @@ pub(crate) struct InstalledSource {
     /// catalog, so they do not persist a duplicate version string in config.
     #[serde(default)]
     pub(crate) version: Option<String>,
+    /// Resolved manifest description. This is derived from the manifest and is
+    /// not persisted in config.
+    #[serde(skip)]
+    pub(crate) description: String,
+    /// Resolved source-authored agent onboarding instructions.
+    #[serde(skip)]
+    pub(crate) onboarding_instructions: Option<String>,
     /// Configured non-secret variable bindings.
     #[serde(default)]
     pub(crate) variables: BTreeMap<String, String>,

@@ -71,6 +71,63 @@ async fn import_source_persists_and_lists() {
 }
 
 #[tokio::test]
+async fn import_source_surfaces_onboarding_context() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path()).replacen(
+        "backend: file\n",
+        "backend: file\ndescription: Local fixture source\nonboarding:\n  instructions: Use local_messages.messages for conversation rows before events.\n",
+        1,
+    );
+
+    let added = harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+    assert_eq!(added.description, "Local fixture source");
+    assert_eq!(
+        added.onboarding_instructions,
+        "Use local_messages.messages for conversation rows before events."
+    );
+
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].description, "Local fixture source");
+    assert_eq!(
+        listed[0].onboarding_instructions,
+        "Use local_messages.messages for conversation rows before events."
+    );
+
+    let source_info = harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: "local_messages".to_string(),
+        }))
+        .await
+        .expect("get source info")
+        .into_inner()
+        .source_info
+        .expect("source info");
+    assert_eq!(
+        source_info.onboarding_instructions,
+        "Use local_messages.messages for conversation rows before events."
+    );
+
+    let rows = harness
+        .execute_sql_rows(
+            "SELECT schema_name, description, onboarding_instructions \
+             FROM coral.sources WHERE schema_name = 'local_messages'",
+        )
+        .await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["schema_name"], "local_messages");
+    assert_eq!(rows[0]["description"], "Local fixture source");
+    assert_eq!(
+        rows[0]["onboarding_instructions"],
+        "Use local_messages.messages for conversation rows before events."
+    );
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 

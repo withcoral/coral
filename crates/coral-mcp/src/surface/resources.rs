@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::values::queryable_table_summary_values;
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Read `coral://catalog` when you need a compact all-source table and table-function index. Use `list_catalog` and `search_catalog` as catalog helpers, use `search_columns` when you know a field but not the table, use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Read `coral://catalog` when you need a compact all-source table and table-function index. Use source context from `coral://guide` or `coral.sources` before probing provider identity, auth scope, or source-specific search semantics. Use `list_catalog` and `search_catalog` as catalog helpers, use `search_columns` when you know a field but not the table, use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.sources`, `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -62,6 +62,21 @@ pub(crate) fn guide_resource_content(
             writeln!(sources_section, "- {schema}").expect("writing to String is infallible");
         }
     }
+    let mut onboarding_sources = sources
+        .iter()
+        .filter_map(|source| {
+            let instructions = source.onboarding_instructions.trim();
+            (!instructions.is_empty()).then_some((source.name.as_str(), instructions))
+        })
+        .collect::<Vec<_>>();
+    onboarding_sources.sort_by(|left, right| left.0.cmp(right.0));
+    if !onboarding_sources.is_empty() {
+        sources_section.push_str("\nSource-authored context:\n");
+        for (schema, instructions) in onboarding_sources {
+            writeln!(sources_section, "- {schema}: {instructions}")
+                .expect("writing to String is infallible");
+        }
+    }
 
     let columns_example = first_visible_table(tables).map_or_else(
         || {
@@ -104,7 +119,7 @@ fn tables_resource_description() -> &'static str {
 }
 
 fn catalog_resource_description() -> &'static str {
-    "JSON summaries of database tables and table functions generated from currently configured sources when read."
+    "JSON source context plus database table and table-function summaries generated from currently configured sources when read."
 }
 
 fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
@@ -134,6 +149,8 @@ mod tests {
             variables: Vec::new(),
             origin: 0,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
+            description: String::new(),
+            onboarding_instructions: String::new(),
         }
     }
 

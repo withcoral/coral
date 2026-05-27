@@ -19,6 +19,10 @@ name: my_source
 version: 0.1.0
 dsl_version: 3
 backend: http
+onboarding:
+  instructions: >-
+    Use my_source.me to identify the authenticated account before
+    account-scoped queries.
 test_queries:
   - SELECT * FROM my_source.messages LIMIT 1
 ```
@@ -28,7 +32,8 @@ test_queries:
 | `name`        | Source name, also used as the SQL schema name      |
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http` or `file` |
+| `backend`     | How data is fetched: `http`, `file`, or `mcp` |
+| `onboarding.instructions` | Optional source-authored guidance for agents to discover source context, identity, auth scope, or provider-specific query semantics. Surfaced through `coral.sources` and MCP guide context. |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
 
 ## Test queries
@@ -966,7 +971,27 @@ starts the loopback flow and returns the provider authorization URL. After the
 callback, Coral exchanges the code, stores the access token as the source
 secret, and stores any refresh token as internal credential metadata.
 
-### Inspecting configured inputs
+### Inspecting source metadata and configured inputs
+
+At runtime, installed source metadata is surfaced through `coral.sources`.
+Use this when an agent or script needs source-level context before probing
+provider identity, auth scope, or source-specific search semantics.
+
+`coral.sources` includes these columns:
+
+| Column | Description |
+| ------ | ----------- |
+| `schema_name` | Source schema name |
+| `description` | Manifest-authored source description |
+| `onboarding_instructions` | Optional manifest-authored agent guidance |
+
+Example query:
+
+```sql
+SELECT schema_name, description, onboarding_instructions
+FROM coral.sources
+ORDER BY schema_name;
+```
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config

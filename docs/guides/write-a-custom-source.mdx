@@ -5,7 +5,7 @@ description: "Extend Coral by adding any API or dataset as a queryable source."
 
 Coral ships with [popular data sources](/reference/bundled-sources), but you are not limited to them. Before writing a new spec, check whether a [community source](/reference/community-sources) already exists. If the data source you need is not available out of the box or in the community catalog, you can write a source spec in YAML and import it.
 
-A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same `coral.tables`, `coral.columns` and `coral.inputs`, same MCP surface.
+A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same `coral.sources`, `coral.tables`, `coral.columns` and `coral.inputs`, same MCP surface.
 
 <Tip>
   Install the [Coral source spec authoring
@@ -37,7 +37,7 @@ Source authoring works well as an agent-driven workflow. Point your coding agent
 2. Lints the file with `coral source lint ./my-source.yaml` to catch errors before installing
 3. Adds it with `coral source add --file ./my-source.yaml`
 4. Validates with `coral source test my_source`
-5. Inspects `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters` and `coral.inputs` to check the shape
+5. Inspects `coral.sources`, `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters` and `coral.inputs` to check the shape
 6. Refines and repeats until the tables look right
 
 ## Search and retrieval endpoints
@@ -273,5 +273,5 @@ For the full set of HTTP response, pagination, auth, and column fields, see [HTT
 
 - **Lint before installing.** `coral source lint ./my-source.yaml` is a fast local precheck because it does not install the source or require credentials.
 - **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check `coral.columns` and `coral.inputs`, then expand.
-- **Use `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters`, and `coral.inputs`.** They show you exactly what Coral sees after adding a source — including required filters, search functions, and column metadata.
+- **Use `coral.sources`, `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters`, and `coral.inputs`.** They show you exactly what Coral sees after adding a source — including source context, required filters, search functions, and column metadata.
 - **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/core/` are working examples of HTTP pagination, response parsing, auth, and inputs.

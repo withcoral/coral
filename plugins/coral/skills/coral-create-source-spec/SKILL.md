@@ -73,6 +73,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - inspect `coral.table_functions` for source-scoped functions, arguments, result columns, kind, and search limits
    - inspect `coral.columns` for canonical column metadata, including `is_virtual` and `is_required_filter`; filter by one table or page large column sets
    - inspect `coral.filters` for normalized table filter names, types, modes, required flags, and descriptions
+   - inspect `coral.sources` to verify source description and any agent-facing onboarding guidance
    - inspect `coral.inputs` to verify variables, secrets, defaults, hints, and required flags
 7. Query representative tables with `coral sql`.
 8. If you are relying on `coral source test`, make sure `test_queries` gives you a basic smoke/connection check for the source.
@@ -89,6 +90,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
 - Do not assume automatic token refresh. If the provider returns short-lived access tokens, call that out as a limitation unless the source has another supported long-lived credential path.
+- Use top-level `onboarding.instructions` when agents need source-level context such as authenticated-principal tables, provider search qualifiers, or stale-vs-authoritative data surfaces. Keep it source-level; do not bury identity or auth-scope advice in one table guide.
 - Keep table names stable and SQL-friendly.
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.

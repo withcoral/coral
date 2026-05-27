@@ -106,6 +106,7 @@ fn candidate_from_manifest(
         name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
+        onboarding_instructions: manifest.onboarding_instructions().map(ToString::to_string),
         inputs: manifest.declared_inputs().to_vec(),
         installed,
         origin,

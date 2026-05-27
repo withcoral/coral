@@ -789,6 +789,7 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
                     installed: false,
                     origin: SourceOrigin::Bundled as i32,
                     credential_storage: SourceCredentialStorage::Unspecified as i32,
+                    onboarding_instructions: String::new(),
                 }],
             }),
     )

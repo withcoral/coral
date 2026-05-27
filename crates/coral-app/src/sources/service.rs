@@ -519,6 +519,8 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
             .collect(),
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(credential_storage) as i32,
+        description: source.description,
+        onboarding_instructions: source.onboarding_instructions.unwrap_or_default(),
     }
 }
 
@@ -552,6 +554,7 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
+        onboarding_instructions: source.onboarding_instructions.unwrap_or_default(),
     }
 }
 

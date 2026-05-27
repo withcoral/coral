@@ -13,9 +13,10 @@ use serde_json::Value;
 use crate::{
     ColumnSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestError, ManifestInputKind,
     ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend,
-    SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
-    TableFunctionArgSpec, ValueSourceSpec, inputs::collect_source_inputs_value, validate_columns,
-    validate_filters_and_column_exprs, validate_test_queries,
+    SourceManifestCommon, SourceOnboardingSpec, SourceTableFunctionKind, SourceTableFunctionSpec,
+    TableCommon, TableFunctionArgSpec, ValueSourceSpec, inputs::collect_source_inputs_value,
+    normalize_onboarding_instructions, validate_columns, validate_filters_and_column_exprs,
+    validate_test_queries,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -38,6 +39,8 @@ struct RawMcpSourceManifest {
     description: String,
     #[serde(default)]
     test_queries: Vec<String>,
+    #[serde(default)]
+    onboarding: Option<SourceOnboardingSpec>,
     backend: SourceBackend,
     #[serde(default)]
     inputs: Option<Value>,
@@ -348,6 +351,7 @@ impl McpSourceManifest {
             version,
             description,
             test_queries,
+            onboarding,
             backend: _backend,
             inputs: _inputs,
             server,
@@ -363,8 +367,15 @@ impl McpSourceManifest {
         validate_test_queries(&name, &test_queries)?;
         validate_server(&name, &server)?;
         validate_table_and_function_names(&name, &tables, &functions)?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let onboarding_instructions = normalize_onboarding_instructions(&name, onboarding)?;
+        let common = SourceManifestCommon::new(
+            dsl_version,
+            name,
+            version,
+            description,
+            onboarding_instructions,
+            test_queries,
+        );
         let functions = functions
             .into_iter()
             .map(|function| function.into_validated(&common.name))

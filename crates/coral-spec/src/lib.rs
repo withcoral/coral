@@ -91,15 +91,16 @@ pub use backends::mcp::{
     McpEnvSpec, McpLimitBinding, McpServerSpec, McpSourceManifest, McpTableFilterBinding,
     McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
 };
-pub(crate) use common::validate_test_queries;
 pub use common::{
     BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,
     FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode,
     PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat,
     ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
-    SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
-    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    SourceOnboardingSpec, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
+    TableFunctionArgSpec, TimestampInput, ValidatedPagination, ValidatedPaginationMode,
+    ValueSourceSpec,
 };
+pub(crate) use common::{normalize_onboarding_instructions, validate_test_queries};
 pub use error::{ManifestError, Result};
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,

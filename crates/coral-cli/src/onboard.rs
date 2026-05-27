@@ -363,6 +363,7 @@ mod tests {
             installed: true,
             origin: 1,
             credential_storage: 1,
+            onboarding_instructions: String::new(),
         };
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("✓ "));
@@ -380,6 +381,7 @@ mod tests {
             installed: false,
             origin: 1,
             credential_storage: 0,
+            onboarding_instructions: String::new(),
         };
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("  "));
@@ -396,6 +398,7 @@ mod tests {
             installed: false,
             origin: 1,
             credential_storage: 0,
+            onboarding_instructions: String::new(),
         };
         let long = SourceInfo {
             name: "statusgator".to_string(),
@@ -405,6 +408,7 @@ mod tests {
             installed: false,
             origin: 1,
             credential_storage: 0,
+            onboarding_instructions: String::new(),
         };
         let width = 11; // len of "statusgator"
         let short_item = format_source_list_item(&short, width);

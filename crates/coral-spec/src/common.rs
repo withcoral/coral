@@ -25,6 +25,7 @@ pub struct SourceManifestCommon {
     pub name: String,
     pub version: String,
     pub description: String,
+    pub onboarding_instructions: Option<String>,
     pub test_queries: Vec<String>,
 }
 
@@ -34,6 +35,7 @@ impl SourceManifestCommon {
         name: String,
         version: String,
         description: String,
+        onboarding_instructions: Option<String>,
         test_queries: Vec<String>,
     ) -> Self {
         Self {
@@ -41,9 +43,38 @@ impl SourceManifestCommon {
             name,
             version,
             description,
+            onboarding_instructions,
             test_queries,
         }
     }
+}
+
+/// Source-level instructions authored for agent onboarding and context discovery.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceOnboardingSpec {
+    pub instructions: String,
+}
+
+impl SourceOnboardingSpec {
+    pub(crate) fn into_instructions(self, source_name: &str) -> Result<String> {
+        let instructions = self.instructions.trim();
+        if instructions.is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' onboarding.instructions must not be empty"
+            )));
+        }
+        Ok(instructions.to_string())
+    }
+}
+
+pub(crate) fn normalize_onboarding_instructions(
+    source_name: &str,
+    onboarding: Option<SourceOnboardingSpec>,
+) -> Result<Option<String>> {
+    onboarding.map_or(Ok(None), |value| {
+        value.into_instructions(source_name).map(Some)
+    })
 }
 
 pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) -> Result<()> {

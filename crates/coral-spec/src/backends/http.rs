@@ -19,10 +19,10 @@ use crate::{
     ColumnSpec, DetailHintDeclaringSurface, DetailHintSpec, DetailHintTargetTable, FilterSpec,
     HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec, PaginationSpec,
     ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result, SearchLimitsSpec,
-    SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
-    inputs::collect_source_inputs_value, validate::validate_template,
-    validate_detail_hint_references, validate_http_function, validate_http_function_names,
-    validate_http_table, validate_table_names, validate_test_queries,
+    SourceBackend, SourceManifestCommon, SourceOnboardingSpec, SourceTableFunctionSpec,
+    TableCommon, inputs::collect_source_inputs_value, normalize_onboarding_instructions,
+    validate::validate_template, validate_detail_hint_references, validate_http_function,
+    validate_http_function_names, validate_http_table, validate_table_names, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -107,6 +107,8 @@ struct RawHttpSourceManifest {
     description: String,
     #[serde(default)]
     test_queries: Vec<String>,
+    #[serde(default)]
+    onboarding: Option<SourceOnboardingSpec>,
     backend: SourceBackend,
     #[serde(default)]
     base_url: ParsedTemplate,
@@ -269,6 +271,7 @@ impl HttpSourceManifest {
             version,
             description,
             test_queries,
+            onboarding,
             backend: _backend,
             base_url,
             auth,
@@ -285,8 +288,15 @@ impl HttpSourceManifest {
         }
         validate_test_queries(&name, &test_queries)?;
         validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let onboarding_instructions = normalize_onboarding_instructions(&name, onboarding)?;
+        let common = SourceManifestCommon::new(
+            dsl_version,
+            name,
+            version,
+            description,
+            onboarding_instructions,
+            test_queries,
+        );
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
