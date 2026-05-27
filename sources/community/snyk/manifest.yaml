@@ -1,0 +1,741 @@
+name: snyk
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Snyk REST API data — organizations, projects, targets (repositories),
+  and issues (vulnerabilities, license violations, code quality). Uses
+  the Snyk JSON:API standard to provide full SQL visibility into your
+  security posture, enabling reporting on unpatched CVEs, vulnerable
+  dependencies, and compliance across your entire engineering
+  organization.
+
+inputs:
+  SNYK_API_TOKEN:
+    kind: secret
+    hint: >-
+      Your Snyk API token. You can generate a personal or service
+      account token in your Snyk Account Settings.
+
+base_url: https://api.snyk.io/rest
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "token {{input.SNYK_API_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/vnd.api+json
+
+test_queries:
+  - SELECT id, name, slug FROM snyk.orgs LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 1: orgs
+  # Snyk Organizations — the top-level container for projects and targets.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: orgs
+    description: >
+      Lists all Snyk organizations your API token has access to.
+      Organizations are the primary boundary in Snyk, containing projects,
+      targets, and issues. The `id` from this table is required to query
+      `projects`, `targets`, and `issues`.
+    guide: >
+      Start with `SELECT id, name, slug, group_id FROM snyk.orgs`. Use the
+      `id` field as the `org_id` filter for all other Snyk tables.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /orgs
+      query:
+        - name: version
+          from: literal
+          value: 2024-10-15
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: next_page_url
+      next_page_url_path:
+        - links
+        - next
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: >
+          The unique organization ID. Required as a filter for querying
+          projects, targets, and issues.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: false
+        description: The JSON:API resource type (always "org").
+        expr:
+          kind: path
+          path:
+            - type
+      - name: name
+        type: Utf8
+        nullable: true
+        description: The display name of the organization.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: The URL-friendly slug of the organization.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - slug
+      - name: is_personal
+        type: Boolean
+        nullable: true
+        description: Whether this is a personal user organization.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - is_personal
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: The ID of the Snyk Group this organization belongs to.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - group_id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the organization was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the organization was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 2: targets
+  # Repositories, registries, and environments being scanned.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: targets
+    description: >
+      Lists all targets within a specific Snyk organization. A target is the
+      entity being scanned — typically a Git repository (GitHub, GitLab,
+      Bitbucket), a container registry, or a CLI workspace. A single target
+      can contain multiple projects (e.g., a monorepo with multiple package.json
+      files). Requires an `org_id` filter.
+    guide: >
+      Requires `org_id` filter. Use `SELECT id, display_name, origin,
+      remote_url FROM snyk.targets WHERE org_id = 'your-org-id'`. Use
+      `origin` to differentiate between github, cli, dockerhub, etc.
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/targets
+      query:
+        - name: version
+          from: literal
+          value: 2024-10-15
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: next_page_url
+      next_page_url_path:
+        - links
+        - next
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: >
+          The unique target ID. Referenced by `target_reference` on projects.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: false
+        description: The JSON:API resource type (always "target").
+        expr:
+          kind: path
+          path:
+            - type
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: The human-readable name of the target (e.g., repo name).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - display_name
+      - name: origin
+        type: Utf8
+        nullable: true
+        description: >
+          The source of the target (e.g., github, gitlab, bitbucket-server,
+          azure-repos, cli, docker-hub).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - origin
+      - name: is_private
+        type: Boolean
+        nullable: true
+        description: Whether the target is a private repository/resource.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - is_private
+      - name: remote_url
+        type: Utf8
+        nullable: true
+        description: >
+          The URL of the remote resource (e.g., the GitHub repository URL).
+          Useful for joining with data from other source specs like GitHub.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - remote_url
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the target was added to Snyk.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the target was last updated or scanned.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+      - name: org_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the org_id filter value.
+        expr:
+          kind: from_filter
+          key: org_id
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 3: projects
+  # Scanned projects (manifest files, images, IaC configurations).
+  # ──────────────────────────────────────────────────────────────────────
+  - name: projects
+    description: >
+      Lists all projects within a specific Snyk organization. A project
+      represents a single scanned manifest or artifact within a target —
+      for example, a `package.json`, a `pom.xml`, a `Dockerfile`, or a
+      Terraform configuration file. This table provides the core inventory
+      of what Snyk is actively monitoring. Requires an `org_id` filter.
+    guide: >
+      Requires `org_id` filter. Use `SELECT id, name, type, origin,
+      target_reference FROM snyk.projects WHERE org_id = 'your-org-id'`.
+      Use `type` to segment by ecosystem (npm, maven, pip, terraform).
+      Join `target_reference` to `snyk.targets.id` for repository context.
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+      - name: type
+      - name: origin
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/projects
+      query:
+        - name: version
+          from: literal
+          value: 2024-10-15
+        - name: types
+          from: filter
+          key: type
+        - name: origins
+          from: filter
+          key: origin
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: next_page_url
+      next_page_url_path:
+        - links
+        - next
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: The unique project ID. Used to identify the scanned artifact.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >
+          The JSON:API resource type (always "project"). Note: The Snyk
+          project type (e.g., npm) is stored in the `project_type` column.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: name
+        type: Utf8
+        nullable: true
+        description: >
+          The name of the project. Usually incorporates the target name
+          and the manifest path (e.g., "my-repo:frontend/package.json").
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: project_type
+        type: Utf8
+        nullable: true
+        description: >
+          The package manager or ecosystem of the project (e.g., npm, maven,
+          pip, go, docker, terraform, k8sconfig).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - type
+      - name: origin
+        type: Utf8
+        nullable: true
+        description: >
+          The origin of the project (e.g., github, cli, dockerhub).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - origin
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >
+          The status of the project (e.g., active, inactive).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status
+      - name: target_reference
+        type: Utf8
+        nullable: true
+        description: >
+          The ID of the target this project belongs to. Join to
+          `snyk.targets.id`.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - target_reference
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: >
+          The specific Git branch scanned, if applicable.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - branch
+      - name: target_file
+        type: Utf8
+        nullable: true
+        description: >
+          The specific manifest file scanned (e.g., "package.json").
+        expr:
+          kind: path
+          path:
+            - attributes
+            - target_file
+      - name: tags
+        type: Json
+        nullable: true
+        description: Array of custom tags applied to the project.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - tags
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the project was first imported/created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the project was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+      - name: org_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the org_id filter value.
+        expr:
+          kind: from_filter
+          key: org_id
+
+  # ──────────────────────────────────────────────────────────────────────
+  # TABLE 4: issues
+  # Security vulnerabilities, license violations, and code quality issues.
+  # ──────────────────────────────────────────────────────────────────────
+  - name: issues
+    description: >
+      Lists all identified security vulnerabilities, license issues, and
+      code quality problems across projects in an organization. Each issue
+      includes severity, CVE/CWE identifiers, affected packages, fix
+      availability, and the description of the problem. This is the ultimate
+      security intelligence table — use it to find unpatched critical CVEs,
+      measure organizational risk exposure, and drive remediation workflows.
+      Requires an `org_id` filter.
+    guide: >
+      Requires `org_id` filter. Use `SELECT id, title, severity, issue_type,
+      package_name, package_version, is_patchable FROM snyk.issues WHERE
+      org_id = 'your-org-id'`. Filter by `effective_severity_level` to
+      focus on 'critical' or 'high' vulnerabilities. Filter by `type` to
+      isolate 'package_vulnerability' or 'license' issues.
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+      - name: effective_severity_level
+      - name: type
+      - name: ignored
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/issues
+      query:
+        - name: version
+          from: literal
+          value: 2024-10-15
+        - name: effective_severity_level
+          from: filter
+          key: effective_severity_level
+        - name: type
+          from: filter
+          key: type
+        - name: ignored
+          from: filter
+          key: ignored
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: next_page_url
+      next_page_url_path:
+        - links
+        - next
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: The unique Snyk issue identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: json_api_type
+        type: Utf8
+        nullable: true
+        description: >
+          The JSON:API resource type. Usually "issue". The actual Snyk
+          issue category is in `issue_type`.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: title
+        type: Utf8
+        nullable: true
+        description: >
+          The title of the vulnerability or issue (e.g., "Remote Code
+          Execution (RCE)", "Cross-site Scripting (XSS)").
+        expr:
+          kind: path
+          path:
+            - attributes
+            - title
+      - name: issue_type
+        type: Utf8
+        nullable: true
+        description: >
+          The category of the issue. Common values: package_vulnerability,
+          license, code, config, secrets.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - type
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: >
+          The effective severity level of the issue. Values: critical,
+          high, medium, low. Essential for triage prioritization.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - effective_severity_level
+      - name: description
+        type: Utf8
+        nullable: true
+        description: >
+          Detailed markdown description of the vulnerability, including
+          how it can be exploited and remediation advice.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - description
+      - name: problems
+        type: Json
+        nullable: true
+        description: >
+          JSON array of standard vulnerability identifiers (e.g., CVEs,
+          CWEs, GHSA IDs) associated with this issue.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - problems
+      - name: cvss_score
+        type: Utf8
+        nullable: true
+        description: >
+          The Common Vulnerability Scoring System (CVSS) numerical score,
+          extracted from the severities object.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - severities
+            - 0
+            - score
+      - name: cvss_vector
+        type: Utf8
+        nullable: true
+        description: The CVSS vector string detailing the vulnerability metrics.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - severities
+            - 0
+            - vector
+      - name: package_name
+        type: Utf8
+        nullable: true
+        description: >
+          For package vulnerabilities, the name of the affected package
+          (e.g., "lodash", "requests").
+        expr:
+          kind: path
+          path:
+            - attributes
+            - coordinates
+            - 0
+            - representations
+            - 1
+            - dependency
+            - package_name
+      - name: package_version
+        type: Utf8
+        nullable: true
+        description: >
+          The version of the affected package found in the project.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - coordinates
+            - 0
+            - representations
+            - 1
+            - dependency
+            - package_version
+      - name: is_ignored
+        type: Boolean
+        nullable: true
+        description: >
+          Whether this issue has been explicitly ignored by a developer
+          or admin in Snyk.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - ignored
+      - name: is_patchable
+        type: Boolean
+        nullable: true
+        description: >
+          Whether a Snyk patch is available to fix this vulnerability
+          without upgrading the package version.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - is_patchable
+      - name: is_upgradable
+        type: Boolean
+        nullable: true
+        description: >
+          Whether upgrading the package to a newer version will fix
+          this vulnerability.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - is_upgradable
+      - name: is_pinnable
+        type: Boolean
+        nullable: true
+        description: >
+          Whether this transitive dependency vulnerability can be fixed
+          by pinning the package in the manifest.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - is_pinnable
+      - name: is_reachable
+        type: Boolean
+        nullable: true
+        description: >
+          If Snyk Reachable Vulnerabilities analysis is enabled, indicates
+          whether the vulnerable function is actually called by the code.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - is_reachable
+      - name: resolution
+        type: Json
+        nullable: true
+        description: >
+          JSON object detailing the required actions to fix the issue
+          (e.g., upgrade path, nearest fixed version).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - resolution
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the issue was first identified by Snyk.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the issue data was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+      - name: org_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the org_id filter value.
+        expr:
+          kind: from_filter
+          key: org_id
