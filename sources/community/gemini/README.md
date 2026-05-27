@@ -93,10 +93,14 @@ coral source test gemini
 #     ✓ SELECT name, version FROM gemini.models LIMIT 5
 #       5 rows
 
-coral sql "SELECT response FROM gemini.generate(model => 'gemini-1.5-flash', prompt => 'What is SQL?') LIMIT 1"
-# +-----------------------------------------------------------------------------+
-# | response                                                                    |
-# +-----------------------------------------------------------------------------+
-# | SQL (Structured Query Language) is a standard language for managing data... |
-# +-----------------------------------------------------------------------------+
+coral sql "SELECT response FROM gemini.generate(model => 'gemini-flash-latest', prompt => 'What is SQL?') LIMIT 1"
+# +-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+# | response                                                                                                                                                                                                                                |
+# +-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+# | **SQL** (pronounced either **"S-Q-L"** or **"Sequel"**) stands for **Structured Query Language**.                                                                                                                                       |
+# |                                                                                                                                                                                                                                         |
+# | In simple terms, SQL is the standard language used to communicate with, manage, and manipulate **relational databases**.                                                                                                                |
+# |                                                                                                                                                                                                                                         |
+# | If you think of a database as a giant, highly organized digital filing cabinet, SQL is the language you use to ask the filing cabinet clerk to store, retrieve, change, or delete information...                                        |
+# +-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 ```
