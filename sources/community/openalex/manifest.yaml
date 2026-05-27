@@ -12,9 +12,9 @@ inputs:
   OPENALEX_API_KEY:
     kind: secret
     hint: >-
-      API key for OpenAlex. Get a free key at https://openalex.org/users/me.
-      An API key is required for higher rate limits (10 req/s vs 1 req/s
-      for anonymous access). The key is passed as the api_key query parameter.
+      API key for OpenAlex. Get a free key at https://openalex.org/settings/api.
+      An API key provides higher rate limits and a daily free usage allowance of
+      100,000 requests. The key is passed as the api_key query parameter.
 base_url: https://api.openalex.org
 request_headers:
   - name: Accept
@@ -40,8 +40,8 @@ tables:
       type:article, open_access.is_oa:true).
     guide: >
       Start with `SELECT title, publication_year, cited_by_count FROM
-      openalex.works WHERE search = 'transformer' LIMIT 10`. Use `filter` for
-      structured queries like `filter = 'publication_year:2024,type:article'`.
+      openalex.works WHERE search = 'transformer' LIMIT 10`. Use `filter_value` for
+      structured queries like `filter_value = 'publication_year:2024,type:article'`.
       Combine `search` and `filter` for targeted results. The `authorships`
       column contains the full author list as JSON. Use `sort` to order results
       (e.g. `cited_by_count:desc`, `publication_year:desc`).
@@ -340,7 +340,7 @@ tables:
       Start with `SELECT display_name, works_count, cited_by_count FROM
       openalex.authors WHERE search = 'Yann LeCun' LIMIT 5`. Use the author's
       OpenAlex ID from results to find their works: `SELECT title FROM
-      openalex.works WHERE filter = 'author.id:A5023888391' LIMIT 10`.
+      openalex.works WHERE filter_value = 'author.id:A5023888391' LIMIT 10`.
     fetch_limit_default: 25
     filters:
       - name: filter_value
@@ -506,8 +506,8 @@ tables:
       organization, works count, open-access status, and APC pricing.
     guide: >
       Start with `SELECT display_name, works_count, cited_by_count FROM
-      openalex.sources WHERE search = 'Nature' LIMIT 5`. Use `filter` for
-      structured queries like `filter = 'is_oa:true,type:journal'`.
+      openalex.sources WHERE search = 'Nature' LIMIT 5`. Use `filter_value` for
+      structured queries like `filter_value = 'is_oa:true,type:journal'`.
     fetch_limit_default: 25
     filters:
       - name: filter_value
@@ -692,7 +692,6 @@ tables:
           kind: from_filter
           key: search
 
-
   # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # institutions â€“ universities, companies, research orgs
   # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -703,8 +702,8 @@ tables:
       country, type, works count, and citation count.
     guide: >
       Start with `SELECT display_name, country_code, works_count FROM
-      openalex.institutions WHERE search = 'Stanford' LIMIT 5`. Use `filter`
-      for structured queries like `filter = 'country_code:US,type:education'`.
+      openalex.institutions WHERE search = 'Stanford' LIMIT 5`. Use `filter_value`
+      for structured queries like `filter_value = 'country_code:US,type:education'`.
     fetch_limit_default: 25
     filters:
       - name: filter_value
@@ -907,7 +906,7 @@ tables:
       Start with `SELECT display_name, works_count FROM openalex.topics
       LIMIT 10`. Topics are organized in a hierarchy: domain > field >
       subfield > topic. Use topic IDs to filter works: `SELECT title FROM
-      openalex.works WHERE filter = 'topics.id:T10048' LIMIT 10`.
+      openalex.works WHERE filter_value = 'topics.id:T10048' LIMIT 10`.
     fetch_limit_default: 25
     filters:
       - name: filter_value
@@ -1071,7 +1070,6 @@ tables:
         expr:
           kind: from_filter
           key: search
-
 
 functions:
   - name: search_works
@@ -1660,7 +1658,6 @@ functions:
           kind: path
           path:
             - updated_date
-
 
   # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # institutions â€“ universities, companies, research orgs

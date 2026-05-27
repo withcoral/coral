@@ -10,8 +10,8 @@ coral source add --file sources/community/openalex/manifest.yaml
 
 ## Setup
 
-OpenAlex requires a free API key for reliable access. Get one at [openalex.org/users/me](https://openalex.org/users/me).
-The key provides higher rate limits (10 req/s vs 1 req/s) and replaces the deprecated `mailto` pool.
+OpenAlex recommends a free API key for reliable access. Get one at [openalex.org/settings/api](https://openalex.org/settings/api).
+The key provides higher rate limits and a daily free usage allowance of 100,000 requests.
 
 Provide the key during setup:
 
