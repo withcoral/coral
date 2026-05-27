@@ -42,7 +42,7 @@ ORDER BY CASE WHEN score = -1 THEN 999 ELSE score END ASC
 ```
 
 ```sql
--- Only the failing checks (score < 5, excluding N/A)
+-- Low-scoring checks Scorecard flags for review (score < 5, excluding N/A)
 SELECT check_name, score, reason
 FROM scorecard.checks
 WHERE owner = 'django'
@@ -52,11 +52,11 @@ ORDER BY score ASC
 ```
 
 ```sql
--- Quick health summary
+-- Score distribution summary
 SELECT
   COUNT(*) AS total_checks,
-  SUM(CASE WHEN score >= 8 THEN 1 ELSE 0 END) AS passing,
-  SUM(CASE WHEN score >= 0 AND score < 5 THEN 1 ELSE 0 END) AS critical
+  SUM(CASE WHEN score >= 8 THEN 1 ELSE 0 END) AS high_scoring,
+  SUM(CASE WHEN score >= 0 AND score < 5 THEN 1 ELSE 0 END) AS low_scoring
 FROM scorecard.checks
 WHERE owner = 'expressjs'
   AND repo  = 'express'
@@ -82,13 +82,15 @@ WHERE owner = 'expressjs'
 
 ## Score reference
 
+Scores are a heuristic, opinionated signal from the OpenSSF Scorecard tool. They reflect the tool's weighting of each check, not an absolute measure of security. See the [Scorecard scoring docs](https://github.com/ossf/scorecard/blob/main/README.md#aggregate-score) for methodology.
+
 | Score | Meaning |
 |---|---|
-| 10 | Excellent — check fully satisfied |
-| 8–9 | Good — minor issues |
-| 5–7 | Fair — partial compliance |
-| 1–4 | Poor — significant gap |
-| 0 | Critical — check completely unsatisfied |
+| 10 | Highest — check fully satisfied |
+| 8–9 | High |
+| 5–7 | Mid-range |
+| 1–4 | Low — area Scorecard flags for review |
+| 0 | Lowest — check not satisfied |
 | -1 | N/A — check not applicable for this repo |
 
 ## Rate limits

@@ -35,10 +35,11 @@ tables:
       Fuzzing, License, Maintained, Packaging, Pinned-Dependencies, SAST,
       Security-Policy, Signed-Releases, Token-Permissions, Vulnerabilities.
 
-      Scores: 10 = excellent, 0 = critical gap, -1 = not applicable.
-      Sort by score ASC to surface which checks need the most improvement.
-      Filter WHERE score >= 0 AND score < 5 to find critical security gaps
-      (exclude -1 N/A values).
+      Scores: 10 = highest, 0 = lowest, -1 = not applicable.
+      Sort by score ASC to surface which checks Scorecard flags for review.
+      Filter WHERE score >= 0 AND score < 5 to find low-scoring checks
+      (exclude -1 N/A values). Scorecard is a heuristic signal — scores
+      reflect the tool's opinionated weighting, not absolute security guarantees.
     fetch_limit_default: 30
     filters:
       - name: owner
