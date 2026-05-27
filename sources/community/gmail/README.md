@@ -43,9 +43,9 @@ https://developers.google.com/oauthplayground using scope:
 | `gmail.threads` | List threads by label or search query |
 | `gmail.drafts` | List all saved drafts |
 
-> Note: `messages`, `threads` and `drafts` are ID/discovery tables.
-> The Gmail list endpoints return IDs only.
-> Use the IDs to fetch full message details via the Gmail API directly.
+> Note: `messages` and `drafts` are ID/discovery tables that return IDs only.
+> The `threads` table also returns `snippet` and `history_id` columns.
+> Use message or draft IDs to fetch full details via the Gmail API directly.
 
 ## Example Queries
 
