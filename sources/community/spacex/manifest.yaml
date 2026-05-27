@@ -1,0 +1,374 @@
+name: spacex
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query public SpaceX launch, rocket, launchpad, and crew data as SQL.
+base_url: https://api.spacexdata.com/v4
+test_queries:
+  - SELECT id, name, date_utc, success FROM spacex.launches LIMIT 1
+  - SELECT id, name, type, active FROM spacex.rockets LIMIT 1
+  - SELECT id, name, region, status FROM spacex.launchpads LIMIT 1
+  - SELECT id, name, agency, status FROM spacex.crew LIMIT 1
+tables:
+  - name: launches
+    description: SpaceX launches, including mission metadata, dates, related rocket and launchpad IDs, links, and payload references.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /launches
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: SpaceX launch identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Mission or launch name.
+        expr: {kind: path, path: [name]}
+      - name: flight_number
+        type: Int64
+        nullable: true
+        description: SpaceX flight number.
+        expr: {kind: path, path: [flight_number]}
+      - name: date_utc
+        type: Utf8
+        nullable: true
+        description: Launch date and time in UTC.
+        expr: {kind: path, path: [date_utc]}
+      - name: date_unix
+        type: Int64
+        nullable: true
+        description: Launch date and time as a Unix timestamp.
+        expr: {kind: path, path: [date_unix]}
+      - name: date_precision
+        type: Utf8
+        nullable: true
+        description: Precision of the launch date value.
+        expr: {kind: path, path: [date_precision]}
+      - name: upcoming
+        type: Boolean
+        nullable: true
+        description: Whether the launch is scheduled for the future.
+        expr: {kind: path, path: [upcoming]}
+      - name: success
+        type: Boolean
+        nullable: true
+        description: Whether the launch succeeded.
+        expr: {kind: path, path: [success]}
+      - name: rocket_id
+        type: Utf8
+        nullable: true
+        description: Related rocket ID; join to spacex.rockets.id.
+        expr: {kind: path, path: [rocket]}
+      - name: launchpad_id
+        type: Utf8
+        nullable: true
+        description: Related launchpad ID; join to spacex.launchpads.id.
+        expr: {kind: path, path: [launchpad]}
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Narrative launch details, when available.
+        expr: {kind: path, path: [details]}
+      - name: static_fire_date_utc
+        type: Utf8
+        nullable: true
+        description: Static-fire test date in UTC, when available.
+        expr: {kind: path, path: [static_fire_date_utc]}
+      - name: window_seconds
+        type: Int64
+        nullable: true
+        description: Launch window duration in seconds.
+        expr: {kind: path, path: [window]}
+      - name: crew
+        type: Json
+        nullable: true
+        description: Crew assignments attached to the launch.
+        expr: {kind: path, path: [crew]}
+      - name: ships
+        type: Json
+        nullable: true
+        description: Ship IDs related to the launch.
+        expr: {kind: path, path: [ships]}
+      - name: capsules
+        type: Json
+        nullable: true
+        description: Capsule IDs related to the launch.
+        expr: {kind: path, path: [capsules]}
+      - name: payloads
+        type: Json
+        nullable: true
+        description: Payload IDs related to the launch.
+        expr: {kind: path, path: [payloads]}
+      - name: failures
+        type: Json
+        nullable: true
+        description: Failure records for unsuccessful launches.
+        expr: {kind: path, path: [failures]}
+      - name: fairings
+        type: Json
+        nullable: true
+        description: Fairing recovery metadata.
+        expr: {kind: path, path: [fairings]}
+      - name: links
+        type: Json
+        nullable: true
+        description: Patch, webcast, article, Wikipedia, and media links.
+        expr: {kind: path, path: [links]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full launch object for fields not flattened into columns.
+        expr: {kind: path, path: []}
+
+  - name: rockets
+    description: SpaceX rocket catalog with dimensions, mass, engines, payload capacity, cost, and descriptive metadata.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /rockets
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: SpaceX rocket identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Rocket name.
+        expr: {kind: path, path: [name]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Rocket type.
+        expr: {kind: path, path: [type]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the rocket is active.
+        expr: {kind: path, path: [active]}
+      - name: stages
+        type: Int64
+        nullable: true
+        description: Number of rocket stages.
+        expr: {kind: path, path: [stages]}
+      - name: boosters
+        type: Int64
+        nullable: true
+        description: Number of side boosters.
+        expr: {kind: path, path: [boosters]}
+      - name: cost_per_launch
+        type: Int64
+        nullable: true
+        description: Estimated cost per launch in US dollars.
+        expr: {kind: path, path: [cost_per_launch]}
+      - name: success_rate_pct
+        type: Int64
+        nullable: true
+        description: Launch success rate percentage.
+        expr: {kind: path, path: [success_rate_pct]}
+      - name: first_flight
+        type: Utf8
+        nullable: true
+        description: First flight date.
+        expr: {kind: path, path: [first_flight]}
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Country associated with the rocket.
+        expr: {kind: path, path: [country]}
+      - name: company
+        type: Utf8
+        nullable: true
+        description: Company associated with the rocket.
+        expr: {kind: path, path: [company]}
+      - name: wikipedia
+        type: Utf8
+        nullable: true
+        description: Wikipedia URL.
+        expr: {kind: path, path: [wikipedia]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Rocket description.
+        expr: {kind: path, path: [description]}
+      - name: height
+        type: Json
+        nullable: true
+        description: Height measurements.
+        expr: {kind: path, path: [height]}
+      - name: diameter
+        type: Json
+        nullable: true
+        description: Diameter measurements.
+        expr: {kind: path, path: [diameter]}
+      - name: mass
+        type: Json
+        nullable: true
+        description: Mass measurements.
+        expr: {kind: path, path: [mass]}
+      - name: engines
+        type: Json
+        nullable: true
+        description: Engine configuration.
+        expr: {kind: path, path: [engines]}
+      - name: payload_weights
+        type: Json
+        nullable: true
+        description: Payload capacity records.
+        expr: {kind: path, path: [payload_weights]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full rocket object for fields not flattened into columns.
+        expr: {kind: path, path: []}
+
+  - name: launchpads
+    description: SpaceX launchpad locations, statuses, coordinates, and historical launch references.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /launchpads
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: SpaceX launchpad identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Launchpad short name.
+        expr: {kind: path, path: [name]}
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Launchpad full name.
+        expr: {kind: path, path: [full_name]}
+      - name: locality
+        type: Utf8
+        nullable: true
+        description: Local area for the launchpad.
+        expr: {kind: path, path: [locality]}
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Region, state, or territory for the launchpad.
+        expr: {kind: path, path: [region]}
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Launchpad timezone.
+        expr: {kind: path, path: [timezone]}
+      - name: latitude
+        type: Float64
+        nullable: true
+        description: Launchpad latitude.
+        expr: {kind: path, path: [latitude]}
+      - name: longitude
+        type: Float64
+        nullable: true
+        description: Launchpad longitude.
+        expr: {kind: path, path: [longitude]}
+      - name: launch_attempts
+        type: Int64
+        nullable: true
+        description: Number of launch attempts from this pad.
+        expr: {kind: path, path: [launch_attempts]}
+      - name: launch_successes
+        type: Int64
+        nullable: true
+        description: Number of successful launches from this pad.
+        expr: {kind: path, path: [launch_successes]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current launchpad status.
+        expr: {kind: path, path: [status]}
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Launchpad details.
+        expr: {kind: path, path: [details]}
+      - name: launches
+        type: Json
+        nullable: true
+        description: Launch IDs associated with the launchpad.
+        expr: {kind: path, path: [launches]}
+      - name: images
+        type: Json
+        nullable: true
+        description: Launchpad image URLs.
+        expr: {kind: path, path: [images]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full launchpad object for fields not flattened into columns.
+        expr: {kind: path, path: []}
+
+  - name: crew
+    description: SpaceX crew members, including agency, image, Wikipedia profile, status, and linked launches.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crew
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: SpaceX crew member identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Crew member name.
+        expr: {kind: path, path: [name]}
+      - name: agency
+        type: Utf8
+        nullable: true
+        description: Crew member agency.
+        expr: {kind: path, path: [agency]}
+      - name: image
+        type: Utf8
+        nullable: true
+        description: Crew member image URL.
+        expr: {kind: path, path: [image]}
+      - name: wikipedia
+        type: Utf8
+        nullable: true
+        description: Crew member Wikipedia URL.
+        expr: {kind: path, path: [wikipedia]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Crew member status.
+        expr: {kind: path, path: [status]}
+      - name: launches
+        type: Json
+        nullable: true
+        description: Launch IDs associated with the crew member.
+        expr: {kind: path, path: [launches]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full crew object for fields not flattened into columns.
+        expr: {kind: path, path: []}
