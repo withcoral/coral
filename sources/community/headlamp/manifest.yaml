@@ -3,26 +3,17 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query Kubernetes cluster metadata through the Headlamp backend API.
-base_url: "{{input.HEADLAMP_BASE_URL}}/api"
+  Query Kubernetes cluster metadata through the Headlamp backend
+  configuration API.
+base_url: "{{input.HEADLAMP_BASE_URL}}"
 
 inputs:
   HEADLAMP_BASE_URL:
     kind: variable
     hint: |
-      Headlamp base URL without trailing slash and without `/api`,
-      for example `https://headlamp.example.com` or `http://localhost:4466`.
-  HEADLAMP_AUTH_TOKEN:
-    kind: secret
-    hint: |
-      Bearer authentication token with access to Headlamp cluster resources.
-
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.HEADLAMP_AUTH_TOKEN}}
+      Headlamp base URL without a trailing slash, for example
+      `https://headlamp.example.com` or `http://localhost:4466`. Include any
+      sub-path Headlamp is served under; this source appends `/config`.
 
 request_headers:
   - name: Accept
@@ -34,12 +25,19 @@ test_queries:
 
 tables:
   - name: clusters
-    description: Kubernetes clusters visible through Headlamp.
+    description: Kubernetes clusters visible through the Headlamp backend configuration.
+    guide: |
+      Each row is one cluster from `GET /config`, read from the `clusters`
+      array in the response body. Headlamp's `/config` endpoint is read-only and
+      unauthenticated — the `X-HEADLAMP_BACKEND-TOKEN` guard only applies to
+      Headlamp's mutating and in-cluster backend APIs, not to config — so this
+      source requires no token.
     request:
       method: GET
-      path: /clusters
+      path: /config
     response:
       row_strategy: direct
+      rows_path: [clusters]
     pagination:
       mode: none
     columns:
@@ -53,8 +51,8 @@ tables:
         nullable: true
         description: Kubernetes API server URL.
         expr: {kind: path, path: [server]}
-      - name: auth_provider
+      - name: auth_type
         type: Utf8
         nullable: true
-        description: Authentication provider name.
-        expr: {kind: path, path: [authProvider]}
+        description: Authentication type configured for the cluster.
+        expr: {kind: path, path: [auth_type]}

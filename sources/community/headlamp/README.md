@@ -1,7 +1,7 @@
 # Headlamp (Community)
 
 **Version:** 0.1.0
-**Backend:** HTTP (Headlamp Backend Proxy API)
+**Backend:** HTTP (Headlamp Backend Configuration API)
 **Tables:** 1
 **Base URL:** `{{input.HEADLAMP_BASE_URL}}`
 
@@ -35,7 +35,15 @@ coral source add --file <path-to-manifest>
 
 | Input | Kind | Required | Description |
 |---|---|---|---|
-| `HEADLAMP_BASE_URL` | variable | yes | Headlamp base URL without trailing slash, for example `https://headlamp.example.com` or `http://localhost:4466` |
+| `HEADLAMP_BASE_URL` | variable | yes | Headlamp base URL without a trailing slash, for example `https://headlamp.example.com` or `http://localhost:4466`. Include any sub-path Headlamp is served under; the source appends `/config`. |
+
+---
+
+# Authentication
+
+No credentials are required. This source reads Headlamp's `GET /config` endpoint, which is read-only and unauthenticated. Headlamp's `X-HEADLAMP_BACKEND-TOKEN` guard protects only its mutating and in-cluster backend APIs, not `/config`, so the manifest declares no auth and sends no token.
+
+If your deployment places Headlamp behind a reverse proxy that adds its own authentication, terminating that auth is out of scope for this source — point `HEADLAMP_BASE_URL` at an endpoint that serves `/config` directly.
 
 ---
 
@@ -43,7 +51,7 @@ coral source add --file <path-to-manifest>
 
 | Table | API Endpoint | Required Filters | Pagination |
 |---|---|---|---|
-| `clusters` | `GET /config` | — | None (maps from `clusters` array) |
+| `clusters` | `GET /config` | — | None (maps from the `clusters` array) |
 
 ---
 
@@ -51,13 +59,13 @@ coral source add --file <path-to-manifest>
 
 ## headlamp.clusters
 
-Kubernetes clusters accessible through the Headlamp backend configuration.
+Kubernetes clusters accessible through the Headlamp backend configuration. Each row is one entry from the `clusters` array returned by `GET /config`.
 
 | Column | Type | Description |
 |---|---|---|
 | `name` | Utf8 | Cluster name |
 | `server` | Utf8 | Kubernetes API server URL |
-| `auth_type` | Utf8 | Authentication type |
+| `auth_type` | Utf8 | Authentication type configured for the cluster |
 
 ---
 
@@ -92,15 +100,19 @@ coral source lint sources/community/headlamp/manifest.yaml
 ## Execute Live Connection Test
 
 ```bash
-export HEADLAMP_BASE_URL=https://headlamp.internal.infra
+export HEADLAMP_BASE_URL=https://headlamp.example.com
 
 coral source add --file sources/community/headlamp/manifest.yaml
 coral source test headlamp
+coral sql "SELECT name, server, auth_type FROM headlamp.clusters LIMIT 5"
 ```
 
 ---
 
-# Representative Live Output
+# Live Output
+
+> Replace the block below with the actual output from your own `coral source test headlamp`
+> run against this manifest. Do not ship placeholder output.
 
 ```text
 $ coral source test headlamp
@@ -114,22 +126,15 @@ $ coral source test headlamp
   1 declared · 1 passed · 0 failed
 
 ✓ SELECT name FROM headlamp.clusters LIMIT 1
-
-+-------------+
-| name        |
-+-------------+
-| k8s-prod-01 |
-+-------------+
-
-1 row
+  1 row
 ```
 
 ---
 
 # Limitations
 
-- Read-only execution scope
-- Cluster registration and configuration mutations are out of scope
-- Does not expose Kubernetes workload telemetry such as Pods, Deployments, Events, or Logs
-- Intended for auditing cluster connectivity visibility through Headlamp
-- Targets the Headlamp configuration endpoints directly; specialized reverse-proxy authentication configurations are out of scope
+- Read-only execution scope; no authentication is used and none is sent.
+- Cluster registration and configuration mutations are out of scope.
+- Does not expose Kubernetes workload telemetry such as Pods, Deployments, Events, or Logs.
+- Intended for auditing cluster connectivity visibility through Headlamp.
+- Targets the Headlamp configuration endpoint (`/config`) directly; specialized reverse-proxy authentication configurations are out of scope.
