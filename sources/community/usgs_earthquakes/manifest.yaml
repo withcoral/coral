@@ -5,7 +5,7 @@ backend: http
 description: Query earthquake events from the public USGS Earthquake Catalog API as SQL.
 base_url: https://earthquake.usgs.gov/fdsnws/event/1
 test_queries:
-  - SELECT id, magnitude, place, event_time FROM usgs_earthquakes.events LIMIT 1
+  - SELECT id, magnitude, place, latitude, longitude, depth_km, event_time FROM usgs_earthquakes.events LIMIT 1
   - SELECT id, magnitude, place FROM usgs_earthquakes.events WHERE min_magnitude = 5 ORDER BY event_time DESC LIMIT 1
 tables:
   - name: events
@@ -30,12 +30,12 @@ tables:
       - name: max_magnitude
         type: Float64
         description: Maximum earthquake magnitude.
-      - name: latitude
+      - name: center_latitude
         type: Float64
-        description: Center latitude for radius searches. Use with longitude and max_radius_km.
-      - name: longitude
+        description: Center latitude for radius searches. Use with center_longitude and max_radius_km.
+      - name: center_longitude
         type: Float64
-        description: Center longitude for radius searches. Use with latitude and max_radius_km.
+        description: Center longitude for radius searches. Use with center_latitude and max_radius_km.
       - name: max_radius_km
         type: Float64
         description: Maximum radius in kilometers from latitude and longitude.
@@ -62,7 +62,7 @@ tables:
         description: Review status, commonly automatic or reviewed.
       - name: order_by
         type: Utf8
-        description: USGS ordering option such as time, time-asc, magnitude, magnitude-asc, or updated.
+        description: USGS ordering option such as time, time-asc, magnitude, or magnitude-asc.
     request:
       method: GET
       path: /query
@@ -87,10 +87,10 @@ tables:
           key: max_magnitude
         - name: latitude
           from: filter
-          key: latitude
+          key: center_latitude
         - name: longitude
           from: filter
-          key: longitude
+          key: center_longitude
         - name: maxradiuskm
           from: filter
           key: max_radius_km
@@ -378,6 +378,36 @@ tables:
           kind: path
           path:
             - geometry
+      - name: longitude
+        type: Float64
+        nullable: true
+        description: Event longitude from GeoJSON geometry.coordinates[0].
+        expr:
+          kind: path
+          path:
+            - geometry
+            - coordinates
+            - "0"
+      - name: latitude
+        type: Float64
+        nullable: true
+        description: Event latitude from GeoJSON geometry.coordinates[1].
+        expr:
+          kind: path
+          path:
+            - geometry
+            - coordinates
+            - "1"
+      - name: depth_km
+        type: Float64
+        nullable: true
+        description: Event depth in kilometers from GeoJSON geometry.coordinates[2].
+        expr:
+          kind: path
+          path:
+            - geometry
+            - coordinates
+            - "2"
       - name: properties
         type: Json
         nullable: true
@@ -421,20 +451,20 @@ tables:
         expr:
           kind: from_filter
           key: max_magnitude
-      - name: latitude
+      - name: center_latitude
         type: Float64
         nullable: true
-        description: Echoes the latitude filter used for this request.
+        description: Echoes the center_latitude filter used for this request.
         expr:
           kind: from_filter
-          key: latitude
-      - name: longitude
+          key: center_latitude
+      - name: center_longitude
         type: Float64
         nullable: true
-        description: Echoes the longitude filter used for this request.
+        description: Echoes the center_longitude filter used for this request.
         expr:
           kind: from_filter
-          key: longitude
+          key: center_longitude
       - name: max_radius_km
         type: Float64
         nullable: true

@@ -19,7 +19,7 @@ coral source test usgs_earthquakes
 Recent earthquakes:
 
 ```sql
-SELECT id, magnitude, place, event_time, url
+SELECT id, magnitude, place, latitude, longitude, depth_km, event_time, url
 FROM usgs_earthquakes.events
 ORDER BY event_time DESC
 LIMIT 10;
@@ -38,10 +38,10 @@ LIMIT 20;
 Earthquakes near San Francisco:
 
 ```sql
-SELECT id, magnitude, place, event_time
+SELECT id, magnitude, place, latitude, longitude, depth_km, event_time
 FROM usgs_earthquakes.events
-WHERE latitude = 37.7749
-  AND longitude = -122.4194
+WHERE center_latitude = 37.7749
+  AND center_longitude = -122.4194
   AND max_radius_km = 500
   AND min_magnitude = 2.5
 ORDER BY event_time DESC
@@ -55,20 +55,30 @@ SELECT id, magnitude, place, event_time
 FROM usgs_earthquakes.events
 WHERE start_time = '2026-05-01'
   AND end_time = '2026-05-27'
-  AND min_magnitude = 4
+  AND min_magnitude = 5
 ORDER BY event_time DESC
 LIMIT 50;
 ```
 
 ## Exposed Table
 
-`usgs_earthquakes.events` returns GeoJSON feature rows from `/query?format=geojson`, with common fields flattened into typed columns and the full `geometry` and `properties` objects available as JSON.
+`usgs_earthquakes.events` returns GeoJSON feature rows from `/query?format=geojson`, with common fields flattened into typed columns and the full `geometry` and `properties` objects available as JSON. The `latitude`, `longitude`, and `depth_km` columns represent the event coordinates from `geometry.coordinates`.
+
+## Query Guidance
+
+USGS limits query responses and broad historical scans can fail upstream even when a SQL `LIMIT` is present. For reliable first results, keep at least one of these filters narrow:
+
+- Time range: use `start_time` and `end_time`.
+- Magnitude: use `min_magnitude` for broader time windows.
+- Geography: use either `center_latitude`, `center_longitude`, and `max_radius_km`, or a bounding box.
+
+For very broad recent-event use cases, USGS also publishes real-time feeds outside the catalog query endpoint.
 
 Common filters include:
 
 - `start_time`, `end_time`, `updated_after`
 - `min_magnitude`, `max_magnitude`
-- `latitude`, `longitude`, `max_radius_km`
+- `center_latitude`, `center_longitude`, `max_radius_km`
 - `min_latitude`, `max_latitude`, `min_longitude`, `max_longitude`
 - `event_type`, `alert_level`, `status`, `order_by`
 
