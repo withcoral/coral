@@ -1,5 +1,5 @@
 name: github
-version: 1.1.6
+version: 1.1.7
 dsl_version: 3
 backend: http
 description: >-
@@ -247,7 +247,9 @@ functions:
         nullable: true
         expr: {kind: path, path: [score]}
   - name: search_issues
-    description: Search GitHub issues and pull requests.
+    description: >-
+      Search GitHub issues and pull requests. For current PRs waiting on the
+      authenticated user's review, prefer github.review_requested_prs().
     args:
       - name: q
         required: true
@@ -329,6 +331,88 @@ functions:
         type: Utf8
         nullable: true
         expr: {kind: path, path: [repository_url]}
+  - name: review_requested_prs
+    description: >-
+      Open pull requests currently requesting review from the authenticated user.
+      Wraps GitHub issue search review-requested:@me, including team review
+      requests; prefer this over notifications for current review queues because
+      notifications are inbox state and can be stale.
+    request:
+      method: GET
+      path: /search/issues
+      query:
+        - name: q
+          from: literal
+          value: "is:pr is:open review-requested:@me archived:false"
+        - name: sort
+          from: literal
+          value: updated
+        - name: order
+          from: literal
+          value: desc
+    response:
+      rows_path: [items]
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_size:
+        default: 30
+        max: 100
+        query_param: per_page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      link_header_require_results: false
+    columns:
+      - name: repository_full_name
+        type: Utf8
+        nullable: true
+        description: >-
+          Repository owner/name for GitHub Cloud. For Enterprise Server, use
+          repository_url if your API base differs from https://api.github.com.
+        expr:
+          kind: replace
+          expr: {kind: path, path: [repository_url]}
+          from: "https://api.github.com/repos/"
+          to: ""
+      - name: number
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [number]}
+      - name: title
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [title]}
+      - name: author_login
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [user, login]}
+      - name: html_url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [html_url]}
+      - name: state
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [state]}
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [updated_at]}
+      - name: created_at
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [created_at]}
+      - name: repository_url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [repository_url]}
+      - name: pull_request_url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [pull_request, url]}
   - name: search_labels
     description: Search GitHub labels in a repository.
     args:
@@ -58664,11 +58748,13 @@ tables:
           path:
             - url
   - name: notifications
-    description: List notifications for the authenticated user
+    description: List GitHub notification inbox entries for the authenticated user
     guide: >
       Use this table to review the authenticated user's notifications. Works without WHERE filters.
       Start with owner/repo or all before paging busy inboxes; unread state changes as GitHub
-      updates the inbox.
+      updates the inbox. Do not use this table as the source of truth for current pull requests
+      waiting on your review; notification inbox state can be stale. Use github.review_requested_prs()
+      for current review queues.
     filters:
       - name: all
         required: false

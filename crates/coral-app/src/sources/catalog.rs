@@ -122,7 +122,7 @@ mod tests {
 
     use std::collections::BTreeSet;
 
-    use coral_spec::ManifestInputKind;
+    use coral_spec::{ManifestInputKind, ValueSourceSpec, parse_source_manifest_yaml};
 
     use super::{describe_manifest, list_bundled_sources, load_bundled_source};
     use crate::sources::SourceName;
@@ -143,6 +143,43 @@ mod tests {
                 .any(|source| source.name == SourceName::parse("stripe").expect("source"))
         );
         assert!(sources.iter().all(|source| !source.version.is_empty()));
+    }
+
+    #[test]
+    fn github_review_requested_prs_function_uses_current_review_search() {
+        let source_name = SourceName::parse("github").expect("source");
+        let source = load_bundled_source(&source_name).expect("github bundled source");
+        let manifest =
+            parse_source_manifest_yaml(&source.manifest_yaml).expect("parse github manifest");
+        let http = manifest.as_http().expect("github is an HTTP source");
+        let function = http
+            .functions
+            .iter()
+            .find(|function| function.name == "review_requested_prs")
+            .expect("review-requested PR shortcut");
+
+        assert!(function.args.is_empty());
+        assert!(function.description.contains("notifications"));
+        assert!(
+            function
+                .columns
+                .iter()
+                .any(|column| column.name == "repository_full_name")
+        );
+
+        let q = function
+            .request
+            .query
+            .iter()
+            .find(|param| param.name == "q")
+            .expect("q query param");
+        let ValueSourceSpec::Literal { value } = &q.value else {
+            panic!("review_requested_prs q must be a literal");
+        };
+        assert_eq!(
+            value.as_str(),
+            Some("is:pr is:open review-requested:@me archived:false")
+        );
     }
 
     #[test]

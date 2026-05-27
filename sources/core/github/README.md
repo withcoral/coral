@@ -249,10 +249,14 @@ Remaining ~104 org tables require the PAT to be scoped to the organization with 
 | `search_code` | `github.search_code(q => 'className repo:owner/repo')` |
 | `search_commits` | `github.search_commits(q => 'fix repo:owner/repo')` |
 | `search_issues` | `github.search_issues(q => 'repo:owner/repo is:issue bug')` |
+| `review_requested_prs` | `github.review_requested_prs()` |
 
 Note: `search_commits` requires actual search text.
 Qualifier-only queries such as `q => 'repo:owner/repo'` return 422.
 `search_issues` requires `is:issue` or `is:pull-request` in the query.
+Use `review_requested_prs` for open pull requests currently waiting on the
+authenticated user's review. Do not use `notifications` as the source of truth
+for that workflow; notification inbox state can be stale.
 
 #### Requires GitHub App JWT (19 tables)
 
