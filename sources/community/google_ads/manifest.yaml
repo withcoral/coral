@@ -94,7 +94,10 @@ tables:
         - path:
             - query
           from: literal
-          value: "SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign.start_date, campaign.end_date FROM campaign"
+          value: >-
+            SELECT campaign.id, campaign.name, campaign.status,
+            campaign.advertising_channel_type, campaign.start_date,
+            campaign.end_date FROM campaign
     response:
       rows_path:
         - results
@@ -182,7 +185,9 @@ tables:
         - path:
             - query
           from: literal
-          value: "SELECT ad_group.id, ad_group.name, ad_group.status, ad_group.type, ad_group.campaign, campaign.id, campaign.name FROM ad_group"
+          value: >-
+            SELECT ad_group.id, ad_group.name, ad_group.status, ad_group.type,
+            ad_group.campaign, campaign.id, campaign.name FROM ad_group
     response:
       rows_path:
         - results
@@ -279,7 +284,10 @@ tables:
         - path:
             - query
           from: literal
-          value: "SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status, ad_group_ad.ad.type, ad_group_ad.ad_group, ad_group.id, campaign.id FROM ad_group_ad"
+          value: >-
+            SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status,
+            ad_group_ad.ad.type, ad_group_ad.ad_group, ad_group.id,
+            campaign.id FROM ad_group_ad
     response:
       rows_path:
         - results
@@ -387,7 +395,10 @@ tables:
         - path:
             - query
           from: template
-          template: "SELECT campaign.id, campaign.name, segments.date, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date BETWEEN '{{filter.start_date}}' AND '{{filter.end_date}}'"
+          template: >-
+            SELECT campaign.id, campaign.name, segments.date, metrics.impressions,
+            metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign
+            WHERE segments.date BETWEEN '{{filter.start_date}}' AND '{{filter.end_date}}'
     response:
       rows_path:
         - results
