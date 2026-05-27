@@ -1,0 +1,566 @@
+name: servicenow
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query ServiceNow ITSM and CMDB metadata from the Table API for incident,
+  change, problem, configuration item, and user inventory workflows.
+base_url: "{{input.SERVICENOW_INSTANCE_URL}}/api/now/table"
+
+inputs:
+  SERVICENOW_INSTANCE_URL:
+    kind: variable
+    hint: |
+      Base URL for your ServiceNow instance, without a trailing slash.
+      Example: https://example.service-now.com.
+  SERVICENOW_USERNAME:
+    kind: variable
+    hint: |
+      ServiceNow username for Basic auth. Use a least-privilege integration
+      user with read access to the tables you want Coral to inspect.
+  SERVICENOW_PASSWORD:
+    kind: secret
+    hint: |
+      ServiceNow password or API-authenticated credential for the integration
+      user. Scope table ACLs to read-only access where possible.
+
+auth:
+  type: BasicAuth
+  username: "{{input.SERVICENOW_USERNAME}}"
+  password: "{{input.SERVICENOW_PASSWORD}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT sys_id, number, short_description FROM servicenow.incidents LIMIT 1
+  - SELECT sys_id, name, user_name FROM servicenow.users LIMIT 1
+
+tables:
+  - name: incidents
+    description: ServiceNow incident records visible to the configured user.
+    guide: |
+      Use `query` for ServiceNow encoded query syntax, such as
+      `active=true^priority=1`. This table requests a documented field subset
+      with `sysparm_fields` and paginates with `sysparm_limit` and
+      `sysparm_offset`.
+    filters:
+      - name: query
+      - name: display_value
+    request:
+      method: GET
+      path: /incident
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: sys_id,number,short_description,state,priority,impact,urgency,category,assignment_group,assigned_to,caller_id,opened_by,opened_at,resolved_at,closed_at,active,sys_created_on,sys_updated_on
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_display_value
+          from: filter_bool
+          key: display_value
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: ServiceNow record sys_id.
+      - name: number
+        type: Utf8
+        nullable: true
+        description: Incident number.
+      - name: short_description
+        type: Utf8
+        nullable: true
+        description: Short incident description.
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Incident state value.
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Incident priority value.
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: Incident impact value.
+      - name: urgency
+        type: Utf8
+        nullable: true
+        description: Incident urgency value.
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Incident category.
+      - name: assignment_group
+        type: Utf8
+        nullable: true
+        description: Assignment group value or display value.
+      - name: assigned_to
+        type: Utf8
+        nullable: true
+        description: Assigned user value or display value.
+      - name: caller_id
+        type: Utf8
+        nullable: true
+        description: Caller value or display value.
+      - name: opened_by
+        type: Utf8
+        nullable: true
+        description: User that opened the incident.
+      - name: opened_at
+        type: Utf8
+        nullable: true
+        description: Incident opened timestamp.
+      - name: resolved_at
+        type: Utf8
+        nullable: true
+        description: Incident resolved timestamp.
+      - name: closed_at
+        type: Utf8
+        nullable: true
+        description: Incident closed timestamp.
+      - name: active
+        type: Utf8
+        nullable: true
+        description: ServiceNow active value, usually "true" or "false".
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: Record creation timestamp.
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: Record update timestamp.
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional ServiceNow encoded query filter.
+        expr: {kind: from_filter, key: query}
+      - name: display_value
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional sysparm_display_value filter.
+        expr: {kind: from_filter, key: display_value}
+
+  - name: change_requests
+    description: ServiceNow change request records visible to the configured user.
+    guide: |
+      Use `query` for encoded query syntax such as `active=true^state=0`.
+      This table uses the ServiceNow Table API and offset pagination.
+    filters:
+      - name: query
+      - name: display_value
+    request:
+      method: GET
+      path: /change_request
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: sys_id,number,short_description,type,state,priority,risk,impact,assignment_group,assigned_to,requested_by,start_date,end_date,active,sys_created_on,sys_updated_on
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_display_value
+          from: filter_bool
+          key: display_value
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: ServiceNow record sys_id.
+      - name: number
+        type: Utf8
+        nullable: true
+        description: Change request number.
+      - name: short_description
+        type: Utf8
+        nullable: true
+        description: Short change description.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Change type.
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Change state value.
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Change priority value.
+      - name: risk
+        type: Utf8
+        nullable: true
+        description: Change risk value.
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: Change impact value.
+      - name: assignment_group
+        type: Utf8
+        nullable: true
+        description: Assignment group value or display value.
+      - name: assigned_to
+        type: Utf8
+        nullable: true
+        description: Assigned user value or display value.
+      - name: requested_by
+        type: Utf8
+        nullable: true
+        description: Requesting user value or display value.
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Planned start date.
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Planned end date.
+      - name: active
+        type: Utf8
+        nullable: true
+        description: ServiceNow active value, usually "true" or "false".
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: Record creation timestamp.
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: Record update timestamp.
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional ServiceNow encoded query filter.
+        expr: {kind: from_filter, key: query}
+      - name: display_value
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional sysparm_display_value filter.
+        expr: {kind: from_filter, key: display_value}
+
+  - name: problems
+    description: ServiceNow problem records visible to the configured user.
+    filters:
+      - name: query
+      - name: display_value
+    request:
+      method: GET
+      path: /problem
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: sys_id,number,short_description,state,priority,assignment_group,assigned_to,known_error,active,opened_at,closed_at,sys_created_on,sys_updated_on
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_display_value
+          from: filter_bool
+          key: display_value
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: ServiceNow record sys_id.
+      - name: number
+        type: Utf8
+        nullable: true
+        description: Problem number.
+      - name: short_description
+        type: Utf8
+        nullable: true
+        description: Short problem description.
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Problem state value.
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Problem priority value.
+      - name: assignment_group
+        type: Utf8
+        nullable: true
+        description: Assignment group value or display value.
+      - name: assigned_to
+        type: Utf8
+        nullable: true
+        description: Assigned user value or display value.
+      - name: known_error
+        type: Utf8
+        nullable: true
+        description: ServiceNow known error value, usually "true" or "false".
+      - name: active
+        type: Utf8
+        nullable: true
+        description: ServiceNow active value, usually "true" or "false".
+      - name: opened_at
+        type: Utf8
+        nullable: true
+        description: Problem opened timestamp.
+      - name: closed_at
+        type: Utf8
+        nullable: true
+        description: Problem closed timestamp.
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: Record creation timestamp.
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: Record update timestamp.
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional ServiceNow encoded query filter.
+        expr: {kind: from_filter, key: query}
+      - name: display_value
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional sysparm_display_value filter.
+        expr: {kind: from_filter, key: display_value}
+
+  - name: cmdb_ci
+    description: ServiceNow configuration items from the CMDB.
+    filters:
+      - name: query
+      - name: display_value
+    request:
+      method: GET
+      path: /cmdb_ci
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: sys_id,name,sys_class_name,install_status,operational_status,category,subcategory,manufacturer,model_id,owned_by,managed_by,support_group,sys_created_on,sys_updated_on
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_display_value
+          from: filter_bool
+          key: display_value
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: ServiceNow record sys_id.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Configuration item name.
+      - name: sys_class_name
+        type: Utf8
+        nullable: true
+        description: CI class name.
+      - name: install_status
+        type: Utf8
+        nullable: true
+        description: Installation status.
+      - name: operational_status
+        type: Utf8
+        nullable: true
+        description: Operational status.
+      - name: category
+        type: Utf8
+        nullable: true
+        description: CI category.
+      - name: subcategory
+        type: Utf8
+        nullable: true
+        description: CI subcategory.
+      - name: manufacturer
+        type: Utf8
+        nullable: true
+        description: Manufacturer value or display value.
+      - name: model_id
+        type: Utf8
+        nullable: true
+        description: Model value or display value.
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: Owner value or display value.
+      - name: managed_by
+        type: Utf8
+        nullable: true
+        description: Manager value or display value.
+      - name: support_group
+        type: Utf8
+        nullable: true
+        description: Support group value or display value.
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: Record creation timestamp.
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: Record update timestamp.
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional ServiceNow encoded query filter.
+        expr: {kind: from_filter, key: query}
+      - name: display_value
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional sysparm_display_value filter.
+        expr: {kind: from_filter, key: display_value}
+
+  - name: users
+    description: ServiceNow user records visible to the configured user.
+    filters:
+      - name: query
+      - name: display_value
+    request:
+      method: GET
+      path: /sys_user
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: sys_id,user_name,name,email,active,department,company,manager,title,sys_created_on,sys_updated_on
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_display_value
+          from: filter_bool
+          key: display_value
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: ServiceNow record sys_id.
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: User login name.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+      - name: active
+        type: Utf8
+        nullable: true
+        description: ServiceNow active value, usually "true" or "false".
+      - name: department
+        type: Utf8
+        nullable: true
+        description: Department value or display value.
+      - name: company
+        type: Utf8
+        nullable: true
+        description: Company value or display value.
+      - name: manager
+        type: Utf8
+        nullable: true
+        description: Manager value or display value.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: User title.
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: Record creation timestamp.
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: Record update timestamp.
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional ServiceNow encoded query filter.
+        expr: {kind: from_filter, key: query}
+      - name: display_value
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional sysparm_display_value filter.
+        expr: {kind: from_filter, key: display_value}
