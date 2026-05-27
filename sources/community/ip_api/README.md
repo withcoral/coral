@@ -13,8 +13,9 @@ coral source add --file sources/community/ip_api/manifest.yaml
 
 ## Setup
 
-No authentication is required to use the ip-api API. 
-*Note: The free API allows up to 45 HTTP requests per minute. If you exceed this limit, your requests will be throttled.*
+No authentication is required for the free endpoint. However, the free API is restricted to non-commercial use and only available over HTTP (not HTTPS). Commercial use or HTTPS support requires an [ip-api Pro](https://ip-api.com/) subscription.
+
+**Rate Limits:** The free endpoint allows up to 45 requests per minute. If exceeded, requests will return a 429 status and your IP may be banned for 1 hour for repeated overuse. Limits can be tracked via the `X-Rl` and `X-Ttl` response headers. Note that agent-driven queries can easily exhaust this shared IP limit.
 
 ## Tables
 
@@ -42,9 +43,9 @@ Fetch geolocation details. By default, it fetches the details for the IP from wh
 | `status` | Utf8 | Response status (e.g., `success`, `fail`) |
 | `message` | Utf8 | Error message if status is `fail` |
 | `country` | Utf8 | Country name |
-| `countryCode` | Utf8 | Two-letter country code (ISO 3166-1 alpha-2) |
+| `country_code` | Utf8 | Two-letter country code (ISO 3166-1 alpha-2, mapped from API's `countryCode`) |
 | `region` | Utf8 | Region/state code |
-| `regionName` | Utf8 | Region/state name |
+| `region_name` | Utf8 | Region/state name (mapped from API's `regionName`) |
 | `city` | Utf8 | City name |
 | `zip` | Utf8 | Zip/postal code |
 | `lat` | Float64 | Latitude |
@@ -60,15 +61,15 @@ Fetch geolocation details. By default, it fetches the details for the IP from wh
 
 ```bash
 # Fetch geolocation details for your current IP address
-coral sql '
-  SELECT country, "regionName", city, lat, lon, isp
+coral sql "
+  SELECT country, region_name, city, lat, lon, isp
   FROM ip_api.location
   LIMIT 1
-'
+"
 
 /*
 +---------+-------------------------------------+-----------+---------+---------+-------------------------------+
-| country | regionName                          | city      | lat     | lon     | isp                           |
+| country | region_name                         | city      | lat     | lon     | isp                           |
 +---------+-------------------------------------+-----------+---------+---------+-------------------------------+
 | India   | National Capital Territory of Delhi | New Delhi | 28.6327 | 77.2198 | Reliance Jio Infocomm Limited |
 +---------+-------------------------------------+-----------+---------+---------+-------------------------------+

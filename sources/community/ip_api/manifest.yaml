@@ -37,12 +37,20 @@ tables:
         type: Utf8
       - name: country
         type: Utf8
-      - name: countryCode
+      - name: country_code
         type: Utf8
+        expr:
+          kind: path
+          path:
+            - countryCode
       - name: region
         type: Utf8
-      - name: regionName
+      - name: region_name
         type: Utf8
+        expr:
+          kind: path
+          path:
+            - regionName
       - name: city
         type: Utf8
       - name: zip
