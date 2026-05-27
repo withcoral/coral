@@ -165,15 +165,18 @@ tables:
       mode: none
     columns:
       - name: date
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: >-
           ISO 8601 timestamp when this Scorecard result was produced (weekly cadence).
           Use to assess data freshness before acting on scores.
         expr:
-          kind: path
-          path:
-            - date
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - date
 
       - name: aggregate_score
         type: Float64
