@@ -8,10 +8,50 @@ description: >-
 inputs:
   GMAIL_ACCESS_TOKEN:
     kind: secret
-    hint: >-
-      Google OAuth2 access token with Gmail read-only scope.
-      Generate one at https://developers.google.com/oauthplayground
-      using the scope https://www.googleapis.com/auth/gmail.readonly
+    hint: |
+      Google Gmail OAuth 2.0 access token with the Gmail readonly scope.
+      Paste the access token value itself, without a `Bearer ` prefix.
+      For interactive setup, choose "Connect Gmail" and provide a
+      Google OAuth Desktop app client ID and client secret with the Gmail API
+      enabled.
+
+      The OAuth flow requests:
+      https://www.googleapis.com/auth/gmail.readonly
+      See https://developers.google.com/workspace/gmail/api/auth/scopes.
+
+      Note: gmail.readonly is a restricted scope. Users publishing an app
+      publicly will need to go through Google OAuth verification.
+      gmail.metadata is insufficient for this source because the messages
+      and threads tables support a q search filter, which requires at least
+      gmail.readonly per Gmail API docs.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Gmail
+          description: Use Google OAuth to retrieve a Gmail access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GMAIL_OAUTH_CLIENT_ID
+              secret:
+                input: GMAIL_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/gmail.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Gmail OAuth access token.
 base_url: "https://gmail.googleapis.com"
 auth:
   type: HeaderAuth

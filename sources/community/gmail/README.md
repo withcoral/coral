@@ -4,16 +4,16 @@ Query your Gmail mailbox using SQL via the Gmail REST API v1.
 
 ## Setup
 
-### 1. Get an OAuth2 Access Token
+### 1. Create a Google OAuth Desktop App
 
-1. Go to https://developers.google.com/oauthplayground
-2. In the scopes box enter:
-https://www.googleapis.com/auth/gmail.readonly
-3. Click **Authorize APIs** and sign in with your Google account
-4. Click **Exchange authorization code for tokens**
-5. Copy the **Access token**
-
-> Note: Access tokens expire after 1 hour. Repeat the steps above to get a fresh token when needed.
+1. Go to https://console.cloud.google.com
+2. Create a new project or select existing
+3. Go to **APIs & Services** → **Enable APIs**
+4. Search and enable **Gmail API**
+5. Go to **APIs & Services** → **Credentials**
+6. Click **Create Credentials** → **OAuth Client ID**
+7. Select **Desktop App**
+8. Copy the **Client ID** and **Client Secret**
 
 ### 2. Add the Source
 
@@ -21,7 +21,17 @@ https://www.googleapis.com/auth/gmail.readonly
 coral source add --interactive --file sources/community/gmail/manifest.yaml
 ```
 
-When prompted enter your access token.
+When prompted:
+- Choose **"Connect Gmail"** for interactive OAuth flow
+- Enter your **Client ID** and **Client Secret**
+- A browser window will open — sign in and approve access
+- Token is stored automatically!
+
+Or choose **"Paste access token"** if you already have a token from
+https://developers.google.com/oauthplayground using scope:
+`https://www.googleapis.com/auth/gmail.readonly`
+
+> Note: Access tokens expire after 1 hour. Re-run the add command to refresh.
 
 ## Tables
 
@@ -33,8 +43,8 @@ When prompted enter your access token.
 | `gmail.threads` | List threads by label or search query |
 | `gmail.drafts` | List all saved drafts |
 
-> Note: `messages` and `threads` tables are ID/discovery tables.
-> The Gmail list endpoints return message IDs and thread IDs.
+> Note: `messages`, `threads` and `drafts` are ID/discovery tables.
+> The Gmail list endpoints return IDs only.
 > Use the IDs to fetch full message details via the Gmail API directly.
 
 ## Example Queries
@@ -120,4 +130,4 @@ Full details: https://developers.google.com/workspace/gmail/api/reference/quota
 
 - Gmail API: https://developers.google.com/workspace/gmail/api/reference/rest
 - Auth Scopes: https://developers.google.com/workspace/gmail/api/auth/scopes
-- OAuth Playground: https://developers.google.com/oauthplayground
+- Gmail API Console: https://console.cloud.google.com
