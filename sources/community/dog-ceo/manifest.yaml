@@ -1,0 +1,105 @@
+name: dog_ceo
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch random dog images and filter by breed using the Dog CEO API.
+base_url: https://dog.ceo/api
+test_queries:
+  - SELECT image_url FROM dog_ceo.random_image LIMIT 1
+  - SELECT image_url FROM dog_ceo.random_images WHERE count = 2 LIMIT 2
+  - SELECT image_url FROM dog_ceo.breed_images WHERE breed = 'hound' AND count = 1 LIMIT 1
+tables:
+  - name: random_image
+    description: Get a single random dog image.
+    request:
+      method: GET
+      path: /breeds/image/random
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: image_url
+        type: Utf8
+        nullable: false
+        description: The image URL.
+        expr:
+          kind: path
+          path:
+            - message
+      - name: status
+        type: Utf8
+        nullable: false
+        description: The API status.
+        expr:
+          kind: path
+          path:
+            - status
+
+  - name: random_images
+    description: Get multiple random dog images.
+    filters:
+      - name: count
+        required: true
+    request:
+      method: GET
+      path: /breeds/image/random/{{filter.count}}
+    response:
+      rows_path:
+        - message
+    pagination:
+      mode: none
+    columns:
+      - name: count
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Number of images requested.
+        expr:
+          kind: from_filter
+          key: count
+      - name: image_url
+        type: Utf8
+        nullable: false
+        description: The image URL.
+        expr:
+          kind: current_row
+
+  - name: breed_images
+    description: Get random images for a specific breed.
+    filters:
+      - name: breed
+        required: true
+      - name: count
+        required: true
+    request:
+      method: GET
+      path: /breed/{{filter.breed}}/images/random/{{filter.count}}
+    response:
+      rows_path:
+        - message
+    pagination:
+      mode: none
+    columns:
+      - name: breed
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: The breed.
+        expr:
+          kind: from_filter
+          key: breed
+      - name: count
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Number of images requested.
+        expr:
+          kind: from_filter
+          key: count
+      - name: image_url
+        type: Utf8
+        nullable: false
+        description: The image URL.
+        expr:
+          kind: current_row

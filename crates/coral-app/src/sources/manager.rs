@@ -75,6 +75,9 @@ pub(crate) enum ImportSourceWithCredentialsEvent {
         input_key: String,
         authorization_url: String,
         expires_in_seconds: u64,
+        user_code: Option<String>,
+        verification_uri: Option<String>,
+        verification_uri_complete: Option<String>,
     },
     OAuthCompleted {
         input_key: String,
@@ -775,6 +778,10 @@ impl SourceManager {
                                     input_key: authorization_input_key,
                                     authorization_url: authorization.authorization_url,
                                     expires_in_seconds: authorization.expires_in_seconds,
+                                    user_code: authorization.user_code,
+                                    verification_uri: authorization.verification_uri,
+                                    verification_uri_complete: authorization
+                                        .verification_uri_complete,
                                 },
                             )
                             .await

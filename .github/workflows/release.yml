@@ -252,7 +252,8 @@ jobs:
             release_json="$(gh api \
               --method PATCH \
               "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-              -F prerelease=false)"
+              -F prerelease=false \
+              -F make_latest=true)"
           fi
 
           {
