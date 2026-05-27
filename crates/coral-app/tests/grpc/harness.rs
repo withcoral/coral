@@ -1,11 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use coral_api::v1::{
     ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
     PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, catalog_item, import_source_response,
 };
+use coral_app::EngineExtensionsProvider;
 use coral_client::{
     AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
@@ -31,21 +33,33 @@ impl GrpcHarness {
     pub(crate) async fn new() -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path().join("coral-config");
-        Self::start_with_parts(temp_dir, config_dir).await
+        Self::start_with_parts(temp_dir, config_dir, None).await
     }
 
     pub(crate) async fn start_with_config_dir(config_dir: PathBuf) -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
-        Self::start_with_parts(temp_dir, config_dir).await
+        Self::start_with_parts(temp_dir, config_dir, None).await
     }
 
-    async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
+    pub(crate) async fn new_with_engine_extensions_provider(
+        provider: Arc<dyn EngineExtensionsProvider>,
+    ) -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        Self::start_with_parts(temp_dir, config_dir, Some(provider)).await
+    }
+
+    async fn start_with_parts(
+        temp_dir: TempDir,
+        config_dir: PathBuf,
+        provider: Option<Arc<dyn EngineExtensionsProvider>>,
+    ) -> Self {
         ensure_file_credentials_config(&config_dir);
-        let server = ServerBuilder::new()
-            .with_config_dir(&config_dir)
-            .start()
-            .await
-            .expect("start server");
+        let mut builder = ServerBuilder::new().with_config_dir(&config_dir);
+        if let Some(provider) = provider {
+            builder = builder.add_engine_extensions_provider(provider);
+        }
+        let server = builder.start().await.expect("start server");
         let app = AppClient::connect(server.endpoint_uri())
             .await
             .expect("connect client");

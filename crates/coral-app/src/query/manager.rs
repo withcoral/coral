@@ -1,7 +1,9 @@
 //! Query-time loading, validation, and execution over installed sources.
 
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,7 +17,10 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::catalog::cache::{CatalogMetadataCache, CatalogMetadataSignature};
+use crate::credentials::{
+    CredentialManager, CredentialSetId, CredentialStorageKind, CredentialsError,
+};
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
@@ -40,10 +45,12 @@ pub(crate) struct QueryManager {
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
+    catalog_cache: CatalogMetadataCache,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
 }
 
 impl QueryManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -51,11 +58,30 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
+        Self::with_catalog_cache(
+            config_store,
+            credential_manager,
+            runtime_context,
+            layout,
+            CatalogMetadataCache::default(),
+            engine_extensions_providers,
+        )
+    }
+
+    pub(crate) fn with_catalog_cache(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        catalog_cache: CatalogMetadataCache,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> Self {
         Self {
             config_store,
             credential_manager,
             runtime_context,
             layout,
+            catalog_cache,
             engine_extensions_providers,
         }
     }
@@ -66,13 +92,8 @@ impl QueryManager {
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace_name)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
-        CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
-            .await
-            .map_err(QueryManagerError::Core)
+        let catalog = self.catalog_snapshot(workspace_name).await?;
+        Ok(filter_tables(&catalog.tables, schema_filter, table_filter))
     }
 
     pub(crate) async fn list_catalog(
@@ -80,13 +101,8 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace_name)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
-        CoralQuery::list_catalog(&sources, runtime, schema_filter)
-            .await
-            .map_err(QueryManagerError::Core)
+        let catalog = self.catalog_snapshot(workspace_name).await?;
+        Ok(filter_catalog(&catalog, schema_filter))
     }
 
     pub(crate) async fn execute_sql(
@@ -241,6 +257,126 @@ impl QueryManager {
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
+
+    async fn catalog_snapshot(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Arc<CatalogInfo>, QueryManagerError> {
+        let signature = self.catalog_metadata_signature(workspace_name)?;
+        self.catalog_cache
+            .get_or_insert_with(workspace_name, signature, || async {
+                let sources = self
+                    .load_query_sources(workspace_name)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self.runtime_config(&sources);
+                CoralQuery::list_catalog(&sources, runtime, None)
+                    .await
+                    .map_err(QueryManagerError::Core)
+            })
+            .await
+    }
+
+    fn catalog_metadata_signature(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<CatalogMetadataSignature, QueryManagerError> {
+        let sources = self
+            .config_store
+            .list_workspace_sources(workspace_name)
+            .map_err(QueryManagerError::App)?;
+        let mut hasher = DefaultHasher::new();
+        for source in &sources {
+            hash_catalog_metadata_source_inputs(
+                &mut hasher,
+                workspace_name,
+                source,
+                &self.layout,
+                &self.credential_manager,
+            )
+            .map_err(QueryManagerError::App)?;
+        }
+        Ok(CatalogMetadataSignature::from_hash(hasher.finish()))
+    }
+}
+
+fn hash_catalog_metadata_source_inputs(
+    hasher: &mut DefaultHasher,
+    workspace_name: &WorkspaceName,
+    source: &InstalledSource,
+    layout: &AppStateLayout,
+    credential_manager: &CredentialManager,
+) -> Result<(), AppError> {
+    source.name.as_str().hash(hasher);
+    source.version.hash(hasher);
+    source.variables.hash(hasher);
+    source.secrets.hash(hasher);
+    source
+        .credential_storage
+        .map(CredentialStorageKind::as_config_value)
+        .hash(hasher);
+    source.origin.as_config_value().hash(hasher);
+
+    if source.origin == crate::sources::model::SourceOrigin::Imported {
+        match std::fs::read(layout.manifest_file(workspace_name, &source.name)) {
+            Ok(manifest) => manifest.hash(hasher),
+            Err(error) => {
+                "manifest-error".hash(hasher);
+                error.kind().hash(hasher);
+                error.to_string().hash(hasher);
+            }
+        }
+    }
+
+    if let Some(credential_storage) = source.credential_storage_for_material() {
+        let credential_set_id = CredentialSetId::for_source(&source.name);
+        match credential_manager.read_material(
+            workspace_name,
+            &credential_set_id,
+            credential_storage,
+        ) {
+            Ok(material) => material.hash(hasher),
+            Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
+                return Err(error);
+            }
+            Err(error) => {
+                "credential-error".hash(hasher);
+                error.to_string().hash(hasher);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn filter_catalog(catalog: &CatalogInfo, schema_filter: Option<&str>) -> CatalogInfo {
+    CatalogInfo {
+        sources: catalog
+            .sources
+            .iter()
+            .filter(|source| schema_filter.is_none_or(|value| source.schema_name == value))
+            .cloned()
+            .collect(),
+        tables: filter_tables(&catalog.tables, schema_filter, None),
+        table_functions: catalog
+            .table_functions
+            .iter()
+            .filter(|function| schema_filter.is_none_or(|value| function.schema_name == value))
+            .cloned()
+            .collect(),
+    }
+}
+
+fn filter_tables(
+    tables: &[TableInfo],
+    schema_filter: Option<&str>,
+    table_filter: Option<&str>,
+) -> Vec<TableInfo> {
+    tables
+        .iter()
+        .filter(|table| schema_filter.is_none_or(|value| table.schema_name == value))
+        .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
+        .cloned()
+        .collect()
 }
 
 #[derive(Clone, Copy)]

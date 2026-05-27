@@ -4,16 +4,34 @@
 )]
 
 use coral_api::v1::{
-    DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-    SearchCatalogRequest, SearchColumnsRequest, catalog_item,
+    DeleteSourceRequest, DescribeTableRequest, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, PaginationRequest, SearchCatalogRequest, SearchColumnsRequest,
+    catalog_item,
 };
+use coral_app::{EngineExtensions, EngineExtensionsProvider, QuerySource};
 use coral_client::default_workspace;
+use std::fs;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tonic::Request;
 
 use super::harness::{
     GrpcHarness, fixture_manifest_with_functions_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_filter_yaml,
 };
+
+struct CountingEngineExtensionsProvider {
+    runtime_builds: Arc<AtomicUsize>,
+}
+
+impl EngineExtensionsProvider for CountingEngineExtensionsProvider {
+    fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+        self.runtime_builds.fetch_add(1, Ordering::SeqCst);
+        EngineExtensions::default()
+    }
+}
 
 #[tokio::test]
 async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
@@ -75,6 +93,171 @@ async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
             .iter()
             .any(|field| field == "result_columns")
     );
+}
+
+#[tokio::test]
+async fn catalog_metadata_reuses_snapshot_until_source_changes() {
+    let runtime_builds = Arc::new(AtomicUsize::new(0));
+    let harness = GrpcHarness::new_with_engine_extensions_provider(Arc::new(
+        CountingEngineExtensionsProvider {
+            runtime_builds: runtime_builds.clone(),
+        },
+    ))
+    .await;
+    harness
+        .import_source(
+            fixture_manifest_with_functions_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    call_cached_metadata_endpoints(&harness).await;
+    assert_eq!(runtime_builds.load(Ordering::SeqCst), 1);
+
+    harness
+        .import_source(
+            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    let refreshed = list_catalog_page(&harness, "", 0, "list refreshed catalog").await;
+
+    assert_eq!(runtime_builds.load(Ordering::SeqCst), 2);
+    assert_catalog_has_source(&refreshed, "local_messages");
+
+    edit_local_messages_manifest(&harness);
+    let edited = list_catalog_page(&harness, "local_messages", 1, "list edited catalog").await;
+
+    assert_eq!(runtime_builds.load(Ordering::SeqCst), 3);
+    assert_edited_events_description(&edited);
+
+    delete_source(&harness, "local_messages").await;
+    let after_delete = list_catalog_page(&harness, "", 0, "list catalog after delete").await;
+
+    assert_eq!(runtime_builds.load(Ordering::SeqCst), 4);
+    assert_catalog_missing_source(&after_delete, "local_messages");
+}
+
+async fn call_cached_metadata_endpoints(harness: &GrpcHarness) {
+    harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: String::new(),
+            kind: 0,
+            pagination: None,
+        }))
+        .await
+        .expect("list catalog");
+    harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "Issue".to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 0,
+            pagination: None,
+        }))
+        .await
+        .expect("search catalog");
+    harness
+        .catalog_client()
+        .describe_table(Request::new(DescribeTableRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "searchy".to_string(),
+            table_name: "placeholder".to_string(),
+        }))
+        .await
+        .expect("describe table");
+    harness
+        .catalog_client()
+        .list_columns(Request::new(ListColumnsRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "searchy".to_string(),
+            table_name: "placeholder".to_string(),
+            pattern: None,
+            ignore_case: true,
+            required_only: false,
+            pagination: None,
+        }))
+        .await
+        .expect("list columns");
+}
+
+async fn list_catalog_page(
+    harness: &GrpcHarness,
+    schema_name: &str,
+    kind: i32,
+    context: &str,
+) -> ListCatalogResponse {
+    harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: schema_name.to_string(),
+            kind,
+            pagination: Some(PaginationRequest {
+                limit: 50,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect(context)
+        .into_inner()
+}
+
+fn edit_local_messages_manifest(harness: &GrpcHarness) {
+    let manifest_path = harness
+        .config_dir()
+        .join("workspaces/default/sources/local_messages/manifest.yaml");
+    let edited_manifest = fs::read_to_string(&manifest_path)
+        .expect("read imported manifest")
+        .replace("Fixture events", "Edited fixture events");
+    fs::write(&manifest_path, edited_manifest).expect("edit imported manifest");
+}
+
+fn assert_catalog_has_source(response: &ListCatalogResponse, schema_name: &str) {
+    assert!(
+        response
+            .sources
+            .iter()
+            .any(|source| source.schema_name == schema_name)
+    );
+}
+
+fn assert_catalog_missing_source(response: &ListCatalogResponse, schema_name: &str) {
+    assert!(
+        response
+            .sources
+            .iter()
+            .all(|source| source.schema_name != schema_name)
+    );
+}
+
+fn assert_edited_events_description(response: &ListCatalogResponse) {
+    let events = response
+        .items
+        .iter()
+        .find_map(|item| match item.item.as_ref().expect("catalog item") {
+            catalog_item::Item::Table(table) if table.name == "events" => Some(table),
+            catalog_item::Item::Table(_) | catalog_item::Item::TableFunction(_) => None,
+        })
+        .expect("events table");
+    assert_eq!(events.description, "Edited fixture events");
+}
+
+async fn delete_source(harness: &GrpcHarness, name: &str) {
+    harness
+        .source_client()
+        .delete_source(Request::new(DeleteSourceRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+        }))
+        .await
+        .expect("delete source");
 }
 
 #[tokio::test]

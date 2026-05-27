@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bootstrap::AppError;
+use crate::catalog::cache::CatalogMetadataCache;
 use crate::credentials::oauth::{
     OAuthCredentialManager, OAuthCredentialMaterial, StartOAuthCredentialRequest,
     material_key_belongs_to_input,
@@ -29,6 +30,7 @@ pub(crate) struct SourceManager {
     credential_manager: CredentialManager,
     oauth_manager: OAuthCredentialManager,
     layout: AppStateLayout,
+    catalog_cache: CatalogMetadataCache,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -145,16 +147,32 @@ struct SourceRollbackState {
 }
 
 impl SourceManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
+    ) -> Self {
+        Self::with_catalog_cache(
+            config_store,
+            credential_manager,
+            layout,
+            CatalogMetadataCache::default(),
+        )
+    }
+
+    pub(crate) fn with_catalog_cache(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        catalog_cache: CatalogMetadataCache,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             oauth_manager: OAuthCredentialManager::new(),
             layout,
+            catalog_cache,
         }
     }
 
@@ -468,6 +486,7 @@ impl SourceManager {
             self.restore_source_rollback_state(workspace_name, source_name, Some(previous), None);
             return Err(error);
         }
+        self.catalog_cache.invalidate_workspace(workspace_name);
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
         cleanup_empty_parent(
             &self.layout.workspaces_root(),
@@ -591,6 +610,7 @@ impl SourceManager {
             );
             return Err(error);
         }
+        self.catalog_cache.invalidate_workspace(workspace_name);
         Ok(apply_candidate_metadata(stored, request.candidate))
     }
 

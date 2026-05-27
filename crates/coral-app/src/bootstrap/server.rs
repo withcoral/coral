@@ -37,6 +37,7 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
+use crate::catalog::cache::CatalogMetadataCache;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
@@ -262,10 +263,12 @@ impl ServerBuilder {
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let catalog_cache = CatalogMetadataCache::default();
+        let source_manager = SourceManager::with_catalog_cache(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            catalog_cache.clone(),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -276,11 +279,12 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_http_body_capture_max_bytes(http_body_capture_max_bytes);
 
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::with_catalog_cache(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
+            catalog_cache,
             self.config.engine_extensions_providers,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
