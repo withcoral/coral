@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coral Onboard"
+  short_description: "Install Coral, register the MCP server, and run a first query"
+  default_prompt: "Use $coral-onboard to install Coral and connect a first source."
+
+policy:
+  allow_implicit_invocation: true
