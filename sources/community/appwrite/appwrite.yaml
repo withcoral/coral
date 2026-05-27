@@ -1,0 +1,202 @@
+name: appwrite
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  APPWRITE_ENDPOINT:
+    kind: variable
+    default: https://cloud.appwrite.io/v1
+    hint: Appwrite API endpoint — use region-specific URL if needed e.g. https://sfo.cloud.appwrite.io/v1 or https://fra.cloud.appwrite.io/v1
+  APPWRITE_PROJECT_ID:
+    kind: variable
+    hint: Your Appwrite Project ID (found in Settings → General)
+  APPWRITE_API_KEY:
+    kind: secret
+    hint: Appwrite API key with read scopes (from Settings → API Keys)
+
+base_url: "{{input.APPWRITE_ENDPOINT}}"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Appwrite-Key
+      from: template
+      template: "{{input.APPWRITE_API_KEY}}"
+    - name: X-Appwrite-Project
+      from: template
+      template: "{{input.APPWRITE_PROJECT_ID}}"
+
+test_queries:
+  - SELECT "$id", name, email FROM appwrite.users LIMIT 1
+  - SELECT "$id", name, enabled FROM appwrite.functions LIMIT 1
+
+tables:
+  - name: users
+    description: Appwrite users — registered accounts in your project. Covers identity, email verification status, phone, labels, and account activity.
+    request:
+      method: GET
+      path: /users
+    response:
+      rows_path:
+        - users
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: $id
+        type: Utf8
+      - name: $createdAt
+        type: Utf8
+      - name: $updatedAt
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: email
+        type: Utf8
+      - name: phone
+        type: Utf8
+      - name: emailVerification
+        type: Boolean
+      - name: phoneVerification
+        type: Boolean
+      - name: status
+        type: Boolean
+      - name: labels
+        type: Utf8
+      - name: accessedAt
+        type: Utf8
+
+  - name: teams
+    description: Appwrite teams — groups of users with shared access to project resources.
+    request:
+      method: GET
+      path: /teams
+    response:
+      rows_path:
+        - teams
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: $id
+        type: Utf8
+      - name: $createdAt
+        type: Utf8
+      - name: $updatedAt
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: total
+        type: Int64
+
+  - name: databases
+    description: Appwrite databases — top-level database containers in your project.
+    request:
+      method: GET
+      path: /databases
+    response:
+      rows_path:
+        - databases
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: $id
+        type: Utf8
+      - name: $createdAt
+        type: Utf8
+      - name: $updatedAt
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: enabled
+        type: Boolean
+
+  - name: functions
+    description: Appwrite functions — serverless functions deployed in your project. Covers runtime, deployment status, schedule, and execution configuration.
+    request:
+      method: GET
+      path: /functions
+    response:
+      rows_path:
+        - functions
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: $id
+        type: Utf8
+      - name: $createdAt
+        type: Utf8
+      - name: $updatedAt
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: enabled
+        type: Boolean
+      - name: runtime
+        type: Utf8
+      - name: deployment
+        type: Utf8
+      - name: schedule
+        type: Utf8
+      - name: scheduleNext
+        type: Utf8
+      - name: schedulePrevious
+        type: Utf8
+      - name: timeout
+        type: Int64
+      - name: entrypoint
+        type: Utf8
+      - name: commands
+        type: Utf8
+
+  - name: buckets
+    description: Appwrite storage buckets — file storage containers with permission and size configuration.
+    request:
+      method: GET
+      path: /storage/buckets
+    response:
+      rows_path:
+        - buckets
+    pagination:
+      mode: offset
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      offset_param: offset
+    columns:
+      - name: $id
+        type: Utf8
+      - name: $createdAt
+        type: Utf8
+      - name: $updatedAt
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: enabled
+        type: Boolean
+      - name: maximumFileSize
+        type: Int64
+      - name: encryption
+        type: Boolean
+      - name: antivirus
+        type: Boolean
