@@ -11,13 +11,22 @@ It does not create, update, or delete ServiceNow records.
 ## Authentication
 
 Use a least-privilege ServiceNow integration user with read access to the
-tables you want Coral to inspect.
+tables you want Coral to inspect. This manifest currently supports ServiceNow
+Basic authentication only. If your instance requires OAuth or another auth
+scheme, use a separate source variant rather than pasting bearer tokens into
+the password input.
 
 | Input | Kind | Description |
 |---|---|---|
 | `SERVICENOW_INSTANCE_URL` | variable | ServiceNow instance URL, without a trailing slash. |
 | `SERVICENOW_USERNAME` | variable | ServiceNow username for Basic auth. |
-| `SERVICENOW_PASSWORD` | secret | ServiceNow password or API credential. |
+| `SERVICENOW_PASSWORD` | secret | ServiceNow password for the Basic auth integration user. |
+
+Provider references:
+
+- [ServiceNow REST API overview](https://www.servicenow.com/docs/r/api-reference/rest-api-explorer/c_RESTAPI.html)
+- [ServiceNow Table API](https://www.servicenow.com/docs/r/api-reference/rest-apis/c_TableAPI.html)
+- [ServiceNow inbound REST API rate limiting](https://www.servicenow.com/docs/r/api-reference/rest-api-explorer/inbound-REST-API-rate-limiting.html)
 
 ## Setup
 
@@ -63,8 +72,10 @@ Configuration items by class:
 ```sql
 SELECT sys_class_name, COUNT(*) AS ci_count
 FROM servicenow.cmdb_ci
+WHERE query = 'install_status=1'
 GROUP BY sys_class_name
-ORDER BY ci_count DESC;
+ORDER BY ci_count DESC
+LIMIT 25;
 ```
 
 Active users:
@@ -81,10 +92,25 @@ LIMIT 25;
 - ServiceNow table access is governed by the integration user's ACLs.
 - The `query` filter maps to ServiceNow encoded query syntax through
   `sysparm_query`.
+- Use encoded `query` filters plus SQL `LIMIT` for production instances. Each
+  table has a conservative default fetch limit, but explicit filters are still
+  the best way to avoid broad Table API scans.
+- Requests send `sysparm_no_count=true` so ServiceNow does not do extra count
+  work that Coral does not need for paginated reads.
+- The source uses the versioned Table API v2 path so empty result sets return
+  a `200` response with an empty result array.
+- Raw ID/value columns stay stable across queries. Display values are exposed
+  in separate `*_display` columns where useful.
 - This source requests explicit `sysparm_fields` field lists instead of raw
   table payloads.
 - Timestamps are exposed as strings because ServiceNow Table API date formats
   can vary by instance settings.
+
+Useful ServiceNow docs:
+
+- [Encoded query strings](https://www.servicenow.com/docs/r/api-reference/rest-apis/c_TableAPI.html)
+- [ACL and REST authentication behavior](https://www.servicenow.com/docs/r/api-reference/rest-api-explorer/c_RESTAPI.html)
+- [Inbound REST rate limiting](https://www.servicenow.com/docs/r/api-reference/rest-api-explorer/inbound-REST-API-rate-limiting.html)
 
 ## Validation
 
@@ -123,9 +149,16 @@ Query tests
 Representative query:
 
 ```sql
-SELECT sys_id, user_name, name, active
-FROM servicenow.users
-LIMIT 3;
+SELECT number, state, state_display, assignment_group, assignment_group_display
+FROM servicenow.incidents
+LIMIT 2;
+```
+
+Example output:
+
+```text
+number     | state | state_display | assignment_group                 | assignment_group_display
+INC0000060 | 7     | Closed        | 287ebd7da9fe198100f92cc8d1d2154e | Network
 ```
 
 The manifest includes `test_queries`, and no credentials or customer data are
