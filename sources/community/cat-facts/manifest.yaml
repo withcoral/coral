@@ -1,0 +1,69 @@
+name: cat_facts
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch random cat facts and list paginated facts from CatFact.ninja.
+base_url: https://catfact.ninja
+test_queries:
+  - SELECT fact, length FROM cat_facts.random_fact LIMIT 1
+  - SELECT fact, length FROM cat_facts.facts LIMIT 10
+tables:
+  - name: random_fact
+    description: Get a single random cat fact.
+    request:
+      method: GET
+      path: /fact
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: fact
+        type: Utf8
+        nullable: false
+        description: The cat fact.
+        expr:
+          kind: path
+          path:
+            - fact
+      - name: length
+        type: Int64
+        nullable: false
+        description: The character length of the fact.
+        expr:
+          kind: path
+          path:
+            - length
+
+  - name: facts
+    description: List paginated cat facts.
+    request:
+      method: GET
+      path: /facts
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 10
+        max: 100
+        query_param: limit
+    columns:
+      - name: fact
+        type: Utf8
+        nullable: false
+        description: The cat fact.
+        expr:
+          kind: path
+          path:
+            - fact
+      - name: length
+        type: Int64
+        nullable: false
+        description: The character length of the fact.
+        expr:
+          kind: path
+          path:
+            - length
