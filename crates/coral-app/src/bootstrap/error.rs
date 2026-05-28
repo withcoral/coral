@@ -140,41 +140,45 @@ impl AppError {
                 detail: error.to_string(),
                 hint: Some("Retry the command. If it keeps failing, restart the terminal session and try again.".to_string()),
             },
-            AppError::Credentials(error) => match error {
-                CredentialsError::Parse(detail) => ErrorDiagnostic {
-                    reason: CORAL_ERROR_REASON_INVALID_SECRETS_FILE,
-                    summary: "Coral could not read saved source credentials".to_string(),
-                    detail: detail.clone(),
-                    hint: Some("Refresh the saved credentials for the affected source.".to_string()),
-                },
-                CredentialsError::Io(error) => ErrorDiagnostic {
-                    reason: CORAL_ERROR_REASON_SECRETS_FILE_ERROR,
-                    summary: "Coral could not read or write saved source credentials".to_string(),
-                    detail: error.to_string(),
-                    hint: Some("Check permissions on the Coral config directory, or use a writable config directory.".to_string()),
-                },
-                CredentialsError::Unavailable(detail) => ErrorDiagnostic {
-                    reason: "SECRETS_STORE_UNAVAILABLE",
-                    summary: "Coral could not access saved source credentials".to_string(),
-                    detail: detail.clone(),
-                    hint: Some("Unlock or configure the system credential store, then retry.".to_string()),
-                },
-                CredentialsError::SnapshotStorageMismatch {
-                    snapshot,
-                    requested,
-                } => ErrorDiagnostic {
-                    reason: "SECRETS_STORAGE_MISMATCH",
-                    summary: "Saved source credentials use a different storage backend".to_string(),
-                    detail: format!(
-                        "The credential snapshot is stored in `{snapshot}`, but `{requested}` was requested."
-                    ),
-                    hint: Some(
-                        "Use the same credential storage backend or re-add the source credentials."
-                            .to_string(),
-                    ),
-                },
-            },
+            AppError::Credentials(error) => credentials_diagnostic(error),
         }
+    }
+}
+
+fn credentials_diagnostic(error: &CredentialsError) -> ErrorDiagnostic {
+    match error {
+        CredentialsError::Parse(detail) => ErrorDiagnostic {
+            reason: CORAL_ERROR_REASON_INVALID_SECRETS_FILE,
+            summary: "Coral could not read saved source credentials".to_string(),
+            detail: detail.clone(),
+            hint: Some("Refresh the saved credentials for the affected source.".to_string()),
+        },
+        CredentialsError::Io(error) => ErrorDiagnostic {
+            reason: CORAL_ERROR_REASON_SECRETS_FILE_ERROR,
+            summary: "Coral could not read or write saved source credentials".to_string(),
+            detail: error.to_string(),
+            hint: Some("Check permissions on the Coral config directory, or use a writable config directory.".to_string()),
+        },
+        CredentialsError::Unavailable(detail) => ErrorDiagnostic {
+            reason: "SECRETS_STORE_UNAVAILABLE",
+            summary: "Coral could not access saved source credentials".to_string(),
+            detail: detail.clone(),
+            hint: Some("Unlock or configure the system credential store, then retry.".to_string()),
+        },
+        CredentialsError::SnapshotStorageMismatch {
+            snapshot,
+            requested,
+        } => ErrorDiagnostic {
+            reason: "SECRETS_STORAGE_MISMATCH",
+            summary: "Saved source credentials use a different storage backend".to_string(),
+            detail: format!(
+                "The credential snapshot is stored in `{snapshot}`, but `{requested}` was requested."
+            ),
+            hint: Some(
+                "Use the same credential storage backend or re-add the source credentials."
+                    .to_string(),
+            ),
+        },
     }
 }
 

@@ -563,6 +563,7 @@ pub(crate) fn collect_inputs_from_env(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn shell_quote_arg(value: &str) -> String {
     if value
         .chars()

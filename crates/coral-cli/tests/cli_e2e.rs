@@ -1018,7 +1018,7 @@ async fn source_remove_normalizes_error_for_unknown_source() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        stderr.contains("source 'unknown_source' was not found"),
+        stderr.contains("Error: Source `unknown_source` is not installed"),
         "expected normalized not-found error in stderr: {stderr}"
     );
     assert!(
