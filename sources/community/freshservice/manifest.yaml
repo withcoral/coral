@@ -1,0 +1,474 @@
+name: freshservice
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Freshservice tickets, agents, requesters, departments, assets, and
+  locations.
+base_url: "{{input.FRESHSERVICE_DOMAIN}}/api/v2"
+
+inputs:
+  FRESHSERVICE_DOMAIN:
+    kind: variable
+    hint: |
+      Freshservice account URL without a trailing slash, for example
+      `https://example.freshservice.com`.
+  FRESHSERVICE_API_KEY:
+    kind: secret
+    hint: |
+      Freshservice API key. The key is sent with HTTP Basic auth as the
+      username and a placeholder password.
+
+auth:
+  type: BasicAuth
+  username: "{{input.FRESHSERVICE_API_KEY}}"
+  password: X
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, subject, status FROM freshservice.tickets LIMIT 1
+  - SELECT id, email FROM freshservice.requesters LIMIT 1
+
+tables:
+  - name: tickets
+    description: Freshservice tickets visible to the API key.
+    guide: |
+      Ticket inventory can be large. Use SQL LIMIT and provider filters such as
+      `updated_since`, `requester_id`, or `email` to narrow production queries.
+      This table intentionally does not expose ticket conversations.
+    filters:
+      - name: updated_since
+      - name: requester_id
+      - name: email
+      - name: workspace_id
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /tickets
+      query:
+        - name: updated_since
+          from: filter
+          key: updated_since
+        - name: requester_id
+          from: filter
+          key: requester_id
+        - name: email
+          from: filter
+          key: email
+        - name: workspace_id
+          from: filter
+          key: workspace_id
+    response:
+      rows_path: [tickets]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Freshservice ticket ID.
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Ticket subject.
+      - name: description_text
+        type: Utf8
+        nullable: true
+        description: Plain-text ticket description.
+      - name: status
+        type: Int64
+        nullable: true
+        description: Ticket status code.
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Ticket priority code.
+      - name: source
+        type: Int64
+        nullable: true
+        description: Ticket source code.
+      - name: requester_id
+        type: Int64
+        nullable: true
+        description: Requester user ID.
+      - name: responder_id
+        type: Int64
+        nullable: true
+        description: Assigned agent ID.
+      - name: group_id
+        type: Int64
+        nullable: true
+        description: Assigned group ID.
+      - name: department_id
+        type: Int64
+        nullable: true
+        description: Department ID.
+      - name: workspace_id
+        type: Int64
+        nullable: true
+        description: Freshservice workspace ID when returned.
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Ticket category.
+      - name: sub_category
+        type: Utf8
+        nullable: true
+        description: Ticket subcategory.
+      - name: item_category
+        type: Utf8
+        nullable: true
+        description: Ticket item category.
+      - name: tags
+        type: Json
+        nullable: true
+        description: Ticket tags.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Ticket creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Ticket update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+      - name: due_by
+        type: Timestamp
+        nullable: true
+        description: Ticket due time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [due_by]}
+
+  - name: agents
+    description: Freshservice agents.
+    guide: |
+      Lists agents visible to the API key. Use this table to map responder IDs
+      on tickets to people.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /agents
+    response:
+      rows_path: [agents]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Agent ID.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Agent email.
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Agent first name.
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Agent last name.
+      - name: job_title
+        type: Utf8
+        nullable: true
+        description: Agent job title.
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the agent is active.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Agent creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Agent update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: requesters
+    description: Freshservice requesters.
+    guide: |
+      Lists requesters visible to the API key. Use SQL LIMIT when scanning
+      larger service desks.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /requesters
+    response:
+      rows_path: [requesters]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Requester ID.
+      - name: primary_email
+        type: Utf8
+        nullable: true
+        description: Requester primary email.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Requester email when returned.
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Requester first name.
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Requester last name.
+      - name: job_title
+        type: Utf8
+        nullable: true
+        description: Requester job title.
+      - name: department_id
+        type: Int64
+        nullable: true
+        description: Department ID.
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the requester is active.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Requester creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Requester update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: departments
+    description: Freshservice departments.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /departments
+    response:
+      rows_path: [departments]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Department ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Department name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Department description.
+      - name: head_user_id
+        type: Int64
+        nullable: true
+        description: Department head user ID.
+      - name: prime_user_id
+        type: Int64
+        nullable: true
+        description: Prime user ID.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Department creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Department update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: assets
+    description: Freshservice assets visible to the API key.
+    guide: |
+      Asset inventories can be large. This table uses a conservative default
+      fetch limit and exposes metadata only, not sensitive custom fields.
+    filters:
+      - name: updated_since
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /assets
+      query:
+        - name: updated_since
+          from: filter
+          key: updated_since
+    response:
+      rows_path: [assets]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Asset ID.
+      - name: display_id
+        type: Int64
+        nullable: true
+        description: Human-readable asset display ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Asset name.
+      - name: asset_type_id
+        type: Int64
+        nullable: true
+        description: Asset type ID.
+      - name: user_id
+        type: Int64
+        nullable: true
+        description: Assigned user ID.
+      - name: department_id
+        type: Int64
+        nullable: true
+        description: Department ID.
+      - name: location_id
+        type: Int64
+        nullable: true
+        description: Location ID.
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: Asset impact.
+      - name: usage_type
+        type: Utf8
+        nullable: true
+        description: Asset usage type.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Asset creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Asset update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: locations
+    description: Freshservice locations.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /locations
+    response:
+      rows_path: [locations]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Location ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Location name.
+      - name: parent_location_id
+        type: Int64
+        nullable: true
+        description: Parent location ID.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Location creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Location update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
