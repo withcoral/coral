@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 1;
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v1";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v2";
 pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v1";
 
 #[derive(Debug, Clone)]
@@ -1353,16 +1353,15 @@ fn classify_response_schema(
         .unwrap_or("object")
         == "object"
     {
-        if let Some(items) = schema
+        if let Some((property_name, items)) = schema
             .get("properties")
             .and_then(Value::as_object)
-            .and_then(|properties| properties.get("items"))
-            && items.get("type").and_then(Value::as_str) == Some("array")
+            .and_then(wrapped_list_property)
         {
             let item = items.get("items").cloned().unwrap_or(Value::Null);
             return (
                 OutputCardinality::WrappedList,
-                vec!["items".to_string()],
+                vec![property_name.to_string()],
                 item.clone(),
                 item.get("$ref")
                     .and_then(Value::as_str)
@@ -1381,6 +1380,17 @@ fn classify_response_schema(
         );
     }
     (OutputCardinality::Unknown, Vec::new(), schema.clone(), None)
+}
+
+fn wrapped_list_property(properties: &Map<String, Value>) -> Option<(&str, &Value)> {
+    ["items", "data", "results", "rows"]
+        .iter()
+        .find_map(|name| {
+            properties
+                .get(*name)
+                .filter(|property| property.get("type").and_then(Value::as_str) == Some("array"))
+                .map(|property| (*name, property))
+        })
 }
 
 fn required_fields(schema: &Value) -> BTreeSet<String> {
@@ -2007,6 +2017,73 @@ surfaces:
         assert!(published.contains(&"issues"), "{published:?}");
         assert!(published.contains(&"search_issues"), "{published:?}");
         assert!(published.contains(&"get_issue"), "{published:?}");
+    }
+
+    #[test]
+    fn importer_recognizes_common_wrapped_list_response_fields() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: statusgator
+version: 1.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.example.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /boards/{board_id}/incidents:
+    get:
+      operationId: listIncidents
+      parameters:
+        - {name: board_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: {type: boolean}
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Incident'}
+                  pagination:
+                    type: object
+components:
+  schemas:
+    Incident:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+"
+            .as_bytes(),
+        )
+        .expect("import");
+        let operation = ir.operations.first().expect("operation");
+        assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+        assert_eq!(operation.output.row_path, vec!["data".to_string()]);
+
+        let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+        let projection = catalog
+            .projections
+            .iter()
+            .find(|projection| projection.operation_id == "listincidents")
+            .expect("projection");
+        assert_eq!(projection.name, "incidents");
+        assert!(matches!(projection.kind, ProjectionKind::Table));
     }
 
     #[test]

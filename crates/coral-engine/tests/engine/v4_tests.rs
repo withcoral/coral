@@ -62,7 +62,7 @@ surfaces:
             source_version: "2.0.0".to_string(),
             manifest_sha256: "unused".to_string(),
             surfaces: Vec::new(),
-            importer_version: "openapi-v1".to_string(),
+            importer_version: "openapi-v2".to_string(),
             projection_generator_version: "derive-read-v1".to_string(),
         },
         surfaces: vec![MaterializedSurface {
