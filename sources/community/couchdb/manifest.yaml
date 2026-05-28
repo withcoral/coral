@@ -1,0 +1,415 @@
+name: couchdb
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query CouchDB server, database inventory, task, scheduler, and replication
+  metadata through the CouchDB HTTP API.
+base_url: "{{input.COUCHDB_BASE_URL}}"
+
+inputs:
+  COUCHDB_BASE_URL:
+    kind: variable
+    default: http://localhost:5984
+    hint: CouchDB base URL without a trailing slash.
+  COUCHDB_USERNAME:
+    kind: variable
+    default: admin
+    hint: CouchDB username.
+  COUCHDB_PASSWORD:
+    kind: secret
+    hint: CouchDB password.
+
+auth:
+  type: BasicAuth
+  username: "{{input.COUCHDB_USERNAME}}"
+  password: "{{input.COUCHDB_PASSWORD}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT couchdb, version FROM couchdb.server LIMIT 1
+  - SELECT db_name, doc_count FROM couchdb.database_infos LIMIT 1
+  - SELECT id, database, state FROM couchdb.scheduler_jobs LIMIT 1
+
+tables:
+  - name: server
+    description: CouchDB server welcome and version metadata.
+    request:
+      method: GET
+      path: /
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: couchdb
+        type: Utf8
+        nullable: true
+        description: CouchDB welcome string.
+      - name: version
+        type: Utf8
+        nullable: true
+        description: CouchDB version.
+      - name: vendor__name
+        type: Utf8
+        nullable: true
+        description: Vendor name.
+        expr: {kind: path, path: [vendor, name]}
+      - name: features_json
+        type: Json
+        nullable: true
+        description: CouchDB feature flags.
+        expr: {kind: path, path: [features]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw server metadata object.
+        expr: {kind: path, path: []}
+
+  - name: active_tasks
+    description: Active server tasks such as compaction, indexing, and replication.
+    request:
+      method: GET
+      path: /_active_tasks
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Task ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Task type.
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Database associated with the task.
+      - name: pid
+        type: Utf8
+        nullable: true
+        description: Process ID.
+      - name: progress
+        type: Int64
+        nullable: true
+        description: Progress percentage.
+      - name: total_changes
+        type: Int64
+        nullable: true
+        description: Total changes for the task.
+      - name: changes_done
+        type: Int64
+        nullable: true
+        description: Changes completed by the task.
+      - name: started_on
+        type: Timestamp
+        nullable: true
+        description: Task start time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [started_on]}
+      - name: updated_on
+        type: Timestamp
+        nullable: true
+        description: Task update time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [updated_on]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw active task object.
+        expr: {kind: path, path: []}
+
+  - name: database_infos
+    description: Metadata for all CouchDB databases.
+    guide: |
+      Uses `/_dbs_info` to inventory databases and storage sizes.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /_dbs_info
+    response:
+      rows_path: []
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Database key.
+      - name: db_name
+        type: Utf8
+        nullable: true
+        description: Database name.
+        expr: {kind: path, path: [info, db_name]}
+      - name: doc_count
+        type: Int64
+        nullable: true
+        description: Number of documents.
+        expr: {kind: path, path: [info, doc_count]}
+      - name: doc_del_count
+        type: Int64
+        nullable: true
+        description: Number of deleted documents.
+        expr: {kind: path, path: [info, doc_del_count]}
+      - name: update_seq
+        type: Utf8
+        nullable: true
+        description: Update sequence token.
+        expr: {kind: path, path: [info, update_seq]}
+      - name: sizes__active
+        type: Int64
+        nullable: true
+        description: Active data size in bytes.
+        expr: {kind: path, path: [info, sizes, active]}
+      - name: sizes__external
+        type: Int64
+        nullable: true
+        description: External data size in bytes.
+        expr: {kind: path, path: [info, sizes, external]}
+      - name: sizes__file
+        type: Int64
+        nullable: true
+        description: File size in bytes.
+        expr: {kind: path, path: [info, sizes, file]}
+      - name: compact_running
+        type: Boolean
+        nullable: true
+        description: Whether compaction is running.
+        expr: {kind: path, path: [info, compact_running]}
+      - name: cluster_json
+        type: Json
+        nullable: true
+        description: Cluster shard settings.
+        expr: {kind: path, path: [info, cluster]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw database info object.
+        expr: {kind: path, path: []}
+
+  - name: database_info
+    description: Metadata for a CouchDB database.
+    guide: |
+      Requires `db`, for example `WHERE db = 'users'`.
+    filters:
+      - name: db
+        required: true
+    request:
+      method: GET
+      path: /{{filter.db}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: db
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Database name supplied as a filter.
+        expr:
+          kind: from_filter
+          key: db
+      - name: db_name
+        type: Utf8
+        nullable: true
+        description: Database name.
+      - name: doc_count
+        type: Int64
+        nullable: true
+        description: Number of documents.
+      - name: doc_del_count
+        type: Int64
+        nullable: true
+        description: Number of deleted documents.
+      - name: update_seq
+        type: Utf8
+        nullable: true
+        description: Update sequence token.
+      - name: sizes__active
+        type: Int64
+        nullable: true
+        description: Active data size in bytes.
+        expr: {kind: path, path: [sizes, active]}
+      - name: sizes__external
+        type: Int64
+        nullable: true
+        description: External data size in bytes.
+        expr: {kind: path, path: [sizes, external]}
+      - name: sizes__file
+        type: Int64
+        nullable: true
+        description: File size in bytes.
+        expr: {kind: path, path: [sizes, file]}
+      - name: compact_running
+        type: Boolean
+        nullable: true
+        description: Whether compaction is running.
+      - name: cluster_json
+        type: Json
+        nullable: true
+        description: Cluster shard settings.
+        expr: {kind: path, path: [cluster]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw database metadata object.
+        expr: {kind: path, path: []}
+
+  - name: scheduler_jobs
+    description: Replication scheduler jobs.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /_scheduler/jobs
+    response:
+      rows_path: [jobs]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Job ID.
+      - name: doc_id
+        type: Utf8
+        nullable: true
+        description: Replication document ID.
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Source database.
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Scheduler state.
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Cluster node where the job is running.
+      - name: pid
+        type: Utf8
+        nullable: true
+        description: Replication process ID.
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Replication source.
+      - name: target
+        type: Utf8
+        nullable: true
+        description: Replication target.
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: When the replication job started.
+      - name: user
+        type: Utf8
+        nullable: true
+        description: Replication user.
+      - name: info_json
+        type: Json
+        nullable: true
+        description: Scheduler job info payload.
+        expr: {kind: path, path: [info]}
+      - name: history_json
+        type: Json
+        nullable: true
+        description: Recent scheduler job history.
+        expr: {kind: path, path: [history]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw scheduler job object.
+        expr: {kind: path, path: []}
+
+  - name: scheduler_docs
+    description: Replication scheduler document states.
+    guide: |
+      Uses `/_scheduler/docs` to inspect document-backed replications, including
+      completed and failed states.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /_scheduler/docs
+    response:
+      rows_path: [docs]
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Replication ID, when available.
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Replicator database.
+      - name: doc_id
+        type: Utf8
+        nullable: true
+        description: Replication document ID.
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Replication state.
+      - name: error_count
+        type: Int64
+        nullable: true
+        description: Consecutive scheduler errors.
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Cluster node handling the replication.
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Replication source.
+      - name: target
+        type: Utf8
+        nullable: true
+        description: Replication target.
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: When the replication started.
+      - name: last_updated
+        type: Timestamp
+        nullable: true
+        description: Last scheduler state update.
+      - name: info_json
+        type: Json
+        nullable: true
+        description: Scheduler document info payload.
+        expr: {kind: path, path: [info]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw scheduler document object.
+        expr: {kind: path, path: []}

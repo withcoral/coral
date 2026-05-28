@@ -1,0 +1,73 @@
+# CouchDB Coral source
+
+Query CouchDB server, database inventory, task, and replication scheduler
+metadata with Coral. This source intentionally stays read-only and
+observability-focused.
+
+## Setup
+
+```bash
+COUCHDB_BASE_URL=http://localhost:5984 \
+COUCHDB_USERNAME=admin \
+COUCHDB_PASSWORD=... \
+coral source add --file sources/community/couchdb/manifest.yaml
+```
+
+Run validation:
+
+```bash
+coral source test couchdb
+```
+
+## Tables
+
+| Table | Description |
+| --- | --- |
+| `couchdb.server` | Server version and vendor metadata. |
+| `couchdb.active_tasks` | Active compaction, indexing, and replication tasks. |
+| `couchdb.database_infos` | Paginated metadata for all databases. |
+| `couchdb.database_info` | Database metadata for a required `db`. |
+| `couchdb.scheduler_jobs` | Active replication scheduler jobs. |
+| `couchdb.scheduler_docs` | Replication document states, including completed and failed states. |
+
+## Example queries
+
+```sql
+SELECT id, type, database, progress, started_on
+FROM couchdb.active_tasks
+ORDER BY started_on DESC;
+```
+
+```sql
+SELECT db_name, doc_count, sizes__active, sizes__external, compact_running
+FROM couchdb.database_infos
+ORDER BY sizes__file DESC
+LIMIT 20;
+```
+
+```sql
+SELECT db_name, doc_count, sizes__active, sizes__external
+FROM couchdb.database_info
+WHERE db = 'users';
+```
+
+```sql
+SELECT id, database, doc_id, state, error_count, last_updated
+FROM couchdb.scheduler_docs
+WHERE state IN ('error', 'failed', 'crashing')
+ORDER BY last_updated DESC
+LIMIT 50;
+```
+
+## Notes
+
+- This source does not expose arbitrary document scans in v1.
+- `couchdb.database_infos` uses the documented `GET /_dbs_info` endpoint added
+  in CouchDB 3.2. For older servers, use `couchdb.database_info` with a
+  database filter.
+- Use database-scoped filters for metadata that would otherwise require a
+  path parameter.
+
+## API references
+
+- https://docs.couchdb.org/en/stable/api/index.html
