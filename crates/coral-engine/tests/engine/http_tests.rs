@@ -1256,8 +1256,8 @@ async fn auth_headers_sent_correctly() {
         "type": "HeaderAuth",
         "headers": [{
             "name": "Authorization",
-            "from": "template",
-            "template": "Bearer {{input.API_TOKEN}}"
+            "from": "bearer",
+            "key": "API_TOKEN"
         }]
     });
     let source = build_source_with_secrets(manifest, [("API_TOKEN", "secret-token")]);
@@ -1267,6 +1267,48 @@ async fn auth_headers_sent_correctly() {
             &[source],
             test_runtime(),
             "SELECT COUNT(*) AS n FROM http_auth.users",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 3})]);
+}
+
+#[tokio::test]
+async fn auth_header_one_of_uses_bearer_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("authorization", "Bearer oauth-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_auth_fallback", &server.uri());
+    manifest["inputs"] = json!({
+        "API_KEY": { "kind": "secret", "required": false },
+        "OAUTH_TOKEN": { "kind": "secret", "required": false }
+    });
+    manifest["auth"] = json!({
+        "type": "HeaderAuth",
+        "headers": [{
+            "name": "Authorization",
+            "from": "one_of",
+            "values": [
+                { "from": "input", "key": "API_KEY" },
+                { "from": "bearer", "key": "OAUTH_TOKEN" }
+            ]
+        }]
+    });
+    let source = build_source_with_secrets(manifest, [("OAUTH_TOKEN", "oauth-token")]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT COUNT(*) AS n FROM http_auth_fallback.users",
         )
         .await
         .expect("query should succeed"),

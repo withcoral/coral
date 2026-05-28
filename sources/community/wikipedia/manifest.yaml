@@ -1,0 +1,487 @@
+name: wikipedia
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Wikipedia articles via the public MediaWiki and REST APIs. Search
+  articles by keyword, look up page summaries by title, and discover random
+  articles. No authentication required.
+base_url: https://en.wikipedia.org
+request_headers:
+  - name: Api-User-Agent
+    from: literal
+    value: "Coral Wikipedia source (https://github.com/withcoral/coral)"
+test_queries:
+  - SELECT title, snippet FROM wikipedia.search WHERE query = 'Rust' LIMIT 1
+  - SELECT title, description, extract FROM wikipedia.page WHERE title = 'Rust' LIMIT 1
+  - SELECT title, description, extract FROM wikipedia.random LIMIT 1
+tables:
+  - name: search
+    description: |
+      Search Wikipedia articles by keyword using the MediaWiki search API.
+      Filter by `query` (required). Use SQL `LIMIT` to control result count.
+    fetch_limit_default: 50
+    filters:
+      - name: query
+        required: true
+    request:
+      method: GET
+      path: /w/api.php
+      query:
+        - name: action
+          from: literal
+          value: query
+        - name: list
+          from: literal
+          value: search
+        - name: srsearch
+          from: filter
+          key: query
+        - name: format
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - query
+        - search
+    pagination:
+      mode: offset
+      offset_param: sroffset
+      page_size:
+        default: 10
+        max: 50
+        query_param: srlimit
+    columns:
+      - name: ns
+        type: Int64
+        nullable: true
+        description: MediaWiki namespace ID (0 = articles).
+        expr:
+          kind: path
+          path:
+            - ns
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Article title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: pageid
+        type: Int64
+        nullable: false
+        description: Unique Wikipedia page ID.
+        expr:
+          kind: path
+          path:
+            - pageid
+      - name: size
+        type: Int64
+        nullable: true
+        description: Page size in bytes.
+        expr:
+          kind: path
+          path:
+            - size
+      - name: wordcount
+        type: Int64
+        nullable: true
+        description: Approximate word count.
+        expr:
+          kind: path
+          path:
+            - wordcount
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: HTML snippet matching the query.
+        expr:
+          kind: path
+          path:
+            - snippet
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Last edit timestamp.
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the search query used.
+        expr:
+          kind: from_filter
+          key: query
+
+  - name: page
+    description: |
+      Fetch a single article summary by exact title via the Wikipedia REST API.
+      Filter by `title` (required). Returns one row per query.
+    filters:
+      - name: title
+        required: true
+    request:
+      method: GET
+      path: /api/rest_v1/page/summary/{{filter.title}}
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Page type (standard, disambiguation, no-extract).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Article title (may be deprecated; prefer titles_normalized).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: displaytitle
+        type: Utf8
+        nullable: true
+        description: Formatted display title (may be deprecated; prefer titles_display).
+        expr:
+          kind: path
+          path:
+            - displaytitle
+      - name: titles_canonical
+        type: Utf8
+        nullable: true
+        description: Canonical title with underscores (e.g. Rust_(programming_language)).
+        expr:
+          kind: path
+          path:
+            - titles
+            - canonical
+      - name: titles_normalized
+        type: Utf8
+        nullable: true
+        description: Normalized title with spaces (e.g. Rust (programming language)).
+        expr:
+          kind: path
+          path:
+            - titles
+            - normalized
+      - name: titles_display
+        type: Utf8
+        nullable: true
+        description: Formatted display title, may include HTML (e.g. italics).
+        expr:
+          kind: path
+          path:
+            - titles
+            - display
+      - name: pageid
+        type: Int64
+        nullable: true
+        description: Wikipedia page ID.
+        expr:
+          kind: path
+          path:
+            - pageid
+      - name: lang
+        type: Utf8
+        nullable: true
+        description: Language code (e.g. en).
+        expr:
+          kind: path
+          path:
+            - lang
+      - name: dir
+        type: Utf8
+        nullable: true
+        description: Text direction (ltr or rtl).
+        expr:
+          kind: path
+          path:
+            - dir
+      - name: revision
+        type: Utf8
+        nullable: true
+        description: Current revision ID.
+        expr:
+          kind: path
+          path:
+            - revision
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Last modified timestamp.
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Short topic description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: extract
+        type: Utf8
+        nullable: true
+        description: Plain-text summary.
+        expr:
+          kind: path
+          path:
+            - extract
+      - name: extract_html
+        type: Utf8
+        nullable: true
+        description: HTML summary.
+        expr:
+          kind: path
+          path:
+            - extract_html
+      - name: thumbnail_source
+        type: Utf8
+        nullable: true
+        description: Thumbnail image URL.
+        expr:
+          kind: path
+          path:
+            - thumbnail
+            - source
+      - name: thumbnail_width
+        type: Int64
+        nullable: true
+        description: Thumbnail width in pixels.
+        expr:
+          kind: path
+          path:
+            - thumbnail
+            - width
+      - name: thumbnail_height
+        type: Int64
+        nullable: true
+        description: Thumbnail height in pixels.
+        expr:
+          kind: path
+          path:
+            - thumbnail
+            - height
+      - name: content_url
+        type: Utf8
+        nullable: true
+        description: Desktop article URL.
+        expr:
+          kind: path
+          path:
+            - content_urls
+            - desktop
+            - page
+      - name: mobile_url
+        type: Utf8
+        nullable: true
+        description: Mobile article URL.
+        expr:
+          kind: path
+          path:
+            - content_urls
+            - mobile
+            - page
+      - name: wikibase_item
+        type: Utf8
+        nullable: true
+        description: Wikidata item ID (e.g. Q12345).
+        expr:
+          kind: path
+          path:
+            - wikibase_item
+
+  - name: random
+    description: |
+      Fetch a random article summary via the Wikipedia REST API.
+      Returns exactly one row per query — the endpoint does not support
+      fetching multiple random articles in a single request.
+    request:
+      method: GET
+      path: /api/rest_v1/page/random/summary
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Page type (standard, disambiguation, no-extract).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Article title (may be deprecated; prefer titles_normalized).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: displaytitle
+        type: Utf8
+        nullable: true
+        description: Formatted display title (may be deprecated; prefer titles_display).
+        expr:
+          kind: path
+          path:
+            - displaytitle
+      - name: titles_canonical
+        type: Utf8
+        nullable: true
+        description: Canonical title with underscores.
+        expr:
+          kind: path
+          path:
+            - titles
+            - canonical
+      - name: titles_normalized
+        type: Utf8
+        nullable: true
+        description: Normalized title with spaces.
+        expr:
+          kind: path
+          path:
+            - titles
+            - normalized
+      - name: titles_display
+        type: Utf8
+        nullable: true
+        description: Formatted display title, may include HTML.
+        expr:
+          kind: path
+          path:
+            - titles
+            - display
+      - name: pageid
+        type: Int64
+        nullable: true
+        description: Wikipedia page ID.
+        expr:
+          kind: path
+          path:
+            - pageid
+      - name: lang
+        type: Utf8
+        nullable: true
+        description: Language code (e.g. en).
+        expr:
+          kind: path
+          path:
+            - lang
+      - name: dir
+        type: Utf8
+        nullable: true
+        description: Text direction (ltr or rtl).
+        expr:
+          kind: path
+          path:
+            - dir
+      - name: revision
+        type: Utf8
+        nullable: true
+        description: Current revision ID.
+        expr:
+          kind: path
+          path:
+            - revision
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Last modified timestamp.
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Short topic description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: extract
+        type: Utf8
+        nullable: true
+        description: Plain-text summary.
+        expr:
+          kind: path
+          path:
+            - extract
+      - name: extract_html
+        type: Utf8
+        nullable: true
+        description: HTML summary.
+        expr:
+          kind: path
+          path:
+            - extract_html
+      - name: thumbnail_source
+        type: Utf8
+        nullable: true
+        description: Thumbnail image URL.
+        expr:
+          kind: path
+          path:
+            - thumbnail
+            - source
+      - name: thumbnail_width
+        type: Int64
+        nullable: true
+        description: Thumbnail width in pixels.
+        expr:
+          kind: path
+          path:
+            - thumbnail
+            - width
+      - name: thumbnail_height
+        type: Int64
+        nullable: true
+        description: Thumbnail height in pixels.
+        expr:
+          kind: path
+          path:
+            - thumbnail
+            - height
+      - name: content_url
+        type: Utf8
+        nullable: true
+        description: Desktop article URL.
+        expr:
+          kind: path
+          path:
+            - content_urls
+            - desktop
+            - page
+      - name: mobile_url
+        type: Utf8
+        nullable: true
+        description: Mobile article URL.
+        expr:
+          kind: path
+          path:
+            - content_urls
+            - mobile
+            - page
+      - name: wikibase_item
+        type: Utf8
+        nullable: true
+        description: Wikidata item ID (e.g. Q12345).
+        expr:
+          kind: path
+          path:
+            - wikibase_item

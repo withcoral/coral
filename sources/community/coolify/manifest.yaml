@@ -1,0 +1,385 @@
+name: coolify
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Coolify projects, environments, servers, applications, and active
+  deployments via the Coolify REST API (self-hosted or Coolify Cloud).
+base_url: "{{input.COOLIFY_BASE_URL}}/api/v1"
+
+inputs:
+  COOLIFY_BASE_URL:
+    kind: variable
+    hint: |
+      Coolify instance base root URL with NO trailing slash and no /api suffix,
+      for example `https://coolify.example.com` or `http://localhost:8000`.
+  COOLIFY_API_TOKEN:
+    kind: secret
+    hint: |
+      Bearer API token from Coolify Keys & Tokens → API tokens. The token
+      must have read access to the resources you query.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.COOLIFY_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT uuid, name FROM coolify.projects LIMIT 1
+
+tables:
+  - name: projects
+    description: Coolify projects (top-level grouping for environments and resources).
+    request:
+      method: GET
+      path: /projects
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Internal project ID.
+        expr: {kind: path, path: [id]}
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Project UUID.
+        expr: {kind: path, path: [uuid]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+        expr: {kind: path, path: [description]}
+
+  - name: environments
+    description: Environments within a specific Coolify project.
+    filters:
+      - name: project_uuid
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_uuid}}/environments
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: project_uuid
+        type: Utf8
+        nullable: false
+        description: Project UUID from the required project_uuid filter.
+        expr: {kind: from_filter, key: project_uuid}
+      - name: id
+        type: Int64
+        nullable: true
+        description: Internal environment ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Environment name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Environment description.
+        expr: {kind: path, path: [description]}
+      - name: project_id
+        type: Int64
+        nullable: true
+        description: Internal project ID on the environment record.
+        expr: {kind: path, path: [project_id]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Environment creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: servers
+    description: Registered Coolify servers (deployment targets).
+    request:
+      method: GET
+      path: /servers
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Internal server ID.
+        expr: {kind: path, path: [id]}
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Server UUID.
+        expr: {kind: path, path: [uuid]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Server name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Server description.
+        expr: {kind: path, path: [description]}
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: Server IP address or hostname.
+        expr: {kind: path, path: [ip]}
+      - name: user
+        type: Utf8
+        nullable: true
+        description: SSH user for the server.
+        expr: {kind: path, path: [user]}
+      - name: port
+        type: Int64
+        nullable: true
+        description: SSH port.
+        expr: {kind: path, path: [port]}
+      - name: proxy_type
+        type: Utf8
+        nullable: true
+        description: Reverse proxy type (traefik, caddy, none).
+        expr: {kind: path, path: [proxy_type]}
+      - name: unreachable_count
+        type: Int64
+        nullable: true
+        description: Count of consecutive unreachable checks.
+        expr: {kind: path, path: [unreachable_count]}
+
+  - name: applications
+    description: Deployed applications across all projects and environments.
+    filters:
+      - name: tag
+        required: false
+    request:
+      method: GET
+      path: /applications
+      query:
+        - name: tag
+          from: filter
+          key: tag
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: tag
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Tag filter value when `WHERE tag = '...'` is used.
+        expr: {kind: from_filter, key: tag}
+      - name: id
+        type: Int64
+        nullable: true
+        description: Internal application ID.
+        expr: {kind: path, path: [id]}
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Application UUID.
+        expr: {kind: path, path: [uuid]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Application name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Application description.
+        expr: {kind: path, path: [description]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Application runtime status.
+        expr: {kind: path, path: [status]}
+      - name: fqdn
+        type: Utf8
+        nullable: true
+        description: Application domains (FQDN).
+        expr: {kind: path, path: [fqdn]}
+      - name: git_repository
+        type: Utf8
+        nullable: true
+        description: Git repository URL.
+        expr: {kind: path, path: [git_repository]}
+      - name: git_branch
+        type: Utf8
+        nullable: true
+        description: Git branch.
+        expr: {kind: path, path: [git_branch]}
+      - name: git_commit_sha
+        type: Utf8
+        nullable: true
+        description: Deployed Git commit SHA.
+        expr: {kind: path, path: [git_commit_sha]}
+      - name: build_pack
+        type: Utf8
+        nullable: true
+        description: Build pack (nixpacks, static, dockerfile, dockercompose).
+        expr: {kind: path, path: [build_pack]}
+      - name: environment_id
+        type: Int64
+        nullable: true
+        description: Internal environment ID.
+        expr: {kind: path, path: [environment_id]}
+      - name: destination_id
+        type: Int64
+        nullable: true
+        description: Internal destination (server) ID.
+        expr: {kind: path, path: [destination_id]}
+      - name: health_check_enabled
+        type: Boolean
+        nullable: true
+        description: Whether HTTP health checks are enabled.
+        expr: {kind: path, path: [health_check_enabled]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Application creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: deployments
+    description: Currently running deployments across the Coolify instance.
+    request:
+      method: GET
+      path: /deployments
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Internal deployment queue ID.
+        expr: {kind: path, path: [id]}
+      - name: deployment_uuid
+        type: Utf8
+        nullable: true
+        description: Deployment UUID.
+        expr: {kind: path, path: [deployment_uuid]}
+      - name: application_id
+        type: Utf8
+        nullable: true
+        description: Application identifier on the deployment record.
+        expr: {kind: path, path: [application_id]}
+      - name: application_name
+        type: Utf8
+        nullable: true
+        description: Application name.
+        expr: {kind: path, path: [application_name]}
+      - name: server_id
+        type: Int64
+        nullable: true
+        description: Internal server ID.
+        expr: {kind: path, path: [server_id]}
+      - name: server_name
+        type: Utf8
+        nullable: true
+        description: Target server name.
+        expr: {kind: path, path: [server_name]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Deployment status (in-progress, finished, failed, etc.).
+        expr: {kind: path, path: [status]}
+      - name: commit
+        type: Utf8
+        nullable: true
+        description: Git commit SHA being deployed.
+        expr: {kind: path, path: [commit]}
+      - name: commit_message
+        type: Utf8
+        nullable: true
+        description: Git commit message.
+        expr: {kind: path, path: [commit_message]}
+      - name: deployment_url
+        type: Utf8
+        nullable: true
+        description: URL to view the deployment in Coolify.
+        expr: {kind: path, path: [deployment_url]}
+      - name: force_rebuild
+        type: Boolean
+        nullable: true
+        description: Whether the deployment forced a rebuild without cache.
+        expr: {kind: path, path: [force_rebuild]}
+      - name: is_webhook
+        type: Boolean
+        nullable: true
+        description: Whether the deployment was triggered by a webhook.
+        expr: {kind: path, path: [is_webhook]}
+      - name: is_api
+        type: Boolean
+        nullable: true
+        description: Whether the deployment was triggered via API.
+        expr: {kind: path, path: [is_api]}
+      - name: rollback
+        type: Boolean
+        nullable: true
+        description: Whether this deployment is a rollback.
+        expr: {kind: path, path: [rollback]}
+      - name: git_type
+        type: Utf8
+        nullable: true
+        description: Git provider type.
+        expr: {kind: path, path: [git_type]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Deployment start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last deployment status update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
