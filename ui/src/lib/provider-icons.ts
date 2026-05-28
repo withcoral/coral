@@ -41,12 +41,10 @@ const PROVIDER_ICONS: Record<string, string> = {
   statuspage: '/images/providers/statuspage.svg',
 
   // Incident / paging
-  incident_io: '/images/providers/incident_io.png',
   pagerduty: '/images/providers/pagerduty.png',
 
   // Code hosts
   github: '/images/providers/github.svg',
-  gitlab: '/images/providers/gitlab.svg',
 
   // Databases & data
   clickhouse: '/images/providers/Clickhouse.png',
@@ -56,15 +54,12 @@ const PROVIDER_ICONS: Record<string, string> = {
 
   // LLM providers
   anthropic: '/images/providers/anthropic.svg',
-  claude: '/images/providers/anthropic.svg',
-  codex: '/images/providers/openai.svg',
   openai: '/images/providers/openai.svg',
   xai: '/images/providers/xai.svg',
 
   // Project / product
   launchdarkly: '/images/providers/launchdarkly.svg',
   linear: '/images/providers/linear.svg',
-  posthog: '/images/providers/posthog.png',
   slack: '/images/providers/slack.png',
 }
 
