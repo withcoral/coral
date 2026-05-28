@@ -1,0 +1,96 @@
+name: defillama
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  DeFi protocol TVL, market cap, and change metrics from DeFiLlama.
+  No authentication required.
+base_url: https://api.llama.fi
+test_queries:
+  - SELECT name, slug, tvl FROM defillama.protocols ORDER BY tvl DESC LIMIT 1
+  - SELECT slug, change_7d FROM defillama.protocols WHERE change_7d < -10 LIMIT 5
+tables:
+  - name: protocols
+    description: >-
+      All DeFi protocols tracked by DeFiLlama with TVL, market cap,
+      and price change metrics over 1d, 7d, and 30d windows.
+    request:
+      method: GET
+      path: /protocols
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        description: Protocol display name.
+      - name: slug
+        type: Utf8
+        description: Protocol slug identifier used for cross-referencing.
+      - name: category
+        type: Utf8
+        description: DeFi category (e.g. Liquid Staking, Lending, DEX).
+      - name: chains
+        type: Json
+        description: Array of chain names the protocol operates on.
+      - name: tvl
+        type: Float64
+        description: Total value locked in USD.
+      - name: change_1d
+        type: Float64
+        description: TVL percentage change over the last 1 day.
+      - name: change_7d
+        type: Float64
+        description: TVL percentage change over the last 7 days.
+      - name: change_1m
+        type: Float64
+        description: TVL percentage change over the last 30 days.
+      - name: mcap
+        type: Float64
+        description: Fully diluted market capitalization in USD.
+      - name: fdv
+        type: Float64
+        description: Fully diluted valuation in USD.
+      - name: staking
+        type: Float64
+        description: Total staked value in USD.
+  - name: protocol_tvl
+    description: >-
+      Historical TVL for a specific protocol by slug.
+      Returns a single row with current TVL and chain breakdown.
+    filters:
+      - name: slug
+        required: true
+        description: Protocol slug (e.g. 'aave', 'uniswap', 'lido').
+    request:
+      method: GET
+      path: /protocol/{{filter.slug}}
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        description: Protocol display name.
+      - name: slug
+        type: Utf8
+        description: Protocol slug identifier.
+      - name: tvl
+        type: Float64
+        description: Current total value locked in USD.
+      - name: chain_tvls
+        type: Json
+        description: TVL breakdown by chain as a JSON object.
+      - name: change_1d
+        type: Float64
+        description: TVL percentage change over the last 1 day.
+      - name: change_7d
+        type: Float64
+        description: TVL percentage change over the last 7 days.
+      - name: change_1m
+        type: Float64
+        description: TVL percentage change over the last 30 days.
