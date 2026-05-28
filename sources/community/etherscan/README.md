@@ -44,6 +44,7 @@ ERC-20 token transfer events for a wallet address on a given EVM chain.
 |--------|------|----------|-------------|
 | `chainid` | Int64 | Yes | EVM chain ID (1 = Ethereum, 8453 = Base, 10 = Optimism, 42161 = Arbitrum) |
 | `address` | Utf8 | Yes | Wallet address to query transfers for |
+| `contractaddress` | Utf8 | No | Token contract address to filter by (e.g. USDC: `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`) |
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -106,7 +107,7 @@ ORDER BY usdc_received DESC;
 ### Etherscan V2 API behavior
 
 - **Error responses are HTTP 200** — Etherscan signals errors as `{"status":"0","message":"NOTOK","result":"..."}` inside a successful HTTP response. Coral handles this via `ok_path`/`error_path`.
-- **Rate limits** — Free tier: 5 calls/sec. Use conservative page sizes and cache aggressively.
+- **Rate limits** — Free tier: 3 calls/sec, Lite tier: 5 calls/sec. Use conservative page sizes and cache aggressively.
 - **Chain support** — Free API key supports Ethereum mainnet (chainid=1). Base (8453), Optimism (10), and Arbitrum (42161) may require a paid plan.
 - **Pagination** — Uses offset-based pagination (page/offset params). Default page size is 50, max 100.
 
