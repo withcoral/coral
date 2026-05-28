@@ -36,15 +36,21 @@ test_queries:
 
 tables:
   - name: collections
-    description: List of team spaces, permissioned categories, and root wiki notebooks.
+    description: Collections organizing document clusters.
     request:
       method: POST
       path: /collections.list
+      body:
+        from: literal
+        value: "{}"
     response:
       row_strategy: direct
-      rows_path: [data, collections]
+      rows_path: [data]
     pagination:
-      mode: none
+      mode: offset
+      offset_key: offset
+      limit_key: limit
+      limit: 100
     columns:
       - name: id
         type: Utf8
@@ -54,99 +60,136 @@ tables:
       - name: name
         type: Utf8
         nullable: false
-        description: Display name of the collection channel.
+        description: Display name of the collection.
         expr: {kind: path, path: [name]}
       - name: description
         type: Utf8
         nullable: true
-        description: Short purpose summary attached to the collection space.
+        description: Short description of the collection space.
         expr: {kind: path, path: [description]}
       - name: permission
         type: Utf8
         nullable: true
-        description: Default workspace sharing access model roles (e.g., read, write).
+        description: Default workspace sharing access model role.
         expr: {kind: path, path: [permission]}
       - name: created_at
-        type: Utf8
+        type: Timestamp
         nullable: true
-        description: ISO timestamp showing when the repository section was initialized.
-        expr: {kind: path, path: [createdAt]}
+        description: Timestamp detailing when the collection was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
 
   - name: documents
-    description: Individual markdown-formatted wiki articles and knowledge resources.
+    description: Wiki articles and documents tracked across workspaces.
     request:
       method: POST
       path: /documents.list
+      body:
+        from: literal
+        value: "{}"
     response:
       row_strategy: direct
-      rows_path: [data, documents]
+      rows_path: [data]
     pagination:
-      mode: none
+      mode: offset
+      offset_key: offset
+      limit_key: limit
+      limit: 100
     columns:
       - name: id
         type: Utf8
         nullable: false
-        description: Unique programmatic ID of the document asset.
+        description: Unique identifier of the document.
         expr: {kind: path, path: [id]}
       - name: collection_id
         type: Utf8
         nullable: false
-        description: Parent collection container location where the asset resides.
+        description: Parent collection identifier.
         expr: {kind: path, path: [collectionId]}
       - name: title
         type: Utf8
         nullable: false
-        description: Display header title of the document.
+        description: Title of the document.
         expr: {kind: path, path: [title]}
-      - name: status
-        type: Utf8
-        nullable: true
-        description: Publishing state of the article entry (e.g., draft, published).
-        expr: {kind: path, path: [status]}
       - name: revision
         type: Int64
         nullable: true
         description: Document revision number.
         expr: {kind: path, path: [revision]}
       - name: updated_at
-        type: Utf8
+        type: Timestamp
         nullable: true
-        description: ISO timestamp tracking the latest text modification sweep.
-        expr: {kind: path, path: [updatedAt]}
+        description: Timestamp tracking the latest text modification.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updatedAt]}
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the document was initially published.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [publishedAt]}
+      - name: archived_at
+        type: Timestamp
+        nullable: true
+        description: "Timestamp when the document was archived."
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [archivedAt]}
+      - name: deleted_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the document was soft-deleted.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [deletedAt]}
 
   - name: users
-    description: Directory mapping team member profiles, access permissions, and identity maps.
+    description: User account profiles managed inside the Outline workspace.
     request:
       method: POST
       path: /users.list
+      body:
+        from: literal
+        value: "{}"
     response:
       row_strategy: direct
-      rows_path: [data, users]
+      rows_path: [data]
     pagination:
-      mode: none
+      mode: offset
+      offset_key: offset
+      limit_key: limit
+      limit: 100
     columns:
       - name: id
         type: Utf8
         nullable: false
-        description: Globally unique internal user identifier token.
+        description: Unique identifier of the user account.
         expr: {kind: path, path: [id]}
       - name: name
         type: Utf8
         nullable: false
-        description: Real name of the individual.
+        description: Display name of the user.
         expr: {kind: path, path: [name]}
       - name: email
         type: Utf8
         nullable: true
-        description: Primary email address linked to the team profile metadata.
+        description: Primary email address of the user.
         expr: {kind: path, path: [email]}
       - name: role
         type: Utf8
         nullable: true
-        description: Administrative role tier allocated inside the server workspace (e.g., admin, member).
+        description: Administrative role tier allocated inside the workspace.
         expr: {kind: path, path: [role]}
       - name: is_suspended
-        type: Bool
+        type: Boolean
         nullable: true
         description: Indicates whether the user account is suspended.
         expr: {kind: path, path: [isSuspended]}

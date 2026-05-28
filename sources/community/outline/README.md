@@ -1,29 +1,27 @@
 # Outline (Community)
 
 **Version:** 0.1.0
-**Backend:** HTTP (Outline RPC-style API Interface)
+**Backend:** HTTP (Outline API)
 **Tables:** 3
 **Base URL:** `{{input.OUTLINE_URL}}/api`
 
-Query collaborative workspace metadata, document lifecycle states, and user access roles directly through Coral SQL using the Outline API.
+Query Outline collections, documents, and user directories directly through Coral SQL.
 
-This integration is intended for knowledge-management auditing, operational visibility, and workspace governance workflows.
+This source provides visibility into workspace organization, document lifecycle metadata, and user access information for operational auditing and knowledge-base inventory use cases.
 
-Coral exposes read-only access patterns. Document mutations, collection management, publishing operations, and workspace administration actions are out of scope.
+Coral exposes read-only access to Outline resources. Creating, updating, publishing, archiving, or deleting content is out of scope.
 
 ---
 
-# Install
+## Install
 
 Community sources are not bundled with the Coral binary.
-
-From the Coral repository root:
 
 ```bash
 coral source add --file sources/community/outline/manifest.yaml
 ```
 
-Or copy `manifest.yaml` into your workspace and pass that path to:
+Or copy `manifest.yaml` into your workspace and reference it directly:
 
 ```bash
 coral source add --file <path-to-manifest>
@@ -31,75 +29,71 @@ coral source add --file <path-to-manifest>
 
 ---
 
-# Inputs
+## Inputs
 
-| Input | Kind | Required | Description |
-|---|---|---|---|
-| `OUTLINE_URL` | variable | yes | Outline instance base URL with protocol but without trailing slash, for example `https://app.getoutline.com` |
-| `OUTLINE_API_TOKEN` | secret | yes | Long-lived personal API token or bot token generated in Outline user settings |
-
----
-
-# Tables Overview
-
-| Table | API Endpoint | Required Filters | Pagination |
-|---|---|---|---|
-| `collections` | `POST /collections.list` | — | None (fetches collection array directly) |
-| `documents` | `POST /documents.list` | — | None (fetches document array directly) |
-| `users` | `POST /users.list` | — | None (fetches user array directly) |
+| Input               | Kind     | Required | Description                                                                               |
+| ------------------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
+| `OUTLINE_URL`       | variable | yes      | Outline instance URL without a trailing slash (for example, `https://app.getoutline.com`) |
+| `OUTLINE_API_TOKEN` | secret   | yes      | Personal API token or bot token generated within Outline                                  |
 
 ---
 
-# Table Reference
+## Tables Overview
 
-## outline.collections
-
-List of permissioned collections and workspace catalog groupings.
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | Utf8 | Unique collection identifier |
-| `name` | Utf8 | Collection display name |
-| `description` | Utf8 | Collection summary description |
-| `permission` | Utf8 | Default workspace permission model |
-| `created_at` | Utf8 | Collection creation timestamp |
+| Table         | Endpoint                 | Pagination   |
+| ------------- | ------------------------ | ------------ |
+| `collections` | `POST /collections.list` | Offset-based |
+| `documents`   | `POST /documents.list`   | Offset-based |
+| `users`       | `POST /users.list`       | Offset-based |
 
 ---
 
-## outline.documents
+## Table Reference
 
-Wiki articles and knowledge-base documentation resources.
+### outline.collections
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | Utf8 | Unique document identifier |
-| `collection_id` | Utf8 | Parent collection identifier |
-| `title` | Utf8 | Document title |
-| `status` | Utf8 | Publishing state (`draft`, `published`, etc.) |
-| `revision` | Int64 | Document revision number |
-| `updated_at` | Utf8 | Timestamp of the most recent document update |
+Collections used to organize documents within a workspace.
+
+| Column        | Type      | Description                   |
+| ------------- | --------- | ----------------------------- |
+| `id`          | Utf8      | Collection identifier         |
+| `name`        | Utf8      | Collection name               |
+| `description` | Utf8      | Collection description        |
+| `permission`  | Utf8      | Collection permission model   |
+| `created_at`  | Timestamp | Collection creation timestamp |
+
+### outline.documents
+
+Documents and knowledge-base content stored within Outline.
+
+| Column          | Type      | Description                  |
+| --------------- | --------- | ---------------------------- |
+| `id`            | Utf8      | Document identifier          |
+| `collection_id` | Utf8      | Parent collection identifier |
+| `title`         | Utf8      | Document title               |
+| `revision`      | Int64     | Revision number              |
+| `updated_at`    | Timestamp | Last modification timestamp  |
+| `published_at`  | Timestamp | Publication timestamp        |
+| `archived_at`   | Timestamp | Archive timestamp            |
+| `deleted_at`    | Timestamp | Soft-deletion timestamp      |
+
+### outline.users
+
+Workspace users visible to the authenticated API token.
+
+| Column         | Type    | Description                           |
+| -------------- | ------- | ------------------------------------- |
+| `id`           | Utf8    | User identifier                       |
+| `name`         | Utf8    | Display name                          |
+| `email`        | Utf8    | Email address                         |
+| `role`         | Utf8    | Workspace role                        |
+| `is_suspended` | Boolean | Whether the user account is suspended |
 
 ---
 
-## outline.users
+## Example Queries
 
-Workspace membership directory and access metadata.
-
-> Visibility of user records depends on the permissions associated with the provided API token.
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | Utf8 | Unique internal user identifier |
-| `name` | Utf8 | User display name |
-| `email` | Utf8 | Primary email address |
-| `role` | Utf8 | Workspace role assigned to the user |
-| `is_suspended` | Bool | Indicates whether the user account is suspended |
-
----
-
-# Example Queries
-
-## Audit Stale Workspace Drafts
+### Find Unpublished Documents
 
 ```sql
 SELECT
@@ -107,13 +101,12 @@ SELECT
   collection_id,
   updated_at
 FROM outline.documents
-WHERE status = 'draft'
+WHERE published_at IS NULL
+  AND archived_at IS NULL
 ORDER BY updated_at ASC;
 ```
 
----
-
-## Track Suspended User Accounts
+### Audit Suspended Users
 
 ```sql
 SELECT
@@ -127,67 +120,45 @@ ORDER BY name ASC;
 
 ---
 
-# Validation
-
-Run formatting and schema validation locally before opening a pull request.
-
-## Lint Sources
-
-```bash
-make lint-sources
-```
-
-## Validate Coral Source Schema
-
-```bash
-coral source lint sources/community/outline/manifest.yaml
-```
-
-## Execute Live Connection Test
-
-```bash
-export OUTLINE_URL=https://app.getoutline.com
-export OUTLINE_API_TOKEN=your_secret_api_token_here
-
-coral source add --file sources/community/outline/manifest.yaml
-coral source test outline
-```
-
----
-
-# Representative Live Output
+### Representative Live Output
 
 ```text
 $ coral source test outline
 
-✓ outline connected successfully
+  ✓ outline connected successfully
 
-  outline (3 tables)
-  ├─ collections
-  ├─ documents
-  └─ users
+    outline (3 tables)
+    ├─ collections
+    ├─ documents
+    └─ users
 
-  Query tests
-  1 declared · 1 passed · 0 failed
+    Query tests
+    1 declared · 1 passed · 0 failed
 
-✓ SELECT name FROM outline.collections LIMIT 1
+  ✓ SELECT name FROM outline.collections LIMIT 1
+    1 row
+```
 
-+-------------------+
-| name              |
-+-------------------+
-| Engineering Wiki  |
-+-------------------+
+### Representative Query Output
 
-1 row
+```text
+$ coral sql --query "SELECT title, published_at FROM outline.documents WHERE archived_at IS NULL LIMIT 2"
+
++------------------------------------+----------------------+
+| title                              | published_at         |
++------------------------------------+----------------------+
+| Runbooks: Kubernetes Cluster Loss  | 2026-04-12T08:14:22Z |
+| Incident Lifecycle Management      | 2026-05-30T14:22:05Z |
++------------------------------------+----------------------+
 ```
 
 ---
 
-# Limitations
+## Limitations
 
-- Read-only retrieval scope
-- Does not support document mutations, collection administration, or publishing operations
-- Returned data visibility depends entirely on the permissions associated with the provided `OUTLINE_API_TOKEN`
-- The Outline API exposes list operations through RPC-style POST endpoints rather than traditional REST collection GET endpoints
-- Query filtering is evaluated by Coral SQL after upstream API retrieval
-```
+* Read-only source
+* Workspace mutations are not supported
+* Collection administration operations are not supported
+* Returned data depends on the permissions granted to `OUTLINE_API_TOKEN`
+* Outline list operations use RPC-style POST endpoints
+* Pagination is implemented using provider-side `offset` and `limit` parameters
