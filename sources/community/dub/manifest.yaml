@@ -1,0 +1,609 @@
+name: dub
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query links, domains, tags, and workspace metadata from Dub.co.
+  Covers link analytics (clicks, leads, sales), custom domains,
+  tag management, and workspace configuration.
+base_url: https://api.dub.co
+
+inputs:
+  DUB_API_KEY:
+    kind: secret
+    hint: |
+      Your Dub.co API key. Generate a server-side secret API key from:
+      Workspace Settings → API Keys → Create API Key.
+      Ensure the key has restricted permissions with at least:
+      - links.read
+      - domains.read
+      - tags.read
+      Keys start with "dub_" and are scoped to a single workspace.
+      See https://dub.co/docs/api-reference/introduction
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.DUB_API_KEY}}
+
+test_queries:
+  - SELECT id, domain, key, url, clicks, leads, created_at FROM dub.links LIMIT 10
+  - SELECT * FROM dub.domains LIMIT 10
+  - SELECT * FROM dub.tags LIMIT 10
+
+tables:
+
+
+  # ------------------------------------------------------------------
+  # dub.links — short links with analytics
+  # GET /links
+  # Root JSON array. Page-based pagination (page + pageSize).
+  # ------------------------------------------------------------------
+  - name: links
+    description: >-
+      Short links in the workspace with click, lead, and sales analytics.
+      Optionally filter by domain, search term, tag, folder, or archived
+      status. Includes destination URL, metadata, and conversion tracking
+      fields.
+    guide: |
+      No required filters — the API key scopes results to the workspace.
+      Start with `SELECT id, domain, key, url, clicks FROM dub.links LIMIT 10`.
+      Use `WHERE domain = 'yourdomain.com'` to narrow by domain.
+      Use `WHERE show_archived = true` to include archived links.
+      The `tags` column is a JSON array of {id, name, color} objects.
+    filters:
+      - name: domain
+      - name: search
+      - name: show_archived
+      - name: tag_ids
+      - name: folder_id
+      - name: sort_by
+      - name: sort_order
+    request:
+      method: GET
+      path: /links
+      query:
+        - name: domain
+          from: filter
+          key: domain
+        - name: search
+          from: filter
+          key: search
+        - name: showArchived
+          from: filter_bool
+          key: show_archived
+        - name: tagIds
+          from: filter
+          key: tag_ids
+        - name: folderId
+          from: filter
+          key: folder_id
+        - name: sortBy
+          from: filter
+          key: sort_by
+        - name: sortOrder
+          from: filter
+          key: sort_order
+    response: {}
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    fetch_limit_default: 100
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique link identifier (prefixed with link_).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: domain
+        type: Utf8
+        nullable: false
+        description: Domain of the short link (e.g. dub.sh).
+        expr:
+          kind: path
+          path:
+            - domain
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Short link slug (the path portion after the domain).
+        expr:
+          kind: path
+          path:
+            - key
+      - name: url
+        type: Utf8
+        nullable: false
+        description: Destination URL the short link redirects to.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: short_link
+        type: Utf8
+        nullable: false
+        description: Full short link URL (e.g. https://dub.sh/abc123).
+        expr:
+          kind: path
+          path:
+            - shortLink
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: Custom identifier from your own database.
+        expr:
+          kind: path
+          path:
+            - externalId
+      - name: tenant_id
+        type: Utf8
+        nullable: true
+        description: Tenant identifier for grouping links by customer or team.
+        expr:
+          kind: path
+          path:
+            - tenantId
+      - name: folder_id
+        type: Utf8
+        nullable: true
+        description: Folder ID the link belongs to.
+        expr:
+          kind: path
+          path:
+            - folderId
+      - name: workspace_id
+        type: Utf8
+        nullable: false
+        description: Workspace ID that owns this link.
+        expr:
+          kind: path
+          path:
+            - workspaceId
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID of the link creator.
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: clicks
+        type: Int64
+        nullable: false
+        description: Total number of clicks on the short link.
+        expr:
+          kind: path
+          path:
+            - clicks
+      - name: leads
+        type: Int64
+        nullable: false
+        description: Total number of leads generated from the link.
+        expr:
+          kind: path
+          path:
+            - leads
+      - name: sales
+        type: Int64
+        nullable: false
+        description: Total number of sales generated from the link.
+        expr:
+          kind: path
+          path:
+            - sales
+      - name: sale_amount
+        type: Int64
+        nullable: false
+        description: Total monetary value of sales from the link (in cents).
+        expr:
+          kind: path
+          path:
+            - saleAmount
+      - name: conversions
+        type: Int64
+        nullable: false
+        description: Number of leads that converted to paying customers.
+        expr:
+          kind: path
+          path:
+            - conversions
+      - name: last_clicked
+        type: Timestamp
+        nullable: true
+        description: When the link was last clicked (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastClicked
+      - name: archived
+        type: Boolean
+        nullable: false
+        description: Whether the link is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: proxy
+        type: Boolean
+        nullable: false
+        description: Whether custom link previews (proxy) are enabled.
+        expr:
+          kind: path
+          path:
+            - proxy
+      - name: rewrite
+        type: Boolean
+        nullable: false
+        description: Whether link cloaking (URL rewrite) is enabled.
+        expr:
+          kind: path
+          path:
+            - rewrite
+      - name: track_conversion
+        type: Boolean
+        nullable: false
+        description: Whether conversion tracking is enabled for the link.
+        expr:
+          kind: path
+          path:
+            - trackConversion
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: When the link expires (ISO 8601), or null if no expiry.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expiresAt
+      - name: expired_url
+        type: Utf8
+        nullable: true
+        description: URL to redirect to after the link has expired.
+        expr:
+          kind: path
+          path:
+            - expiredUrl
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Custom OG title for social media previews.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Custom OG description for social media previews.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: image
+        type: Utf8
+        nullable: true
+        description: Custom OG image URL for social media previews.
+        expr:
+          kind: path
+          path:
+            - image
+      - name: video
+        type: Utf8
+        nullable: true
+        description: Custom OG video URL for social media previews.
+        expr:
+          kind: path
+          path:
+            - video
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of tag objects assigned to the link. Each object
+          has id, name, and color fields. Use SQL JSON functions to
+          inspect.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: geo
+        type: Json
+        nullable: true
+        description: >-
+          Geographic targeting configuration for the link.
+          Use SQL JSON functions to inspect.
+        expr:
+          kind: path
+          path:
+            - geo
+      - name: test_variants
+        type: Json
+        nullable: true
+        description: >-
+          A/B test variant URLs and traffic distribution configuration.
+          Use SQL JSON functions to inspect.
+        expr:
+          kind: path
+          path:
+            - testVariants
+      - name: qr_code
+        type: Utf8
+        nullable: false
+        description: URL to the generated QR code image for the link.
+        expr:
+          kind: path
+          path:
+            - qrCode
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the link was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: When the link was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: sort_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Field to sort links by (createdAt, clicks, saleAmount, lastClicked).
+        expr:
+          kind: from_filter
+          key: sort_by
+      - name: sort_order
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort direction (asc, desc).
+        expr:
+          kind: from_filter
+          key: sort_order
+
+  # ------------------------------------------------------------------
+  # dub.domains — custom domains
+  # GET /domains
+  # Root JSON array. Page-based pagination (page + pageSize).
+  # ------------------------------------------------------------------
+  - name: domains
+    description: >-
+      Custom domains registered in the workspace. Returns domain name,
+      verification status, deep link settings, and configuration.
+    guide: |
+      No required filters. Start with `SELECT * FROM dub.domains` to see
+      all domains. Use `WHERE search = 'yourdomain'` to filter by name.
+      Use `WHERE archived = true` to include archived domains.
+    filters:
+      - name: archived
+      - name: search
+    request:
+      method: GET
+      path: /domains
+      query:
+        - name: archived
+          from: filter_bool
+          key: archived
+        - name: search
+          from: filter
+          key: search
+    response: {}
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 50
+        max: 50
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Unique domain identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Domain name (e.g. example.com).
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: verified
+        type: Boolean
+        nullable: false
+        description: Whether domain ownership is verified via DNS.
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: primary
+        type: Boolean
+        nullable: false
+        description: Whether this is the default domain for new links.
+        expr:
+          kind: path
+          path:
+            - primary
+      - name: archived
+        type: Boolean
+        nullable: false
+        description: Whether the domain is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: placeholder
+        type: Utf8
+        nullable: true
+        description: Placeholder URL shown when the domain root is visited.
+        expr:
+          kind: path
+          path:
+            - placeholder
+      - name: expired_url
+        type: Utf8
+        nullable: true
+        description: URL to redirect to after a link on this domain has expired.
+        expr:
+          kind: path
+          path:
+            - expiredUrl
+      - name: not_found_url
+        type: Utf8
+        nullable: true
+        description: URL to redirect to when a link on this domain is not found.
+        expr:
+          kind: path
+          path:
+            - notFoundUrl
+      - name: logo
+        type: Utf8
+        nullable: true
+        description: URL of the domain logo image.
+        expr:
+          kind: path
+          path:
+            - logo
+      - name: asset_links
+        type: Utf8
+        nullable: true
+        description: Android App Links configuration (JSON string).
+        expr:
+          kind: path
+          path:
+            - assetLinks
+      - name: apple_app_site_association
+        type: Utf8
+        nullable: true
+        description: iOS Universal Links configuration (JSON string).
+        expr:
+          kind: path
+          path:
+            - appleAppSiteAssociation
+      - name: registered_domain
+        type: Json
+        nullable: true
+        description: >-
+          Domain registration metadata. Use SQL JSON functions to inspect.
+        expr:
+          kind: path
+          path:
+            - registeredDomain
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the domain was added (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the domain was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+
+  # ------------------------------------------------------------------
+  # dub.tags — link tags
+  # GET /tags
+  # Root JSON array. Page-based pagination (page + pageSize).
+  # ------------------------------------------------------------------
+  - name: tags
+    description: >-
+      Tags used to organize and categorize links in the workspace.
+      Each tag has a name and color. Use tag IDs to filter the links
+      table with the tag_ids filter.
+    guide: |
+      No required filters. Start with `SELECT * FROM dub.tags` to see all
+      tags. Use `WHERE search = 'marketing'` to search by name. Use the
+      `id` column as the `tag_ids` filter on the links table.
+    filters:
+      - name: search
+    request:
+      method: GET
+      path: /tags
+      query:
+        - name: search
+          from: filter
+          key: search
+    response: {}
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique tag identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Tag display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: color
+        type: Utf8
+        nullable: false
+        description: >-
+          Tag color (one of red, yellow, green, blue, purple, brown,
+          gray, pink).
+        expr:
+          kind: path
+          path:
+            - color

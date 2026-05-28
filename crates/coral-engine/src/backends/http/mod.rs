@@ -9,21 +9,31 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
-use crate::RequestAuthenticator;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
     RegisteredTable, SourceTableFunctions, build_registered_inputs, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names,
 };
+use crate::{QuerySource, RequestAuthenticator, SourceInputResolver};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
+mod fetch;
 pub(crate) mod function;
+mod pagination;
 pub(crate) mod provider;
 mod rate_limit;
+mod registration_checks;
+mod request;
+mod response;
 pub(crate) mod target;
+#[cfg(test)]
+mod test_support;
+mod trace;
+mod transport;
+mod url;
 
 pub(crate) use client::HttpSourceClient;
 pub(crate) use error::ProviderQueryError;
@@ -32,22 +42,31 @@ pub(crate) use provider::HttpSourceTableProvider;
 #[derive(Debug, Clone)]
 struct HttpCompiledSource {
     manifest: HttpSourceManifest,
+    source: QuerySource,
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    body_capture_max_bytes: Option<usize>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
 pub(crate) fn compile_source(
     manifest: HttpSourceManifest,
+    source: QuerySource,
     source_secrets: std::collections::BTreeMap<String, String>,
     source_variables: std::collections::BTreeMap<String, String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    body_capture_max_bytes: Option<usize>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
+        source,
         source_secrets,
         source_variables,
         request_authenticators,
+        body_capture_max_bytes,
+        source_input_resolver,
     })
 }
 
@@ -57,9 +76,12 @@ pub(crate) fn compile_manifest(
 ) -> Box<dyn CompiledBackendSource> {
     compile_source(
         manifest.clone(),
+        request.source.clone(),
         request.source_secrets.clone(),
         request.source_variables.clone(),
         request.request_authenticators.clone(),
+        request.runtime_context.http_body_capture_max_bytes,
+        request.source_input_resolver.clone(),
     )
 }
 
@@ -74,11 +96,14 @@ impl CompiledBackendSource for HttpCompiledSource {
     }
 
     async fn register(&self, _ctx: &SessionContext) -> Result<BackendRegistration> {
-        let backend = HttpSourceClient::from_manifest(
+        let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
             &self.manifest,
             &self.source_secrets,
             &self.source_variables,
             &self.request_authenticators,
+            self.source.clone(),
+            self.source_input_resolver.clone(),
+            self.body_capture_max_bytes,
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
@@ -180,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn required_secret_names_exclude_variable_inputs() {
+    fn required_secret_names_exclude_optional_and_variable_inputs() {
         let manifest = parse_source_manifest_value(json!({
             "dsl_version": 3,
             "name": "alpha",
@@ -188,7 +213,8 @@ mod tests {
             "backend": "http",
             "base_url": "https://api.example.com",
             "inputs": {
-                "API_BASE": { "kind": "variable", "default": "https://api.example.com" }
+                "API_BASE": { "kind": "variable", "default": "https://api.example.com" },
+                "OPTIONAL_TOKEN": { "kind": "secret", "required": false }
             },
             "tables": [{
                 "name": "items",

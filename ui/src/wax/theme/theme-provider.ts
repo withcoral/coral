@@ -22,7 +22,12 @@ export function useTheme() {
     window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEY, newValue: nextTheme }))
   }
 
-  return { setTheme, theme: resolvedTheme, themeClass: getThemeClass(resolvedTheme), themePreference }
+  return {
+    setTheme,
+    theme: resolvedTheme,
+    themeClass: getThemeClass(resolvedTheme),
+    themePreference,
+  }
 }
 
 export function useThemeClassOnBody() {

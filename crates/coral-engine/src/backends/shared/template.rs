@@ -72,6 +72,7 @@ pub(crate) fn resolve_value_source(
             let rendered = render_template(template, context)?;
             Ok(Some(Value::String(rendered)))
         }
+        ValueSourceSpec::OneOf { values } => resolve_one_of(values, context),
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
         ValueSourceSpec::Filter { key, default } => Ok(string_runtime_value(
             context,
@@ -152,11 +153,31 @@ pub(crate) fn resolve_value_source(
         ValueSourceSpec::Input { key } => {
             Ok(context.resolved_inputs.get(key).cloned().map(Value::String))
         }
+        ValueSourceSpec::Bearer { key } => Ok(context
+            .resolved_inputs
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .map(|value| Value::String(format!("Bearer {value}")))),
         ValueSourceSpec::State { key } => {
             Ok(context.state.get(key).map(|v| Value::String(v.clone())))
         }
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => Ok(Some(now_minus_seconds(*seconds))),
     }
+}
+
+fn resolve_one_of(
+    values: &[ValueSourceSpec],
+    context: &RenderContext<'_>,
+) -> Result<Option<Value>> {
+    for value in values {
+        let Some(resolved) = resolve_value_source(value, context)? else {
+            continue;
+        };
+        if !value_to_string(&resolved).is_empty() {
+            return Ok(Some(resolved));
+        }
+    }
+    Ok(None)
 }
 
 fn string_runtime_value(
@@ -373,12 +394,33 @@ pub(crate) fn validate_value_source_inputs(
         ValueSourceSpec::Template { template } => {
             validate_input_dependencies(template, resolved_inputs)
         }
+        ValueSourceSpec::OneOf { values } => {
+            let mut last_error = None;
+            for value in values {
+                match validate_value_source_inputs(value, resolved_inputs) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Err(last_error.unwrap_or_else(|| {
+                DataFusionError::Execution("`from: one_of` value source has no values".to_string())
+            }))
+        }
         ValueSourceSpec::Input { key } => {
             if resolved_inputs.contains_key(key) {
                 Ok(())
             } else {
                 Err(DataFusionError::Execution(format!(
                     "missing source input '{key}' for `from: input` value source"
+                )))
+            }
+        }
+        ValueSourceSpec::Bearer { key } => {
+            if resolved_inputs.contains_key(key) {
+                Ok(())
+            } else {
+                Err(DataFusionError::Execution(format!(
+                    "missing source input '{key}' for `from: bearer` value source"
                 )))
             }
         }
@@ -395,5 +437,336 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::ArgSplitInt { .. }
         | ValueSourceSpec::State { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use coral_spec::ValueSourceSpec;
+    use serde_json::json;
+
+    use super::{EMPTY_MAP, RenderContext, resolve_value_source, validate_value_source_inputs};
+
+    fn inputs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    fn test_render_context<'a>(
+        filters: &'a HashMap<String, String>,
+        args: &'a HashMap<String, String>,
+        resolved_inputs: &'a BTreeMap<String, String>,
+    ) -> RenderContext<'a> {
+        RenderContext::new(filters, args, &EMPTY_MAP, resolved_inputs)
+    }
+
+    #[test]
+    fn resolve_value_source_uses_provider_scoped_credentials() {
+        let resolved_inputs = BTreeMap::from([("API_KEY".to_string(), "alpha-secret".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::Input {
+                key: "API_KEY".to_string(),
+            },
+            &test_render_context(&HashMap::new(), &HashMap::new(), &resolved_inputs),
+        )
+        .expect("input lookup should succeed");
+
+        assert_eq!(value, Some(json!("alpha-secret")));
+    }
+
+    #[test]
+    fn resolve_value_source_uses_declared_store_without_fallback() {
+        let resolved_inputs = BTreeMap::new();
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::Input {
+                key: "API_KEY".to_string(),
+            },
+            &test_render_context(&HashMap::new(), &HashMap::new(), &resolved_inputs),
+        )
+        .expect("input lookup should succeed");
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_ints_as_numbers() {
+        let filters = HashMap::from([("start_time".to_string(), "1700000000000000".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterInt {
+                key: "start_time".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("integer filter should resolve");
+
+        assert_eq!(value, Some(json!(1_700_000_000_000_000_i64)));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_filter_ints() {
+        let filters = HashMap::from([("start_time".to_string(), "not-a-number".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterInt {
+                key: "start_time".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("invalid integer filter should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("filter 'start_time' value 'not-a-number' is not a valid i64")
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_splits_filter_parts() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE-496".to_string())]);
+
+        let team = resolve_value_source(
+            &ValueSourceSpec::FilterSplit {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("split filter should resolve");
+        let number = resolve_value_source(
+            &ValueSourceSpec::FilterSplitInt {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("split integer filter should resolve");
+
+        assert_eq!(team, Some(json!("SOURCE")));
+        assert_eq!(number, Some(json!(496)));
+    }
+
+    #[test]
+    fn resolve_value_source_splits_function_argument_parts() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE-496".to_string())]);
+
+        let team = resolve_value_source(
+            &ValueSourceSpec::ArgSplit {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 0,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("split function argument should resolve");
+        let number = resolve_value_source(
+            &ValueSourceSpec::ArgSplitInt {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("split integer function argument should resolve");
+
+        assert_eq!(team, Some(json!("SOURCE")));
+        assert_eq!(number, Some(json!(496)));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_filter_split_part() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterSplit {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("missing split part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_function_argument_split_part() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::ArgSplit {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect_err("missing split function argument part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "function argument 'issue' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_missing_filter_split_int_part() {
+        let filters = HashMap::from([("issue_identifier".to_string(), "SOURCE496".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterSplitInt {
+                key: "issue_identifier".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("missing split integer part should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'issue_identifier' value 'SOURCE496' does not contain split part 1"
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_function_argument_split_int_part() {
+        let args = HashMap::from([("issue".to_string(), "SOURCE-abc".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::ArgSplitInt {
+                key: "issue".to_string(),
+                separator: "-".to_string(),
+                part: 1,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect_err("invalid split function argument int should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("function argument 'issue' split part 1 value 'abc' is not a valid i64")
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_bools_as_bools() {
+        let filters = HashMap::from([("descending".to_string(), "false".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterBool {
+                key: "descending".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("bool filter should resolve");
+
+        assert_eq!(value, Some(json!(false)));
+    }
+
+    #[test]
+    fn one_of_prefers_first_present_value() {
+        let resolved_inputs = inputs(&[("API_KEY", "lin_api_key"), ("OAUTH_TOKEN", "oauth")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![
+                    ValueSourceSpec::Input {
+                        key: "API_KEY".to_string(),
+                    },
+                    ValueSourceSpec::Bearer {
+                        key: "OAUTH_TOKEN".to_string(),
+                    },
+                ],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, Some(json!("lin_api_key")));
+    }
+
+    #[test]
+    fn one_of_uses_bearer_fallback_value() {
+        let resolved_inputs = inputs(&[("OAUTH_TOKEN", "oauth")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![
+                    ValueSourceSpec::Input {
+                        key: "API_KEY".to_string(),
+                    },
+                    ValueSourceSpec::Bearer {
+                        key: "OAUTH_TOKEN".to_string(),
+                    },
+                ],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, Some(json!("Bearer oauth")));
+    }
+
+    #[test]
+    fn one_of_ignores_empty_bearer_values() {
+        let resolved_inputs = inputs(&[("OAUTH_TOKEN", "")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                }],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn one_of_input_dependency_validation_accepts_any_resolved_branch() {
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+            ],
+        };
+
+        validate_value_source_inputs(&value, &inputs(&[("API_KEY", "lin_api_key")]))
+            .expect("api key should satisfy one_of");
+        validate_value_source_inputs(&value, &inputs(&[("OAUTH_TOKEN", "oauth_access")]))
+            .expect("oauth token should satisfy one_of");
+        assert!(
+            validate_value_source_inputs(&value, &inputs(&[]))
+                .expect_err("missing both should fail")
+                .to_string()
+                .contains("missing source input 'OAUTH_TOKEN' for `from: bearer` value source")
+        );
     }
 }
