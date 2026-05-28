@@ -1,0 +1,367 @@
+name: appsignal
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query AppSignal application metadata, deploy markers, exception incidents,
+  and uptime monitors through AppSignal's GraphQL API.
+base_url: https://appsignal.com
+
+inputs:
+  APPSIGNAL_API_TOKEN:
+    kind: secret
+    hint: AppSignal personal API token.
+  APPSIGNAL_APP_ID:
+    kind: variable
+    hint: AppSignal app ID used for app-scoped GraphQL queries.
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name, environment FROM appsignal.app_overview LIMIT 1
+  - SELECT id, number, state FROM appsignal.exception_incidents LIMIT 1
+
+tables:
+  - name: app_overview
+    description: Current AppSignal application metadata for the configured app ID.
+    fetch_limit_default: 1
+    request:
+      method: POST
+      path: /graphql
+      query:
+        - name: token
+          from: input
+          key: APPSIGNAL_API_TOKEN
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query AppOverview($appId: String!) {
+              app(id: $appId) {
+                id
+                name
+                environment
+              }
+            }
+        - path: [variables, appId]
+          from: input
+          key: APPSIGNAL_APP_ID
+    response:
+      rows_path: [data, app]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: AppSignal app ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Application name.
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Application environment.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw AppSignal app object.
+        expr: {kind: path, path: []}
+
+  - name: deploy_markers
+    description: Deploy markers for the configured AppSignal app.
+    guide: |
+      Use this table to correlate incidents with recent deployments.
+    fetch_limit_default: 100
+    request:
+      method: POST
+      path: /graphql
+      query:
+        - name: token
+          from: input
+          key: APPSIGNAL_API_TOKEN
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query MarkersIndexQuery($appId: String!, $limit: Int) {
+              app(id: $appId) {
+                deployMarkers(limit: $limit) {
+                  id
+                  createdAt
+                  shortRevision
+                  revision
+                  gitCompareUrl
+                  user
+                  liveForInWords
+                  liveFor
+                  exceptionCount
+                  exceptionRate
+                }
+              }
+            }
+        - path: [variables, appId]
+          from: input
+          key: APPSIGNAL_APP_ID
+        - path: [variables, limit]
+          from: literal
+          value: 100
+    response:
+      rows_path: [data, app, deployMarkers]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Deploy marker ID.
+      - name: short_revision
+        type: Utf8
+        nullable: true
+        description: Short revision string.
+        expr: {kind: path, path: [shortRevision]}
+      - name: revision
+        type: Utf8
+        nullable: true
+        description: Full revision string.
+      - name: git_compare_url
+        type: Utf8
+        nullable: true
+        description: Git compare URL.
+        expr: {kind: path, path: [gitCompareUrl]}
+      - name: user
+        type: Utf8
+        nullable: true
+        description: Deploy user.
+      - name: live_for_in_words
+        type: Utf8
+        nullable: true
+        description: Human-readable live duration.
+        expr: {kind: path, path: [liveForInWords]}
+      - name: live_for
+        type: Float64
+        nullable: true
+        description: Live duration value.
+        expr: {kind: path, path: [liveFor]}
+      - name: exception_count
+        type: Int64
+        nullable: true
+        description: Exception count for this marker.
+        expr: {kind: path, path: [exceptionCount]}
+      - name: exception_rate
+        type: Float64
+        nullable: true
+        description: Exception rate for this marker.
+        expr: {kind: path, path: [exceptionRate]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Deploy marker creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw deploy marker object.
+        expr: {kind: path, path: []}
+
+  - name: exception_incidents
+    description: Exception incidents for the configured AppSignal app.
+    guide: |
+      Use this table to inspect current error incident state, severity, action
+      names, namespaces, and last occurrence time.
+    fetch_limit_default: 100
+    request:
+      method: POST
+      path: /graphql
+      query:
+        - name: token
+          from: input
+          key: APPSIGNAL_API_TOKEN
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query ExceptionIncidentsQuery($appId: String!, $limit: Int) {
+              app(id: $appId) {
+                exceptionIncidents(limit: $limit) {
+                  id
+                  number
+                  count
+                  lastOccurredAt
+                  actionNames
+                  exceptionName
+                  state
+                  namespace
+                  firstBacktraceLine
+                  errorGroupingStrategy
+                  severity
+                }
+              }
+            }
+        - path: [variables, appId]
+          from: input
+          key: APPSIGNAL_APP_ID
+        - path: [variables, limit]
+          from: literal
+          value: 100
+    response:
+      rows_path: [data, app, exceptionIncidents]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Incident ID.
+      - name: number
+        type: Int64
+        nullable: true
+        description: Incident number shown in AppSignal.
+      - name: count
+        type: Int64
+        nullable: true
+        description: Occurrence count.
+      - name: exception_name
+        type: Utf8
+        nullable: true
+        description: Exception name.
+        expr: {kind: path, path: [exceptionName]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Incident state.
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: AppSignal namespace.
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Incident severity.
+      - name: first_backtrace_line
+        type: Utf8
+        nullable: true
+        description: First backtrace line.
+        expr: {kind: path, path: [firstBacktraceLine]}
+      - name: error_grouping_strategy
+        type: Utf8
+        nullable: true
+        description: Error grouping strategy.
+        expr: {kind: path, path: [errorGroupingStrategy]}
+      - name: action_names_json
+        type: Json
+        nullable: true
+        description: Action names associated with the incident.
+        expr: {kind: path, path: [actionNames]}
+      - name: last_occurred_at
+        type: Timestamp
+        nullable: true
+        description: Last occurrence timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastOccurredAt]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw exception incident object.
+        expr: {kind: path, path: []}
+
+  - name: uptime_monitors
+    description: Uptime monitors and their alert state for the configured app.
+    fetch_limit_default: 100
+    request:
+      method: POST
+      path: /graphql
+      query:
+        - name: token
+          from: input
+          key: APPSIGNAL_API_TOKEN
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query UptimeMonitorsQuery($appId: String!) {
+              app(id: $appId) {
+                uptimeMonitors {
+                  id
+                  name
+                  url
+                  description
+                  warmupDuration
+                  checkBodyContent
+                  regions
+                  alerts {
+                    id
+                    state
+                    message
+                    createdAt
+                    openedAt
+                    resolvedAt
+                    closedAt
+                    lastValue
+                    peakValue
+                    mean
+                  }
+                }
+              }
+            }
+        - path: [variables, appId]
+          from: input
+          key: APPSIGNAL_APP_ID
+    response:
+      rows_path: [data, app, uptimeMonitors]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Uptime monitor ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Uptime monitor name.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Uptime monitor URL.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Uptime monitor description.
+      - name: warmup_duration
+        type: Float64
+        nullable: true
+        description: Warmup duration.
+        expr: {kind: path, path: [warmupDuration]}
+      - name: check_body_content
+        type: Utf8
+        nullable: true
+        description: Body content checked by the monitor.
+        expr: {kind: path, path: [checkBodyContent]}
+      - name: regions_json
+        type: Json
+        nullable: true
+        description: Uptime monitor regions.
+        expr: {kind: path, path: [regions]}
+      - name: alerts_json
+        type: Json
+        nullable: true
+        description: Alert objects for the uptime monitor.
+        expr: {kind: path, path: [alerts]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw uptime monitor object.
+        expr: {kind: path, path: []}
