@@ -172,11 +172,11 @@ tables:
   - name: organization_memberships
     description: WorkOS User Management organization memberships.
     guide: |
-      Requires `organization_id` from `workos.organizations`. Add `user_id`
-      when you want to narrow membership inventory to one user.
+      WorkOS requires at least one scoping filter: `organization_id` from
+      `workos.organizations` or `user_id` from `workos.users`. Unscoped
+      membership queries are rejected by the provider.
     filters:
       - name: organization_id
-        required: true
       - name: user_id
     fetch_limit_default: 100
     request:

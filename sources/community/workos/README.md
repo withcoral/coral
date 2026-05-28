@@ -34,7 +34,7 @@ Official docs:
 | --- | --- |
 | `workos.organizations` | WorkOS organizations. |
 | `workos.users` | User Management users. Supports `organization_id` and `email`. |
-| `workos.organization_memberships` | User-to-organization memberships. Requires `organization_id`; optionally supports `user_id`. |
+| `workos.organization_memberships` | User-to-organization memberships. WorkOS requires either `organization_id` or `user_id`. |
 | `workos.directories` | Directory Sync directories. |
 | `workos.events` | WorkOS environment events. Supports organization, event, time range, and order filters. |
 
@@ -67,6 +67,15 @@ WHERE organization_id = 'org_...'
 LIMIT 25;
 ```
 
+Review memberships for one user:
+
+```sql
+SELECT id, user_id, organization_id, status, role_slug
+FROM workos.organization_memberships
+WHERE user_id = 'user_...'
+LIMIT 25;
+```
+
 Review recent events:
 
 ```sql
@@ -80,6 +89,9 @@ LIMIT 25;
 ## Notes
 
 - WorkOS list endpoints are cursor paginated with `after` and `limit`.
+- WorkOS requires `organization_id` or `user_id` for membership queries; an
+  unscoped `workos.organization_memberships` query is expected to fail at the
+  provider API.
 - The source is read-only and does not create, update, or delete WorkOS
   resources.
 - Event `data` and `context` are JSON metadata columns; avoid selecting them in
