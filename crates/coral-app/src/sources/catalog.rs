@@ -21,6 +21,7 @@ pub(crate) struct BundledSourceManifest {
 pub(crate) struct InstalledSourceManifest {
     pub(crate) source_spec: ValidatedSourceManifest,
     pub(crate) candidate: CandidateSource,
+    pub(crate) manifest_yaml: String,
 }
 
 pub(crate) fn list_bundled_sources(
@@ -84,6 +85,7 @@ pub(crate) fn resolve_installed_manifest(
     Ok(InstalledSourceManifest {
         source_spec,
         candidate,
+        manifest_yaml,
     })
 }
 

@@ -135,6 +135,21 @@ coral source test github
 coral source test local_messages
 ```
 
+### `coral source refresh <NAME>`
+
+Rebuild materialized artifacts for an installed DSL v4 source without changing
+its manifest, variables, or secrets.
+
+```shellscript
+coral source refresh github
+coral source refresh github --json
+```
+
+Refresh re-fetches or re-reads the pinned surface descriptors declared by the
+manifest, verifies their SHA-256 hashes, regenerates semantic IR and SQL
+projections, and atomically replaces `materialized/v4` only after the new
+artifacts validate. It does not run provider data queries or `test_queries`.
+
 ### `coral source remove <NAME>`
 
 Remove an installed source.

@@ -1035,10 +1035,11 @@ impl<'a> OpenApiImporter<'a> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<String> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
-        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-            return Some(type_id_from_ref(reference));
-        }
-        let type_id = normalize_identifier(suggested_id, "type");
+        let type_id = schema
+            .get("$ref")
+            .and_then(Value::as_str)
+            .map(type_id_from_ref)
+            .unwrap_or_else(|| normalize_identifier(suggested_id, "type"));
         if self.types.contains_key(&type_id) {
             return Some(type_id);
         }
@@ -1640,7 +1641,7 @@ pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec
 }
 
 pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
-    projection
+    let mut columns = projection
         .columns
         .iter()
         .map(|column| ColumnSpec {
@@ -1653,7 +1654,29 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
                 path: column.source_path.clone(),
             }),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let existing = columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<HashSet<_>>();
+    columns.extend(
+        projection
+            .inputs
+            .iter()
+            .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
+            .filter(|input| !existing.contains(&input.name))
+            .map(|input| ColumnSpec {
+                name: input.name.clone(),
+                data_type: manifest_data_type_name(input.data_type).to_string(),
+                nullable: !input.required,
+                r#virtual: true,
+                description: input.description.clone(),
+                expr: Some(ExprSpec::FromFilter {
+                    key: input.name.clone(),
+                }),
+            }),
+    );
+    columns
 }
 
 pub fn manifest_data_type_name(data_type: ManifestDataType) -> &'static str {
