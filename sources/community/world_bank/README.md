@@ -33,20 +33,45 @@ ORDER BY date DESC
 LIMIT 10
 ```
 
-### Compare poverty rates — most recent value per country
+### GDP for a specific year or year range
+
+```sql
+-- Single year (server-side filter — does not over-fetch)
+SELECT country_name, date, value AS gdp_usd
+FROM world_bank.data
+WHERE country = 'all' AND indicator = 'NY.GDP.MKTP.CD' AND date = '2023'
+  AND value IS NOT NULL
+ORDER BY value DESC
+LIMIT 20
+
+-- Year range
+SELECT date, value AS gdp_usd
+FROM world_bank.data
+WHERE country = 'US' AND indicator = 'NY.GDP.MKTP.CD' AND date = '2010:2023'
+ORDER BY date DESC
+```
+
+> Use the `date` filter to push the year predicate to the API. Without it,
+> a `WHERE date = '2023'` clause in SQL applies **after** the fetch, so
+> paginated requests may silently miss rows. Supported formats: `'2024'`
+> (single year) and `'2010:2020'` (inclusive range).
+
+### Compare poverty rates — latest non-null value per country
 
 ```sql
 SELECT country_name, date, value AS poverty_rate_pct
 FROM world_bank.data
 WHERE country = 'all' AND indicator = 'SI.POV.DDAY'
-  AND mrv = '1' AND value IS NOT NULL
+  AND mrnev = '1' AND value IS NOT NULL
 ORDER BY value DESC
 LIMIT 20
 ```
 
-> **`mrv = '1'`** (Most Recent Value) returns one row per country/region with
-> its latest published value — ideal for cross-country comparisons. Without it,
-> data for all years is returned interleaved per country.
+> **`mrnev = '1'`** (Most Recent Non-Empty Value) returns one row per
+> country/region with its latest **non-null** observation — essential for
+> sparse indicators like poverty rates where recent periods often have no
+> published data. Use `mrv = '1'` instead when you want the most recent
+> period regardless of whether data is null.
 
 ### Countries by income level
 
@@ -95,7 +120,7 @@ LIMIT 20
 SELECT country_name, date, value AS renewable_pct
 FROM world_bank.data
 WHERE country = 'all' AND indicator = 'EG.FEC.RNEW.ZS'
-  AND mrv = '1' AND value IS NOT NULL
+  AND mrnev = '1' AND value IS NOT NULL
 ORDER BY value DESC
 LIMIT 15
 ```
@@ -106,7 +131,7 @@ LIMIT 15
 SELECT country_name, date, value AS unemployment_pct
 FROM world_bank.data
 WHERE country = 'all' AND indicator = 'SL.UEM.TOTL.ZS'
-  AND mrv = '1' AND value IS NOT NULL
+  AND mrnev = '1' AND value IS NOT NULL
 ORDER BY value DESC
 LIMIT 10
 ```
@@ -120,7 +145,7 @@ LIMIT 10
 | `SP.POP.TOTL` | Population, total |
 | `FP.CPI.TOTL.ZG` | Inflation, consumer prices (annual %) |
 | `SL.UEM.TOTL.ZS` | Unemployment, total (% of labor force) |
-| `SI.POV.DDAY` | Poverty headcount ratio at $2.15/day (2017 PPP) % |
+| `SI.POV.DDAY` | Poverty headcount ratio at $3.00/day (2021 PPP) % |
 | `EN.ATM.CO2E.PC` | CO2 emissions (metric tons per capita) |
 | `EG.FEC.RNEW.ZS` | Renewable energy consumption (% of total final energy) |
 | `SH.DYN.MORT` | Mortality rate, under-5 (per 1,000 live births) |
@@ -141,10 +166,11 @@ Use `world_bank.countries` to look up codes for any country or region.
 
 ## Data Notes
 
-- **Annual data only:** The `date` column is a year string (e.g. `'2024'`), not a timestamp.
+- **Annual data only:** The `date` column is a year string (e.g. `'2024'`), not a timestamp. Use `WHERE date = '2024'` or `WHERE date = '2010:2020'` to push year filtering to the API — a SQL predicate on `date` without this filter applies after fetching and may silently miss rows when results are paginated.
+- **`mrv` vs `mrnev`:** `mrv = '1'` returns the most recent period per country (may be null). `mrnev = '1'` returns the most recent **non-null** period per country. For sparse indicators (poverty rates, hospital beds, etc.), prefer `mrnev`.
 - **Null values:** Many country/year combinations have no published data — always filter `WHERE value IS NOT NULL` unless you want to see coverage gaps.
 - **Aggregate regions:** Entries like `EAS` (East Asia & Pacific) or `SSA` (Sub-Saharan Africa) are valid country codes and return regional aggregates.
-- **Data freshness:** Varies by indicator. The `lastupdated` field in API metadata reflects the last database refresh. Most WDI indicators are updated annually.
+- **Data freshness:** Varies by indicator. Most WDI indicators are updated annually.
 
 ## Validation
 

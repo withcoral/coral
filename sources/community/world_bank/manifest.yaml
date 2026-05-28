@@ -11,7 +11,7 @@ base_url: https://api.worldbank.org/v2
 
 test_queries:
   - SELECT indicator_id, indicator_name, date, value FROM world_bank.data WHERE country = 'US' AND indicator = 'NY.GDP.MKTP.CD' LIMIT 5
-  - SELECT country_name, date, value FROM world_bank.data WHERE country = 'all' AND indicator = 'NY.GDP.MKTP.CD' AND mrv = '1' LIMIT 5
+  - SELECT country_name, date, value FROM world_bank.data WHERE country = 'all' AND indicator = 'SI.POV.DDAY' AND mrnev = '1' AND value IS NOT NULL LIMIT 10
   - SELECT id, name, region, income_level FROM world_bank.countries LIMIT 5
   - SELECT id, topic FROM world_bank.topics
   - SELECT id, name FROM world_bank.topic_indicators WHERE topic = '3' LIMIT 5
@@ -40,20 +40,28 @@ tables:
         country = 'US' or 'USA'     → United States
         country = 'IN' or 'IND'     → India
         country = 'all'             → all countries (returns data for each
-                                       country across all years; use mrv = 1
-                                       to get only the most recent value per
-                                       country for cross-country comparisons)
+                                       country across all years)
 
-      Use mrv (Most Recent Value) for cross-country snapshots:
-        WHERE country = 'all' AND indicator = 'NY.GDP.MKTP.CD' AND mrv = 1
-        returns one row per country with its most recently published value,
-        ordered by country. Without mrv, data for all years is returned
-        interleaved per country.
+      Filter by a single year or year range (pushed to the API):
+        WHERE date = '2024'           → single year only
+        WHERE date = '2010:2020'      → inclusive year range
+
+      Use mrnev for cross-country snapshots (latest non-empty value):
+        WHERE country = 'all' AND indicator = 'SI.POV.DDAY' AND mrnev = '1'
+        returns one row per country with its latest non-null observation.
+        Prefer mrnev for sparse indicators (poverty rates, hospital beds,
+        etc.) where recent periods may have no published data.
+
+      Use mrv for the N most recently published periods (may include nulls):
+        WHERE country = 'all' AND indicator = 'NY.GDP.MKTP.CD' AND mrv = '1'
+        returns one row per country for the most recent period regardless of
+        whether value is null. Without mrv or mrnev, data for all years is
+        returned interleaved per country.
 
       Commonly used indicators:
         NY.GDP.MKTP.CD    GDP (current US$)
         SP.POP.TOTL       Population total
-        SI.POV.DDAY       Poverty headcount ratio at $2.15/day (2017 PPP) %
+        SI.POV.DDAY       Poverty headcount ratio at $3.00/day (2021 PPP) %
         EN.ATM.CO2E.PC    CO2 emissions (metric tons per capita)
         SH.DYN.MORT       Mortality rate, under-5 (per 1,000 live births)
         SE.PRM.ENRR       School enrollment, primary (% gross)
@@ -72,7 +80,9 @@ tables:
         required: true
       - name: indicator
         required: true
+      - name: date
       - name: mrv
+      - name: mrnev
     request:
       method: GET
       path: /country/{{filter.country}}/indicator/{{filter.indicator}}
@@ -80,9 +90,15 @@ tables:
         - name: format
           from: literal
           value: json
+        - name: date
+          from: filter
+          key: date
         - name: mrv
           from: filter
           key: mrv
+        - name: mrnev
+          from: filter
+          key: mrnev
     response:
       rows_path:
         - "1"
@@ -192,13 +208,28 @@ tables:
         type: Utf8
         nullable: true
         description: >-
-          Echoes the mrv (Most Recent Value) filter. When set to '1', the API
-          returns only the single most recently published value per country,
-          making cross-country comparisons possible without fetching all years.
+          Echoes the mrv (Most Recent Value periods) filter. When set to '1',
+          the API returns one row per country for the most recently published
+          period — which may have a null value for sparse indicators. For
+          latest non-null observations use mrnev instead.
           Pass as a quoted string: WHERE mrv = '1'.
         expr:
           kind: from_filter
           key: mrv
+
+      - name: mrnev
+        type: Utf8
+        nullable: true
+        description: >-
+          Echoes the mrnev (Most Recent Non-Empty Values) filter. When set to
+          '1', the API returns one row per country with its latest non-null
+          observation, skipping periods with no published data. Preferred over
+          mrv for sparse indicators such as poverty rates, hospital beds, or
+          any indicator updated less than annually. Pass as a quoted string:
+          WHERE mrnev = '1'.
+        expr:
+          kind: from_filter
+          key: mrnev
 
   # ──────────────────────────────────────────────────────────────────────
   # world_bank.indicators — full catalog of 29,500+ indicator codes
