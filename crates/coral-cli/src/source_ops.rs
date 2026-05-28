@@ -1120,8 +1120,8 @@ fn spawn_oauth_redirect_paste_prompt(
     if !stdin().is_terminal() || !stdout().is_terminal() {
         return None;
     }
-    let expected_redirect_uri = match expected_oauth_redirect_uri(authorization_url) {
-        Ok(redirect_uri) => redirect_uri,
+    let (expected_redirect_uri, expected_state) = match expected_oauth_redirect(authorization_url) {
+        Ok(expected) => expected,
         Err(error) => {
             println!(
                 "{}",
@@ -1138,25 +1138,103 @@ fn spawn_oauth_redirect_paste_prompt(
         )
         .dim()
     );
-    print!("Redirect URL: ");
-    if let Err(error) = stdout().flush() {
-        eprintln!("Could not render OAuth redirect prompt: {error}");
-        return None;
-    }
 
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
-    let handle = thread::spawn(move || match read_oauth_redirect_prompt(&worker_cancel) {
-        Ok(Some(value)) if !value.trim().is_empty() => {
-            match submit_oauth_redirect_url(value.trim(), &expected_redirect_uri) {
-                Ok(()) => println!("Submitted OAuth redirect for {label}."),
-                Err(error) => eprintln!("Could not submit OAuth redirect URL: {error}"),
+    let handle = thread::spawn(move || {
+        while !worker_cancel.load(Ordering::Relaxed) {
+            print!("Redirect URL: ");
+            if let Err(error) = stdout().flush() {
+                eprintln!("Could not render OAuth redirect prompt: {error}");
+                return;
+            }
+            match read_oauth_redirect_prompt(&worker_cancel) {
+                Ok(Some(value)) if value.trim().is_empty() => {}
+                Ok(Some(value)) => {
+                    match submit_oauth_redirect_url(
+                        value.trim(),
+                        &expected_redirect_uri,
+                        expected_state.as_deref(),
+                    ) {
+                        Ok(()) => {
+                            println!("Submitted OAuth redirect for {label}.");
+                            return;
+                        }
+                        Err(error) => eprintln!("Could not submit OAuth redirect URL: {error}"),
+                    }
+                }
+                Ok(None) => return,
+                Err(error) => {
+                    eprintln!("Could not read OAuth redirect URL: {error}");
+                    return;
+                }
             }
         }
-        Ok(Some(_) | None) => {}
-        Err(error) => eprintln!("Could not read OAuth redirect URL: {error}"),
     });
     Some(OAuthRedirectPastePrompt::new(cancel, handle))
+}
+
+fn expected_oauth_redirect(
+    authorization_url: &str,
+) -> Result<(Url, Option<String>), anyhow::Error> {
+    let authorization_url = Url::parse(authorization_url)?;
+    let redirect_uri = authorization_url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "redirect_uri").then(|| value.into_owned()))
+        .ok_or_else(|| anyhow::anyhow!("authorization URL is missing redirect_uri"))?;
+    let redirect_uri = Url::parse(&redirect_uri)?;
+    validate_loopback_http_redirect(&redirect_uri)?;
+    let state = authorization_url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "state").then(|| value.into_owned()));
+    Ok((redirect_uri, state))
+}
+
+fn submit_oauth_redirect_url(
+    value: &str,
+    expected_redirect_uri: &Url,
+    expected_state: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    let callback_url = Url::parse(value)?;
+    validate_oauth_redirect_url(&callback_url, expected_redirect_uri, expected_state)?;
+    let response = send_loopback_get(&callback_url)?;
+    let status = response.lines().next().unwrap_or_default();
+    if !http_status_is_success(status) {
+        return Err(anyhow::anyhow!(
+            "callback listener returned unexpected response: {status}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_oauth_redirect_url(
+    callback_url: &Url,
+    expected_redirect_uri: &Url,
+    expected_state: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    validate_loopback_http_redirect(callback_url)?;
+    if callback_url.host() != expected_redirect_uri.host()
+        || callback_url.port_or_known_default() != expected_redirect_uri.port_or_known_default()
+        || callback_url.path() != expected_redirect_uri.path()
+    {
+        return Err(anyhow::anyhow!(
+            "redirect URL must match the OAuth redirect URI host, port, and path"
+        ));
+    }
+    if callback_url.query().is_none() {
+        return Err(anyhow::anyhow!("redirect URL is missing query parameters"));
+    }
+    if let Some(expected_state) = expected_state {
+        let callback_state = callback_url
+            .query_pairs()
+            .find_map(|(key, value)| (key == "state").then(|| value.into_owned()));
+        if callback_state.as_deref() != Some(expected_state) {
+            return Err(anyhow::anyhow!(
+                "redirect URL state does not match the active OAuth authorization"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn read_oauth_redirect_prompt(cancel: &AtomicBool) -> Result<Option<String>, anyhow::Error> {
@@ -1204,52 +1282,6 @@ fn apply_redirect_prompt_key(key: KeyEvent, value: &mut String) -> RedirectPromp
         }
         _ => RedirectPromptAction::Continue,
     }
-}
-
-fn expected_oauth_redirect_uri(authorization_url: &str) -> Result<Url, anyhow::Error> {
-    let authorization_url = Url::parse(authorization_url)?;
-    let redirect_uri = authorization_url
-        .query_pairs()
-        .find_map(|(key, value)| (key == "redirect_uri").then(|| value.into_owned()))
-        .ok_or_else(|| anyhow::anyhow!("authorization URL is missing redirect_uri"))?;
-    let redirect_uri = Url::parse(&redirect_uri)?;
-    validate_loopback_http_redirect(&redirect_uri)?;
-    Ok(redirect_uri)
-}
-
-fn submit_oauth_redirect_url(
-    value: &str,
-    expected_redirect_uri: &Url,
-) -> Result<(), anyhow::Error> {
-    let callback_url = Url::parse(value)?;
-    validate_oauth_redirect_url(&callback_url, expected_redirect_uri)?;
-    let response = send_loopback_get(&callback_url)?;
-    let status = response.lines().next().unwrap_or_default();
-    if !http_status_is_success(status) {
-        return Err(anyhow::anyhow!(
-            "callback listener returned unexpected response: {status}"
-        ));
-    }
-    Ok(())
-}
-
-fn validate_oauth_redirect_url(
-    callback_url: &Url,
-    expected_redirect_uri: &Url,
-) -> Result<(), anyhow::Error> {
-    validate_loopback_http_redirect(callback_url)?;
-    if callback_url.host() != expected_redirect_uri.host()
-        || callback_url.port_or_known_default() != expected_redirect_uri.port_or_known_default()
-        || callback_url.path() != expected_redirect_uri.path()
-    {
-        return Err(anyhow::anyhow!(
-            "redirect URL must match the OAuth redirect URI host, port, and path"
-        ));
-    }
-    if callback_url.query().is_none() {
-        return Err(anyhow::anyhow!("redirect URL is missing query parameters"));
-    }
-    Ok(())
 }
 
 fn validate_loopback_http_redirect(url: &Url) -> Result<(), anyhow::Error> {
@@ -1434,7 +1466,7 @@ mod tests {
 
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
-        apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect_uri,
+        apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
         finalize_input_value, shell_quote_arg, source_name_arg, submit_oauth_redirect_url,
         validate_oauth_redirect_url, validation_follow_up,
     };
@@ -1649,16 +1681,17 @@ mod tests {
     }
 
     #[test]
-    fn expected_oauth_redirect_uri_reads_authorization_query() {
+    fn expected_oauth_redirect_reads_authorization_query() {
         let authorization_url = "https://provider.example.com/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback&state=xyz";
 
-        let redirect_uri =
-            expected_oauth_redirect_uri(authorization_url).expect("redirect_uri should parse");
+        let (redirect_uri, state) =
+            expected_oauth_redirect(authorization_url).expect("redirect_uri should parse");
 
         assert_eq!(
             redirect_uri.as_str(),
             "http://localhost:53682/oauth/callback"
         );
+        assert_eq!(state.as_deref(), Some("xyz"));
     }
 
     #[test]
@@ -1667,7 +1700,7 @@ mod tests {
         let mismatched =
             Url::parse("http://localhost:53682/other?state=xyz&code=abc").expect("callback url");
 
-        let error = validate_oauth_redirect_url(&mismatched, &expected)
+        let error = validate_oauth_redirect_url(&mismatched, &expected, None)
             .expect_err("mismatched callback should fail");
 
         assert!(
@@ -1684,7 +1717,7 @@ mod tests {
         let callback = Url::parse("http://example.com:53682/oauth/callback?state=xyz&code=abc")
             .expect("callback url");
 
-        let error = validate_oauth_redirect_url(&callback, &expected)
+        let error = validate_oauth_redirect_url(&callback, &expected, None)
             .expect_err("non-loopback callback should fail");
 
         assert!(
@@ -1715,8 +1748,24 @@ mod tests {
         let callback_url =
             format!("http://127.0.0.1:{port}/oauth/callback?state=xyz&code=test-code");
 
-        submit_oauth_redirect_url(&callback_url, &expected).expect("submit redirect url");
+        submit_oauth_redirect_url(&callback_url, &expected, Some("xyz"))
+            .expect("submit redirect url");
         server.join().expect("callback server");
+    }
+
+    #[test]
+    fn oauth_redirect_url_must_match_expected_state_when_present() {
+        let expected = Url::parse("http://localhost:53682/oauth/callback").expect("expected url");
+        let stale = Url::parse("http://localhost:53682/oauth/callback?state=old&code=abc")
+            .expect("callback url");
+
+        let error = validate_oauth_redirect_url(&stale, &expected, Some("xyz"))
+            .expect_err("state mismatch should fail before callback submission");
+
+        assert!(
+            error.to_string().contains("state"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
