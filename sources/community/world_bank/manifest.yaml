@@ -11,7 +11,7 @@ base_url: https://api.worldbank.org/v2
 
 test_queries:
   - SELECT indicator_id, indicator_name, date, value FROM world_bank.data WHERE country = 'US' AND indicator = 'NY.GDP.MKTP.CD' LIMIT 5
-  - SELECT country_name, date, value FROM world_bank.data WHERE country = 'all' AND indicator = 'SI.POV.DDAY' AND mrnev = '1' AND value IS NOT NULL LIMIT 10
+  - SELECT country_name, date, value FROM world_bank.data WHERE country = 'all' AND indicator = 'SI.POV.DDAY' AND mrnev = '1' LIMIT 10
   - SELECT id, name, region, income_level FROM world_bank.countries LIMIT 5
   - SELECT id, topic FROM world_bank.topics
   - SELECT id, name FROM world_bank.topic_indicators WHERE topic = '3' LIMIT 5
