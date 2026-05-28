@@ -49,7 +49,7 @@ tables:
         description: TVL percentage change over the last 30 days.
       - name: mcap
         type: Float64
-        description: Fully diluted market capitalization in USD.
+        description: Circulating market capitalization in USD.
       - name: fdv
         type: Float64
         description: Fully diluted valuation in USD.

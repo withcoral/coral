@@ -40,7 +40,7 @@ No required filters — returns all protocols in a single request.
 | `change_1d` | Float64 | TVL % change over 1 day |
 | `change_7d` | Float64 | TVL % change over 7 days |
 | `change_1m` | Float64 | TVL % change over 30 days |
-| `mcap` | Float64 | Fully diluted market cap in USD |
+| `mcap` | Float64 | Circulating market cap in USD |
 | `fdv` | Float64 | Fully diluted valuation in USD |
 | `staking` | Float64 | Total staked value in USD |
 
