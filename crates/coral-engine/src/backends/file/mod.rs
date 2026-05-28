@@ -22,8 +22,9 @@ use datafusion::prelude::SessionContext;
 
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
+    RegisteredTable, build_registered_inputs, build_registered_prepared_statements,
+    build_registered_table, registered_columns_from_schema, registered_columns_from_specs,
+    required_filter_names,
 };
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
 
@@ -131,6 +132,10 @@ impl CompiledBackendSource for FileCompiledSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
                 table_functions: vec![],
+                prepared_statements: build_registered_prepared_statements(
+                    &self.manifest.common.name,
+                    &self.manifest.common.prepared_statements,
+                ),
                 inputs,
             },
         })

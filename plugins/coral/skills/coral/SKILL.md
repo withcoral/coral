@@ -23,19 +23,21 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 ## Workflow
 
 1. Identify the needed source, entity, and scope from the user request.
-2. Discover tables and table functions with `list_catalog` or `search_catalog`; page large catalogs and narrow by schema or kind when useful.
-3. Read `list_catalog` or `search_catalog` for `sql_reference`, `sql_call_example`, and `required_filters`; use `coral://guide` for query patterns and `coral://tables` for table summaries.
+2. Discover tables, table functions, and prepared statements with `list_catalog` or `search_catalog`; page large catalogs and narrow by schema or kind when useful.
+3. Read `list_catalog` or `search_catalog` for `sql_reference`, `sql_call_example`, `sql_execute_example`, and `required_filters`; use `coral://guide` for query patterns and `coral://tables` for table summaries.
 4. Inspect `coral.columns` for table columns, required filters, virtual columns, and descriptions.
 5. Inspect `coral.table_functions` for source-scoped function arguments and result columns.
-6. Inspect `coral.inputs` when source configuration affects the answer.
-7. Query with `sql`: select useful columns, include required filters or function arguments, and add `LIMIT` unless complete output is requested.
-8. Summarize evidence, gaps, and next action. If editing code, use the Coral result to guide changes.
+6. Inspect `coral.prepared_statements` for source-declared reusable SQL shapes and `EXECUTE` examples.
+7. Inspect `coral.inputs` when source configuration affects the answer.
+8. Query with `sql`: select useful columns, include required filters or function arguments, and add `LIMIT` unless complete output is requested.
+9. Summarize evidence, gaps, and next action. If editing code, use the Coral result to guide changes.
 
 ## Query Rules
 
 - Use each table's `sql_reference`; write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 - Use each table function's `sql_call_example`, filling in required arguments before querying it.
-- Keep metadata discovery bounded: page catalog discovery, query `coral.columns` for one table or `coral.table_functions` for one source when possible, and add `LIMIT` when reading broad metadata directly.
+- Use each prepared statement's `sql_execute_example` when a source exposes a reusable query shape.
+- Keep metadata discovery bounded: page catalog discovery, query `coral.columns` for one table or `coral.table_functions` / `coral.prepared_statements` for one source when possible, and add `LIMIT` when reading broad metadata directly.
 - Virtual columns are filter-only and return `NULL`; check `is_virtual`.
 - Required filters must appear in `WHERE`; inspect `required_filters` and `is_required_filter`.
 - Secret inputs always return `value = NULL`; use `is_set`.

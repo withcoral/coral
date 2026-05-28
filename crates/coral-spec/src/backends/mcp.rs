@@ -15,7 +15,7 @@ use crate::{
     ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend,
     SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
     TableFunctionArgSpec, ValueSourceSpec, inputs::collect_source_inputs_value, validate_columns,
-    validate_filters_and_column_exprs, validate_test_queries,
+    validate_filters_and_column_exprs, validate_prepared_statements, validate_test_queries,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -38,6 +38,8 @@ struct RawMcpSourceManifest {
     description: String,
     #[serde(default)]
     test_queries: Vec<String>,
+    #[serde(default)]
+    prepared_statements: Vec<crate::PreparedStatementSpec>,
     backend: SourceBackend,
     #[serde(default)]
     inputs: Option<Value>,
@@ -348,6 +350,7 @@ impl McpSourceManifest {
             version,
             description,
             test_queries,
+            prepared_statements,
             backend: _backend,
             inputs: _inputs,
             server,
@@ -361,10 +364,17 @@ impl McpSourceManifest {
             )));
         }
         validate_test_queries(&name, &test_queries)?;
+        validate_prepared_statements(&name, &prepared_statements)?;
         validate_server(&name, &server)?;
         validate_table_and_function_names(&name, &tables, &functions)?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let common = SourceManifestCommon::new(
+            dsl_version,
+            name,
+            version,
+            description,
+            test_queries,
+            prepared_statements,
+        );
         let functions = functions
             .into_iter()
             .map(|function| function.into_validated(&common.name))

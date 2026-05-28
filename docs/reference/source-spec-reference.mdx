@@ -21,6 +21,13 @@ dsl_version: 3
 backend: http
 test_queries:
   - SELECT * FROM my_source.messages LIMIT 1
+prepared_statements:
+  - name: messages_by_type
+    description: Messages for one type
+    args:
+      - name: type
+        type: Utf8
+    sql: SELECT * FROM my_source.messages WHERE type = $1
 ```
 
 | Field         | Description                                        |
@@ -30,6 +37,7 @@ test_queries:
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
 | `backend`     | How data is fetched: `http` or `file` |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
+| `prepared_statements` | Optional reusable source-scoped SQL statements registered at query time |
 
 ## Test queries
 
@@ -49,6 +57,55 @@ Notes:
 - Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.
 - Keep these queries read-only. Statements such as `CREATE`, `COPY`, `INSERT`,
   `UPDATE`, `DELETE`, or `SET` are reported as failed validation queries.
+
+## Prepared statements
+
+Use the optional top-level `prepared_statements` field to expose reusable
+source-scoped SQL query shapes. Coral registers these statements in the query
+runtime before executing user SQL.
+
+```yaml
+prepared_statements:
+  - name: messages_by_session
+    description: Messages for one session
+    args:
+      - name: session
+        type: Utf8
+    sql: |
+      SELECT type, text
+      FROM local_messages.messages
+      WHERE sessionId = $1
+      ORDER BY text
+```
+
+Each argument is positional. The first declared argument binds to `$1`, the
+second to `$2`, and so on. Argument types use the same scalar names as columns:
+`Utf8`, `Int64`, `Float64`, `Boolean`, `Timestamp`, and `Json`.
+
+Prepared statements are discoverable through `coral.prepared_statements` and
+catalog APIs. Use the advertised `execute_name` or `sql_execute_example` when
+calling one:
+
+```sql
+SELECT statement_name, execute_name, arguments_json, sql_execute_example
+FROM coral.prepared_statements
+WHERE schema_name = 'local_messages';
+```
+
+```sql
+EXECUTE coral_prep_6c6f63616c5f6d65737361676573_6d657373616765735f62795f73657373696f6e('s1');
+```
+
+Notes:
+
+- Keep prepared statement SQL read-only. Coral accepts statements starting with
+  `SELECT`, `WITH`, or `VALUES`, then DataFusion validates the prepared plan
+  with DDL and DML disabled at runtime.
+- Prepared statement names are source-scoped in the manifest. Runtime
+  `EXECUTE` names are generated to avoid collisions across sources.
+- Prepared statements are query recipes over Coral tables and table functions.
+  Use `functions` instead when the source needs provider-native request
+  arguments that shape HTTP or MCP calls directly.
 
 ## Column types
 

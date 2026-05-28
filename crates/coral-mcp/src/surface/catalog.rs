@@ -1,6 +1,8 @@
 use coral_api::v1::{
     ColumnSearchResult, DescribeTableResponse, ListCatalogResponse, ListColumnsResponse,
-    SearchCatalogResponse, Table as ProtoTable, TableFunction as ProtoTableFunction,
+    PreparedStatement as ProtoPreparedStatement,
+    PreparedStatementArgument as ProtoPreparedStatementArgument, SearchCatalogResponse,
+    Table as ProtoTable, TableFunction as ProtoTableFunction,
     TableFunctionArgument as ProtoTableFunctionArgument,
     TableFunctionResultColumn as ProtoTableFunctionResultColumn, TableSummary as ProtoTableSummary,
     catalog_item,
@@ -118,6 +120,9 @@ fn catalog_item_value(item: &coral_api::v1::CatalogItem) -> Option<Value> {
         }
         catalog_item::Item::TableFunction(function) => {
             serde_json::to_value(CatalogTableFunctionItemValue::from(function)).ok()
+        }
+        catalog_item::Item::PreparedStatement(statement) => {
+            serde_json::to_value(CatalogPreparedStatementItemValue::from(statement)).ok()
         }
     }
 }
@@ -316,6 +321,61 @@ struct CatalogTableFunctionValue<'a> {
     function_name: &'a str,
     arguments: Vec<TableFunctionArgumentValue<'a>>,
     result_columns: Vec<TableFunctionResultColumnValue<'a>>,
+}
+
+#[derive(Serialize)]
+struct CatalogPreparedStatementItemValue<'a> {
+    kind: &'static str,
+    schema_name: &'a str,
+    name: String,
+    sql_execute_example: &'a str,
+    description: &'a str,
+    prepared_statement: CatalogPreparedStatementValue<'a>,
+}
+
+impl<'a> From<&'a ProtoPreparedStatement> for CatalogPreparedStatementItemValue<'a> {
+    fn from(statement: &'a ProtoPreparedStatement) -> Self {
+        Self {
+            kind: "prepared_statement",
+            schema_name: &statement.schema_name,
+            name: format!("{}.{}", statement.schema_name, statement.name),
+            sql_execute_example: &statement.sql_execute_example,
+            description: &statement.description,
+            prepared_statement: CatalogPreparedStatementValue {
+                statement_name: &statement.name,
+                execute_name: &statement.execute_name,
+                arguments: statement
+                    .arguments
+                    .iter()
+                    .map(PreparedStatementArgumentValue::from)
+                    .collect(),
+                sql: &statement.sql,
+            },
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct CatalogPreparedStatementValue<'a> {
+    statement_name: &'a str,
+    execute_name: &'a str,
+    arguments: Vec<PreparedStatementArgumentValue<'a>>,
+    sql: &'a str,
+}
+
+#[derive(Serialize)]
+struct PreparedStatementArgumentValue<'a> {
+    name: &'a str,
+    data_type: &'a str,
+}
+
+impl<'a> From<&'a ProtoPreparedStatementArgument> for PreparedStatementArgumentValue<'a> {
+    fn from(argument: &'a ProtoPreparedStatementArgument) -> Self {
+        Self {
+            name: &argument.name,
+            data_type: &argument.data_type,
+        }
+    }
 }
 
 #[derive(Serialize)]

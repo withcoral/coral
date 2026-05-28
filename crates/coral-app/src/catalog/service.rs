@@ -200,6 +200,7 @@ fn catalog_item_kind_from_proto(kind: i32) -> Result<Option<CatalogItemKind>, St
         Ok(ProtoCatalogItemKind::Unspecified) => Ok(None),
         Ok(ProtoCatalogItemKind::Table) => Ok(Some(CatalogItemKind::Table)),
         Ok(ProtoCatalogItemKind::TableFunction) => Ok(Some(CatalogItemKind::TableFunction)),
+        Ok(ProtoCatalogItemKind::PreparedStatement) => Ok(Some(CatalogItemKind::PreparedStatement)),
         Err(_) => Err(app_status(crate::bootstrap::AppError::InvalidInput(
             "unknown catalog item kind".to_string(),
         ))),

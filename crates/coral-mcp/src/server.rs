@@ -43,6 +43,8 @@ const LIST_CATALOG_UNBOUNDED_LIMIT: u32 = 0;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
+const CATALOG_KIND_PREPARED_STATEMENT: ProtoCatalogItemKind =
+    ProtoCatalogItemKind::PreparedStatement;
 
 enum ToolCallOutcome {
     Success(Value),
@@ -149,7 +151,11 @@ impl CoralMcpServer {
                 .into_iter()
                 .filter_map(|item| match item.item {
                     Some(catalog_item::Item::Table(table)) => Some(table),
-                    Some(catalog_item::Item::TableFunction(_)) | None => None,
+                    Some(
+                        catalog_item::Item::TableFunction(_)
+                        | catalog_item::Item::PreparedStatement(_),
+                    )
+                    | None => None,
                 })
                 .collect()
         })
@@ -604,6 +610,7 @@ fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogIte
         None => CATALOG_KIND_ALL,
         Some(CatalogToolKind::Table) => CATALOG_KIND_TABLE,
         Some(CatalogToolKind::TableFunction) => CATALOG_KIND_TABLE_FUNCTION,
+        Some(CatalogToolKind::PreparedStatement) => CATALOG_KIND_PREPARED_STATEMENT,
     }
 }
 
@@ -617,6 +624,9 @@ fn guide_catalog_from_response(
             Some(catalog_item::Item::Table(table)) => tables.push(table),
             Some(catalog_item::Item::TableFunction(function)) => {
                 table_function_schema_names.push(function.schema_name);
+            }
+            Some(catalog_item::Item::PreparedStatement(statement)) => {
+                table_function_schema_names.push(statement.schema_name);
             }
             None => {}
         }

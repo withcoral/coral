@@ -308,7 +308,9 @@ async fn list_catalog_supports_table_kind_and_pagination() {
             .iter()
             .filter_map(|item| match item.item.as_ref().expect("catalog item") {
                 catalog_item::Item::Table(table) => Some(table.name.as_str()),
-                catalog_item::Item::TableFunction(_) => None,
+                catalog_item::Item::TableFunction(_) | catalog_item::Item::PreparedStatement(_) => {
+                    None
+                }
             })
             .collect::<Vec<_>>(),
         vec!["events", "messages"]

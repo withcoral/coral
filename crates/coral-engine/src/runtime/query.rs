@@ -5,6 +5,7 @@ use std::sync::Arc;
 use datafusion::dataframe::DataFrame;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::logical_expr::{LogicalPlan, Statement};
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
@@ -21,7 +22,7 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, QueryExecution, QueryPlan, QueryResultObserver,
+    CatalogInfo, CoreError, PreparedStatementInfo, QueryExecution, QueryPlan, QueryResultObserver,
     QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
 };
 
@@ -29,6 +30,7 @@ pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
+    prepared_statements: Vec<PreparedStatementInfo>,
     failures: Vec<SourceRegistrationFailure>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
@@ -101,6 +103,7 @@ pub(crate) async fn build_runtime(
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
     let table_functions = catalog::collect_table_functions(&registration.active_sources);
+    let prepared_statements = catalog::collect_prepared_statements(&registration.active_sources);
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources
@@ -118,11 +121,13 @@ pub(crate) async fn build_runtime(
             "skipping source during runtime build"
         );
     }
+    register_prepared_statements(&ctx, &registration.active_sources, &tables).await?;
 
     Ok(QueryRuntimeAdapter {
         ctx,
         tables,
         table_functions,
+        prepared_statements,
         failures: registration.failures,
         query_result_observers: extensions.query_result_observers,
     })
@@ -159,7 +164,16 @@ impl QueryRuntimeAdapter {
         CatalogInfo {
             tables: self.list_tables(source_filter, None),
             table_functions: self.list_table_functions(source_filter, None),
+            prepared_statements: self.list_prepared_statements(source_filter),
         }
+    }
+
+    fn list_prepared_statements(&self, source_filter: Option<&str>) -> Vec<PreparedStatementInfo> {
+        self.prepared_statements
+            .iter()
+            .filter(|statement| source_filter.is_none_or(|value| statement.schema_name == value))
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn registration_failure(
@@ -223,8 +237,17 @@ impl QueryRuntimeAdapter {
     }
 
     async fn sql_dataframe(&self, sql: &str) -> Result<DataFrame, CoreError> {
+        let plan = self
+            .ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))?;
+        sql_options_for_plan(&plan)
+            .verify_plan(&plan)
+            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))?;
         self.ctx
-            .sql_with_options(sql, read_only_sql_options())
+            .execute_logical_plan(plan)
             .await
             .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))
     }
@@ -235,6 +258,69 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false)
+}
+
+fn execute_sql_options() -> SQLOptions {
+    SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(true)
+}
+
+fn sql_options_for_plan(plan: &LogicalPlan) -> SQLOptions {
+    match plan {
+        LogicalPlan::Statement(Statement::Execute(_)) => execute_sql_options(),
+        _ => read_only_sql_options(),
+    }
+}
+
+async fn register_prepared_statements(
+    ctx: &SessionContext,
+    active_sources: &[crate::backends::RegisteredSource],
+    tables: &[TableInfo],
+) -> Result<(), CoreError> {
+    for statement in active_sources
+        .iter()
+        .flat_map(|source| source.prepared_statements.iter())
+    {
+        let sql = prepare_statement_sql(statement);
+        ctx.sql_with_options(&sql, execute_sql_options())
+            .await
+            .map_err(|err| datafusion_to_core(&err, tables))?
+            .collect()
+            .await
+            .map_err(|err| datafusion_to_core(&err, tables))?;
+    }
+    Ok(())
+}
+
+fn prepare_statement_sql(
+    statement: &crate::backends::common::RegisteredPreparedStatement,
+) -> String {
+    let data_types = statement
+        .arguments
+        .iter()
+        .map(|argument| prepared_statement_data_type(&argument.data_type))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if data_types.is_empty() {
+        format!("PREPARE {} AS {}", statement.execute_name, statement.sql)
+    } else {
+        format!(
+            "PREPARE {}({}) AS {}",
+            statement.execute_name, data_types, statement.sql
+        )
+    }
+}
+
+fn prepared_statement_data_type(data_type: &str) -> &'static str {
+    match data_type {
+        "Int64" => "BIGINT",
+        "Boolean" => "BOOLEAN",
+        "Float64" => "DOUBLE",
+        "Timestamp" => "TIMESTAMP",
+        _ => "STRING",
+    }
 }
 
 fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> CoreError {

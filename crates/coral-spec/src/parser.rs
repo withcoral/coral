@@ -12,7 +12,7 @@ use crate::backends::file::FileSourceManifest;
 use crate::backends::http::HttpSourceManifest;
 use crate::backends::mcp::McpSourceManifest;
 use crate::schema::validate_manifest_schema;
-use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
+use crate::{ManifestError, ManifestInputSpec, PreparedStatementSpec, Result, SourceBackend};
 
 /// Validated top-level source spec for one registered source.
 ///
@@ -83,6 +83,16 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.test_queries,
             ValidatedManifestKind::File(manifest) => &manifest.common.test_queries,
             ValidatedManifestKind::Mcp(manifest) => &manifest.common.test_queries,
+        }
+    }
+
+    #[must_use]
+    /// Returns source-declared prepared SQL statements.
+    pub fn prepared_statements(&self) -> &[PreparedStatementSpec] {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => &manifest.common.prepared_statements,
+            ValidatedManifestKind::File(manifest) => &manifest.common.prepared_statements,
+            ValidatedManifestKind::Mcp(manifest) => &manifest.common.prepared_statements,
         }
     }
 
@@ -215,6 +225,43 @@ tables:
     }
 
     #[test]
+    fn parse_source_manifest_preserves_prepared_statements() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+prepared_statements:
+  - name: by_kind
+    description: Messages by kind
+    args:
+      - name: kind
+        type: Utf8
+    sql: SELECT kind FROM demo.messages WHERE kind = $1
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect("manifest should parse");
+
+        let statements = manifest.prepared_statements();
+        assert_eq!(statements.len(), 1);
+        let statement = statements.first().expect("prepared statement");
+        assert_eq!(statement.name, "by_kind");
+        let argument = statement.args.first().expect("prepared statement arg");
+        assert_eq!(argument.name, "kind");
+        assert_eq!(argument.data_type, "Utf8");
+    }
+
+    #[test]
     fn parse_source_manifest_rejects_duplicate_table_names() {
         let error = parse_source_manifest_yaml(
             r"
@@ -312,6 +359,36 @@ tables:
         assert_eq!(
             error.to_string(),
             "source 'demo' test_queries[0] must not be empty"
+        );
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_non_read_only_prepared_statement() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+prepared_statements:
+  - name: delete_messages
+    sql: DELETE FROM demo.messages WHERE kind = $1
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("non-read-only prepared statement should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' prepared statement 'delete_messages' must be read-only SQL starting with SELECT, WITH, or VALUES"
         );
     }
 }

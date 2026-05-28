@@ -27,6 +27,7 @@ pub(crate) struct SearchCatalogArguments {
 pub(crate) enum CatalogToolKind {
     Table,
     TableFunction,
+    PreparedStatement,
 }
 
 pub(crate) struct DescribeTableArguments {
@@ -85,7 +86,7 @@ pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_cou
                     "anyOf": [
                         {
                             "type": "string",
-                            "enum": ["table", "table_function"]
+                            "enum": ["table", "table_function", "prepared_statement"]
                         },
                         {
                             "type": "null"
@@ -143,7 +144,7 @@ pub(crate) fn search_catalog_tool(
                     "anyOf": [
                         {
                             "type": "string",
-                            "enum": ["table", "table_function"]
+                            "enum": ["table", "table_function", "prepared_statement"]
                         },
                         {
                             "type": "null"
@@ -342,8 +343,9 @@ fn optional_catalog_kind_argument(
     match kind.as_str() {
         "table" => Ok(Some(CatalogToolKind::Table)),
         "table_function" => Ok(Some(CatalogToolKind::TableFunction)),
+        "prepared_statement" => Ok(Some(CatalogToolKind::PreparedStatement)),
         _ => Err(ErrorData::invalid_params(
-            "argument 'kind' must be 'table' or 'table_function'",
+            "argument 'kind' must be 'table', 'table_function', or 'prepared_statement'",
             None,
         )),
     }
@@ -407,7 +409,8 @@ fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
                 "items": {
                     "oneOf": [
                         catalog_table_item_output_schema(),
-                        catalog_table_function_item_output_schema()
+                        catalog_table_function_item_output_schema(),
+                        catalog_prepared_statement_item_output_schema()
                     ]
                 }
             },
@@ -430,6 +433,50 @@ fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
             }
         }
     }))
+}
+
+fn catalog_prepared_statement_item_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": [
+            "kind",
+            "schema_name",
+            "name",
+            "sql_execute_example",
+            "description",
+            "prepared_statement"
+        ],
+        "additionalProperties": false,
+        "properties": {
+            "kind": { "enum": ["prepared_statement"] },
+            "schema_name": { "type": "string" },
+            "name": { "type": "string" },
+            "sql_execute_example": { "type": "string" },
+            "description": { "type": "string" },
+            "prepared_statement": {
+                "type": "object",
+                "required": ["statement_name", "execute_name", "arguments", "sql"],
+                "additionalProperties": false,
+                "properties": {
+                    "statement_name": { "type": "string" },
+                    "execute_name": { "type": "string" },
+                    "arguments": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "data_type"],
+                            "additionalProperties": false,
+                            "properties": {
+                                "name": { "type": "string" },
+                                "data_type": { "type": "string" }
+                            }
+                        }
+                    },
+                    "sql": { "type": "string" }
+                }
+            }
+        }
+    })
 }
 
 fn catalog_table_item_output_schema() -> Value {
@@ -533,7 +580,8 @@ fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
                 "items": {
                     "oneOf": [
                         catalog_search_item_output_schema(catalog_table_item_output_schema()),
-                        catalog_search_item_output_schema(catalog_table_function_item_output_schema())
+                        catalog_search_item_output_schema(catalog_table_function_item_output_schema()),
+                        catalog_search_item_output_schema(catalog_prepared_statement_item_output_schema())
                     ]
                 }
             },

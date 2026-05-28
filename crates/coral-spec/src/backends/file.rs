@@ -21,7 +21,8 @@ use crate::inputs::collect_source_inputs_value;
 use crate::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputKind, ManifestInputSpec,
     ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
-    TemplatePart, validate_columns, validate_table_names, validate_test_queries,
+    TemplatePart, validate_columns, validate_prepared_statements, validate_table_names,
+    validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -122,6 +123,8 @@ struct RawFileSourceManifest {
     description: String,
     #[serde(default)]
     test_queries: Vec<String>,
+    #[serde(default)]
+    prepared_statements: Vec<crate::PreparedStatementSpec>,
     backend: SourceBackend,
     #[serde(default)]
     inputs: Option<Value>,
@@ -616,14 +619,22 @@ impl FileSourceManifest {
             version,
             description,
             test_queries,
+            prepared_statements,
             backend: _backend,
             inputs: _inputs,
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
+        validate_prepared_statements(&name, &prepared_statements)?;
         validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
-        let common =
-            SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
+        let common = SourceManifestCommon::new(
+            dsl_version,
+            name,
+            version,
+            description,
+            test_queries,
+            prepared_statements,
+        );
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))

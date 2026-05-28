@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_engine::{ColumnInfo, TableFunctionInfo, TableInfo};
+use coral_engine::{ColumnInfo, PreparedStatementInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
@@ -37,12 +37,14 @@ pub(crate) struct Page<T> {
 pub(crate) enum CatalogItem {
     Table(TableInfo),
     TableFunction(TableFunctionInfo),
+    PreparedStatement(PreparedStatementInfo),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CatalogItemKind {
     Table,
     TableFunction,
+    PreparedStatement,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +64,9 @@ pub(crate) enum CatalogMetadataField {
     RequiredFilters,
     Arguments,
     ResultColumns,
+    StatementName,
+    ExecuteName,
+    Sql,
 }
 
 impl CatalogMetadataField {
@@ -76,6 +81,9 @@ impl CatalogMetadataField {
             Self::RequiredFilters => "required_filters",
             Self::Arguments => "arguments",
             Self::ResultColumns => "result_columns",
+            Self::StatementName => "statement_name",
+            Self::ExecuteName => "execute_name",
+            Self::Sql => "sql",
         }
     }
 }
@@ -174,7 +182,11 @@ impl CatalogDiscovery {
             .queries
             .list_catalog(workspace_name, schema_name)
             .await?;
-        let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
+        let mut items = Vec::with_capacity(
+            catalog.tables.len()
+                + catalog.table_functions.len()
+                + catalog.prepared_statements.len(),
+        );
         if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
             items.extend(catalog.tables.into_iter().map(|mut table| {
                 table.columns.clear();
@@ -187,6 +199,14 @@ impl CatalogDiscovery {
                     .table_functions
                     .into_iter()
                     .map(CatalogItem::TableFunction),
+            );
+        }
+        if kind.is_none_or(|kind| kind == CatalogItemKind::PreparedStatement) {
+            items.extend(
+                catalog
+                    .prepared_statements
+                    .into_iter()
+                    .map(CatalogItem::PreparedStatement),
             );
         }
         items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
@@ -321,6 +341,11 @@ fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {
             &function.function_name,
             "table_function",
         ),
+        CatalogItem::PreparedStatement(statement) => (
+            &statement.schema_name,
+            &statement.statement_name,
+            "prepared_statement",
+        ),
     }
 }
 
@@ -379,6 +404,9 @@ fn catalog_item_matched_fields(item: &CatalogItem, regex: &Regex) -> Vec<Catalog
     match item {
         CatalogItem::Table(table) => table_matched_fields(table, regex),
         CatalogItem::TableFunction(function) => table_function_matched_fields(function, regex),
+        CatalogItem::PreparedStatement(statement) => {
+            prepared_statement_matched_fields(statement, regex)
+        }
     }
 }
 
@@ -443,6 +471,45 @@ fn table_function_matched_fields(
             || regex.is_match(&column.description)
     }) {
         matches.push(CatalogMetadataField::ResultColumns);
+    }
+    matches
+}
+
+fn prepared_statement_matched_fields(
+    statement: &PreparedStatementInfo,
+    regex: &Regex,
+) -> Vec<CatalogMetadataField> {
+    let name = format!("{}.{}", statement.schema_name, statement.statement_name);
+    let candidates = [
+        (
+            CatalogMetadataField::SchemaName,
+            statement.schema_name.as_str(),
+        ),
+        (
+            CatalogMetadataField::StatementName,
+            statement.statement_name.as_str(),
+        ),
+        (
+            CatalogMetadataField::ExecuteName,
+            statement.execute_name.as_str(),
+        ),
+        (CatalogMetadataField::Name, name.as_str()),
+        (
+            CatalogMetadataField::Description,
+            statement.description.as_str(),
+        ),
+        (CatalogMetadataField::Sql, statement.sql.as_str()),
+    ];
+    let mut matches = candidates
+        .into_iter()
+        .filter_map(|(field, value)| regex.is_match(value).then_some(field))
+        .collect::<Vec<_>>();
+    if statement
+        .arguments
+        .iter()
+        .any(|argument| regex.is_match(&argument.name) || regex.is_match(&argument.data_type))
+    {
+        matches.push(CatalogMetadataField::Arguments);
     }
     matches
 }

@@ -25,9 +25,9 @@ use self::provider::McpTableProvider;
 use self::transport::StdioMcpToolCaller;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    SourceTableFunctions, build_registered_inputs, build_registered_table,
-    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    SourceTableFunctions, build_registered_inputs, build_registered_prepared_statements,
+    build_registered_table, build_registered_table_function, internal_table_function_name,
+    registered_columns_from_specs, required_filter_names,
 };
 
 #[derive(Debug, Clone)]
@@ -145,6 +145,10 @@ impl CompiledBackendSource for McpCompiledSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
                 table_functions: table_function_infos,
+                prepared_statements: build_registered_prepared_statements(
+                    &self.manifest.common.name,
+                    &self.manifest.common.prepared_statements,
+                ),
                 inputs,
             },
         })

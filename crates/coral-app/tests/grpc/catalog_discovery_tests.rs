@@ -12,7 +12,7 @@ use tonic::Request;
 
 use super::harness::{
     GrpcHarness, fixture_manifest_with_functions_yaml, fixture_manifest_with_multiple_tables_yaml,
-    fixture_manifest_with_required_filter_yaml,
+    fixture_manifest_with_prepared_statement_yaml, fixture_manifest_with_required_filter_yaml,
 };
 
 #[tokio::test]
@@ -58,7 +58,9 @@ async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
         .expect("catalog item")
     {
         catalog_item::Item::TableFunction(function) => function,
-        catalog_item::Item::Table(_) => panic!("expected table function"),
+        catalog_item::Item::Table(_) | catalog_item::Item::PreparedStatement(_) => {
+            panic!("expected table function")
+        }
     };
     assert_eq!(function.name, "lookup_issue");
     assert!(
@@ -110,13 +112,17 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
     assert_eq!(response.items.len(), 2);
     let function = match response.items[0].item.as_ref().expect("catalog item") {
         catalog_item::Item::TableFunction(function) => function,
-        catalog_item::Item::Table(_) => panic!("expected table function"),
+        catalog_item::Item::Table(_) | catalog_item::Item::PreparedStatement(_) => {
+            panic!("expected table function")
+        }
     };
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.name, "lookup_issue");
     let table = match response.items[1].item.as_ref().expect("catalog item") {
         catalog_item::Item::Table(table) => table,
-        catalog_item::Item::TableFunction(_) => panic!("expected table"),
+        catalog_item::Item::TableFunction(_) | catalog_item::Item::PreparedStatement(_) => {
+            panic!("expected table")
+        }
     };
     assert_eq!(table.schema_name, "searchy");
     assert_eq!(table.name, "placeholder");
@@ -150,6 +156,50 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
             catalog_item::Item::TableFunction(_)
         )
     }));
+}
+
+#[tokio::test]
+async fn list_catalog_returns_prepared_statements() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_prepared_statement_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "prepared_messages".to_string(),
+            kind: 3,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("list catalog")
+        .into_inner();
+
+    let pagination = response.pagination.expect("pagination");
+    assert_eq!(pagination.total_count, 1);
+    let statement = match response.items[0].item.as_ref().expect("catalog item") {
+        catalog_item::Item::PreparedStatement(statement) => statement,
+        catalog_item::Item::Table(_) | catalog_item::Item::TableFunction(_) => {
+            panic!("expected prepared statement")
+        }
+    };
+    assert_eq!(statement.schema_name, "prepared_messages");
+    assert_eq!(statement.name, "by_session");
+    assert_eq!(statement.arguments[0].name, "session");
+    assert!(
+        statement
+            .sql_execute_example
+            .starts_with("EXECUTE coral_prep_")
+    );
 }
 
 #[tokio::test]

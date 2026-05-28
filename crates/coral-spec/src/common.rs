@@ -26,6 +26,7 @@ pub struct SourceManifestCommon {
     pub version: String,
     pub description: String,
     pub test_queries: Vec<String>,
+    pub prepared_statements: Vec<PreparedStatementSpec>,
 }
 
 impl SourceManifestCommon {
@@ -35,6 +36,7 @@ impl SourceManifestCommon {
         version: String,
         description: String,
         test_queries: Vec<String>,
+        prepared_statements: Vec<PreparedStatementSpec>,
     ) -> Self {
         Self {
             dsl_version,
@@ -42,6 +44,7 @@ impl SourceManifestCommon {
             version,
             description,
             test_queries,
+            prepared_statements,
         }
     }
 }
@@ -53,6 +56,111 @@ pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) 
                 "source '{source_name}' test_queries[{index}] must not be empty"
             )));
         }
+    }
+    Ok(())
+}
+
+/// One source-declared prepared SQL statement.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedStatementSpec {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub args: Vec<PreparedStatementArgSpec>,
+    pub sql: String,
+}
+
+/// One positional argument accepted by a prepared SQL statement.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedStatementArgSpec {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub data_type: String,
+}
+
+impl PreparedStatementArgSpec {
+    /// Convert this argument's declared type into a normalized manifest data type.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ManifestError`] if the manifest references an unsupported
+    /// data type.
+    pub fn manifest_data_type(&self) -> Result<ManifestDataType> {
+        parse_manifest_data_type(&self.data_type)
+    }
+}
+
+pub(crate) fn validate_prepared_statements(
+    source_name: &str,
+    statements: &[PreparedStatementSpec],
+) -> Result<()> {
+    let mut names = std::collections::BTreeSet::new();
+    for (statement_index, statement) in statements.iter().enumerate() {
+        if statement.name.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' prepared_statements[{statement_index}].name must not be empty"
+            )));
+        }
+        if !names.insert(statement.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' has duplicate prepared statement '{}'",
+                statement.name
+            )));
+        }
+        if statement.sql.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' prepared statement '{}' SQL must not be empty",
+                statement.name
+            )));
+        }
+        validate_prepared_statement_sql(source_name, statement)?;
+        validate_prepared_statement_args(source_name, statement)?;
+    }
+    Ok(())
+}
+
+fn validate_prepared_statement_sql(
+    source_name: &str,
+    statement: &PreparedStatementSpec,
+) -> Result<()> {
+    let first_token = statement
+        .sql
+        .trim_start()
+        .split(|character: char| character.is_whitespace() || character == '(')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    match first_token.as_str() {
+        "SELECT" | "WITH" | "VALUES" => Ok(()),
+        _ => Err(ManifestError::validation(format!(
+            "source '{source_name}' prepared statement '{}' must be read-only SQL starting with SELECT, WITH, or VALUES",
+            statement.name
+        ))),
+    }
+}
+
+fn validate_prepared_statement_args(
+    source_name: &str,
+    statement: &PreparedStatementSpec,
+) -> Result<()> {
+    let mut names = std::collections::BTreeSet::new();
+    for (arg_index, arg) in statement.args.iter().enumerate() {
+        if arg.name.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' prepared statement '{}' args[{arg_index}].name must not be empty",
+                statement.name
+            )));
+        }
+        if !names.insert(arg.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' prepared statement '{}' has duplicate arg '{}'",
+                statement.name, arg.name
+            )));
+        }
+        arg.manifest_data_type()?;
     }
     Ok(())
 }

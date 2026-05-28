@@ -12,9 +12,9 @@ use datafusion::prelude::SessionContext;
 use crate::RequestAuthenticator;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, SourceTableFunctions, build_registered_inputs, build_registered_table,
-    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    RegisteredTable, SourceTableFunctions, build_registered_inputs,
+    build_registered_prepared_statements, build_registered_table, build_registered_table_function,
+    internal_table_function_name, registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
@@ -141,6 +141,10 @@ impl CompiledBackendSource for HttpCompiledSource {
                 schema_name: self.manifest.common.name.clone(),
                 tables: table_infos,
                 table_functions: table_function_infos,
+                prepared_statements: build_registered_prepared_statements(
+                    &self.manifest.common.name,
+                    &self.manifest.common.prepared_statements,
+                ),
                 inputs,
             },
         })

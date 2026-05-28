@@ -135,7 +135,10 @@ impl GrpcHarness {
             .into_iter()
             .filter_map(|item| match item.item {
                 Some(catalog_item::Item::Table(table)) => Some(table),
-                Some(catalog_item::Item::TableFunction(_)) | None => None,
+                Some(
+                    catalog_item::Item::TableFunction(_) | catalog_item::Item::PreparedStatement(_),
+                )
+                | None => None,
             })
             .collect()
     }
@@ -290,6 +293,44 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
                 "columns": table_columns,
             },
         ],
+    }))
+}
+
+pub(crate) fn fixture_manifest_with_prepared_statement_yaml(root: &Path) -> String {
+    let data_dir = root.join("prepared-data");
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    fs::write(
+        data_dir.join("messages.jsonl"),
+        r#"{"type":"user","sessionId":"s1","text":"hello"}
+{"type":"assistant","sessionId":"s1","text":"world"}
+"#,
+    )
+    .expect("write jsonl");
+    manifest_yaml(&json!({
+        "name": "prepared_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "prepared_statements": [{
+            "name": "by_session",
+            "description": "Messages for one session",
+            "args": [{ "name": "session", "type": "Utf8" }],
+            "sql": "SELECT text FROM prepared_messages.messages WHERE \"sessionId\" = $1 ORDER BY text",
+        }],
+        "tables": [{
+            "name": "messages",
+            "description": "Fixture messages",
+            "format": "jsonl",
+            "source": {
+                "location": format!("file://{}/", data_dir.display()),
+                "glob": "**/*.jsonl",
+            },
+            "columns": [
+                {"name": "type", "type": "Utf8"},
+                {"name": "sessionId", "type": "Utf8"},
+                {"name": "text", "type": "Utf8"},
+            ],
+        }],
     }))
 }
 

@@ -16,6 +16,7 @@ Produce a valid, queryable Coral source spec that works with:
 - `coral source test <name>`
 - `coral sql`
 - `coral.tables` and `coral.columns`
+- `coral.prepared_statements` for source-declared reusable SQL shapes
 - `coral.inputs` for source variables and secrets
 
 ## Default Mode
@@ -57,6 +58,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - credential retrieval methods for secrets, including OAuth when the provider supports browser-based setup
    - tables
    - table functions for source-scoped parameterized endpoints
+   - prepared statements for reusable SQL query shapes over exposed tables/functions
    - filters
    - response extraction
    - pagination
@@ -71,6 +73,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 6. Inspect the exposed shape:
    - inspect `coral.tables` for visible tables, descriptions, guides, and required filters; keep metadata queries bounded with `LIMIT`/`OFFSET`
    - inspect `coral.table_functions` for source-scoped functions, arguments, result columns, kind, and search limits
+   - inspect `coral.prepared_statements` for source-declared prepared statements, arguments, and `EXECUTE` examples
    - inspect `coral.columns` for canonical column metadata, including `is_virtual` and `is_required_filter`; filter by one table or page large column sets
    - inspect `coral.filters` for normalized table filter names, types, modes, required flags, and descriptions
    - inspect `coral.inputs` to verify variables, secrets, defaults, hints, and required flags
@@ -93,6 +96,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
 - Use `kind: search` table functions for provider endpoints that accept query text and return ranked candidates.
+- Use top-level `prepared_statements` for reusable read-only SQL over already exposed Coral tables or table functions; do not use them when request arguments need to shape provider-native HTTP/MCP calls directly.
 - Do not model provider search as a table filter. Use `mode: contains` only for ordinary provider-side substring filters. Provider-ranked retrieval belongs in a `kind: search` function.
 - Include `search_limits` on every `kind: search` function and expose stable result identifiers for follow-up detail queries.
 - Prefer explicit pagination when the API shape is known.
@@ -160,6 +164,7 @@ coral source add --file ./my-source.yaml
 coral source test my_source
 coral sql "SELECT schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY schema_name, table_name LIMIT 50 OFFSET 0"
 coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
+coral sql "SELECT statement_name, execute_name, arguments_json, sql_execute_example FROM coral.prepared_statements WHERE schema_name = 'my_source' ORDER BY statement_name LIMIT 50 OFFSET 0"
 coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
 coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 coral sql "SELECT key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' ORDER BY key"

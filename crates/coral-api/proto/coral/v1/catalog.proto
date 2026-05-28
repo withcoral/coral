@@ -117,6 +117,34 @@ message TableFunction {
   repeated TableFunctionResultColumn result_columns = 6;
 }
 
+// An argument accepted by a source-declared prepared statement.
+message PreparedStatementArgument {
+  // Argument name from the source spec.
+  string name = 1;
+  // Source-spec data type rendered as text.
+  string data_type = 2;
+}
+
+// A source-declared prepared statement in one workspace.
+message PreparedStatement {
+  // Workspace whose source set makes this prepared statement visible.
+  Workspace workspace = 1;
+  // Source schema that owns the prepared statement.
+  string schema_name = 2;
+  // Source-scoped prepared statement name.
+  string name = 3;
+  // Runtime DataFusion prepared statement name used with EXECUTE.
+  string execute_name = 4;
+  // User-facing statement description.
+  string description = 5;
+  // Positional arguments accepted by the statement.
+  repeated PreparedStatementArgument arguments = 6;
+  // SQL text prepared by the source.
+  string sql = 7;
+  // Example EXECUTE statement.
+  string sql_execute_example = 8;
+}
+
 // Catalog item kind filter for unified discovery.
 enum CatalogItemKind {
   // Return every currently supported catalog item kind.
@@ -125,6 +153,8 @@ enum CatalogItemKind {
   CATALOG_ITEM_KIND_TABLE = 1;
   // Query-visible table functions.
   CATALOG_ITEM_KIND_TABLE_FUNCTION = 2;
+  // Source-declared prepared statements.
+  CATALOG_ITEM_KIND_PREPARED_STATEMENT = 3;
 }
 
 // One queryable catalog item.
@@ -135,6 +165,8 @@ message CatalogItem {
     TableSummary table = 1;
     // Query-visible table function metadata.
     TableFunction table_function = 2;
+    // Source-declared prepared statement metadata.
+    PreparedStatement prepared_statement = 3;
   }
 }
 

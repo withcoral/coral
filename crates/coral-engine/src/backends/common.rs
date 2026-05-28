@@ -8,7 +8,7 @@ use crate::{QueryRuntimeContext, RequestAuthenticator};
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
+    PreparedStatementSpec, SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::TableFunctionImpl;
@@ -54,6 +54,22 @@ pub(crate) struct RegisteredTableFunction {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct RegisteredPreparedStatement {
+    pub(crate) schema_name: String,
+    pub(crate) statement_name: String,
+    pub(crate) execute_name: String,
+    pub(crate) description: String,
+    pub(crate) arguments: Vec<RegisteredPreparedStatementArgument>,
+    pub(crate) sql: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredPreparedStatementArgument {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RegisteredFilter {
     pub(crate) name: String,
     pub(crate) mode: String,
@@ -96,6 +112,7 @@ pub(crate) struct RegisteredSource {
     pub(crate) schema_name: String,
     pub(crate) tables: Vec<RegisteredTable>,
     pub(crate) table_functions: Vec<RegisteredTableFunction>,
+    pub(crate) prepared_statements: Vec<RegisteredPreparedStatement>,
     pub(crate) inputs: Vec<RegisteredInput>,
 }
 
@@ -115,6 +132,15 @@ pub(crate) fn internal_table_function_name(schema: &str, function: &str) -> Stri
         "__coral_udtf_{}_{}",
         hex_encode(schema),
         hex_encode(function)
+    )
+}
+
+/// Build a collision-free `DataFusion` prepared statement name for a source.
+pub(crate) fn internal_prepared_statement_name(schema: &str, statement: &str) -> String {
+    format!(
+        "coral_prep_{}_{}",
+        hex_encode(schema),
+        hex_encode(statement)
     )
 }
 
@@ -312,6 +338,30 @@ pub(crate) fn build_registered_table_function(
         arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
         search_limits_json: function.search_limits.as_ref().map(serialize_search_limits),
     }
+}
+
+pub(crate) fn build_registered_prepared_statements(
+    schema_name: &str,
+    statements: &[PreparedStatementSpec],
+) -> Vec<RegisteredPreparedStatement> {
+    statements
+        .iter()
+        .map(|statement| RegisteredPreparedStatement {
+            schema_name: schema_name.to_string(),
+            statement_name: statement.name.clone(),
+            execute_name: internal_prepared_statement_name(schema_name, &statement.name),
+            description: statement.description.clone(),
+            arguments: statement
+                .args
+                .iter()
+                .map(|arg| RegisteredPreparedStatementArgument {
+                    name: arg.name.clone(),
+                    data_type: arg.data_type.clone(),
+                })
+                .collect(),
+            sql: statement.sql.clone(),
+        })
+        .collect()
 }
 
 fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {

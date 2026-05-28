@@ -7,10 +7,10 @@ use coral_api::{
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
-        DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, Source, Table, TableFunction, TableFunctionArgument,
-        TableFunctionResultColumn, TableSummary, ValidateSourceResponse, Workspace, catalog_item,
-        query_test_result,
+        DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, PreparedStatement,
+        PreparedStatementArgument, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source,
+        Table, TableFunction, TableFunctionArgument, TableFunctionResultColumn, TableSummary,
+        ValidateSourceResponse, Workspace, catalog_item, query_test_result,
     },
 };
 use opentelemetry::propagation::Extractor;
@@ -289,6 +289,11 @@ pub(crate) fn catalog_item_to_proto(
                 function,
             ))),
         },
+        CatalogItem::PreparedStatement(statement) => ProtoCatalogItem {
+            item: Some(catalog_item::Item::PreparedStatement(
+                prepared_statement_to_proto(workspace_name, statement),
+            )),
+        },
     }
 }
 
@@ -336,6 +341,40 @@ pub(crate) fn table_function_to_proto(
             })
             .collect(),
     }
+}
+
+pub(crate) fn prepared_statement_to_proto(
+    workspace_name: &WorkspaceName,
+    statement: coral_engine::PreparedStatementInfo,
+) -> PreparedStatement {
+    let sql_execute_example = prepared_statement_execute_example(&statement);
+    PreparedStatement {
+        workspace: Some(workspace_to_proto(workspace_name)),
+        schema_name: statement.schema_name,
+        name: statement.statement_name,
+        execute_name: statement.execute_name,
+        description: statement.description,
+        arguments: statement
+            .arguments
+            .into_iter()
+            .map(|argument| PreparedStatementArgument {
+                name: argument.name,
+                data_type: argument.data_type,
+            })
+            .collect(),
+        sql: statement.sql,
+        sql_execute_example,
+    }
+}
+
+fn prepared_statement_execute_example(statement: &coral_engine::PreparedStatementInfo) -> String {
+    let arguments = statement
+        .arguments
+        .iter()
+        .map(|argument| format!("<{}>", argument.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("EXECUTE {}({arguments})", statement.execute_name)
 }
 
 pub(crate) fn describe_table_response_to_proto(

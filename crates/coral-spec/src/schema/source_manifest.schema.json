@@ -71,6 +71,10 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
+    "prepared_statements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/prepared_statement" }
+    },
     "backend": { "type": "string", "enum": ["http", "file", "mcp"] },
     "inputs": { "$ref": "#/$defs/inputs" },
     "base_url": { "type": "string", "minLength": 1 },
@@ -134,6 +138,29 @@
           }
         }
       ]
+    },
+    "prepared_statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sql"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/prepared_statement_arg" }
+        },
+        "sql": { "type": "string", "minLength": 1 }
+      }
+    },
+    "prepared_statement_arg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "$ref": "#/$defs/manifest_data_type" }
+      }
     },
     "credential": {
       "type": "object",

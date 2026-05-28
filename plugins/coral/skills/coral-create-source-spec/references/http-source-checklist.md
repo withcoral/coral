@@ -89,6 +89,7 @@ Additional hint guidance:
 - Use seed queries to discover real IDs for child tables.
 - If a table keeps failing with a missing required filter, inspect `coral.columns` and match the exact filter name.
 - Use `test_queries` for the small set of queries you want `coral source test` to run as a smoke/connection check.
+- Use top-level `prepared_statements` only for reusable read-only SQL over already exposed Coral tables or table functions. Use table functions instead when invocation arguments need to shape provider-native HTTP calls.
 
 ## Pagination
 
@@ -115,6 +116,7 @@ coral source add --file ./my-source.yaml
 coral source test my_source
 coral sql "SELECT table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY table_name LIMIT 50 OFFSET 0"
 coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
+coral sql "SELECT statement_name, execute_name, arguments_json, sql_execute_example FROM coral.prepared_statements WHERE schema_name = 'my_source' ORDER BY statement_name LIMIT 50 OFFSET 0"
 coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
 coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 ```

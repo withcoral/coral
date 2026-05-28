@@ -38,6 +38,19 @@ fn users_manifest(dir: &std::path::Path) -> Value {
     })
 }
 
+fn users_manifest_with_prepared_statement(dir: &std::path::Path) -> Value {
+    let mut manifest = users_manifest(dir);
+    manifest["prepared_statements"] = json!([{
+        "name": "users_for_team",
+        "description": "Users scoped to one team",
+        "args": [
+            { "name": "team_id", "type": "Int64" }
+        ],
+        "sql": "SELECT id, name FROM alpha.users WHERE team_id = $1 ORDER BY id"
+    }]);
+    manifest
+}
+
 fn teams_manifest(dir: &std::path::Path) -> Value {
     json!({
         "name": "beta",
@@ -109,6 +122,89 @@ async fn coral_tables_lists_installed_sources() {
             json!({"schema_name": "alpha", "table_name": "users"}),
             json!({"schema_name": "beta", "table_name": "teams"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn source_declared_prepared_statements_are_queryable() {
+    let temp = TempDir::new().expect("temp dir");
+    let alpha_dir = temp.path().join("alpha");
+    write_jsonl_file(
+        &alpha_dir,
+        "users.jsonl",
+        &[
+            json!({"id": 1, "team_id": 10, "name": "Ada"}),
+            json!({"id": 2, "team_id": 20, "name": "Grace"}),
+            json!({"id": 3, "team_id": 10, "name": "Linus"}),
+        ],
+    );
+    let sources = vec![build_source(users_manifest_with_prepared_statement(
+        &alpha_dir,
+    ))];
+    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), Some("alpha"))
+        .await
+        .expect("catalog should load");
+    let statement = catalog
+        .prepared_statements
+        .first()
+        .expect("prepared statement");
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            &format!("EXECUTE {}(10)", statement.execute_name),
+        )
+        .await
+        .expect("prepared statement should execute"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"id": 1, "name": "Ada"}),
+            json!({"id": 3, "name": "Linus"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_prepared_statements_lists_source_declared_statements() {
+    let temp = TempDir::new().expect("temp dir");
+    let alpha_dir = temp.path().join("alpha");
+    write_jsonl_file(
+        &alpha_dir,
+        "users.jsonl",
+        &[json!({"id": 1, "team_id": 10, "name": "Ada"})],
+    );
+    let sources = vec![build_source(users_manifest_with_prepared_statement(
+        &alpha_dir,
+    ))];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT schema_name, statement_name, description, arguments_json, sql_execute_example \
+             FROM coral.prepared_statements WHERE schema_name = 'alpha'",
+        )
+        .await
+        .expect("prepared statement catalog query should succeed"),
+    );
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["schema_name"], "alpha");
+    assert_eq!(rows[0]["statement_name"], "users_for_team");
+    assert_eq!(rows[0]["description"], "Users scoped to one team");
+    assert_eq!(
+        rows[0]["arguments_json"],
+        r#"[{"name":"team_id","type":"Int64"}]"#
+    );
+    assert!(
+        rows[0]["sql_execute_example"]
+            .as_str()
+            .expect("execute example")
+            .starts_with("EXECUTE coral_prep_")
     );
 }
 

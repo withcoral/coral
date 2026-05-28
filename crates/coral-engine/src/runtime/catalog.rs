@@ -12,13 +12,14 @@ use datafusion::prelude::SessionContext;
 use serde::Serialize;
 
 use crate::backends::common::{
+    RegisteredPreparedStatement, RegisteredPreparedStatementArgument,
     RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
 };
 use crate::backends::{RegisteredSource, RegisteredTableFunction};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
-    ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
-    TableInfo,
+    ColumnInfo, PreparedStatementArgumentInfo, PreparedStatementInfo, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// Schema name for source metadata tables such as `coral.tables`.
@@ -36,6 +37,7 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
     let filters_table = build_filters_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
     let table_functions_table = build_table_functions_table(active_sources)?;
+    let prepared_statements_table = build_prepared_statements_table(active_sources)?;
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
@@ -47,6 +49,10 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
         "table_functions".to_string(),
         Arc::new(table_functions_table),
     );
+    meta_tables.insert(
+        "prepared_statements".to_string(),
+        Arc::new(prepared_statements_table),
+    );
 
     let catalog = ctx
         .catalog("datafusion")
@@ -57,6 +63,85 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
     )?;
 
     Ok(())
+}
+
+fn build_prepared_statements_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("schema_name", DataType::Utf8, false),
+        Field::new("statement_name", DataType::Utf8, false),
+        Field::new("execute_name", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, false),
+        Field::new("arguments_json", DataType::Utf8, false),
+        Field::new("sql", DataType::Utf8, false),
+        Field::new("sql_execute_example", DataType::Utf8, false),
+    ]));
+
+    let mut rows = active_sources
+        .iter()
+        .flat_map(|source| source.prepared_statements.iter())
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        (&left.schema_name, &left.statement_name).cmp(&(&right.schema_name, &right.statement_name))
+    });
+    let arguments_json = rows
+        .iter()
+        .map(|row| prepared_statement_arguments_json(row))
+        .collect::<Result<Vec<_>>>()?;
+    let examples = rows
+        .iter()
+        .map(|row| prepared_statement_execute_example(row))
+        .collect::<Vec<_>>();
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            utf8_column(rows.iter().map(|row| Some(row.schema_name.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.statement_name.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.execute_name.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.description.as_str()))),
+            utf8_column(arguments_json.iter().map(|value| Some(value.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.sql.as_str()))),
+            utf8_column(examples.iter().map(|value| Some(value.as_str()))),
+        ],
+    )
+    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
+
+    MemTable::try_new(schema, vec![vec![batch]])
+}
+
+fn prepared_statement_arguments_json(row: &RegisteredPreparedStatement) -> Result<String> {
+    let arguments = row
+        .arguments
+        .iter()
+        .map(PreparedStatementArgumentJson::from)
+        .collect::<Vec<_>>();
+    serde_json::to_string(&arguments).map_err(|error| DataFusionError::External(Box::new(error)))
+}
+
+fn prepared_statement_execute_example(row: &RegisteredPreparedStatement) -> String {
+    let arguments = row
+        .arguments
+        .iter()
+        .map(|argument| format!("<{}>", argument.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("EXECUTE {}({arguments})", row.execute_name)
+}
+
+#[derive(Serialize)]
+struct PreparedStatementArgumentJson<'a> {
+    name: &'a str,
+    #[serde(rename = "type")]
+    data_type: &'a str,
+}
+
+impl<'a> From<&'a RegisteredPreparedStatementArgument> for PreparedStatementArgumentJson<'a> {
+    fn from(argument: &'a RegisteredPreparedStatementArgument) -> Self {
+        Self {
+            name: &argument.name,
+            data_type: &argument.data_type,
+        }
+    }
 }
 
 fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
@@ -239,6 +324,40 @@ pub(crate) fn collect_table_functions(
         (&left.schema_name, &left.function_name).cmp(&(&right.schema_name, &right.function_name))
     });
     functions
+}
+
+/// Collect typed source-declared prepared statement metadata.
+#[must_use]
+pub(crate) fn collect_prepared_statements(
+    active_sources: &[RegisteredSource],
+) -> Vec<PreparedStatementInfo> {
+    let mut statements = active_sources
+        .iter()
+        .flat_map(|source| {
+            source
+                .prepared_statements
+                .iter()
+                .map(move |statement| PreparedStatementInfo {
+                    schema_name: statement.schema_name.clone(),
+                    statement_name: statement.statement_name.clone(),
+                    execute_name: statement.execute_name.clone(),
+                    description: statement.description.clone(),
+                    arguments: statement
+                        .arguments
+                        .iter()
+                        .map(|argument| PreparedStatementArgumentInfo {
+                            name: argument.name.clone(),
+                            data_type: argument.data_type.clone(),
+                        })
+                        .collect(),
+                    sql: statement.sql.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    statements.sort_by(|left, right| {
+        (&left.schema_name, &left.statement_name).cmp(&(&right.schema_name, &right.statement_name))
+    });
+    statements
 }
 
 fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
@@ -596,6 +715,7 @@ mod tests {
                 arg_names: Vec::new(),
                 search_limits_json: None,
             }],
+            prepared_statements: Vec::new(),
             inputs: Vec::new(),
         }]);
 

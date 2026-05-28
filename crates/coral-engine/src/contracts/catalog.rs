@@ -43,6 +43,34 @@ pub struct CatalogInfo {
     pub tables: Vec<TableInfo>,
     /// Source-scoped table functions.
     pub table_functions: Vec<TableFunctionInfo>,
+    /// Source-declared prepared SQL statements.
+    pub prepared_statements: Vec<PreparedStatementInfo>,
+}
+
+/// Describes one argument accepted by a source-declared prepared statement.
+#[derive(Debug, Clone)]
+pub struct PreparedStatementArgumentInfo {
+    /// Argument name from the source spec.
+    pub name: String,
+    /// Data type rendered in source-spec form.
+    pub data_type: String,
+}
+
+/// Describes one source-declared prepared SQL statement.
+#[derive(Debug, Clone)]
+pub struct PreparedStatementInfo {
+    /// `SQL` schema/source name.
+    pub schema_name: String,
+    /// Public source-scoped prepared statement name.
+    pub statement_name: String,
+    /// Runtime `DataFusion` prepared statement name used with `EXECUTE`.
+    pub execute_name: String,
+    /// User-facing statement description.
+    pub description: String,
+    /// Positional arguments accepted by this statement.
+    pub arguments: Vec<PreparedStatementArgumentInfo>,
+    /// SQL text prepared by the source.
+    pub sql: String,
 }
 
 /// Describes one argument accepted by a source-scoped table function.
