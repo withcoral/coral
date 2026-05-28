@@ -510,41 +510,6 @@ async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Parses CLI arguments and runs the shared Coral CLI.
-///
-/// # Errors
-///
-/// Returns an error if argument parsing, command execution, or output
-/// formatting fails.
-pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), CliError> {
-    let Cli {
-        feature_overrides,
-        command,
-    } = Cli::parse();
-    let feature_overrides = feature_overrides.into_overrides();
-    let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
-
-    match command.required_runtime() {
-        RequiredRuntime::AppClient if is_mcp_stdio => {
-            run_app_command(app, command, Some(&ctx), &feature_overrides).await
-        }
-        RequiredRuntime::AppClient => {
-            coral_app::run_with_context(
-                &ctx,
-                Box::pin(run_app_command(app, command, None, &feature_overrides)),
-            )
-            .await
-        }
-        RequiredRuntime::None => {
-            coral_app::run_with_context(
-                &ctx,
-                Box::pin(run_no_runtime_command(command, &feature_overrides)),
-            )
-            .await
-        }
-    }
-}
-
 async fn run_no_runtime_command(
     command: Command,
     feature_overrides: &coral_app::features::FeatureOverrides,
