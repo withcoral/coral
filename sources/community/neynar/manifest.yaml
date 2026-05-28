@@ -52,6 +52,10 @@ functions:
         - result
         - next
         - cursor
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
     columns:
       - name: hash
         type: Utf8

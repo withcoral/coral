@@ -78,11 +78,11 @@ ORDER BY reactions__likes_count DESC
 LIMIT 10;
 ```
 
-### Search for casts by a specific user
+### Search for casts mentioning a specific topic
 
 ```sql
-SELECT hash, text, timestamp
-FROM neynar.search_casts(q => 'from:vitalik')
+SELECT hash, text, author__username, timestamp
+FROM neynar.search_casts(q => 'ethereum scaling')
 LIMIT 20;
 ```
 
@@ -98,17 +98,21 @@ FROM neynar.search_casts(q => 'optimism grants')
 LIMIT 50;
 ```
 
-### Cross-source JOIN with a grantee registry
+### Cross-source JOIN with other tables
+
+Since `search_casts` is a table function with a required argument, join it with pre-computed data rather than passing outer columns into the function call:
 
 ```sql
-SELECT
-  g.recipient_name,
-  COUNT(DISTINCT c.hash) AS cast_mentions,
-  AVG(c.reactions__likes_count) AS avg_likes
-FROM grantees.registry g
-JOIN neynar.search_casts(q => g.project_slug) c ON true
-GROUP BY g.recipient_name
-ORDER BY cast_mentions DESC;
+-- Search for casts about a project, then join with local data
+WITH cast_results AS (
+  SELECT hash, text, author__username, reactions__likes_count
+  FROM neynar.search_casts(q => 'aave')
+  LIMIT 50
+)
+SELECT author__username, COUNT(*) AS mentions, AVG(reactions__likes_count) AS avg_likes
+FROM cast_results
+GROUP BY author__username
+ORDER BY mentions DESC;
 ```
 
 ---
@@ -121,7 +125,7 @@ The `/cast/search` endpoint requires a **paid Neynar API plan**. Free API keys r
 
 ### Provider-ranked retrieval
 
-This source uses `kind: search` — a provider-ranked retrieval pattern. The API decides relevance ordering based on its own ranking algorithm. You cannot filter by `WHERE author__username = '...'` at the SQL level; instead, include the username in the search query (e.g., `q => 'from:username'`).
+This source uses `kind: search` — a provider-ranked retrieval pattern. The API decides relevance ordering based on its own ranking algorithm. You cannot filter by `WHERE author__username = '...'` at the SQL level; instead, include relevant keywords in the search query to influence ranking.
 
 ### Search limits
 
@@ -131,7 +135,7 @@ This source uses `kind: search` — a provider-ranked retrieval pattern. The API
 
 ### Rate limits
 
-Neynar rate limits depend on your plan tier. The source uses cursor-based pagination for iterating through results within a single search call.
+Neynar rate limits depend on your plan tier. The source supports cursor-based pagination for fetching additional pages of results within a query, up to the `max_top_k` limit.
 
 ---
 
