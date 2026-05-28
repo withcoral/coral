@@ -36,14 +36,14 @@ To disable trace history:
 enabled = false
 ```
 
-HTTP request and response body previews are not recorded by default. To enable local body recording:
+HTTP and MCP request and response body previews are not recorded by default. To enable local body recording:
 
 ```toml
 [trace_history]
 record_http_bodies = true
 ```
 
-Recorded HTTP body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. Body preview spans are never exported to OTLP, even if a broad `[otel].trace_filter` would otherwise match `coral.http.body`.
+The same flag enables HTTP body previews under the `coral.http.body` target and MCP tool-call argument and result previews under the `coral.mcp.body` target. Recorded body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. Body preview spans are never exported to OTLP, even if a broad `[otel].trace_filter` would otherwise match `coral.http.body` or `coral.mcp.body`.
 
 ## Configuration reference
 
@@ -56,7 +56,7 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | `endpoint`                     | string  | unset                                                                  | OTLP/HTTP base URL. When unset, no signals are exported to an external collector. |
 | `headers`                      | string  | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
 | `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
-| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off,coral.mcp.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
 
 ### `[trace_history]`
