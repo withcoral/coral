@@ -102,7 +102,7 @@ impl HttpSourceClient {
         filter_values: &HashMap<String, String>,
         arg_values: &HashMap<String, String>,
         sql_limit: Option<usize>,
-        request_explain: &crate::backends::http::request::ResolvedHttpRequest,
+        projection: Option<&Vec<usize>>,
     ) -> Result<Vec<Value>> {
         fetch_rows(
             self,
@@ -110,7 +110,7 @@ impl HttpSourceClient {
             filter_values,
             arg_values,
             sql_limit,
-            request_explain,
+            projection,
         )
         .await
     }

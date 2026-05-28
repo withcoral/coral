@@ -10,8 +10,7 @@ use crate::backends::http::transport::build_logged_url;
 use crate::backends::http::url::{join_url, normalize_base_url};
 use crate::backends::shared::json_exec::JsonExecExplain;
 use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
-use coral_spec::BodySpec;
-use coral_spec::{ParsedTemplate, RequestSpec};
+use coral_spec::{BodySpec, HttpMethod, ParsedTemplate, RequestSpec};
 
 #[derive(Debug, Clone)]
 pub(super) enum RequestBody {
@@ -103,12 +102,63 @@ pub(super) fn build_request_explain(
     Ok(ResolvedHttpRequest::new(resolved_request, fingerprint))
 }
 
+pub(super) fn build_outgoing_request_explain(
+    method: HttpMethod,
+    url: &str,
+    query_pairs: &[(String, String)],
+    body: Option<&RequestBody>,
+    limit: Option<usize>,
+    projection: Option<&[usize]>,
+) -> Result<ResolvedHttpRequest> {
+    let logged_url = build_logged_url(url, query_pairs);
+    let projection = projection.map(|indices| indices.to_vec());
+    let resolved_request = serde_json::to_string(&json!({
+        "method": http_method_label(method),
+        "url": logged_url,
+        "query": query_pairs
+            .iter()
+            .map(|(name, value)| json!({"name": name, "value": value}))
+            .collect::<Vec<_>>(),
+        "body": body.map(request_body_to_json),
+        "limit": limit,
+        "projection": projection,
+    }))
+    .map_err(|error| {
+        DataFusionError::Execution(format!("failed to serialize HTTP outgoing request explain payload: {error}"))
+    })?;
+    let fingerprint_payload = json!({
+        "url": logged_url,
+        "query": query_pairs
+            .iter()
+            .map(|(name, value)| json!({"name": name, "value": value}))
+            .collect::<Vec<_>>(),
+        "limit": limit,
+        "projection": projection,
+    });
+    let fingerprint = request_fingerprint(&fingerprint_payload)?;
+    Ok(ResolvedHttpRequest::new(resolved_request, fingerprint))
+}
+
 fn request_fingerprint(payload: &Value) -> Result<String> {
     let bytes = serde_json::to_vec(payload).map_err(|error| {
         DataFusionError::Execution(format!("failed to serialize HTTP request fingerprint payload: {error}"))
     })?;
     let digest = Sha256::digest(bytes);
     Ok(format!("{digest:x}"))
+}
+
+fn http_method_label(method: HttpMethod) -> &'static str {
+    match method {
+        HttpMethod::GET => "GET",
+        HttpMethod::POST => "POST",
+    }
+}
+
+fn request_body_to_json(body: &RequestBody) -> Value {
+    match body {
+        RequestBody::Json(value) => value.clone(),
+        RequestBody::Text(text) => Value::String(text.clone()),
+    }
 }
 pub(super) fn build_query_pairs(
     request: &coral_spec::RequestSpec,
@@ -219,7 +269,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_request_body, build_request_explain, set_path_value, RequestBody,
+        build_outgoing_request_explain, build_request_body, build_request_explain,
+        set_path_value, RequestBody,
     };
     use crate::backends::shared::template::RenderContext;
     use coral_spec::{
@@ -380,5 +431,32 @@ mod tests {
             explain_different_limit.fingerprint()
         );
         assert!(explain_one.resolved_request().contains("https://api.example.com/items"));
+    }
+
+    #[test]
+    fn build_outgoing_request_explain_reflects_page_specific_values() {
+        let first = build_outgoing_request_explain(
+            HttpMethod::GET,
+            "https://api.example.com/items?page=1",
+            &[("page".to_string(), "1".to_string())],
+            Some(&RequestBody::Text("first page".to_string())),
+            Some(25),
+            Some(&[0, 1]),
+        )
+        .expect("outgoing request explain should build");
+        let second = build_outgoing_request_explain(
+            HttpMethod::GET,
+            "https://api.example.com/items?page=2",
+            &[("page".to_string(), "2".to_string())],
+            Some(&RequestBody::Text("second page".to_string())),
+            Some(25),
+            Some(&[0, 1]),
+        )
+        .expect("outgoing request explain should build");
+
+        assert_ne!(first.resolved_request(), second.resolved_request());
+        assert_ne!(first.fingerprint(), second.fingerprint());
+        assert!(first.resolved_request().contains("first page"));
+        assert!(second.resolved_request().contains("second page"));
     }
 }

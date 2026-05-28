@@ -73,7 +73,7 @@ struct HttpFetchPlan {
     filter_values: Arc<HashMap<String, String>>,
     arg_values: Arc<HashMap<String, String>>,
     limit: Option<usize>,
-    request_explain: crate::backends::http::request::ResolvedHttpRequest,
+    projection: Option<Vec<usize>>,
 }
 
 pub(crate) struct HttpJsonExecRequest<'a> {
@@ -97,7 +97,7 @@ impl RowFetcher for HttpFetchPlan {
                 &self.filter_values,
                 &self.arg_values,
                 self.limit,
-                &self.request_explain,
+                self.projection.as_ref(),
             )
             .await
     }
@@ -124,7 +124,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         filter_values: filter_values.clone(),
         arg_values: arg_values.clone(),
         limit,
-        request_explain: request_explain.clone(),
+        projection: projection.cloned(),
     });
 
     let converter = {
