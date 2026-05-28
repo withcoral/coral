@@ -25,6 +25,9 @@ pub enum AppError {
     /// Provider-managed credential refresh failed during active source use.
     #[error("credential refresh failed: {0}")]
     CredentialRefresh(String),
+    /// A required remote dependency was unavailable.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
     /// Filesystem access failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -189,6 +192,7 @@ fn app_code(error: &AppError) -> Code {
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
             Code::FailedPrecondition
         }
+        AppError::Unavailable(_) => Code::Unavailable,
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Io(_)
         | AppError::Yaml(_)
@@ -256,6 +260,14 @@ mod tests {
             status.get_error_details_vec().is_empty(),
             "io::NotFound must not carry SOURCE_NOT_FOUND details"
         );
+    }
+
+    #[test]
+    fn app_status_maps_unavailable() {
+        let status = app_status(AppError::Unavailable(
+            "remote descriptor timed out".to_string(),
+        ));
+        assert_eq!(status.code(), Code::Unavailable);
     }
 
     #[test]

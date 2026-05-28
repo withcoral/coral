@@ -162,12 +162,12 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let response_workspace_name = workspace_name.clone();
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
                 name: bundled_name,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
-            let response_workspace_name = workspace_name.clone();
             let installed = run_blocking_source_operation(move || {
                 sources.create_bundled_source(&workspace_name, &command)
             })
@@ -303,12 +303,17 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let response_workspace_name = workspace_name.clone();
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let result = sources
-                .refresh_source(&workspace_name, &source_name)
-                .map_err(app_status)?;
+            let result = run_blocking_source_operation(move || {
+                sources.refresh_source(&workspace_name, &source_name)
+            })
+            .await?;
             Ok(Response::new(RefreshSourceResponse {
-                source: Some(installed_source_to_proto(&workspace_name, result.source)),
+                source: Some(installed_source_to_proto(
+                    &response_workspace_name,
+                    result.source,
+                )),
                 materialization: Some(materialization_summary_to_proto(result.materialization)),
                 diagnostics: result
                     .diagnostics

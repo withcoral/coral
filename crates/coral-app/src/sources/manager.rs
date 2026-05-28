@@ -18,8 +18,8 @@ use crate::sources::catalog::{
 };
 use crate::sources::materialization::{
     MaterializationBuild, SourceMaterializationSummary, build_v4_materialization_tmp,
-    cleanup_materialization_backup, new_materialization_suffix, replace_v4_materialization,
-    restore_materialization_backup,
+    cleanup_materialization_backup, cleanup_materialization_tmp, new_materialization_suffix,
+    replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -29,6 +29,7 @@ use coral_spec::parse_source_manifest_yaml;
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -455,6 +456,33 @@ impl SourceManager {
                 "source '{source_name}' does not use DSL v4 materialization"
             )));
         };
+        let mut candidate = describe_manifest(&manifest_yaml, source.origin, true)?;
+        if candidate.name != *source_name {
+            return Err(AppError::FailedPrecondition(format!(
+                "installed source '{source_name}' does not match manifest name '{}'",
+                candidate.name
+            )));
+        }
+        candidate.installed = true;
+        candidate.credential_storage = Some(source.effective_credential_storage());
+        let bindings = SourceBindings {
+            variables: source
+                .variables
+                .iter()
+                .map(|(key, value)| SourceBinding {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+            secrets: Vec::new(),
+        };
+        let stored_material = self.source_stored_material_for_validation(
+            workspace_name,
+            &candidate,
+            &bindings,
+            &BTreeSet::new(),
+        )?;
+        validate_bindings(&candidate, &bindings, &stored_material)?;
         let build = build_v4_materialization_tmp(
             &self.layout,
             workspace_name,
@@ -464,13 +492,35 @@ impl SourceManager {
             source.origin,
             &new_materialization_suffix("refresh"),
         )?;
-        let backup =
-            replace_v4_materialization(&self.layout, workspace_name, source_name, &build.temp_dir)?;
-        cleanup_materialization_backup(backup);
+        let backup = match replace_v4_materialization(
+            &self.layout,
+            workspace_name,
+            source_name,
+            &build.temp_dir,
+        ) {
+            Ok(backup) => backup,
+            Err(error) => {
+                cleanup_materialization_tmp(Some(&build.temp_dir));
+                return Err(error);
+            }
+        };
         let mut source = source;
-        source.version = Some(manifest.source_version().to_string());
+        source.version = match source.origin {
+            SourceOrigin::Bundled => None,
+            SourceOrigin::Imported => Some(manifest.source_version().to_string()),
+        };
+        if let Err(error) = self
+            .config_store
+            .upsert_source(workspace_name, source.clone())
+        {
+            restore_materialization_backup(&self.layout, workspace_name, source_name, backup);
+            return Err(error);
+        }
+        cleanup_materialization_backup(backup);
+        let mut resolved = source;
+        resolved.version = Some(manifest.source_version().to_string());
         Ok(RefreshSourceResult {
-            source,
+            source: resolved,
             materialization: build.summary,
             diagnostics: build.diagnostics,
         })
@@ -514,19 +564,34 @@ impl SourceManager {
             );
             return Err(error);
         }
-        if source_dir.exists()
-            && let Err(error) = std::fs::remove_dir_all(&source_dir)
-        {
-            self.restore_source_rollback_state(
-                workspace_name,
-                source_name,
-                Some(previous),
-                None,
-                &credential_guard,
-            );
-            return Err(error.into());
+        let source_dir_backup =
+            source_dir.with_file_name(format!("{source_name}.delete.rollback.{}", Uuid::new_v4()));
+        let had_source_dir = source_dir.exists();
+        if had_source_dir {
+            if source_dir_backup.exists() {
+                std::fs::remove_dir_all(&source_dir_backup)?;
+            }
+            if let Err(error) = std::fs::rename(&source_dir, &source_dir_backup) {
+                self.restore_source_rollback_state(
+                    workspace_name,
+                    source_name,
+                    Some(previous),
+                    None,
+                    &credential_guard,
+                );
+                return Err(error.into());
+            }
         }
         if let Err(error) = self.config_store.remove_source(workspace_name, source_name) {
+            if had_source_dir
+                && source_dir_backup.exists()
+                && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
+            {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                    source_dir_backup.display()
+                )));
+            }
             self.restore_source_rollback_state(
                 workspace_name,
                 source_name,
@@ -535,6 +600,9 @@ impl SourceManager {
                 &credential_guard,
             );
             return Err(error);
+        }
+        if source_dir_backup.exists() {
+            std::fs::remove_dir_all(&source_dir_backup)?;
         }
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
         cleanup_empty_parent(
@@ -573,6 +641,7 @@ impl SourceManager {
         if let Err(error) =
             self.persist_manifest_artifact(workspace_name, &source_name, request.manifest_yaml)
         {
+            cleanup_materialization_tmp(request.materialization_tmp.as_deref());
             self.restore_source_rollback_state(
                 workspace_name,
                 &source_name,
@@ -613,6 +682,7 @@ impl SourceManager {
                 ) {
                     Ok(outcome) => outcome,
                     Err(error) => {
+                        cleanup_materialization_tmp(request.materialization_tmp.as_deref());
                         self.restore_source_rollback_state(
                             workspace_name,
                             &source_name,
@@ -643,6 +713,7 @@ impl SourceManager {
                 ) {
                     Ok(backup) => backup,
                     Err(error) => {
+                        cleanup_materialization_tmp(request.materialization_tmp.as_deref());
                         self.restore_source_rollback_state(
                             workspace_name,
                             &source_name,
@@ -1463,6 +1534,37 @@ surfaces:
         )
     }
 
+    fn manifest_v4_with_required_token(openapi_file: &std::path::Path) -> String {
+        let bytes = v4_openapi_fixture().as_bytes();
+        format!(
+            r#"
+name: github_v4_test
+version: 2.0.1
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+    inputs:
+      API_BASE:
+        kind: variable
+        default: http://127.0.0.1:1
+      GITHUB_TOKEN:
+        kind: secret
+    base_url: "{{{{input.API_BASE}}}}"
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: template
+          template: Bearer {{{{input.GITHUB_TOKEN}}}}
+"#,
+            openapi_file.display(),
+            sha256_hex(bytes)
+        )
+    }
+
     fn manifest_without_secrets() -> String {
         r#"
 name: public_messages
@@ -1570,10 +1672,19 @@ tables:
     #[test]
     fn import_v4_source_writes_materialized_artifacts() {
         let temp = TempDir::new().expect("temp dir");
+        let descriptor_root = std::env::current_dir()
+            .expect("cwd")
+            .join("target")
+            .join("v4-test-fixtures");
+        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
+        let descriptor_temp = tempfile::Builder::new()
+            .prefix("github-v4-")
+            .tempdir_in(descriptor_root)
+            .expect("descriptor temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let openapi_file = temp.path().join("github-openapi.yaml");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
@@ -1601,6 +1712,55 @@ tables:
                 .join("rest")
                 .join("semantic-ir.yaml")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn refresh_v4_source_rejects_new_required_secret_without_materializing() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_root = std::env::current_dir()
+            .expect("cwd")
+            .join("target")
+            .join("v4-test-fixtures");
+        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
+        let descriptor_temp = tempfile::Builder::new()
+            .prefix("github-v4-refresh-")
+            .tempdir_in(descriptor_root)
+            .expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import v4 source");
+        let source_name = SourceName::parse("github_v4_test").expect("source");
+        std::fs::write(
+            layout.manifest_file(&default_workspace(), &source_name),
+            manifest_v4_with_required_token(&openapi_file),
+        )
+        .expect("update manifest");
+
+        let Err(error) = manager.refresh_source(&default_workspace(), &source_name) else {
+            panic!("refresh should reject missing token");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("missing required source secret 'GITHUB_TOKEN'"),
+            "{error}"
         );
     }
 

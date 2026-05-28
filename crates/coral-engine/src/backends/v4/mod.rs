@@ -1,6 +1,6 @@
 //! Runtime registration for materialized DSL v4 projections.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,6 +12,7 @@ use coral_spec::v4::{
 };
 use coral_spec::{SourceTableFunctionSpec, TableCommon};
 use datafusion::datasource::TableProvider;
+use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 
 use crate::CoreError;
@@ -32,11 +33,12 @@ pub(crate) fn compile_manifest(
     request: &BackendCompileRequest<'_>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     let mut compiled_surfaces = Vec::new();
+    let source_input_resolution = SourceInputResolutionContext::from_query_source(request.source);
     for surface in &manifest.surfaces {
         let http_manifest = http_manifest_for_surface(manifest, materialized, &surface.id)?;
         compiled_surfaces.push(crate::backends::http::compile_source(
             http_manifest,
-            SourceInputResolutionContext::from_query_source(request.source),
+            source_input_resolution.clone(),
             request.request_authenticators.clone(),
             request.runtime_context.body_capture_max_bytes,
             request.source_input_resolver.clone(),
@@ -162,21 +164,38 @@ impl CompiledBackendSource for V4CompiledSource {
     async fn register(
         &self,
         ctx: &SessionContext,
-        registration: &BackendRegistrationContext,
+        registration_context: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration> {
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_functions = SourceTableFunctions::new();
         let mut registered_tables = Vec::new();
         let mut registered_functions = Vec::new();
         let mut inputs = Vec::new();
+        let mut input_keys = BTreeSet::new();
         for compiled in &self.compiled_surfaces {
-            let registration = compiled.register(ctx, registration).await?;
-            tables.extend(registration.tables);
-            table_functions.extend(registration.table_functions);
+            let registration = compiled.register(ctx, registration_context).await?;
+            for (name, table) in registration.tables {
+                if tables.insert(name.clone(), table).is_some() {
+                    return Err(DataFusionError::Execution(format!(
+                        "DSL v4 source '{}' registered duplicate table '{name}'",
+                        self.source_name
+                    )));
+                }
+            }
+            for (name, function) in registration.table_functions {
+                if table_functions.insert(name.clone(), function).is_some() {
+                    return Err(DataFusionError::Execution(format!(
+                        "DSL v4 source '{}' registered duplicate table function '{name}'",
+                        self.source_name
+                    )));
+                }
+            }
             registered_tables.extend(registration.source.tables);
             registered_functions.extend(registration.source.table_functions);
-            if inputs.is_empty() {
-                inputs = registration.source.inputs;
+            for input in registration.source.inputs {
+                if input_keys.insert(input.key.clone()) {
+                    inputs.push(input);
+                }
             }
         }
         Ok(BackendRegistration {

@@ -207,8 +207,13 @@ impl V4SourceManifest {
             }
             let inputs = collect_declared_inputs(surface_value)?;
             validate_input_references(surface_value, &inputs)?;
-            merge_surface_inputs(&name, &raw_surface.id, &inputs, &mut input_by_key)?;
-            declared_inputs.extend(inputs.clone());
+            merge_surface_inputs(
+                &name,
+                &raw_surface.id,
+                &inputs,
+                &mut input_by_key,
+                &mut declared_inputs,
+            )?;
             let descriptor = parse_descriptor(&name, &raw_surface)?;
             if raw_surface.base_url.raw().trim().is_empty() {
                 return Err(ManifestError::validation(format!(
@@ -230,7 +235,6 @@ impl V4SourceManifest {
             });
         }
 
-        let declared_inputs = input_by_key.into_values().map(|(_, input)| input).collect();
         Ok(Self {
             common,
             surfaces: validated_surfaces,
@@ -325,6 +329,7 @@ fn merge_surface_inputs(
     surface_id: &str,
     inputs: &[ManifestInputSpec],
     input_by_key: &mut BTreeMap<String, (String, ManifestInputSpec)>,
+    declared_inputs: &mut Vec<ManifestInputSpec>,
 ) -> Result<()> {
     for input in inputs {
         if let Some((existing_surface, existing)) = input_by_key.get(&input.key) {
@@ -337,6 +342,7 @@ fn merge_surface_inputs(
             continue;
         }
         input_by_key.insert(input.key.clone(), (surface_id.to_string(), input.clone()));
+        declared_inputs.push(input.clone());
     }
     Ok(())
 }
@@ -832,9 +838,21 @@ impl<'a> OpenApiImporter<'a> {
                 continue;
             };
             let Some(parameter_obj) = resolved.as_object() else {
+                diagnostics.push(Diagnostic::warning(
+                    "OPENAPI_PARAMETER_INVALID",
+                    format!("operation '{operation_id}' has a parameter that is not an object"),
+                    self.surface.id.clone(),
+                    Some(operation_id.to_string()),
+                ));
                 continue;
             };
             let Some(name) = parameter_obj.get("name").and_then(Value::as_str) else {
+                diagnostics.push(Diagnostic::warning(
+                    "OPENAPI_PARAMETER_INVALID",
+                    format!("operation '{operation_id}' has a parameter without a string name"),
+                    self.surface.id.clone(),
+                    Some(operation_id.to_string()),
+                ));
                 continue;
             };
             let Some(location) = parameter_obj
@@ -873,10 +891,7 @@ impl<'a> OpenApiImporter<'a> {
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                     data_type: scalar,
-                    default_value: schema
-                        .get("default")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
+                    default_value: schema.get("default").map(openapi_default_to_string),
                     description: parameter_obj
                         .get("description")
                         .and_then(Value::as_str)
@@ -989,9 +1004,27 @@ impl<'a> OpenApiImporter<'a> {
             );
         };
 
-        let resolved = self
-            .resolve_ref(schema, operation_id, diagnostics)
-            .unwrap_or(schema.clone());
+        let Some(resolved) = self.resolve_ref(schema, operation_id, diagnostics) else {
+            diagnostics.push(Diagnostic::warning(
+                "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
+                format!("operation '{operation_id}' response schema could not be resolved"),
+                self.surface.id.clone(),
+                Some(operation_id.to_string()),
+            ));
+            return (
+                IrOperationOutput {
+                    cardinality: OutputCardinality::Unknown,
+                    type_ref: "json".to_string(),
+                    row_path: Vec::new(),
+                },
+                RestResponseAttachment {
+                    status_code,
+                    media_type,
+                    response: ResponseSpec::default(),
+                },
+                None,
+            );
+        };
         let (cardinality, row_path, row_schema, entity_name) =
             classify_response_schema(path, &resolved);
         let type_ref = self
@@ -1056,6 +1089,15 @@ impl<'a> OpenApiImporter<'a> {
             .get("nullable")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        self.types.insert(
+            type_id.clone(),
+            IrType {
+                id: type_id.clone(),
+                shape: IrTypeShape::Json,
+                nullable,
+                description: description.clone(),
+            },
+        );
         let shape = if let Some(all_of) = resolved.get("allOf").and_then(Value::as_array) {
             let mut merged = Map::new();
             for item in all_of {
@@ -1249,6 +1291,15 @@ fn parse_parameter_location(location: &str) -> Option<OpenApiParameterLocation> 
         "header" => Some(OpenApiParameterLocation::Header),
         "cookie" => Some(OpenApiParameterLocation::Cookie),
         _ => None,
+    }
+}
+
+fn openapi_default_to_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Null | Value::Array(_) | Value::Object(_) => value.to_string(),
     }
 }
 
@@ -1827,14 +1878,44 @@ fn entity_name_from_path(path: &str) -> String {
 }
 
 fn singularize(value: &str) -> String {
-    value
-        .strip_suffix('s')
-        .map_or_else(|| value.to_string(), ToString::to_string)
+    if let Some(stem) = value.strip_suffix("ies")
+        && !stem.is_empty()
+    {
+        return format!("{stem}y");
+    }
+    for suffix in ["ches", "shes", "xes", "ses"] {
+        if let Some(stem) = value.strip_suffix(suffix)
+            && !stem.is_empty()
+        {
+            return format!("{stem}{}", suffix.trim_end_matches("es"));
+        }
+    }
+    if value.ends_with('s')
+        && !value.ends_with("ss")
+        && !value.ends_with("us")
+        && !value.ends_with("ics")
+        && value != "news"
+    {
+        return value.trim_end_matches('s').to_string();
+    }
+    value.to_string()
 }
 
 fn pluralize(value: &str) -> String {
     if value.ends_with('s') {
         value.to_string()
+    } else if let Some(stem) = value.strip_suffix('y') {
+        if stem
+            .chars()
+            .next_back()
+            .is_some_and(|c| !"aeiou".contains(c))
+        {
+            format!("{stem}ies")
+        } else {
+            format!("{value}s")
+        }
+    } else if value.ends_with('x') || value.ends_with("ch") || value.ends_with("sh") {
+        format!("{value}es")
     } else {
         format!("{value}s")
     }
@@ -1867,24 +1948,30 @@ surfaces:
     file: /tmp/openapi.yaml
     sha256: 0000000000000000000000000000000000000000000000000000000000000000
     inputs:
-      API_BASE:
+      ZZZ_TOKEN:
+        kind: secret
+      AAA_BASE:
         kind: variable
         default: https://api.example.com
-      API_TOKEN:
-        kind: secret
-    base_url: "{{input.API_BASE}}"
+    base_url: "{{input.AAA_BASE}}"
     auth:
       type: HeaderAuth
       headers:
         - name: Authorization
           from: template
-          template: Bearer {{input.API_TOKEN}}
+          template: Bearer {{input.ZZZ_TOKEN}}
 "#,
         )
         .expect("v4 manifest");
         assert_eq!(manifest.dsl_version(), 4);
         assert!(manifest.as_v4().is_some());
         assert_eq!(manifest.declared_inputs().len(), 2);
+        let keys = manifest
+            .declared_inputs()
+            .iter()
+            .map(|input| input.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["ZZZ_TOKEN", "AAA_BASE"]);
     }
 
     #[test]
@@ -1920,6 +2007,171 @@ surfaces:
         assert!(published.contains(&"issues"), "{published:?}");
         assert!(published.contains(&"search_issues"), "{published:?}");
         assert!(published.contains(&"get_issue"), "{published:?}");
+    }
+
+    #[test]
+    fn importer_handles_recursive_schema_refs() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: trees
+version: 1.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.example.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /trees/{id}:
+    get:
+      operationId: trees/get
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/tree'}
+components:
+  schemas:
+    tree:
+      type: object
+      properties:
+        id: {type: string}
+        children:
+          type: array
+          items: {$ref: '#/components/schemas/tree'}
+"
+            .as_bytes(),
+        )
+        .expect("recursive schema imports");
+        assert!(ir.types.iter().any(|ty| ty.id == "tree"));
+    }
+
+    #[test]
+    fn importer_preserves_non_string_parameter_defaults() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: defaults
+version: 1.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.example.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+        - {name: archived, in: query, schema: {type: boolean, default: false}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+            .as_bytes(),
+        )
+        .expect("defaults import");
+        let operation = ir.operations.first().expect("operation");
+        let defaults = operation
+            .inputs
+            .iter()
+            .map(|input| (input.name.as_str(), input.default_value.as_deref()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(defaults.get("per_page"), Some(&Some("30")));
+        assert_eq!(defaults.get("archived"), Some(&Some("false")));
+    }
+
+    #[test]
+    fn importer_warns_for_invalid_parameters_and_unresolved_responses() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: broken
+version: 1.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.example.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/missing'}
+"
+            .as_bytes(),
+        )
+        .expect("broken schema imports with diagnostics");
+        let operation = ir.operations.first().expect("operation");
+        let codes = operation
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"OPENAPI_PARAMETER_INVALID"), "{codes:?}");
+        assert!(
+            codes.contains(&"OPENAPI_RESPONSE_SCHEMA_UNRESOLVED"),
+            "{codes:?}"
+        );
+        assert_eq!(operation.output.cardinality, OutputCardinality::Unknown);
+    }
+
+    #[test]
+    fn projection_names_avoid_obvious_bad_singulars() {
+        assert_eq!(singularize("status"), "status");
+        assert_eq!(singularize("news"), "news");
+        assert_eq!(singularize("analytics"), "analytics");
+        assert_eq!(singularize("addresses"), "address");
+        assert_eq!(pluralize("box"), "boxes");
     }
 
     fn github_openapi() -> &'static str {

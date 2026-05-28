@@ -94,9 +94,11 @@ Each surface requires:
 - `base_url`: runtime base URL template
 
 Remote descriptors must use HTTPS and are always pinned by `sha256`. Local
-`file` descriptors are for imported development sources only; bundled sources
-must not depend on local OpenAPI files. Providers with mutable OpenAPI URLs
-should be mirrored to a stable Coral-owned artifact URL and pinned there.
+`file` descriptors are for imported development sources only; they must be
+regular files under the current working directory, must not be symlinks, and
+are bounded to the same descriptor size limit as remote descriptors. Bundled
+sources must not depend on local OpenAPI files. Providers with mutable OpenAPI
+URLs should be mirrored to a stable Coral-owned artifact URL and pinned there.
 
 Surface `inputs` reuse the v3 input declaration shape, but v4 inputs are scoped
 to the surface that uses them. During `source add`, Coral prompts for the union
