@@ -191,6 +191,25 @@ pub enum ManifestOAuthClientSecretTransport {
     RequestBody,
 }
 
+impl ManifestOAuthClientSecretTransport {
+    /// Canonical manifest label for this transport mode.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BasicAuth => "basic_auth",
+            Self::RequestBody => "request_body",
+        }
+    }
+
+    /// Parse a canonical manifest transport label.
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value {
+            "basic_auth" => Some(Self::BasicAuth),
+            "request_body" => Some(Self::RequestBody),
+            _ => None,
+        }
+    }
+}
+
 /// OAuth scope parameter configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestOAuthScopesSpec {
@@ -692,13 +711,11 @@ fn parse_oauth_client_secret(
     let input = required_string(secret, "input", input_key, "oauth.client.secret")?;
     validate_input_key("oauth client secret input key", &input)?;
     let transport = match secret.get("transport").and_then(Value::as_str) {
-        Some("basic_auth") => ManifestOAuthClientSecretTransport::BasicAuth,
-        Some("request_body") => ManifestOAuthClientSecretTransport::RequestBody,
-        Some(other) => {
-            return Err(ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.client.secret.transport has unsupported value '{other}'"
-            )));
-        }
+        Some(value) => ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.client.secret.transport has unsupported value '{value}'"
+            ))
+        })?,
         None => {
             return Err(ManifestError::validation(format!(
                 "manifest input '{input_key}' oauth.client.secret is missing transport"
@@ -1457,6 +1474,30 @@ tables: []
         assert_eq!(
             oauth.client.secret.as_ref().expect("secret").transport,
             ManifestOAuthClientSecretTransport::RequestBody
+        );
+    }
+
+    #[test]
+    fn oauth_client_secret_transport_labels_are_canonical() {
+        assert_eq!(
+            ManifestOAuthClientSecretTransport::BasicAuth.label(),
+            "basic_auth"
+        );
+        assert_eq!(
+            ManifestOAuthClientSecretTransport::RequestBody.label(),
+            "request_body"
+        );
+        assert_eq!(
+            ManifestOAuthClientSecretTransport::from_label("basic_auth"),
+            Some(ManifestOAuthClientSecretTransport::BasicAuth)
+        );
+        assert_eq!(
+            ManifestOAuthClientSecretTransport::from_label("request_body"),
+            Some(ManifestOAuthClientSecretTransport::RequestBody)
+        );
+        assert_eq!(
+            ManifestOAuthClientSecretTransport::from_label("unsupported"),
+            None
         );
     }
 

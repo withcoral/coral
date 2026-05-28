@@ -43,7 +43,7 @@ These checks should be based on the authoritative API docs for the API the sourc
 - Auth docs mention required token type, scopes or permissions, and where to get credentials.
 - If a secret declares `credential.methods`, each method matches the provider's supported setup path. OAuth methods use authorization-code flow, an explicit `pkce` value, loopback redirect URI, correct endpoint URLs, appropriate client ID/default/input behavior, required `client.id.input` when the token endpoint needs client-secret authentication, correct client-secret transport when needed, and least-privilege scopes.
 - OAuth methods do not replace runtime auth. The stored secret is still referenced by `auth`, request headers, query params, or body fields where the provider expects it.
-- OAuth setup docs tell users whether they need their own OAuth client, which redirect URI to register, and which scopes to grant. If access tokens are short-lived, the source or docs call out that automatic token refresh is not implemented.
+- OAuth setup docs tell users whether they need their own OAuth client, which redirect URI to register, which scopes to grant, and any provider/client settings required to issue refresh tokens. If access tokens are short-lived and the provider will not issue refresh tokens, the source or docs call out that users must reconnect when access tokens expire.
 - When both OAuth and pasted-token setup are supported, the method ordering and labels make the preferred path obvious, usually OAuth first and `source_config` fallback second.
 - Non-trivial sources include README or manifest guides with setup, schema orientation, and example queries.
 - Behavior changes, setup changes, source semantics, and examples are documented in the same PR.

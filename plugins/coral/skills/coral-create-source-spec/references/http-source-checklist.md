@@ -37,7 +37,7 @@ Use:
 - For public clients, declare `client.id.default`, `client.id.input`, or both. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
 - If the provider supports pasted tokens too, put the OAuth method first and add a `source_config` fallback.
-- Do not rely on automatic token refresh; call out short-lived access tokens as a limitation.
+- For short-lived OAuth access tokens, document the scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire.
 
 ## Description and Input Hints
 
