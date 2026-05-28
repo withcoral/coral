@@ -25,7 +25,7 @@ mod status_error;
 
 use std::io::Cursor;
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, SchemaRef};
 use arrow::ipc::reader::StreamReader;
 use arrow::json::writer::{JsonArray, WriterBuilder};
 use arrow::record_batch::RecordBatch;
@@ -152,12 +152,43 @@ pub fn format_batches_json(batches: &[RecordBatch]) -> Result<String, QueryResul
 
 /// Converts batches into JSON row objects.
 ///
+/// `Int64` and `UInt64` columns are emitted as JSON strings rather than numbers
+/// so the exact value survives consumers (e.g. JS `JSON.parse`) that decode
+/// JSON numbers as IEEE-754 doubles and would silently truncate values past
+/// 2^53.
+///
 /// # Errors
 ///
 /// Returns [`QueryResultError`] if the batches cannot be encoded as JSON rows.
 pub fn batches_to_json_rows(batches: &[RecordBatch]) -> Result<Vec<Value>, QueryResultError> {
     let json = format_batches_json(batches)?;
-    serde_json::from_str(&json).map_err(Into::into)
+    let mut rows: Vec<Value> = serde_json::from_str(&json)?;
+    stringify_int64_columns(batches, &mut rows);
+    Ok(rows)
+}
+
+fn stringify_int64_columns(batches: &[RecordBatch], rows: &mut [Value]) {
+    let Some(schema) = batches.first().map(RecordBatch::schema) else {
+        return;
+    };
+    let int64_columns: Vec<&str> = schema
+        .fields()
+        .iter()
+        .filter(|f| matches!(f.data_type(), DataType::Int64 | DataType::UInt64))
+        .map(|f| f.name().as_str())
+        .collect();
+    if int64_columns.is_empty() {
+        return;
+    }
+    for row in rows {
+        let Value::Object(obj) = row else { continue };
+        for col in &int64_columns {
+            if let Some(Value::Number(n)) = obj.get(*col) {
+                let as_string = n.to_string();
+                obj.insert((*col).to_string(), Value::String(as_string));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +276,38 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let row = rows.get(1).expect("second row");
         assert!(row.get("name").is_some_and(Value::is_null));
+    }
+
+    #[test]
+    fn batches_to_json_rows_stringifies_int64_values() {
+        use arrow::array::UInt64Array;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("user_id", DataType::Int64, false),
+            Field::new("snowflake_id", DataType::UInt64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![-8_504_475_857_937_456_387_i64, 1])) as _,
+                Arc::new(UInt64Array::from(vec![18_446_744_073_709_551_000_u64, 2])) as _,
+                Arc::new(StringArray::from(vec![Some("a"), Some("b")])) as _,
+            ],
+        )
+        .expect("batch");
+
+        let rows = batches_to_json_rows(&[batch]).expect("rows");
+        let first = rows.first().expect("first row");
+        assert_eq!(
+            first.get("user_id"),
+            Some(&Value::String("-8504475857937456387".to_string())),
+        );
+        assert_eq!(
+            first.get("snowflake_id"),
+            Some(&Value::String("18446744073709551000".to_string())),
+        );
+        assert_eq!(first.get("name"), Some(&Value::String("a".to_string())));
     }
 
     #[test]
