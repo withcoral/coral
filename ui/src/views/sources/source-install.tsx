@@ -15,10 +15,10 @@ import { Text as ButtonText } from '@/wax/components/button/text'
 import * as Dialog from '@/wax/components/dialog'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
+import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
 import { Markdown } from '@/components/markdown'
-import { showToast } from '@/components/toast'
 import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
@@ -178,7 +178,7 @@ function SourceInstallDialogContent({
         await createBundledSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
       }
 
-      showToast('success', `Installed ${name}`)
+      addToast('success', { title: `Installed ${name}` })
       onInstalled(name)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

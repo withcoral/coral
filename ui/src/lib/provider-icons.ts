@@ -16,7 +16,7 @@ const PROVIDER_ICONS: Record<string, string> = {
   aws: '/images/providers/aws.svg',
   cloudwatch_logs: '/images/providers/aws.svg',
   cloudwatch_metrics: '/images/providers/aws.svg',
-  gcp: '/images/providers/gcp.png',
+  gcp: '/images/providers/gcp.svg',
   google: '/images/providers/google.svg',
   google_calendar: '/images/providers/google.svg',
   google_contacts: '/images/providers/google.svg',

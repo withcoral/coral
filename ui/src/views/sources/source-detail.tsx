@@ -9,9 +9,9 @@ import { Text as ButtonText } from '@/wax/components/button/text'
 import * as Dialog from '@/wax/components/dialog'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
+import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
-import { showToast } from '@/components/toast'
 import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
@@ -91,11 +91,11 @@ function SourceDetailDialogContent({
     setDeleting(true)
     try {
       await deleteSource(name)
-      showToast('success', `Removed ${name}`)
+      addToast('success', { title: `Removed ${name}` })
       setConfirmingRemove(false)
       onRemoved(name)
     } catch (e) {
-      showToast('error', e instanceof Error ? e.message : String(e))
+      addToast('error', { title: e instanceof Error ? e.message : String(e) })
       setDeleting(false)
     }
   }, [name, onRemoved])
@@ -280,19 +280,19 @@ function BindingRow({
       }
       if (kind === 'secret') {
         if (trimmed.length === 0) {
-          showToast('error', `Enter a new value for ${keyName}`)
+          addToast('error', { title: `Enter a new value for ${keyName}` })
           setSaving(false)
           return
         }
         bindings.push({ key: keyName, value: trimmed, secret: true })
       }
       await createBundledSource(sourceName, bindings)
-      showToast('success', `Updated ${keyName}`)
+      addToast('success', { title: `Updated ${keyName}` })
       setEditing(false)
       setDraft('')
       await onSaved()
     } catch (e) {
-      showToast('error', e instanceof Error ? e.message : String(e))
+      addToast('error', { title: e instanceof Error ? e.message : String(e) })
     } finally {
       setSaving(false)
     }
