@@ -74,7 +74,7 @@ fn collect_filter_values(
                 filters.insert(col, val);
             }
         }
-        Expr::InList(in_list) if !in_list.negated && in_list.list.len() == 1 => {
+        Expr::InList(in_list) if !in_list.negated => {
             let Expr::Column(col) = in_list.expr.as_ref() else {
                 return;
             };
@@ -82,11 +82,28 @@ fn collect_filter_values(
             if !allowed.contains(col_name.as_str()) {
                 return;
             }
-            let Some(literal) = in_list.list.first() else {
+            if in_list.list.len() == 1 {
+                let Some(literal) = in_list.list.first() else {
+                    return;
+                };
+                if let Some(value) = literal_to_string(literal) {
+                    filters.insert(col_name, value);
+                }
                 return;
-            };
-            if let Some(value) = literal_to_string(literal) {
-                filters.insert(col_name, value);
+            }
+
+            let mode = filter_modes.get(col_name.as_str()).copied().unwrap_or_default();
+            if !matches!(mode, FilterMode::Search | FilterMode::Contains) {
+                return;
+            }
+
+            let values = in_list
+                .list
+                .iter()
+                .map(literal_to_string)
+                .collect::<Option<Vec<_>>>();
+            if let Some(values) = values {
+                filters.insert(col_name, values.join(","));
             }
         }
         _ => {}
@@ -122,8 +139,10 @@ fn extract_column_like(
         return None;
     }
     let raw = literal_to_string(right)?;
-    let stripped = raw.strip_prefix('%').unwrap_or(&raw);
-    let stripped = stripped.strip_suffix('%').unwrap_or(stripped);
+    let stripped = raw.trim_start_matches('%').trim_end_matches('%');
+    if stripped.is_empty() || stripped.contains('%') || stripped.contains('_') {
+        return None;
+    }
     Some((col_name.to_string(), stripped.to_string()))
 }
 
@@ -253,6 +272,14 @@ mod tests {
     }
 
     #[test]
+    fn strips_repeated_edge_percent_wildcards_from_like_pattern() {
+        let filters = vec![filter("q", false, FilterMode::Contains)];
+
+        let values = extract_filter_values(&[like_expr("q", "%%deploy%%")], &filters);
+        assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
+    }
+
+    #[test]
     fn extracts_like_value_for_contains_mode_filter() {
         let filters = vec![filter("q", false, FilterMode::Contains)];
 
@@ -270,6 +297,16 @@ mod tests {
         let values = extract_filter_values(&[expr], &filters);
 
         assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
+    }
+
+    #[test]
+    fn extracts_multi_item_in_list_for_contains_mode_filter() {
+        let filters = vec![filter("repo", false, FilterMode::Contains)];
+
+        let expr = col("repo").in_list(vec![lit("coral"), lit("pathfinder")], false);
+        let values = extract_filter_values(&[expr], &filters);
+
+        assert_eq!(values.get("repo").map(String::as_str), Some("coral,pathfinder"));
     }
 
     #[test]

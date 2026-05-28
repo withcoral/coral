@@ -279,7 +279,7 @@ fn classify_filter(
         && !like.negated
         && let Expr::Column(col) = like.expr.as_ref()
         && allowed.contains(col.name())
-        && literal_to_string(like.pattern.as_ref()).is_some()
+        && literal_like_search_term(like.pattern.as_ref()).is_some()
     {
         let mode = filter_modes.get(col.name()).copied().unwrap_or_default();
         if matches!(mode, FilterMode::Search | FilterMode::Contains) {
@@ -289,7 +289,42 @@ fn classify_filter(
             return TableProviderFilterPushDown::Inexact;
         }
     }
+    if let Expr::InList(in_list) = expr
+        && !in_list.negated
+        && let Expr::Column(col) = in_list.expr.as_ref()
+        && allowed.contains(col.name())
+    {
+        if in_list.list.len() == 1 {
+            if in_list
+                .list
+                .first()
+                .and_then(|value| literal_to_string(value.as_ref()))
+                .is_some()
+            {
+                return TableProviderFilterPushDown::Exact;
+            }
+        }
+
+        let mode = filter_modes.get(col.name()).copied().unwrap_or_default();
+        if matches!(mode, FilterMode::Search | FilterMode::Contains)
+            && in_list
+                .list
+                .iter()
+                .all(|value| literal_to_string(value.as_ref()).is_some())
+        {
+            return TableProviderFilterPushDown::Inexact;
+        }
+    }
     TableProviderFilterPushDown::Unsupported
+}
+
+fn literal_like_search_term(expr: &Expr) -> Option<String> {
+    let raw = literal_to_string(expr)?;
+    let trimmed = raw.trim_start_matches('%').trim_end_matches('%');
+    if trimmed.is_empty() || trimmed.contains('%') || trimmed.contains('_') {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 #[cfg(test)]
@@ -371,6 +406,32 @@ mod tests {
             &like_expr("query", "%deploy%"),
             &allowed(&["query"]),
             &modes(&[("query", FilterMode::Search)]),
+        );
+        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
+    }
+
+    #[test]
+    fn extracts_multi_item_in_list_for_contains_mode_filter() {
+        let pushdown = classify_filter(
+            &col("query").in_list(vec![lit("deploy"), lit("runbook")], false),
+            &allowed(&["query"]),
+            &modes(&[("query", FilterMode::Contains)]),
+        );
+        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
+    }
+
+    #[test]
+    fn case_insensitive_like_on_contains_mode_pushes_down_inexactly() {
+        let pushdown = classify_filter(
+            &Expr::Like(Like::new(
+                false,
+                Box::new(col("query")),
+                Box::new(lit("%%Deploy%%")),
+                None,
+                true,
+            )),
+            &allowed(&["query"]),
+            &modes(&[("query", FilterMode::Contains)]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
     }
