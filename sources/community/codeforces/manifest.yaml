@@ -1,4 +1,4 @@
- ============================================================
+# ============================================================
 # Codeforces — Coral Community Source Spec
 # ============================================================
 #
@@ -40,6 +40,23 @@ description: >
   Access user profiles, rating history, submission records,
   and contest listings via the official public Codeforces API.
   No authentication required — just pass a user handle as input.
+
+  ### Tables Provided
+
+  - `codeforces.user_info` -> profile, current rating, rank, and maximum achieved rankings.
+  - `codeforces.submissions` -> full submission history records containing verdicts, execution footprints, and question metadata.
+  - `codeforces.rating_history` -> contest-by-contest progression mapping rating updates over time.
+  - `codeforces.contests` -> comprehensive database of past completed and upcoming competitive contest timelines.
+
+  ### Example Queries
+
+  ```sql
+  SELECT handle, rating, rank FROM codeforces.user_info WHERE handle = 'tourist';
+  ```
+
+  ```sql
+  SELECT problem_name, rating, language FROM codeforces.submissions WHERE handle = 'tourist' AND verdict = 'OK' ORDER BY problem_rating DESC;
+  ```
 backend: http
 
 # ── INPUTS ──────────────────────────────────────────────────
@@ -66,7 +83,6 @@ base_url: "https://codeforces.com"
 # No auth block needed — omitted intentionally.
 
 # ── TABLES ───────────────────────────────────────────────────
-
 tables:
 
   # ──────────────────────────────────────────────────────────
