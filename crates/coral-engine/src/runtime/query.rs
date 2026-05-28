@@ -8,6 +8,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
+use tracing::{Instrument as _, info_span};
 
 use crate::backends::compile_query_source;
 use crate::runtime::catalog;
@@ -21,7 +22,7 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, QueryExecution, QueryPlan, QueryResultObserver,
+    CatalogInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan, QueryResultObserver,
     QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
 };
 
@@ -34,6 +35,14 @@ pub(crate) struct QueryRuntimeAdapter {
 }
 
 pub(crate) async fn build_runtime(
+    sources: &[QuerySource],
+    runtime: QueryRuntimeConfig,
+) -> Result<QueryRuntimeAdapter, CoreError> {
+    let span = info_span!("coral.engine.runtime.build", source.count = sources.len());
+    build_runtime_inner(sources, runtime).instrument(span).await
+}
+
+async fn build_runtime_inner(
     sources: &[QuerySource],
     runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
@@ -164,6 +173,34 @@ impl QueryRuntimeAdapter {
         CatalogInfo {
             tables: self.list_tables(source_filter, None),
             table_functions: self.list_table_functions(source_filter, None),
+        }
+    }
+
+    pub(crate) fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
+        if let Some(table) = self
+            .tables
+            .iter()
+            .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+            .cloned()
+        {
+            return DescribeTableInfo {
+                table: Some(table),
+                missing_context_tables: Vec::new(),
+            };
+        }
+
+        let missing_context_tables = self
+            .tables
+            .iter()
+            .cloned()
+            .map(|mut table| {
+                table.columns.clear();
+                table
+            })
+            .collect();
+        DescribeTableInfo {
+            table: None,
+            missing_context_tables,
         }
     }
 

@@ -66,10 +66,10 @@ pub use composition::{
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
-    QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    CatalogInfo, ColumnInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult,
+    QueryTestSuccess, SourceValidationReport, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -117,6 +117,27 @@ impl CoralQuery {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
             .catalog_info(schema_filter))
+    }
+
+    /// Describes one table or returns lightweight table metadata for missing-table help.
+    ///
+    /// This builds the runtime once, clones only the matched table on exact
+    /// hits, and clones lightweight table metadata when the table is missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if credential resolution fails, if any validated
+    /// source spec cannot be compiled, or if the underlying query runtime
+    /// cannot be built.
+    pub async fn describe_table(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<DescribeTableInfo, CoreError> {
+        Ok(runtime::query::build_runtime(sources, runtime)
+            .await?
+            .describe_table(schema_name, table_name))
     }
 
     /// Executes one `SQL` statement over the provided source set.
