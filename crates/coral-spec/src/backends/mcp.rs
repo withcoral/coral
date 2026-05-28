@@ -481,6 +481,11 @@ fn validate_streamable_http_server(
             )));
         }
     }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' MCP streamable_http server url must not embed credentials in userinfo; use the `auth` block with a secret input instead"
+        )));
+    }
     if let Some(auth) = auth {
         validate_streamable_http_auth_token(source_name, auth.bearer_token(), declared_inputs)?;
     }
@@ -1179,6 +1184,60 @@ mod tests {
             }))
             .unwrap_or_else(|err| panic!("loopback url `{url}` should parse: {err}"));
         }
+    }
+
+    #[test]
+    fn rejects_streamable_http_url_with_userinfo_password() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "remote_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "streamable_http",
+                "url": "https://alice:s3cret@mcp.example.com/mcp"
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "title", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("userinfo credentials should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not embed credentials in userinfo"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_streamable_http_url_with_username_only_userinfo() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "remote_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "streamable_http",
+                "url": "https://api-token@mcp.example.com/mcp"
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "title", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("username-only userinfo should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not embed credentials in userinfo"),
+            "got: {error}"
+        );
     }
 
     #[test]
