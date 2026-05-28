@@ -1,0 +1,484 @@
+name: chargebee
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query customers, subscriptions, invoices, and transactions from Chargebee.
+
+inputs:
+  CHARGEBEE_SITE:
+    kind: variable
+    hint: >-
+      Chargebee site URL without a trailing slash, for example
+      https://example.chargebee.com. The source appends /api/v2.
+  CHARGEBEE_API_KEY:
+    kind: secret
+    hint: >-
+      Chargebee API key with read access to customers, subscriptions,
+      invoices, and transactions. The key is used as the HTTP Basic auth
+      username with a blank password.
+
+base_url: "{{input.CHARGEBEE_SITE}}/api/v2"
+
+auth:
+  type: BasicAuth
+  username: "{{input.CHARGEBEE_API_KEY}}"
+  password: ""
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, email, first_name, last_name FROM chargebee.customers LIMIT 1
+  - SELECT id, customer_id, status FROM chargebee.subscriptions LIMIT 1
+  - SELECT id, customer_id, status FROM chargebee.invoices LIMIT 1
+  - SELECT id, customer_id, type, status FROM chargebee.transactions LIMIT 1
+
+tables:
+  - name: customers
+    description: Chargebee customer records.
+    guide: >-
+      Start here for customer identity. Use id to join to subscriptions,
+      invoices, and transactions. Use LIMIT on large sites.
+    fetch_limit_default: 100
+    filters:
+      - name: id
+        description: Filter by exact customer ID.
+      - name: email
+        description: Filter by exact customer email.
+      - name: company
+        description: Filter by exact company name.
+    request:
+      method: GET
+      path: /customers
+      query:
+        - name: id[is]
+          from: filter
+          key: id
+        - name: email[is]
+          from: filter
+          key: email
+        - name: company[is]
+          from: filter
+          key: company
+    response:
+      rows_path: [list]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path: [next_offset]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Chargebee customer ID.
+        expr: {kind: path, path: [customer, id]}
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Customer first name.
+        expr: {kind: path, path: [customer, first_name]}
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Customer last name.
+        expr: {kind: path, path: [customer, last_name]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Customer email address.
+        expr: {kind: path, path: [customer, email]}
+      - name: company
+        type: Utf8
+        nullable: true
+        description: Customer company name.
+        expr: {kind: path, path: [customer, company]}
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: Customer phone number.
+        expr: {kind: path, path: [customer, phone]}
+      - name: taxability
+        type: Utf8
+        nullable: true
+        description: Customer taxability setting.
+        expr: {kind: path, path: [customer, taxability]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Customer creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [customer, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Customer last update time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [customer, updated_at]}
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether the customer is deleted.
+        expr: {kind: path, path: [customer, deleted]}
+
+  - name: subscriptions
+    description: Chargebee subscription records.
+    guide: >-
+      Use customer_id to join to chargebee.customers.id. Use status to narrow
+      active, paused, cancelled, or non-renewing subscriptions.
+    fetch_limit_default: 100
+    filters:
+      - name: id
+        description: Filter by exact subscription ID.
+      - name: customer_id
+        description: Filter by exact customer ID.
+      - name: status
+        description: Filter by exact subscription status.
+    request:
+      method: GET
+      path: /subscriptions
+      query:
+        - name: id[is]
+          from: filter
+          key: id
+        - name: customer_id[is]
+          from: filter
+          key: customer_id
+        - name: status[is]
+          from: filter
+          key: status
+    response:
+      rows_path: [list]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path: [next_offset]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Chargebee subscription ID.
+        expr: {kind: path, path: [subscription, id]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: Customer ID for this subscription.
+        expr: {kind: path, path: [subscription, customer_id]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Subscription status.
+        expr: {kind: path, path: [subscription, status]}
+      - name: plan_id
+        type: Utf8
+        nullable: true
+        description: Legacy plan ID, when present.
+        expr: {kind: path, path: [subscription, plan_id]}
+      - name: current_term_start
+        type: Timestamp
+        nullable: true
+        description: Current billing term start time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [subscription, current_term_start]}
+      - name: current_term_end
+        type: Timestamp
+        nullable: true
+        description: Current billing term end time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [subscription, current_term_end]}
+      - name: next_billing_at
+        type: Timestamp
+        nullable: true
+        description: Next scheduled billing time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [subscription, next_billing_at]}
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Subscription start time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [subscription, started_at]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Subscription creation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [subscription, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Subscription last update time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [subscription, updated_at]}
+      - name: cancelled_at
+        type: Timestamp
+        nullable: true
+        description: Subscription cancellation time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [subscription, cancelled_at]}
+
+  - name: invoices
+    description: Chargebee invoice records.
+    guide: >-
+      Use customer_id and subscription_id to join invoices to customers and
+      subscriptions. Amount columns are in the smallest currency unit.
+    fetch_limit_default: 100
+    filters:
+      - name: id
+        description: Filter by exact invoice ID.
+      - name: customer_id
+        description: Filter by exact customer ID.
+      - name: subscription_id
+        description: Filter by exact subscription ID.
+      - name: status
+        description: Filter by exact invoice status.
+    request:
+      method: GET
+      path: /invoices
+      query:
+        - name: id[is]
+          from: filter
+          key: id
+        - name: customer_id[is]
+          from: filter
+          key: customer_id
+        - name: subscription_id[is]
+          from: filter
+          key: subscription_id
+        - name: status[is]
+          from: filter
+          key: status
+    response:
+      rows_path: [list]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path: [next_offset]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Chargebee invoice ID.
+        expr: {kind: path, path: [invoice, id]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: Customer ID for this invoice.
+        expr: {kind: path, path: [invoice, customer_id]}
+      - name: subscription_id
+        type: Utf8
+        nullable: true
+        description: Subscription ID for this invoice, when present.
+        expr: {kind: path, path: [invoice, subscription_id]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Invoice status.
+        expr: {kind: path, path: [invoice, status]}
+      - name: currency_code
+        type: Utf8
+        nullable: true
+        description: Three-letter invoice currency code.
+        expr: {kind: path, path: [invoice, currency_code]}
+      - name: total
+        type: Int64
+        nullable: true
+        description: Invoice total in the smallest currency unit.
+        expr: {kind: path, path: [invoice, total]}
+      - name: amount_paid
+        type: Int64
+        nullable: true
+        description: Amount paid in the smallest currency unit.
+        expr: {kind: path, path: [invoice, amount_paid]}
+      - name: amount_due
+        type: Int64
+        nullable: true
+        description: Amount due in the smallest currency unit.
+        expr: {kind: path, path: [invoice, amount_due]}
+      - name: credits_applied
+        type: Int64
+        nullable: true
+        description: Credits applied in the smallest currency unit.
+        expr: {kind: path, path: [invoice, credits_applied]}
+      - name: date
+        type: Timestamp
+        nullable: true
+        description: Invoice date.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [invoice, date]}
+      - name: due_date
+        type: Timestamp
+        nullable: true
+        description: Invoice due date.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [invoice, due_date]}
+      - name: paid_at
+        type: Timestamp
+        nullable: true
+        description: Invoice paid time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [invoice, paid_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Invoice last update time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [invoice, updated_at]}
+
+  - name: transactions
+    description: Chargebee transaction records.
+    guide: >-
+      Use customer_id and subscription_id to connect payments and refunds to
+      customers and subscriptions. Amount is in the smallest currency unit.
+    fetch_limit_default: 100
+    filters:
+      - name: id
+        description: Filter by exact transaction ID.
+      - name: customer_id
+        description: Filter by exact customer ID.
+      - name: subscription_id
+        description: Filter by exact subscription ID.
+      - name: type
+        description: Filter by exact transaction type.
+      - name: status
+        description: Filter by exact transaction status.
+    request:
+      method: GET
+      path: /transactions
+      query:
+        - name: id[is]
+          from: filter
+          key: id
+        - name: customer_id[is]
+          from: filter
+          key: customer_id
+        - name: subscription_id[is]
+          from: filter
+          key: subscription_id
+        - name: type[is]
+          from: filter
+          key: type
+        - name: status[is]
+          from: filter
+          key: status
+    response:
+      rows_path: [list]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path: [next_offset]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Chargebee transaction ID.
+        expr: {kind: path, path: [transaction, id]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: Customer ID for this transaction.
+        expr: {kind: path, path: [transaction, customer_id]}
+      - name: subscription_id
+        type: Utf8
+        nullable: true
+        description: Subscription ID for this transaction, when present.
+        expr: {kind: path, path: [transaction, subscription_id]}
+      - name: invoice_id
+        type: Utf8
+        nullable: true
+        description: Invoice ID for this transaction, when present.
+        expr: {kind: path, path: [transaction, invoice_id]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Transaction type.
+        expr: {kind: path, path: [transaction, type]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Transaction status.
+        expr: {kind: path, path: [transaction, status]}
+      - name: payment_method
+        type: Utf8
+        nullable: true
+        description: Payment method used for the transaction.
+        expr: {kind: path, path: [transaction, payment_method]}
+      - name: gateway
+        type: Utf8
+        nullable: true
+        description: Payment gateway, when present.
+        expr: {kind: path, path: [transaction, gateway]}
+      - name: currency_code
+        type: Utf8
+        nullable: true
+        description: Three-letter transaction currency code.
+        expr: {kind: path, path: [transaction, currency_code]}
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Transaction amount in the smallest currency unit.
+        expr: {kind: path, path: [transaction, amount]}
+      - name: date
+        type: Timestamp
+        nullable: true
+        description: Transaction date.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [transaction, date]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Transaction last update time.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [transaction, updated_at]}

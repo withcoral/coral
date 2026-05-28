@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
+    CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     RequestAuthenticator, RequestAuthenticatorError, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
@@ -730,6 +730,84 @@ async fn search_function_limit_is_capped_by_search_limits() {
         vec![
             json!({ "title": "First", "score": 3.0 }),
             json!({ "title": "Second", "score": 2.0 })
+        ]
+    );
+}
+
+#[tokio::test]
+async fn chargebee_source_uses_cursor_query_rows_path_and_timestamp_mapping() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v2/customers"))
+        .and(header(AUTHORIZATION, "Basic dGVzdF9hcGlfa2V5Og=="))
+        .and(query_param("limit", "100"))
+        .and(query_param_is_missing("offset"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "list": [{
+                "customer": {
+                    "id": "cust_1",
+                    "email": "one@example.com",
+                    "created_at": 1_700_000_000
+                }
+            }],
+            "next_offset": "abc123"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v2/customers"))
+        .and(header(AUTHORIZATION, "Basic dGVzdF9hcGlfa2V5Og=="))
+        .and(query_param("limit", "100"))
+        .and(query_param("offset", "abc123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "list": [{
+                "customer": {
+                    "id": "cust_2",
+                    "email": "two@example.com",
+                    "created_at": 1_700_000_060
+                }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = coral_spec::parse_source_manifest_yaml(include_str!(
+        "../../../../sources/community/chargebee/manifest.yaml"
+    ))
+    .expect("chargebee manifest should parse");
+    let source = QuerySource::new(
+        manifest,
+        BTreeMap::from([("CHARGEBEE_SITE".to_string(), server.uri())]),
+        BTreeMap::from([("CHARGEBEE_API_KEY".to_string(), "test_api_key".to_string())]),
+    );
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, email, created_at FROM chargebee.customers ORDER BY id LIMIT 2",
+        )
+        .await
+        .expect("chargebee customers query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "id": "cust_1",
+                "email": "one@example.com",
+                "created_at": "2023-11-14T22:13:20Z"
+            }),
+            json!({
+                "id": "cust_2",
+                "email": "two@example.com",
+                "created_at": "2023-11-14T22:14:20Z"
+            })
         ]
     );
 }
