@@ -65,8 +65,8 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
 | `enabled`             | boolean | `true`  | Enables trace history without requiring an OTLP collector.                        |
 | `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
-| `record_http_bodies`  | boolean | `false` | Records HTTP request and response bodies in local traces when local tracing is enabled. |
-| `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace.                 |
+| `record_http_bodies`  | boolean | `false` | Records HTTP request and response bodies, and MCP tool-call argument and result payloads, in local traces when local tracing is enabled. |
+| `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace. Applies to both HTTP body previews and MCP tool-call payload previews. |
 
 Example with auth headers and a hosted endpoint:
 
