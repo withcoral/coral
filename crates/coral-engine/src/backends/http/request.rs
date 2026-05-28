@@ -119,7 +119,7 @@ pub(super) fn build_outgoing_request_explain(
             .iter()
             .map(|(name, value)| json!({"name": name, "value": value}))
             .collect::<Vec<_>>(),
-        "body": body.map(request_body_to_json),
+        "body": body.map(request_body_summary),
         "limit": limit,
         "projection": projection,
     }))
@@ -154,10 +154,17 @@ fn http_method_label(method: HttpMethod) -> &'static str {
     }
 }
 
-fn request_body_to_json(body: &RequestBody) -> Value {
+fn request_body_summary(body: &RequestBody) -> Value {
     match body {
-        RequestBody::Json(value) => value.clone(),
-        RequestBody::Text(text) => Value::String(text.clone()),
+        RequestBody::Json(value) => json!({
+            "kind": "json",
+            "empty": value.as_object().is_some_and(|object| object.is_empty())
+                || value.as_array().is_some_and(|array| array.is_empty()),
+        }),
+        RequestBody::Text(text) => json!({
+            "kind": "text",
+            "empty": text.is_empty(),
+        }),
     }
 }
 pub(super) fn build_query_pairs(
@@ -456,7 +463,9 @@ mod tests {
 
         assert_ne!(first.resolved_request(), second.resolved_request());
         assert_ne!(first.fingerprint(), second.fingerprint());
-        assert!(first.resolved_request().contains("first page"));
-        assert!(second.resolved_request().contains("second page"));
+        assert!(first.resolved_request().contains("\"kind\":\"text\""));
+        assert!(second.resolved_request().contains("\"kind\":\"text\""));
+        assert!(!first.resolved_request().contains("first page"));
+        assert!(!second.resolved_request().contains("second page"));
     }
 }
