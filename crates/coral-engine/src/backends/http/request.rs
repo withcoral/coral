@@ -1,10 +1,17 @@
 //! Request query and body construction for HTTP-backed sources.
 
-use datafusion::error::{DataFusionError, Result};
-use serde_json::{Map, Value};
+use std::fmt;
 
+use datafusion::error::{DataFusionError, Result};
+use serde_json::{Map, Value, json};
+
+use sha2::{Digest, Sha256};
+use crate::backends::http::transport::build_logged_url;
+use crate::backends::http::url::{join_url, normalize_base_url};
+use crate::backends::shared::json_exec::JsonExecExplain;
 use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
 use coral_spec::BodySpec;
+use coral_spec::{ParsedTemplate, RequestSpec};
 
 #[derive(Debug, Clone)]
 pub(super) enum RequestBody {
@@ -12,6 +19,97 @@ pub(super) enum RequestBody {
     Text(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ResolvedHttpRequest {
+    resolved_request: String,
+    fingerprint: String,
+}
+
+impl ResolvedHttpRequest {
+    #[must_use]
+    pub(super) fn new(resolved_request: String, fingerprint: String) -> Self {
+        Self {
+            resolved_request,
+            fingerprint,
+        }
+    }
+
+    #[must_use]
+    pub(super) fn resolved_request(&self) -> &str {
+        &self.resolved_request
+    }
+
+    #[must_use]
+    pub(super) fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    #[must_use]
+    pub(super) fn into_json_exec_explain(self) -> JsonExecExplain {
+        JsonExecExplain::new(self.resolved_request, self.fingerprint)
+    }
+}
+
+impl fmt::Display for ResolvedHttpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "resolved_request={} fingerprint={}", self.resolved_request, self.fingerprint)
+    }
+}
+
+pub(super) fn build_request_explain(
+    base_url: &ParsedTemplate,
+    request: &RequestSpec,
+    render_context: &RenderContext<'_>,
+    limit: Option<usize>,
+    projection: Option<&[usize]>,
+) -> Result<ResolvedHttpRequest> {
+    let base_url = normalize_base_url(&crate::backends::shared::template::render_template(
+        base_url,
+        render_context,
+    )?);
+    let rendered_path = crate::backends::shared::template::render_template(
+        &request.path,
+        render_context,
+    )?;
+    let url = join_url(&base_url, &rendered_path)?;
+    let query_pairs = build_query_pairs(request, render_context)?;
+    let logged_url = build_logged_url(&url, &query_pairs);
+    let projection = projection.map(|indices| indices.to_vec());
+    let resolved_request = serde_json::to_string(&json!({
+        "request": request,
+        "call": {
+            "url": logged_url,
+            "query": query_pairs
+                .iter()
+                .map(|(name, value)| json!({"name": name, "value": value}))
+                .collect::<Vec<_>>(),
+            "limit": limit,
+            "projection": projection,
+        },
+    }))
+    .map_err(|error| {
+        DataFusionError::Execution(format!("failed to serialize HTTP request explain payload: {error}"))
+    })?;
+    let fingerprint_payload = json!({
+        "url": logged_url,
+        "query": query_pairs
+            .iter()
+            .map(|(name, value)| json!({"name": name, "value": value}))
+            .collect::<Vec<_>>(),
+        "limit": limit,
+        "projection": projection,
+    });
+    let fingerprint = request_fingerprint(&fingerprint_payload)?;
+    Ok(ResolvedHttpRequest::new(resolved_request, fingerprint))
+}
+
+fn request_fingerprint(payload: &Value) -> Result<String> {
+    let bytes = serde_json::to_vec(payload).map_err(|error| {
+        DataFusionError::Execution(format!("failed to serialize HTTP request fingerprint payload: {error}"))
+    })?;
+    let digest = Sha256::digest(bytes);
+    Ok(format!("{digest:x}"))
+}
 pub(super) fn build_query_pairs(
     request: &coral_spec::RequestSpec,
     render_context: &RenderContext<'_>,
@@ -120,10 +218,13 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{RequestBody, build_request_body, set_path_value};
+    use super::{
+        build_request_body, build_request_explain, set_path_value, RequestBody,
+    };
     use crate::backends::shared::template::RenderContext;
     use coral_spec::{
-        BodyFieldSpec, BodySpec, HttpMethod, ParsedTemplate, RequestSpec, ValueSourceSpec,
+        BodyFieldSpec, BodySpec, HttpMethod, ParsedTemplate, QueryParamSpec, RequestSpec,
+        ValueSourceSpec,
     };
 
     #[test]
@@ -227,5 +328,57 @@ mod tests {
                 "Statistics": ["Average"]
             })
         );
+    }
+
+    #[test]
+    fn build_request_explain_is_stable_for_the_same_input() {
+        let request = RequestSpec {
+            method: HttpMethod::GET,
+            path: ParsedTemplate::parse("/items").expect("template"),
+            query: vec![QueryParamSpec {
+                name: "limit".to_string(),
+                value: ValueSourceSpec::Literal {
+                    value: json!(10),
+                },
+            }],
+            body: BodySpec::default(),
+            headers: vec![],
+        };
+        let base_url = ParsedTemplate::parse("https://api.example.com").expect("template");
+        let resolved_inputs = BTreeMap::new();
+        let context = RenderContext::source_scoped(&resolved_inputs);
+
+        let explain_one = build_request_explain(
+            &base_url,
+            &request,
+            &context,
+            Some(5),
+            Some(&[0, 2]),
+        )
+        .expect("request explain should build");
+        let explain_two = build_request_explain(
+            &base_url,
+            &request,
+            &context,
+            Some(5),
+            Some(&[0, 2]),
+        )
+        .expect("request explain should build");
+        let explain_different_limit = build_request_explain(
+            &base_url,
+            &request,
+            &context,
+            Some(6),
+            Some(&[0, 2]),
+        )
+        .expect("request explain should build");
+
+        assert_eq!(explain_one.resolved_request(), explain_two.resolved_request());
+        assert_eq!(explain_one.fingerprint(), explain_two.fingerprint());
+        assert_ne!(
+            explain_one.fingerprint(),
+            explain_different_limit.fingerprint()
+        );
+        assert!(explain_one.resolved_request().contains("https://api.example.com/items"));
     }
 }

@@ -18,6 +18,7 @@ use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::extract_next_link_url;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
+use crate::backends::http::request::ResolvedHttpRequest;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
 use crate::backends::http::trace::{
     HttpBodyCapture, inject_trace_context, record_http_processing_error, record_http_status_error,
@@ -48,6 +49,7 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) render_context: RenderContext<'a>,
     pub(super) allow_404_empty: bool,
     pub(super) link_header_require_results: bool,
+    pub(super) request_explain: &'a ResolvedHttpRequest,
 }
 
 #[expect(
@@ -82,6 +84,7 @@ pub(super) async fn execute_request(
         render_context,
         allow_404_empty,
         link_header_require_results,
+        request_explain,
     } = request;
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
@@ -141,6 +144,8 @@ pub(super) async fn execute_request(
             http.request.method = method_label,
             http.request.query_count = query_pairs.len(),
             http.request.resend_count = field::Empty,
+            coral.http.request.fingerprint = field::Empty,
+            coral.http.request.resolved = field::Empty,
             http.response.body.size = field::Empty,
             http.response.status_code = field::Empty,
             net.peer.name = field::Empty,
@@ -152,6 +157,14 @@ pub(super) async fn execute_request(
             server.address = field::Empty,
             server.port = field::Empty,
             url.full = %traced_url,
+        );
+        request_span.record(
+            "coral.http.request.resolved",
+            field::display(request_explain.resolved_request()),
+        );
+        request_span.record(
+            "coral.http.request.fingerprint",
+            field::display(request_explain.fingerprint()),
         );
         record_trace_http_endpoint(&request_span, &trace_endpoint);
         if attempt > 1 {
@@ -394,7 +407,7 @@ fn build_http_request(
     }
 }
 
-fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
+pub(super) fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
     if query_pairs.is_empty() {
         return url.to_string();
     }

@@ -192,6 +192,7 @@ impl TableProvider for McpTableProvider {
             fetcher,
             converter,
             projection.cloned(),
+            None,
         )?;
         Ok(Arc::new(exec))
     }

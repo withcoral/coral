@@ -12,6 +12,7 @@ use crate::backends::http::pagination::{
     PageState, apply_pagination_body_fields, apply_pagination_query_pairs, page_is_exhausted,
     pagination_state_values, resolve_page_size,
 };
+use crate::backends::http::request::ResolvedHttpRequest;
 use crate::backends::http::request::{build_query_pairs, build_request_body};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::transport::{OutgoingHttpRequest, execute_request};
@@ -40,6 +41,7 @@ pub(super) async fn fetch_rows(
     filter_values: &HashMap<String, String>,
     arg_values: &HashMap<String, String>,
     sql_limit: Option<usize>,
+    request_explain: &ResolvedHttpRequest,
 ) -> Result<Vec<Value>> {
     let mut all_rows = Vec::new();
     let limits = resolve_fetch_limits(target, sql_limit);
@@ -165,6 +167,7 @@ pub(super) async fn fetch_rows(
                 render_context,
                 allow_404_empty: target.response().allow_404_empty,
                 link_header_require_results: pagination.link_header_require_results,
+                request_explain,
             },
         )
         .await?;

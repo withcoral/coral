@@ -20,8 +20,10 @@ use datafusion::physical_plan::ExecutionPlan;
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::provider::{HttpJsonExecRequest, http_json_exec};
+use crate::backends::http::request::build_request_explain;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
+use crate::backends::shared::template::{EMPTY_MAP, RenderContext};
 use crate::backends::shared::filter_expr::literal_to_string;
 
 struct FunctionCallContext<'a> {
@@ -137,6 +139,19 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
         _filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let render_context = RenderContext::new(
+            &EMPTY_MAP,
+            &self.arg_values,
+            &EMPTY_MAP,
+            self.state.resolved_inputs.as_ref(),
+        );
+        let request_explain = build_request_explain(
+            &self.state.backend.base_url,
+            self.state.target.resolved_request(),
+            &render_context,
+            limit,
+            projection.map(|projection| projection.as_slice()),
+        )?;
         http_json_exec(HttpJsonExecRequest {
             backend: self.state.backend.clone(),
             source_schema: &self.state.source_schema,
@@ -146,6 +161,7 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
             arg_values: self.arg_values.clone(),
             projection,
             limit,
+            request_explain,
         })
     }
 }

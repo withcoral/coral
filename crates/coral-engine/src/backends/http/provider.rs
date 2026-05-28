@@ -14,11 +14,13 @@ use serde_json::Value;
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
+use crate::backends::http::request::build_request_explain;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::template::EMPTY_MAP;
 use coral_spec::FilterMode;
 use coral_spec::backends::http::HttpTableSpec;
 
@@ -71,6 +73,7 @@ struct HttpFetchPlan {
     filter_values: Arc<HashMap<String, String>>,
     arg_values: Arc<HashMap<String, String>>,
     limit: Option<usize>,
+    request_explain: crate::backends::http::request::ResolvedHttpRequest,
 }
 
 pub(crate) struct HttpJsonExecRequest<'a> {
@@ -82,6 +85,7 @@ pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) arg_values: HashMap<String, String>,
     pub(crate) projection: Option<&'a Vec<usize>>,
     pub(crate) limit: Option<usize>,
+    pub(crate) request_explain: crate::backends::http::request::ResolvedHttpRequest,
 }
 
 #[async_trait]
@@ -93,6 +97,7 @@ impl RowFetcher for HttpFetchPlan {
                 &self.filter_values,
                 &self.arg_values,
                 self.limit,
+                &self.request_explain,
             )
             .await
     }
@@ -108,6 +113,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         arg_values,
         projection,
         limit,
+        request_explain,
     } = request;
     let target = Arc::new(target);
     let filter_values = Arc::new(filter_values);
@@ -118,6 +124,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         filter_values: filter_values.clone(),
         arg_values: arg_values.clone(),
         limit,
+        request_explain: request_explain.clone(),
     });
 
     let converter = {
@@ -143,6 +150,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         fetcher,
         converter,
         projection.cloned(),
+        Some(request_explain.into_json_exec_explain()),
     )?;
 
     Ok(Arc::new(exec))
@@ -209,6 +217,19 @@ impl TableProvider for HttpSourceTableProvider {
         let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
         let active_request = self.table.resolve_request(&filter_value_keys).clone();
         let target = self.target.with_resolved_request(active_request);
+        let render_context = crate::backends::shared::template::RenderContext::new(
+            &filter_values,
+            &EMPTY_MAP,
+            &EMPTY_MAP,
+            self.backend.resolved_inputs.as_ref(),
+        );
+        let request_explain = build_request_explain(
+            &self.backend.base_url,
+            target.resolved_request(),
+            &render_context,
+            limit,
+            projection.map(|projection| projection.as_slice()),
+        )?;
 
         http_json_exec(HttpJsonExecRequest {
             backend: self.backend.clone(),
@@ -219,6 +240,7 @@ impl TableProvider for HttpSourceTableProvider {
             arg_values: HashMap::new(),
             projection,
             limit,
+            request_explain,
         })
     }
 }

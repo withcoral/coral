@@ -32,6 +32,39 @@ pub(crate) type Fetcher = Arc<dyn RowFetcher>;
 /// Converts fetched JSON rows into a projected `RecordBatch`.
 pub(crate) type Converter = Arc<dyn Fn(&[Value]) -> Result<RecordBatch> + Send + Sync>;
 
+/// Extra request metadata shown in `DataFusion` explain output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct JsonExecExplain {
+    resolved_request: String,
+    fingerprint: String,
+}
+
+impl JsonExecExplain {
+    #[must_use]
+    pub(crate) fn new(resolved_request: impl Into<String>, fingerprint: impl Into<String>) -> Self {
+        Self {
+            resolved_request: resolved_request.into(),
+            fingerprint: fingerprint.into(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn resolved_request(&self) -> &str {
+        &self.resolved_request
+    }
+
+    #[must_use]
+    pub(crate) fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+}
+
+impl fmt::Display for JsonExecExplain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "resolved_request={} fingerprint={}", self.resolved_request, self.fingerprint)
+    }
+}
+
 /// Execution-plan node for backends that fetch JSON rows and convert them into
 /// `Arrow` record batches.
 pub(crate) struct JsonExec {
@@ -42,6 +75,7 @@ pub(crate) struct JsonExec {
     fetcher: Fetcher,
     converter: Converter,
     projection: Option<Vec<usize>>,
+    explain: Option<JsonExecExplain>,
 }
 
 impl fmt::Debug for JsonExec {
@@ -49,6 +83,7 @@ impl fmt::Debug for JsonExec {
         f.debug_struct("JsonExec")
             .field("source", &self.source_name)
             .field("table", &self.table_name)
+            .field("explain", &self.explain)
             .finish_non_exhaustive()
     }
 }
@@ -67,6 +102,7 @@ impl JsonExec {
         fetcher: Fetcher,
         converter: Converter,
         projection: Option<Vec<usize>>,
+        explain: Option<JsonExecExplain>,
     ) -> Result<Self> {
         let projected_schema = match &projection {
             Some(indices) => Arc::new(schema.project(indices).map_err(|error| {
@@ -89,13 +125,18 @@ impl JsonExec {
             fetcher,
             converter,
             projection,
+            explain,
         })
     }
 }
 
 impl DisplayAs for JsonExec {
     fn fmt_as(&self, _format: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}Exec: table={}", self.source_name, self.table_name)
+        write!(f, "{}Exec: table={}", self.source_name, self.table_name)?;
+        if let Some(explain) = &self.explain {
+            write!(f, " {explain}")?;
+        }
+        Ok(())
     }
 }
 
@@ -215,6 +256,7 @@ mod tests {
             noop_fetcher(),
             converter_with_schema(schema),
             Some(vec![1]),
+            None,
         )
         .expect("projection should succeed");
 
@@ -233,6 +275,7 @@ mod tests {
             noop_fetcher(),
             converter_with_schema(schema),
             Some(vec![1]),
+            None,
         )
         .expect_err("invalid projection should return an error");
 

@@ -177,6 +177,7 @@ impl TableProvider for McpFunctionCallTableProvider {
             fetcher,
             converter,
             projection.cloned(),
+            None,
         )?;
         Ok(Arc::new(exec))
     }
