@@ -5,16 +5,17 @@ Railway's [public GraphQL API](https://docs.railway.com/integrations/api).
 
 ## Tables
 
-| Table            | Description                        | Required filters                             | Optional filters                          |
-| ---------------- | ---------------------------------- | -------------------------------------------- | ----------------------------------------- |
-| `projects`       | Projects accessible by the token   | —                                            | —                                         |
-| `services`       | Services within a project          | `project_id`                                 | —                                         |
-| `environments`   | Environments within a project      | `project_id`                                 | —                                         |
-| `deployments`    | Deployments scoped to a project    | `project_id`                                 | `environment_id`, `service_id`            |
-| `variables`      | Environment variables              | `project_id`, `environment_id`               | `service_id` (omit for shared variables)  |
-| `domains`        | Railway-generated service domains  | `project_id`, `service_id`, `environment_id` | —                                         |
-| `custom_domains` | Custom domains for a service       | `project_id`, `service_id`, `environment_id` | —                                         |
-| `volumes`        | Persistent volumes in a project    | `project_id`                                 | —                                         |
+| Table              | Description                       | Required filters                             | Optional filters                         |
+| ------------------ | --------------------------------- | -------------------------------------------- | ---------------------------------------- |
+| `projects`         | Projects accessible by the token  | —                                            | `workspace_id`                           |
+| `services`         | Services within a project         | `project_id`                                 | —                                        |
+| `environments`     | Environments within a project     | `project_id`                                 | —                                        |
+| `deployments`      | Deployments scoped to a project   | `project_id`                                 | `environment_id`, `service_id`           |
+| `variables`        | Environment variables             | `project_id`, `environment_id`               | `service_id` (omit for shared variables) |
+| `domains`          | Railway-generated service domains | `project_id`, `service_id`, `environment_id` | —                                        |
+| `custom_domains`   | Custom domains for a service      | `project_id`, `service_id`, `environment_id` | —                                        |
+| `volumes`          | Persistent volumes in a project   | `project_id`                                 | —                                        |
+| `volume_instances` | Per-environment volume mounts     | `volume_instance_id`                         | —                                        |
 
 ## Authentication
 
@@ -48,12 +49,25 @@ coral source add --file sources/community/railway/manifest.yaml --interactive
 When using `--interactive`, you will be prompted for `RAILWAY_API_TOKEN`.
 Otherwise, set it as an environment variable before running the command.
 
+If you use a workspace token, include `workspace_id` when you first query
+`railway.projects` so Railway can scope project discovery to that workspace.
+
 ## Example queries
 
 ### List all projects
 
+Account-token users can list all visible projects:
+
 ```sql
 SELECT * FROM railway.projects;
+```
+
+Workspace-token users should scope the discovery query with their workspace ID:
+
+```sql
+SELECT *
+  FROM railway.projects
+ WHERE workspace_id = 'your-workspace-id';
 ```
 
 ### Services in a project
@@ -122,7 +136,7 @@ SELECT name
 ### Railway-generated domains
 
 ```sql
-SELECT domain, created_at
+SELECT domain, suffix, target_port, created_at
   FROM railway.domains
  WHERE project_id     = 'your-project-id'
    AND service_id     = 'your-service-id'
@@ -132,7 +146,7 @@ SELECT domain, created_at
 ### Custom domains
 
 ```sql
-SELECT domain, created_at
+SELECT domain, target_port, certificate_status, verification_token, dns_records
   FROM railway.custom_domains
  WHERE project_id     = 'your-project-id'
    AND service_id     = 'your-service-id'
@@ -142,9 +156,21 @@ SELECT domain, created_at
 ### Volumes in a project
 
 ```sql
-SELECT id, name, created_at
+SELECT id, name, volume_instances, created_at
   FROM railway.volumes
  WHERE project_id = 'your-project-id';
+```
+
+### Volume instance details
+
+Use the `volume_instances` JSON column from `railway.volumes` to discover
+volume instance IDs, then query the mount details:
+
+```sql
+SELECT volume_id, environment_id, service_id, mount_path, state,
+       size_mb, current_size_mb, region
+  FROM railway.volume_instances
+ WHERE volume_instance_id = 'your-volume-instance-id';
 ```
 
 ## Pagination
@@ -157,8 +183,9 @@ matching the pattern used by the Linear core source. Pages default to
 Paginated tables: `projects`, `services`, `environments`, `deployments`,
 `volumes`.
 
-The `variables`, `domains`, and `custom_domains` tables do not use
-pagination because the API returns all items in a single response.
+The `variables`, `domains`, `custom_domains`, and `volume_instances` tables do
+not use pagination because the API returns all items in a single response or a
+single resource by ID.
 
 ## Rate limits
 
@@ -178,6 +205,7 @@ Railway enforces API rate limits (see [Railway API Rate Limits](https://docs.rai
 - **Railway-generated and custom domains** are split into separate tables
   (`domains` and `custom_domains`) because the GraphQL response nests
   them under different keys (`serviceDomains` vs `customDomains`).
-- **Volume fields** — the Volume type only exposes `id`, `name`, and
-  `createdAt`. Mount path and state live on `VolumeInstance` (a
-  per-environment resource) and are not included in this source.
+- **Volume instance discovery** — detailed mount fields live on
+  `VolumeInstance`. Use the `volumes.volume_instances` JSON column to discover
+  instance IDs, then query `railway.volume_instances` for mount path, state,
+  size, region, service, and environment fields.

@@ -4,7 +4,7 @@ dsl_version: 3
 backend: http
 description: >-
   Query projects, services, deployments, environments, variables, domains,
-  and volumes from Railway's GraphQL API.
+  volumes, and volume instances from Railway's GraphQL API.
 inputs:
   RAILWAY_API_TOKEN:
     kind: secret
@@ -24,7 +24,7 @@ auth:
       from: template
       template: "Bearer {{input.RAILWAY_API_TOKEN}}"
 test_queries:
-  - SELECT * FROM railway.projects LIMIT 1
+  - SELECT table_name FROM coral.tables WHERE schema_name = 'railway' AND table_name = 'projects' LIMIT 1
 tables:
   # ─────────────────────────────────────────────────────────────
   # projects – list all projects visible to the token
@@ -34,6 +34,10 @@ tables:
     guide: |
       Start here to discover project IDs. Use `id` to scope queries
       on services, deployments, environments, and variables tables.
+      Workspace-token users can set `workspace_id` to list projects in
+      that workspace: `WHERE workspace_id = 'workspace-id'`.
+    filters:
+      - name: workspace_id
     request:
       method: POST
       path: /
@@ -43,8 +47,8 @@ tables:
             - query
           from: literal
           value: |
-            query Projects($first: Int!, $after: String) {
-              projects(first: $first, after: $after) {
+            query Projects($workspaceId: String, $first: Int!, $after: String) {
+              projects(workspaceId: $workspaceId, first: $first, after: $after) {
                 edges {
                   node {
                     id
@@ -63,6 +67,11 @@ tables:
                 }
               }
             }
+        - path:
+            - variables
+            - workspaceId
+          from: filter
+          key: workspace_id
         - path:
             - variables
             - first
@@ -738,12 +747,25 @@ tables:
                 serviceDomains {
                   id
                   domain
+                  suffix
+                  targetPort
                   createdAt
                   updatedAt
                 }
                 customDomains {
                   id
                   domain
+                  targetPort
+                  status {
+                    verificationToken
+                    certificateStatus
+                    dnsRecords {
+                      hostlabel
+                      requiredValue
+                      currentValue
+                      status
+                    }
+                  }
                   createdAt
                   updatedAt
                 }
@@ -812,6 +834,22 @@ tables:
           kind: path
           path:
             - domain
+      - name: suffix
+        type: Utf8
+        nullable: true
+        description: Railway-generated domain suffix.
+        expr:
+          kind: path
+          path:
+            - suffix
+      - name: target_port
+        type: Int64
+        nullable: true
+        description: Target port this service domain routes to.
+        expr:
+          kind: path
+          path:
+            - targetPort
       - name: created_at
         type: Utf8
         nullable: true
@@ -863,6 +901,17 @@ tables:
                 customDomains {
                   id
                   domain
+                  targetPort
+                  status {
+                    verificationToken
+                    certificateStatus
+                    dnsRecords {
+                      hostlabel
+                      requiredValue
+                      currentValue
+                      status
+                    }
+                  }
                   createdAt
                   updatedAt
                 }
@@ -931,6 +980,41 @@ tables:
           kind: path
           path:
             - domain
+      - name: target_port
+        type: Int64
+        nullable: true
+        description: Target port this custom domain routes to.
+        expr:
+          kind: path
+          path:
+            - targetPort
+      - name: verification_token
+        type: Utf8
+        nullable: true
+        description: Verification TXT token required for domain setup.
+        expr:
+          kind: path
+          path:
+            - status
+            - verificationToken
+      - name: certificate_status
+        type: Utf8
+        nullable: true
+        description: Certificate issuance status.
+        expr:
+          kind: path
+          path:
+            - status
+            - certificateStatus
+      - name: dns_records
+        type: Json
+        nullable: true
+        description: DNS record status objects for this domain.
+        expr:
+          kind: path
+          path:
+            - status
+            - dnsRecords
       - name: created_at
         type: Utf8
         nullable: true
@@ -976,6 +1060,20 @@ tables:
                       id
                       name
                       createdAt
+                      volumeInstances {
+                        edges {
+                          node {
+                            id
+                            environmentId
+                            serviceId
+                            mountPath
+                            state
+                            sizeMB
+                            currentSizeMB
+                            region
+                          }
+                        }
+                      }
                     }
                   }
                   pageInfo {
@@ -1053,4 +1151,160 @@ tables:
           kind: path
           path:
             - node
+            - createdAt
+      - name: volume_instances
+        type: Json
+        nullable: true
+        description: Raw volume instance connection for discovering instance IDs.
+        expr:
+          kind: path
+          path:
+            - node
+            - volumeInstances
+
+  # ─────────────────────────────────────────────────────────────
+  # volume_instances – environment/service-specific volume mounts
+  # ─────────────────────────────────────────────────────────────
+  - name: volume_instances
+    description: Volume mounts for a specific Railway environment/service
+    guide: |
+      Fetches one volume instance by `volume_instance_id`. Use the
+      `volumes.volume_instances` JSON column to discover instance IDs, then
+      query this table for mount path, state, size, region, service, and
+      environment details.
+    filters:
+      - name: volume_instance_id
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query VolumeInstance($id: String!) {
+              volumeInstance(id: $id) {
+                id
+                volumeId
+                environmentId
+                serviceId
+                mountPath
+                state
+                sizeMB
+                currentSizeMB
+                region
+                externalId
+                createdAt
+              }
+            }
+        - path:
+            - variables
+            - id
+          from: filter
+          key: volume_instance_id
+    response:
+      rows_path:
+        - data
+        - volumeInstance
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: volume_instance_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Volume instance ID filter.
+        expr:
+          kind: from_filter
+          key: volume_instance_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Volume instance ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: volume_id
+        type: Utf8
+        nullable: true
+        description: Parent volume ID.
+        expr:
+          kind: path
+          path:
+            - volumeId
+      - name: environment_id
+        type: Utf8
+        nullable: true
+        description: Environment ID for this mount.
+        expr:
+          kind: path
+          path:
+            - environmentId
+      - name: service_id
+        type: Utf8
+        nullable: true
+        description: Service ID for this mount.
+        expr:
+          kind: path
+          path:
+            - serviceId
+      - name: mount_path
+        type: Utf8
+        nullable: true
+        description: Path where the volume is mounted.
+        expr:
+          kind: path
+          path:
+            - mountPath
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Volume instance state.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: size_mb
+        type: Int64
+        nullable: true
+        description: Provisioned volume size in MB.
+        expr:
+          kind: path
+          path:
+            - sizeMB
+      - name: current_size_mb
+        type: Int64
+        nullable: true
+        description: Current used volume size in MB.
+        expr:
+          kind: path
+          path:
+            - currentSizeMB
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Region hosting this volume instance.
+        expr:
+          kind: path
+          path:
+            - region
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: Provider external ID for this volume instance.
+        expr:
+          kind: path
+          path:
+            - externalId
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
             - createdAt
