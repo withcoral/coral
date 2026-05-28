@@ -29,6 +29,7 @@ Use:
 
 - Keep credential collection separate from runtime auth. `inputs` stores values; `auth`, request headers, query params, or body fields decide where values are sent.
 - Use `from: bearer` for raw access tokens that must be sent as `Authorization: Bearer <token>`. Use `from: one_of` when runtime auth should choose the first present credential, such as a pasted API-key header before an OAuth bearer token.
+- When `from: one_of` models alternate stored credentials, mark each branch's secret input `required: false` so either credential can satisfy auth.
 - Use `type: source_config` when the user should provide a stored secret directly through an environment variable or prompt.
 - Use `type: oauth` when the provider should issue the source secret through an OAuth device-code or authorization-code flow during `coral source add --interactive`.
 - Device-code OAuth methods require `flow.type: device_code`, `endpoints.device_authorization_url`, `endpoints.token_url`, and a public client ID. Authorization-code OAuth methods require `flow.type: authorization_code` and an explicit `flow.pkce` of `required` or `disabled`.

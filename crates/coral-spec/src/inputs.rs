@@ -980,27 +980,33 @@ fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Resu
         .iter()
         .map(|input| (input.key.clone(), input.kind))
         .collect();
-    validate_value(root, true, &declared)
+    validate_value(root, true, &declared, false)
 }
 
 fn validate_value(
     value: &Value,
     is_root: bool,
     declared: &BTreeMap<String, ManifestInputKind>,
+    in_auth: bool,
 ) -> Result<()> {
     match value {
         Value::Object(map) => {
-            validate_mapping(map, declared)?;
+            validate_mapping(map, declared, in_auth)?;
             for (key, nested) in map {
                 if is_root && key == "inputs" {
                     continue;
                 }
-                validate_value(nested, false, declared)?;
+                validate_value(
+                    nested,
+                    false,
+                    declared,
+                    in_auth || (is_root && key == "auth"),
+                )?;
             }
         }
         Value::Array(items) => {
             for item in items {
-                validate_value(item, false, declared)?;
+                validate_value(item, false, declared, in_auth)?;
             }
         }
         Value::String(raw) => validate_template(raw, declared)?,
@@ -1012,6 +1018,7 @@ fn validate_value(
 fn validate_mapping(
     map: &Map<String, Value>,
     declared: &BTreeMap<String, ManifestInputKind>,
+    in_auth: bool,
 ) -> Result<()> {
     let Some(source_kind @ ("input" | "bearer")) = map.get("from").and_then(Value::as_str) else {
         return Ok(());
@@ -1030,6 +1037,11 @@ fn validate_mapping(
     if source_kind == "bearer" && *kind != ManifestInputKind::Secret {
         return Err(ManifestError::validation(format!(
             "manifest bearer value source '{key}' must reference a secret input"
+        )));
+    }
+    if source_kind == "input" && in_auth && *kind != ManifestInputKind::Secret {
+        return Err(ManifestError::validation(format!(
+            "manifest auth input value source '{key}' must reference a secret input"
         )));
     }
     if map.contains_key("default") {
@@ -1846,6 +1858,58 @@ tables: []
             message.contains("bearer value source 'HEADER_VALUE' must reference a secret input"),
             "unexpected error: {message}"
         );
+    }
+
+    #[test]
+    fn auth_input_value_source_requires_secret_input() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  HEADER_VALUE:
+    kind: variable
+    default: not-secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: HEADER_VALUE
+tables: []
+";
+        let error = collect(manifest).expect_err("auth input key must point at a secret input");
+        let message = error.to_string();
+        assert!(
+            message
+                .contains("auth input value source 'HEADER_VALUE' must reference a secret input"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn non_auth_input_value_source_allows_variable_input() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_VERSION:
+    kind: variable
+    default: 2026-01-01
+request_headers:
+  - name: API-Version
+    from: input
+    key: API_VERSION
+tables: []
+";
+        let inputs = collect(manifest).expect("non-auth request header can use variable inputs");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].key, "API_VERSION");
     }
 
     #[test]

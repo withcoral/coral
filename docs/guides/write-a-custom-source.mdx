@@ -256,8 +256,19 @@ auth:
 ```
 
 When an API supports either a complete pasted API-key header or an OAuth access
-token, use `from: one_of` and put the pasted header first, then a `from: bearer`
+token, declare both credential inputs as optional secrets, then use
+`from: one_of` and put the pasted header first, followed by a `from: bearer`
 fallback for the raw OAuth token.
+
+```yaml
+inputs:
+  DEMO_API_KEY:
+    kind: secret
+    required: false
+  DEMO_OAUTH_ACCESS_TOKEN:
+    kind: secret
+    required: false
+```
 
 ### OAuth client and redirect options
 

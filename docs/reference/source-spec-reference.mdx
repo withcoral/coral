@@ -721,7 +721,7 @@ Request query params, body fields, and headers support these `from` values:
 | `arg_split` | Split a source function argument string and serialize one part as a string |
 | `arg_split_int` | Split a source function argument string and serialize one part as a JSON integer |
 | `input` | Read a manifest-declared source input (variable/secret) by key |
-| `bearer` | Read a manifest-declared source input by key and serialize it as `Bearer <value>` |
+| `bearer` | Read a manifest-declared secret input by key and serialize it as `Bearer <value>` |
 | `one_of` | Resolve nested value sources in order and use the first present, non-empty value |
 | `state` | Read pagination/runtime state |
 | `now_epoch_minus_seconds` | Emit the current Unix epoch seconds minus the configured offset |
