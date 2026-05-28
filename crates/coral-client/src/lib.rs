@@ -180,23 +180,47 @@ fn stringify_int64_columns(batches: &[RecordBatch], rows: &mut [Value]) {
     let Some(schema) = batches.first().map(RecordBatch::schema) else {
         return;
     };
-    let int64_columns: Vec<&str> = schema
-        .fields()
-        .iter()
-        .filter(|f| matches!(f.data_type(), DataType::Int64 | DataType::UInt64))
-        .map(|f| f.name().as_str())
-        .collect();
-    if int64_columns.is_empty() {
-        return;
-    }
     for row in rows {
-        let Value::Object(obj) = row else { continue };
-        for col in &int64_columns {
-            if let Some(Value::Number(n)) = obj.get(*col) {
-                let as_string = n.to_string();
-                obj.insert((*col).to_string(), Value::String(as_string));
+        for field in schema.fields() {
+            stringify_field(field.data_type(), row, field.name());
+        }
+    }
+}
+
+fn stringify_field(data_type: &DataType, parent: &mut Value, field_name: &str) {
+    let Value::Object(obj) = parent else { return };
+    let Some(value) = obj.get_mut(field_name) else {
+        return;
+    };
+    stringify_value(data_type, value);
+}
+
+fn stringify_value(data_type: &DataType, value: &mut Value) {
+    match data_type {
+        DataType::Int64 | DataType::UInt64 => {
+            if let Value::Number(n) = value {
+                *value = Value::String(n.to_string());
             }
         }
+        DataType::Struct(fields) => {
+            for field in fields {
+                stringify_field(field.data_type(), value, field.name());
+            }
+        }
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => {
+            if let Value::Array(items) = value {
+                for item in items {
+                    stringify_value(field.data_type(), item);
+                }
+            }
+        }
+        DataType::Dictionary(_, value_type) => {
+            stringify_value(value_type, value);
+        }
+        _ => {}
     }
 }
 
@@ -205,14 +229,14 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::array::{Int64Array, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
     use coral_api::v1::ExecuteSqlResponse;
     use serde_json::Value;
 
     use super::{
         CollectedQueryResult, batches_to_json_rows, batches_to_json_rows_int64_safe,
-        decode_execute_sql_response, format_batches_json, format_batches_table,
+        decode_execute_sql_response, format_batches_json, format_batches_table, stringify_value,
     };
 
     fn response() -> ExecuteSqlResponse {
@@ -317,6 +341,95 @@ mod tests {
             Some(&Value::String("18446744073709551000".to_string())),
         );
         assert_eq!(first.get("name"), Some(&Value::String("a".to_string())));
+    }
+
+    #[test]
+    fn stringify_value_rewrites_int64_inside_struct() {
+        let dt = DataType::Struct(Fields::from(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("count", DataType::Int32, false),
+        ]));
+        let mut value =
+            serde_json::json!({"id": -8_504_475_857_937_456_387_i64, "name": "a", "count": 3});
+        stringify_value(&dt, &mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({"id": "-8504475857937456387", "name": "a", "count": 3}),
+        );
+    }
+
+    #[test]
+    fn stringify_value_rewrites_int64_inside_list() {
+        let dt = DataType::List(Arc::new(Field::new("item", DataType::Int64, true)));
+        let mut value = serde_json::json!([1_i64, -8_504_475_857_937_456_387_i64, null]);
+        stringify_value(&dt, &mut value);
+        assert_eq!(
+            value,
+            serde_json::json!(["1", "-8504475857937456387", null]),
+        );
+    }
+
+    #[test]
+    fn stringify_value_rewrites_int64_inside_list_of_structs() {
+        let item = Field::new(
+            "item",
+            DataType::Struct(Fields::from(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("tag", DataType::Utf8, false),
+            ])),
+            false,
+        );
+        let dt = DataType::List(Arc::new(item));
+        let mut value = serde_json::json!([{"id": 1_i64, "tag": "a"}, {"id": -8_504_475_857_937_456_387_i64, "tag": "b"}]);
+        stringify_value(&dt, &mut value);
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"id": "1", "tag": "a"},
+                {"id": "-8504475857937456387", "tag": "b"},
+            ]),
+        );
+    }
+
+    #[test]
+    fn stringify_value_leaves_non_int64_scalars_untouched() {
+        let dt = DataType::Int32;
+        let mut value = serde_json::json!(42);
+        stringify_value(&dt, &mut value);
+        assert_eq!(value, serde_json::json!(42));
+    }
+
+    #[test]
+    fn batches_to_json_rows_int64_safe_rewrites_struct_columns() {
+        use arrow::array::{ArrayRef, StructArray};
+
+        let inner_int = Arc::new(Field::new("id", DataType::Int64, false));
+        let inner_str = Arc::new(Field::new("tag", DataType::Utf8, false));
+        let struct_field = Field::new(
+            "event",
+            DataType::Struct(Fields::from(vec![
+                inner_int.as_ref().clone(),
+                inner_str.as_ref().clone(),
+            ])),
+            false,
+        );
+
+        let id_values =
+            Arc::new(Int64Array::from(vec![-8_504_475_857_937_456_387_i64])) as ArrayRef;
+        let tag_values = Arc::new(StringArray::from(vec!["a"])) as ArrayRef;
+        let event_array = StructArray::from(vec![(inner_int, id_values), (inner_str, tag_values)]);
+
+        let schema = Arc::new(Schema::new(vec![struct_field]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(event_array) as ArrayRef]).expect("batch");
+
+        let rows = batches_to_json_rows_int64_safe(&[batch]).expect("rows");
+        let first = rows.first().expect("first row");
+        assert_eq!(
+            first.get("event"),
+            Some(&serde_json::json!({"id": "-8504475857937456387", "tag": "a"})),
+        );
     }
 
     #[test]
