@@ -28,7 +28,7 @@ inputs:
             redirect_uri: http://127.0.0.1
             redirect_uri_port_mode: random
             endpoints:
-              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
               token_url: https://oauth2.googleapis.com/token
             client:
               id:
@@ -67,15 +67,15 @@ tables:
     description: Google Classroom courses
     guide: |
       Lists courses the user is enrolled in or teaching.
+      Note: `student_id` and `teacher_id` filters are mutually exclusive.
     filters:
       - name: student_id
         required: false
       - name: teacher_id
         required: false
-      - name: course_states
+      - name: course_state
         required: false
-        description: |
-          Comma-separated course states (e.g. ACTIVE, ARCHIVED).
+        description: Restrict results to a course in this state (e.g. ACTIVE, ARCHIVED).
     request:
       method: GET
       path: /v1/courses
@@ -88,7 +88,7 @@ tables:
           key: teacher_id
         - name: courseStates
           from: filter
-          key: course_states
+          key: course_state
     response:
       rows_path:
         - courses
@@ -230,13 +230,14 @@ tables:
         expr:
           kind: from_filter
           key: teacher_id
-      - name: course_states
+      - name: course_state_filter
         type: Utf8
         nullable: true
         virtual: true
+        description: Filter by course state.
         expr:
           kind: from_filter
-          key: course_states
+          key: course_state
       - name: raw
         type: Json
         nullable: false
@@ -248,12 +249,29 @@ tables:
     description: Coursework (assignments/questions) in a specific Google Classroom course
     guide: |
       Lists coursework items. Requires `course_id` filter.
+      By default, only `PUBLISHED` coursework is returned. Use `course_work_state` to query `DRAFT` or `DELETED` coursework.
     filters:
       - name: course_id
         required: true
+      - name: course_work_state
+        required: false
+        description: |
+          Restrict results to coursework in this state.
+          Supported values: PUBLISHED, DRAFT, DELETED. Defaults to PUBLISHED.
+      - name: order_by
+        required: false
+        description: |
+          Optional sort order for results (e.g. `updateTime asc` or `updateTime desc`).
     request:
       method: GET
       path: /v1/courses/{{filter.course_id}}/courseWork
+      query:
+        - name: courseWorkStates
+          from: filter
+          key: course_work_state
+        - name: orderBy
+          from: filter
+          key: order_by
     response:
       rows_path:
         - courseWork
@@ -368,6 +386,22 @@ tables:
         expr:
           kind: from_filter
           key: course_id
+      - name: course_work_state_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by coursework state (e.g. PUBLISHED, DRAFT, DELETED).
+        expr:
+          kind: from_filter
+          key: course_work_state
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional sort order for results (e.g. `updateTime desc`).
+        expr:
+          kind: from_filter
+          key: order_by
       - name: raw
         type: Json
         nullable: false
