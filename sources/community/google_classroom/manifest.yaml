@@ -386,7 +386,7 @@ tables:
         expr:
           kind: from_filter
           key: course_id
-      - name: course_work_state_filter
+      - name: course_work_state
         type: Utf8
         nullable: true
         virtual: true

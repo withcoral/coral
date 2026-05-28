@@ -4,7 +4,13 @@ The `google_classroom` community source exposes read-only Google Classroom cours
 
 ## Setup
 
-Google Classroom API requires OAuth 2.0 user authentication with appropriate scopes.
+Google Classroom API requires OAuth 2.0 user authentication with the following read-only scopes:
+* `https://www.googleapis.com/auth/classroom.courses.readonly` (read course metadata)
+* `https://www.googleapis.com/auth/classroom.coursework.students.readonly` (read course coursework)
+* `https://www.googleapis.com/auth/classroom.coursework.me.readonly` (read student/teacher submissions)
+* `https://www.googleapis.com/auth/classroom.rosters.readonly` (read course roster)
+* `https://www.googleapis.com/auth/classroom.profile.emails` (optional, read user email address profiles)
+* `https://www.googleapis.com/auth/classroom.profile.photos` (optional, read user profile photo URLs)
 
 ### 🔑 OAuth Credentials Configuration
 
