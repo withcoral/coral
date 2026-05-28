@@ -119,6 +119,8 @@ CAST(value AS DOUBLE) / 1e6  -- for USDC (6 decimals)
 CAST(value AS DOUBLE) / 1e18 -- for WETH (18 decimals)
 ```
 
+**Precision caveat:** `DOUBLE` has ~15-17 significant digits. For tokens with 18 decimals and large circulating supply (e.g., SHIB, PEPE), very large raw values may lose precision when cast to DOUBLE. For most standard tokens (USDC, WETH, DAI) this is not an issue. If you need exact arithmetic for high-supply tokens, consider keeping values as Utf8 and converting in your application layer.
+
 ---
 
 ## Source

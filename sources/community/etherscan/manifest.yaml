@@ -88,6 +88,10 @@ tables:
       - name: contract_address
         type: Utf8
         description: Token contract address.
+        expr:
+          kind: path
+          path:
+            - contractAddress
       - name: value
         type: Utf8
         description: Transfer value in token's smallest unit (cast to DOUBLE/1e6 for USDC).
