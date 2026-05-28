@@ -1,0 +1,152 @@
+name: outline
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query team knowledge bases, document lifecycles, and user directories from Outline.
+base_url: "{{input.OUTLINE_URL}}/api"
+
+inputs:
+  OUTLINE_URL:
+    kind: variable
+    hint: |
+      Outline instance base URL with protocol but without trailing slash,
+      for example `https://app.getoutline.com` or `https://wiki.infra.local`.
+  OUTLINE_API_TOKEN:
+    kind: secret
+    hint: Long-lived personal API token or bot token generated in user settings.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.OUTLINE_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT name FROM outline.collections LIMIT 1
+
+tables:
+  - name: collections
+    description: List of team spaces, permissioned categories, and root wiki notebooks.
+    request:
+      method: POST
+      path: /collections.list
+    response:
+      row_strategy: direct
+      rows_path: [data, collections]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the collection.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the collection channel.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Short purpose summary attached to the collection space.
+        expr: {kind: path, path: [description]}
+      - name: permission
+        type: Utf8
+        nullable: true
+        description: Default workspace sharing access model roles (e.g., read, write).
+        expr: {kind: path, path: [permission]}
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO timestamp showing when the repository section was initialized.
+        expr: {kind: path, path: [createdAt]}
+
+  - name: documents
+    description: Individual markdown-formatted wiki articles and knowledge resources.
+    request:
+      method: POST
+      path: /documents.list
+    response:
+      row_strategy: direct
+      rows_path: [data, documents]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique programmatic ID of the document asset.
+        expr: {kind: path, path: [id]}
+      - name: collection_id
+        type: Utf8
+        nullable: false
+        description: Parent collection container location where the asset resides.
+        expr: {kind: path, path: [collectionId]}
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Display header title of the document.
+        expr: {kind: path, path: [title]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Publishing state of the article entry (e.g., draft, published).
+        expr: {kind: path, path: [status]}
+      - name: revision
+        type: Int64
+        nullable: true
+        description: Document revision number.
+        expr: {kind: path, path: [revision]}
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO timestamp tracking the latest text modification sweep.
+        expr: {kind: path, path: [updatedAt]}
+
+  - name: users
+    description: Directory mapping team member profiles, access permissions, and identity maps.
+    request:
+      method: POST
+      path: /users.list
+    response:
+      row_strategy: direct
+      rows_path: [data, users]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique internal user identifier token.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Real name of the individual.
+        expr: {kind: path, path: [name]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Primary email address linked to the team profile metadata.
+        expr: {kind: path, path: [email]}
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Administrative role tier allocated inside the server workspace (e.g., admin, member).
+        expr: {kind: path, path: [role]}
+      - name: is_suspended
+        type: Bool
+        nullable: true
+        description: Indicates whether the user account is suspended.
+        expr: {kind: path, path: [isSuspended]}
