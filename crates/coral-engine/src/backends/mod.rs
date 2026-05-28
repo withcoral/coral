@@ -86,6 +86,7 @@ pub(crate) mod file;
 pub(crate) mod http;
 pub(crate) mod mcp;
 pub(crate) mod shared;
+pub(crate) mod v4;
 
 pub(crate) fn compile_query_source(
     source: &QuerySource,
@@ -93,6 +94,26 @@ pub(crate) fn compile_query_source(
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
+    if let Some(v4_manifest) = source.source_spec().as_v4() {
+        let materialization = source.v4_materialization().ok_or_else(|| {
+            CoreError::internal(format!(
+                "DSL v4 source '{}' was compiled without materialized artifacts",
+                source.source_name()
+            ))
+        })?;
+        return v4::compile_manifest(
+            v4_manifest,
+            materialization,
+            &BackendCompileRequest {
+                source,
+                runtime_context,
+                source_secrets: source.secrets().clone(),
+                source_variables: source.variables().clone(),
+                request_authenticators,
+                source_input_resolver,
+            },
+        );
+    }
     compile_validated_manifest(
         source.source_spec(),
         &BackendCompileRequest {

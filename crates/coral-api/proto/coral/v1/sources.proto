@@ -444,6 +444,62 @@ message DeleteSourceRequest {
 // Confirms source deletion.
 message DeleteSourceResponse {}
 
+// Rebuilds materialized artifacts for an installed DSL v4 source.
+message RefreshSourceRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Bare source name to refresh.
+  string name = 2;
+}
+
+// Summary of a DSL v4 materialization run.
+message SourceMaterializationSummary {
+  // Source name whose artifacts were built.
+  string source_name = 1;
+  // Source manifest version whose artifacts were built.
+  string source_version = 2;
+  // SHA-256 of the exact manifest YAML used for materialization.
+  string manifest_sha256 = 3;
+  // Importer version used to produce semantic IR.
+  string importer_version = 4;
+  // Projection generator version used to produce SQL projections.
+  string projection_generator_version = 5;
+  // Number of upstream surfaces materialized.
+  uint32 surface_count = 6;
+  // Total number of generated projections.
+  uint32 projection_count = 7;
+  // Number of projections published into SQL.
+  uint32 published_projection_count = 8;
+  // Number of generated projections hidden by policy or diagnostics.
+  uint32 hidden_projection_count = 9;
+}
+
+// One importer or projection-generation diagnostic from materialization.
+message SourceMaterializationDiagnostic {
+  // Stable diagnostic code.
+  string code = 1;
+  // Diagnostic severity: info, warning, or error.
+  string severity = 2;
+  // Human-readable diagnostic message.
+  string message = 3;
+  // Surface ID associated with the diagnostic, when applicable.
+  string surface_id = 4;
+  // Operation ID associated with the diagnostic, when applicable.
+  string operation_id = 5;
+  // Projection name associated with the diagnostic, when applicable.
+  string projection_name = 6;
+}
+
+// Result of rebuilding DSL v4 materialized artifacts.
+message RefreshSourceResponse {
+  // Refreshed source metadata.
+  Source source = 1;
+  // Materialization summary.
+  SourceMaterializationSummary materialization = 2;
+  // Non-fatal materialization diagnostics.
+  repeated SourceMaterializationDiagnostic diagnostics = 3;
+}
+
 // Validates that a registered source is queryable.
 message ValidateSourceRequest {
   // Owning workspace resource.
@@ -509,6 +565,8 @@ service SourceService {
   rpc ImportSource(ImportSourceRequest) returns (stream ImportSourceResponse);
   // Deletes a registered source.
   rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse);
+  // Rebuilds materialized artifacts for an installed DSL v4 source.
+  rpc RefreshSource(RefreshSourceRequest) returns (RefreshSourceResponse);
   // Validates that a registered source is queryable.
   rpc ValidateSource(ValidateSourceRequest) returns (ValidateSourceResponse);
 }

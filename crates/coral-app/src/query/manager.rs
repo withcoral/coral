@@ -21,6 +21,7 @@ use crate::query::extensions::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::materialization::load_v4_materialization;
 use crate::sources::model::InstalledSource;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
@@ -175,6 +176,11 @@ impl QueryManager {
                 Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
                     return Err(error);
                 }
+                Err(error @ AppError::FailedPrecondition(_))
+                    if error.to_string().contains("DSL v4 materialized artifacts") =>
+                {
+                    return Err(error);
+                }
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -194,6 +200,17 @@ impl QueryManager {
     ) -> Result<(QuerySource, String), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
+        let v4_materialization = if let Some(v4) = source_spec.as_v4() {
+            Some(load_v4_materialization(
+                &self.layout,
+                workspace_name,
+                &source.name,
+                &installed.manifest_yaml,
+                v4,
+            )?)
+        } else {
+            None
+        };
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
@@ -229,7 +246,12 @@ impl QueryManager {
             }
         }
         Ok((
-            QuerySource::new(source_spec, source.variables.clone(), resolved_secrets),
+            QuerySource::new_with_v4_materialization(
+                source_spec,
+                source.variables.clone(),
+                resolved_secrets,
+                v4_materialization,
+            ),
             installed.candidate.version,
         ))
     }

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use coral_spec::ValidatedSourceManifest;
+use coral_spec::v4::V4MaterializedSource;
 
 use super::ColumnInfo;
 use crate::EngineExtensions;
@@ -15,6 +16,7 @@ use crate::EngineExtensions;
 #[derive(Debug, Clone)]
 pub struct QuerySource {
     source_spec: ValidatedSourceManifest,
+    v4_materialization: Option<V4MaterializedSource>,
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
 }
@@ -30,6 +32,23 @@ impl QuerySource {
     ) -> Self {
         Self {
             source_spec,
+            v4_materialization: None,
+            variables,
+            secrets,
+        }
+    }
+
+    #[must_use]
+    /// Builds one source selection with explicit DSL v4 materialized artifacts.
+    pub fn new_with_v4_materialization(
+        source_spec: ValidatedSourceManifest,
+        variables: BTreeMap<String, String>,
+        secrets: BTreeMap<String, String>,
+        v4_materialization: Option<V4MaterializedSource>,
+    ) -> Self {
+        Self {
+            source_spec,
+            v4_materialization,
             variables,
             secrets,
         }
@@ -51,6 +70,12 @@ impl QuerySource {
     /// Returns the validated declarative source spec for this source.
     pub fn source_spec(&self) -> &ValidatedSourceManifest {
         &self.source_spec
+    }
+
+    #[must_use]
+    /// Returns materialized DSL v4 artifacts supplied by the app for v4 sources.
+    pub fn v4_materialization(&self) -> Option<&V4MaterializedSource> {
+        self.v4_materialization.as_ref()
     }
 
     #[must_use]

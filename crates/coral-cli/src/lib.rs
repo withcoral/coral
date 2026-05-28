@@ -284,6 +284,14 @@ enum SourceCommand {
         /// Name of the source to test
         name: String,
     },
+    /// Refresh materialized artifacts for a DSL v4 source
+    Refresh {
+        /// Name of the source to refresh
+        name: String,
+        /// Emit JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove a source
     Remove {
         /// Name of the source to remove
@@ -670,6 +678,10 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                 source_ops::ValidationSeverityMode::Strict,
             )
             .await?;
+        }
+        SourceCommand::Refresh { name, json } => {
+            let response = source_ops::refresh_source(app, &name).await?;
+            source_ops::print_refresh_response(&response, json)?;
         }
         SourceCommand::Remove { name } => {
             source_ops::remove_and_print(app, &name).await?;
