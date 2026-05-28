@@ -327,14 +327,15 @@ tables:
   - name: secrets
     description: >
       Project secrets inventory (environment variables available to Edge
-      Functions). Returns secret names and last-updated timestamps only —
-      secret values are never returned. Requires the project ref as a
-      filter.
+      Functions). The upstream Supabase API response includes secret
+      values, but this Coral table intentionally omits the value field and
+      exposes only secret names and last-updated timestamps. Requires the
+      project ref as a filter.
     guide: >
       Always filter by project_ref: `SELECT name, updated_at FROM
       supabase.secrets WHERE project_ref = 'abcdefghijklmnopqrst'`.
-      This table is inventory-only: it returns names and timestamps but
-      never exposes secret values.
+      This table is inventory-only: Supabase returns values upstream, but
+      Coral intentionally does not expose the value field in SQL results.
     filters:
       - name: project_ref
         required: true
@@ -431,20 +432,20 @@ tables:
   # ──────────────────────────────────────────────
   - name: service_health
     description: >
-      Health status of individual services within a project. Returns
-      whether each service (auth, realtime, storage, etc.) is healthy,
-      along with version info and any error messages. Requires the project
-      ref and a comma-separated list of service names as filters.
+      Health status of one service within a project. Returns whether the
+      service (auth, realtime, storage, rest, etc.) is healthy, along with
+      version info and any error messages. Requires the project ref and one
+      service name as filters.
     guide: >
-      Always filter by project_ref and services: `SELECT name, healthy,
+      Always filter by project_ref and service: `SELECT name, healthy,
       status, info__version, error FROM supabase.service_health WHERE
-      project_ref = 'abcdefghijklmnopqrst' AND services =
-      'auth,realtime,storage,rest'`. Common service names are auth,
-      realtime, storage, and rest.
+      project_ref = 'abcdefghijklmnopqrst' AND service = 'auth'`. Common
+      service names are auth, realtime, storage, and rest. Query multiple
+      services with separate SQL statements.
     filters:
       - name: project_ref
         required: true
-      - name: services
+      - name: service
         required: true
     request:
       method: GET
@@ -452,7 +453,7 @@ tables:
       query:
         - name: services
           from: filter
-          key: services
+          key: service
     response:
       rows_path: []
     columns:
@@ -503,14 +504,14 @@ tables:
         expr:
           kind: from_filter
           key: project_ref
-      - name: services
+      - name: service
         type: Utf8
         nullable: true
         virtual: true
-        description: Echoes the services filter.
+        description: Echoes the requested service filter.
         expr:
           kind: from_filter
-          key: services
+          key: service
 
   # ──────────────────────────────────────────────
   # Database Backups
@@ -686,12 +687,15 @@ tables:
     description: >
       PostgREST (Data API) configuration for a project. Shows the exposed
       schemas, connection pool size, row limits, and extra search paths.
-      Requires the project ref as a filter.
+      The upstream Supabase API response also includes secret-bearing
+      fields such as jwt_secret, but this Coral table intentionally omits
+      those fields from SQL results. Requires the project ref as a filter.
     guide: >
       Always filter by project_ref: `SELECT db_schema, max_rows, db_pool,
       db_extra_search_path FROM supabase.postgrest_config WHERE project_ref
       = 'abcdefghijklmnopqrst'`. The db_schema column shows which Postgres
-      schemas are exposed through the REST API.
+      schemas are exposed through the REST API. Supabase returns jwt_secret
+      upstream; this source does not expose it as a SQL column.
     filters:
       - name: project_ref
         required: true

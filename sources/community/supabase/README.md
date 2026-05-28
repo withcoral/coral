@@ -65,7 +65,7 @@ When prompted, provide your PAT as `SUPABASE_ACCESS_TOKEN`.
 | `edge_functions`       | `GET /v1/projects/{ref}/functions`            | `project_ref` (required)         | Deployed Edge Functions                            |
 | `secrets`              | `GET /v1/projects/{ref}/secrets`              | `project_ref` (required)         | Secret names and timestamps only (no values)       |
 | `storage_buckets`      | `GET /v1/projects/{ref}/storage/buckets`      | `project_ref` (required)         | Public and private storage buckets                 |
-| `service_health`       | `GET /v1/projects/{ref}/health`               | `project_ref`, `services` (req.) | Per-service health and version info                |
+| `service_health`       | `GET /v1/projects/{ref}/health`               | `project_ref`, `service` (req.)  | Single-service health and version info             |
 | `backups`              | `GET /v1/projects/{ref}/database/backups`     | `project_ref` (required)         | Logical and physical backup snapshots              |
 | `branches`             | `GET /v1/projects/{ref}/branches`             | `project_ref` (required)         | Database branches (requires branching plan)        |
 | `postgrest_config`     | `GET /v1/projects/{ref}/postgrest`            | `project_ref` (required)         | Data API (PostgREST) settings for the project      |
@@ -97,7 +97,7 @@ SELECT id, name, slug, status, version, verify_jwt
 FROM supabase.edge_functions
 WHERE project_ref = 'abcdefghijklmnopqrst';
 
--- Secret inventory (names and timestamps only — values are never returned)
+-- Secret inventory (Coral omits the upstream value field)
 SELECT name, updated_at
 FROM supabase.secrets
 WHERE project_ref = 'abcdefghijklmnopqrst';
@@ -111,7 +111,7 @@ WHERE project_ref = 'abcdefghijklmnopqrst';
 SELECT name, healthy, status, info__version, error
 FROM supabase.service_health
 WHERE project_ref = 'abcdefghijklmnopqrst'
-  AND services = 'auth,realtime,storage,rest';
+  AND service = 'auth';
 
 -- Database backups
 SELECT id, status, is_physical_backup, inserted_at
@@ -144,7 +144,7 @@ projects
     → edge_functions     (project_ref)
     → secrets            (project_ref)
     → storage_buckets    (project_ref)
-    → service_health     (project_ref + services)
+    → service_health     (project_ref + service)
     → backups            (project_ref)
     → branches           (project_ref)
     → postgrest_config   (project_ref)
@@ -152,13 +152,16 @@ projects
 
 ## Security notes
 
-- **Secrets table is inventory-only.** The `secrets` table returns secret names
-  and timestamps but **never exposes secret values**. It is designed for
-  auditing which secrets exist, not for retrieving their contents.
+- **Secrets table is inventory-only in SQL.** Supabase's upstream Management
+  API response for project secrets includes secret values. This Coral source
+  intentionally omits the `value` field from SQL results and exposes only
+  secret names and timestamps for inventory/audit workflows.
+- **PostgREST config omits upstream secret material.** Supabase's upstream
+  PostgREST config response includes secret-bearing fields such as
+  `jwt_secret`. This Coral source intentionally omits `jwt_secret` and exposes
+  only non-secret Data API settings such as schemas, row limits, and pool size.
 - **Token scope.** PATs inherit your full account privileges. Use fine-grained
   permissions to restrict the token to the minimum scopes listed above.
-- **No credential surfaces.** This source does not expose database passwords,
-  connection strings, or API keys from any table.
 
 ## Rate limits
 
@@ -179,8 +182,9 @@ includes `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers.
   API-side limits
 - **Branching**: the `branches` table requires a paid plan with branching
   enabled on the project
-- **Service health**: requires specifying which services to check via the
-  `services` filter (e.g. `auth,realtime,storage,rest`)
+- **Service health**: requires specifying one service to check via the
+  `service` filter (e.g. `auth`, `realtime`, `storage`, or `rest`). Query
+  multiple services with separate SQL statements.
 - **Inactive projects**: for paused/inactive projects, querying
   `service_health` returns an API 400 and `postgrest_config` returns an
   API 404; Coral surfaces these upstream errors rather than crashing
