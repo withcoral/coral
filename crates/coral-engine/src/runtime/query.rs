@@ -85,7 +85,12 @@ async fn build_runtime_inner(
     } = runtime;
     let mut source_candidates = Vec::new();
     for source in sources {
-        match compile_query_source(source, &runtime_context, &extensions.request_authenticators) {
+        match compile_query_source(
+            source,
+            &runtime_context,
+            &extensions.request_authenticators,
+            extensions.source_input_resolver.clone(),
+        ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {

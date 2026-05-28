@@ -972,11 +972,13 @@ endpoint requires client-secret authentication must prompt for both OAuth
 client values: set `client.id.input`, `client.secret.input`, and a
 `client.secret.transport` of `basic_auth` or `request_body`. Client secrets are
 sent only to the token endpoint and are never included in the authorization URL.
+They may be stored as internal credential metadata so Coral can refresh the
+access token without prompting the user again.
 
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
-`scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral may store
-refresh tokens and OAuth metadata alongside the source secret, but automatic
-token refresh is not implemented yet.
+`scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral stores OAuth
+metadata alongside the source secret and preserves rotated refresh tokens when
+the provider returns a new one during refresh.
 
 ### OAuth redirect URIs
 
@@ -997,7 +999,11 @@ When users provide their own authorization-code OAuth client ID, they must
 configure the matching loopback redirect behavior in the OAuth app. Coral
 starts the loopback flow and returns the provider authorization URL. After the
 callback, Coral exchanges the code, stores the access token as the source
-secret, and stores any refresh token as internal credential metadata.
+secret, and stores refresh metadata internally. When the provider issues a
+refresh token, Coral uses it transparently for source validation and queries,
+so users should not need to reconnect the source just because a short-lived
+access token expires. If the provider does not issue a refresh token, users may
+need to reconnect the source after the access token expires.
 
 ### Inspecting configured inputs
 

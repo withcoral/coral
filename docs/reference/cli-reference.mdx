@@ -88,7 +88,9 @@ missing secret declares credential methods, Coral shows those choices in the
 source spec's authored order. `source_config` methods use the normal source
 input path and prompt for the secret value here; OAuth methods open or print an
 authorization URL or device verification URL, wait for provider completion, and
-store the resulting secret without printing token material.
+store the resulting access token without printing token material. If the
+provider returns refresh metadata, Coral keeps it internally so short-lived
+OAuth access tokens can be refreshed without re-running `coral source add`.
 Environment variables still win, so a secret value already present in the
 environment bypasses the retrieval choice.
 
