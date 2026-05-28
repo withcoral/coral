@@ -9,7 +9,10 @@ use coral_api::v1::{
     SearchSurfaceKind,
 };
 use coral_client::default_workspace;
-use rusqlite::Connection;
+use tantivy::collector::Count;
+use tantivy::query::{BooleanQuery, Occur, TermQuery};
+use tantivy::schema::IndexRecordOption;
+use tantivy::{Index, Term};
 use tonic::Request;
 
 use super::harness::{
@@ -55,9 +58,9 @@ async fn search_returns_typed_metadata_and_native_search_results() {
             .join("workspaces")
             .join("default")
             .join("search")
-            .join("search.sqlite")
+            .join("tantivy")
             .exists(),
-        "search should create the workspace SQLite search index"
+        "search should create the workspace Tantivy search index"
     );
     assert!(response.results.iter().any(|result| result.r#type
         == SearchResultType::NativeSearchPath as i32
@@ -258,25 +261,39 @@ fn assert_provider_state(
 }
 
 fn catalog_entity_count(harness: &GrpcHarness, surface_name: &str) -> u32 {
-    let connection = Connection::open(search_index_path(harness)).expect("open search index");
-    connection
-        .query_row(
-            "SELECT count(*) FROM catalog_entities WHERE workspace = 'default' AND surface_name = ?1",
-            [surface_name],
-            |row| row.get(0),
-        )
-        .expect("catalog entity count")
+    catalog_count_for_terms(harness, vec![("surface_name", surface_name)])
 }
 
 fn total_catalog_entity_count(harness: &GrpcHarness) -> u32 {
-    let connection = Connection::open(search_index_path(harness)).expect("open search index");
-    connection
-        .query_row(
-            "SELECT count(*) FROM catalog_entities WHERE workspace = 'default'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("total catalog entity count")
+    catalog_count_for_terms(harness, Vec::new())
+}
+
+fn catalog_count_for_terms(harness: &GrpcHarness, terms: Vec<(&str, &str)>) -> u32 {
+    let index = Index::open_in_dir(search_index_path(harness)).expect("open search index");
+    let schema = index.schema();
+    let entity_kind = schema.get_field("entity_kind").expect("entity_kind field");
+    let mut clauses = vec![(
+        Occur::Must,
+        Box::new(TermQuery::new(
+            Term::from_field_text(entity_kind, "catalog"),
+            IndexRecordOption::Basic,
+        )) as Box<dyn tantivy::query::Query>,
+    )];
+    for (field_name, value) in terms {
+        let field = schema.get_field(field_name).expect("field");
+        clauses.push((
+            Occur::Must,
+            Box::new(TermQuery::new(
+                Term::from_field_text(field, value),
+                IndexRecordOption::Basic,
+            )),
+        ));
+    }
+    let query = BooleanQuery::new(clauses);
+    let reader = index.reader().expect("reader");
+    let searcher = reader.searcher();
+    let count = searcher.search(&query, &Count).expect("catalog count");
+    u32::try_from(count).expect("count fits u32")
 }
 
 fn search_index_path(harness: &GrpcHarness) -> std::path::PathBuf {
@@ -285,5 +302,5 @@ fn search_index_path(harness: &GrpcHarness) -> std::path::PathBuf {
         .join("workspaces")
         .join("default")
         .join("search")
-        .join("search.sqlite")
+        .join("tantivy")
 }

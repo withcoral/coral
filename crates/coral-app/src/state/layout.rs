@@ -86,8 +86,8 @@ impl AppStateLayout {
         self.workspace_dir(workspace_name).join("search")
     }
 
-    pub(crate) fn search_index_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
-        self.search_dir(workspace_name).join("search.sqlite")
+    pub(crate) fn search_index_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.search_dir(workspace_name).join("tantivy")
     }
 
     pub(crate) fn source_dir(
@@ -160,12 +160,12 @@ mod tests {
                 .join("reports.jsonl")
         );
         assert_eq!(
-            layout.search_index_file(&workspace_name),
+            layout.search_index_dir(&workspace_name),
             config_dir
                 .join("workspaces")
                 .join("default")
                 .join("search")
-                .join("search.sqlite")
+                .join("tantivy")
         );
         assert_eq!(
             layout.local_trace_store_dir(),

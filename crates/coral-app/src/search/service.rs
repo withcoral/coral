@@ -69,11 +69,14 @@ impl SearchIndexRefresher {
         catalog: &CatalogInfo,
     ) -> Result<SearchIndexStore, SearchIndexError> {
         let mut refreshed_workspaces = self.refreshed_workspaces.lock().await;
-        let index = SearchIndexStore::open_workspace(&self.layout, workspace_name)?;
-        if !refreshed_workspaces.contains(workspace_name) {
-            index.replace_catalog(workspace_name, catalog)?;
+        let index = if refreshed_workspaces.contains(workspace_name) {
+            SearchIndexStore::open_workspace(&self.layout, workspace_name)?
+        } else {
+            let index =
+                SearchIndexStore::replace_workspace_catalog(&self.layout, workspace_name, catalog)?;
             refreshed_workspaces.insert(workspace_name.clone());
-        }
+            index
+        };
         Ok(index)
     }
 
@@ -217,10 +220,9 @@ impl UniversalSearch {
         let capabilities = index.capabilities();
         tracing::debug!(
             workspace = %workspace_name,
-            sqlite_version = %capabilities.sqlite_version,
-            fts5 = capabilities.fts5,
-            trigram = capabilities.trigram,
-            "using SQLite catalog search index"
+            tantivy_version = %capabilities.tantivy_version,
+            tokenizer = %capabilities.tokenizer,
+            "using Tantivy catalog search index"
         );
         let search_limit = usize::try_from(limit)
             .unwrap_or(usize::MAX)
@@ -664,23 +666,15 @@ fn observed_provider_note(state: SearchProviderState, total_count: usize) -> Str
 }
 
 fn catalog_index_error_status(error: &SearchIndexError) -> CatalogProviderStatus {
-    let state = match error {
-        SearchIndexError::UnsupportedCapability { .. } => SearchProviderState::Partial,
-        SearchIndexError::Io(_) | SearchIndexError::Sqlite(_) => SearchProviderState::Error,
-    };
     CatalogProviderStatus {
-        state,
+        state: SearchProviderState::Error,
         note: format!("Catalog metadata search index is unavailable: {error}"),
     }
 }
 
 fn observed_index_error_status(error: &SearchIndexError) -> ObservedProviderStatus {
-    let state = match error {
-        SearchIndexError::UnsupportedCapability { .. } => SearchProviderState::Partial,
-        SearchIndexError::Io(_) | SearchIndexError::Sqlite(_) => SearchProviderState::Error,
-    };
     ObservedProviderStatus {
-        state,
+        state: SearchProviderState::Error,
         note: format!("Observed-value search index is unavailable: {error}"),
     }
 }

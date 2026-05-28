@@ -21,7 +21,7 @@ use crate::search::index::{
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
-/// Query-result observer that writes direct-provenance cell values into search `SQLite`.
+/// Query-result observer that writes direct-provenance cell values into search index storage.
 pub(crate) struct ObservedValueIndexer {
     layout: AppStateLayout,
     workspace_name: WorkspaceName,
@@ -668,20 +668,13 @@ mod tests {
             .search_observed_values(&workspace, &["payments-api".to_string()], 10)
             .expect("search observed");
         assert_eq!(hits.len(), 1);
-        let observed_count: i64 = store
-            .connect()
-            .expect("connect")
-            .query_row(
-                "
-                SELECT observed_count
-                FROM observed_values
-                WHERE workspace = 'default' AND display_value = 'payments-api'
-                ",
-                [],
-                |row| row.get(0),
-            )
-            .expect("observed count");
-        assert_eq!(observed_count, 3);
+        assert_eq!(
+            store
+                .observed_count_for_test("payments-api")
+                .expect("observed state")
+                .expect("observed count"),
+            3
+        );
     }
 
     fn query_source(name: &str) -> QuerySource {
