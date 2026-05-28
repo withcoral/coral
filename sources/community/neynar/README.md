@@ -42,7 +42,14 @@ Provider-ranked Farcaster cast search. Returns casts matching a search query, or
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
-| `q` | Utf8 | Yes | Search query (keywords, phrases, or usernames) |
+| `q` | Utf8 | Yes | Search query (supports `+` AND, `\|` OR, `*` prefix, `""` phrase, `~n` fuzziness, `-` negate) |
+
+| Filter | Type | Required | Description |
+|--------|------|----------|-------------|
+| `author_fid` | Int64 | No | FID of the user whose casts to search |
+| `channel_id` | Utf8 | No | Filter by channel ID |
+| `mode` | Utf8 | No | Search mode: `literal` (default), `semantic`, or `hybrid` |
+| `limit` | Int64 | No | Results per page (1-100, default 25) |
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -78,32 +85,29 @@ ORDER BY reactions__likes_count DESC
 LIMIT 10;
 ```
 
-### Search for casts mentioning a specific topic
+### Search within a specific channel
 
 ```sql
 SELECT hash, text, author__username, timestamp
-FROM neynar.search_casts(q => 'ethereum scaling')
+FROM neynar.search_casts(q => 'ethereum')
+WHERE channel_id = 'ethereum'
 LIMIT 20;
 ```
 
-### Sentiment analysis on protocol mentions
+### Semantic search for conceptually related casts
 
 ```sql
-SELECT
-  author__username,
-  text,
-  reactions__likes_count,
-  reactions__recasts_count
-FROM neynar.search_casts(q => 'optimism grants')
-LIMIT 50;
+SELECT hash, text, author__username
+FROM neynar.search_casts(q => 'decentralized governance proposals')
+WHERE mode = 'semantic'
+LIMIT 15;
 ```
 
 ### Cross-source JOIN with other tables
 
-Since `search_casts` is a table function with a required argument, join it with pre-computed data rather than passing outer columns into the function call:
+Since `search_casts` is a table function with a required argument, use a CTE to search first, then join:
 
 ```sql
--- Search for casts about a project, then join with local data
 WITH cast_results AS (
   SELECT hash, text, author__username, reactions__likes_count
   FROM neynar.search_casts(q => 'aave')
@@ -125,22 +129,20 @@ The `/cast/search` endpoint requires a **paid Neynar API plan**. Free API keys r
 
 ### Provider-ranked retrieval
 
-This source uses `kind: search` — a provider-ranked retrieval pattern. The API decides relevance ordering based on its own ranking algorithm. You cannot filter by `WHERE author__username = '...'` at the SQL level; instead, include relevant keywords in the search query to influence ranking.
+This source uses `kind: search` — a provider-ranked retrieval pattern. The API decides relevance ordering based on its own ranking algorithm. You cannot filter by `WHERE author__username = '...'` at the SQL level; instead, use the `author_fid` filter or include keywords in the search query.
 
-### Search limits
+### Result limits
 
-- `default_top_k`: 25 results per call
-- `max_top_k`: 100 results per call
-- `max_calls_per_query`: 1 (no automatic pagination across multiple API calls)
+Returns up to 100 results per query (one page). Use the `limit` parameter to control result count. The `mode` parameter controls search behavior: `literal` (exact words), `semantic` (meaning-based), or `hybrid` (both).
 
 ### Rate limits
 
-Neynar rate limits depend on your plan tier. The source supports cursor-based pagination for fetching additional pages of results within a query, up to the `max_top_k` limit.
+Neynar rate limits depend on your plan tier.
 
 ---
 
 ## Source
 
-- [Neynar API docs](https://docs.neynar.com)
+- [Neynar API docs](https://docs.neynar.com/reference/search-casts)
 - [Neynar dashboard](https://neynar.com)
 - [Farcaster protocol](https://farcaster.xyz)

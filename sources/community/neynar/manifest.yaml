@@ -3,8 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Neynar Farcaster API for searching casts, getting user profiles,
-  and accessing Farcaster social data. Uses API key authentication.
+  Neynar Farcaster API for searching casts. Uses API key authentication.
+  Returns provider-ranked results with cast content, author info, and engagement metrics.
 inputs:
   NEYNAR_API_KEY:
     kind: secret
@@ -40,6 +40,18 @@ functions:
         - name: q
           from: arg
           key: q
+        - name: author_fid
+          from: filter_int
+          key: author_fid
+        - name: channel_id
+          from: filter
+          key: channel_id
+        - name: mode
+          from: filter
+          key: mode
+        - name: limit
+          from: filter_int
+          key: limit
     response:
       rows_path:
         - result
@@ -52,10 +64,19 @@ functions:
         - result
         - next
         - cursor
-      page_size:
-        default: 25
-        max: 100
-        query_param: limit
+    filters:
+      - name: author_fid
+        type: Int64
+        description: FID of the user whose casts to search.
+      - name: channel_id
+        type: Utf8
+        description: Filter by channel ID.
+      - name: mode
+        type: Utf8
+        description: Search mode: literal (default), semantic, or hybrid.
+      - name: limit
+        type: Int64
+        description: Number of results per page (1-100, default 25).
     columns:
       - name: hash
         type: Utf8
@@ -66,21 +87,51 @@ functions:
       - name: author__username
         type: Utf8
         description: Author's Farcaster username.
+        expr:
+          kind: path
+          path:
+            - author
+            - username
       - name: author__fid
         type: Int64
         description: Author's Farcaster ID.
+        expr:
+          kind: path
+          path:
+            - author
+            - fid
       - name: author__display_name
         type: Utf8
         description: Author's display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - display_name
       - name: reactions__likes_count
         type: Int64
         description: Number of likes.
+        expr:
+          kind: path
+          path:
+            - reactions
+            - likes_count
       - name: reactions__recasts_count
         type: Int64
         description: Number of recasts.
+        expr:
+          kind: path
+          path:
+            - reactions
+            - recasts_count
       - name: replies__count
         type: Int64
         description: Number of replies.
+        expr:
+          kind: path
+          path:
+            - replies
+            - count
       - name: timestamp
         type: Utf8
         description: Cast timestamp.
