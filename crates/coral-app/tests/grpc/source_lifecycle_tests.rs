@@ -304,6 +304,9 @@ async fn list_catalog_supports_table_kind_and_pagination() {
     assert_eq!(page_pagination.offset, 0);
     assert!(page_pagination.has_more);
     assert_eq!(page_pagination.next_offset, 2);
+    let counts = page.counts.as_ref().expect("catalog counts");
+    assert_eq!(counts.table_count, 3);
+    assert_eq!(counts.table_function_count, 0);
     assert_eq!(
         page.items
             .iter()
@@ -334,6 +337,9 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         .as_ref()
         .expect("unknown schema pagination");
     assert_eq!(unknown_schema_pagination.total_count, 0);
+    let unknown_counts = unknown_schema.counts.as_ref().expect("catalog counts");
+    assert_eq!(unknown_counts.table_count, 0);
+    assert_eq!(unknown_counts.table_function_count, 0);
     assert!(unknown_schema.items.is_empty());
     assert!(!unknown_schema_pagination.has_more);
 }

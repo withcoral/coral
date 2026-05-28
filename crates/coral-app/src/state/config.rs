@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
-use tracing::warn;
+use tracing::{info_span, warn};
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
@@ -324,6 +324,8 @@ impl ConfigStore {
     }
 
     pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
+        let span = info_span!("coral.app.config.load_catalog");
+        let _guard = span.enter();
         let _lock = self.lock_shared()?;
         self.load_unlocked().map(|config| config.catalog)
     }
