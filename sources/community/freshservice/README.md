@@ -56,25 +56,27 @@ LEFT JOIN freshservice.agents AS a
 LIMIT 25;
 ```
 
-Review asset ownership:
+Review ITAM assets:
 
 ```sql
-SELECT id, display_id, name, user_id, department_id, location_id
+SELECT asset_id, asset_no, type_id, service_level, serial_no, rack
 FROM freshservice.assets
-WHERE last_updated_gt = '2026-05-01T00:00:00Z'
+WHERE last_updated_gt = '2026-05-01'
 LIMIT 25;
 ```
 
 ## Notes
 
-- Freshservice list endpoints are modeled with `page` and `per_page`
-  pagination. Page size is capped at 100.
+- Freshservice list endpoints are modeled with provider-specific pagination.
+  Most tables use `page` and `per_page`; `freshservice.assets` uses ITAM
+  `offset` and `limit`. Page size is capped at 100.
 - Ticket conversations, notes, and asset custom-field payloads are intentionally
   omitted from v1 to keep the source read-only and avoid exposing sensitive
   text or credentials.
 - `freshservice.assets` uses the current Freshservice ITAM endpoint
-  `/api/v2/itam/assets`. The legacy `/api/v2/assets` endpoint for older
-  signups is not modeled by this source.
+  `/api/v2/itam/assets`. Use `last_updated_gt` and `last_updated_lt` in
+  `YYYY-MM-DD` format. The legacy `/api/v2/assets` endpoint for older signups
+  is not modeled by this source.
 - Ticket and asset tables have conservative default fetch limits. Use provider
   filters and SQL `LIMIT` for production service desks.
 - Freshservice workspace and MSP accounts may default departments and locations

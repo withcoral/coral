@@ -262,10 +262,10 @@ tables:
         type: Utf8
         nullable: true
         description: Requester job title.
-      - name: department_id
-        type: Int64
+      - name: department_ids
+        type: Json
         nullable: true
-        description: Department ID.
+        description: Department IDs associated with the requester.
       - name: active
         type: Boolean
         nullable: true
@@ -362,9 +362,9 @@ tables:
     description: Freshservice assets visible to the API key.
     guide: |
       Uses the current Freshservice ITAM assets endpoint. Asset inventories can
-      be large, so use `last_updated_gt`, `last_updated_lt`, and SQL LIMIT to
-      narrow production queries. Legacy `/assets` accounts created before
-      March 31, 2026 are intentionally not modeled by this v1 source.
+      be large, so use date-only `last_updated_gt`, `last_updated_lt`, and SQL
+      LIMIT to narrow production queries. Legacy `/assets` accounts created
+      before March 31, 2026 are intentionally not modeled by this v1 source.
     filters:
       - name: last_updated_gt
       - name: last_updated_lt
@@ -383,66 +383,37 @@ tables:
       rows_path: [assets]
       row_strategy: direct
     pagination:
-      mode: page
-      page_param: page
-      page_start: 1
+      mode: offset
+      offset_param: offset
       page_size:
         default: 100
         max: 100
-        query_param: per_page
+        query_param: limit
     columns:
-      - name: id
+      - name: asset_id
         type: Int64
         nullable: false
-        description: Asset ID.
-      - name: display_id
-        type: Int64
-        nullable: true
-        description: Human-readable asset display ID.
-      - name: name
+        description: Freshservice ITAM asset ID.
+      - name: asset_no
         type: Utf8
         nullable: true
-        description: Asset name.
-      - name: asset_type_id
+        description: Freshservice ITAM asset number.
+      - name: type_id
         type: Int64
         nullable: true
-        description: Asset type ID.
-      - name: user_id
-        type: Int64
-        nullable: true
-        description: Assigned user ID.
-      - name: department_id
-        type: Int64
-        nullable: true
-        description: Department ID.
-      - name: location_id
-        type: Int64
-        nullable: true
-        description: Location ID.
-      - name: impact
+        description: Freshservice ITAM asset type ID.
+      - name: service_level
         type: Utf8
         nullable: true
-        description: Asset impact.
-      - name: usage_type
+        description: Freshservice ITAM service level.
+      - name: serial_no
         type: Utf8
         nullable: true
-        description: Asset usage type.
-      - name: created_at
-        type: Timestamp
+        description: Asset serial number.
+      - name: rack
+        type: Utf8
         nullable: true
-        description: Asset creation time.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr: {kind: path, path: [created_at]}
-      - name: updated_at
-        type: Timestamp
-        nullable: true
-        description: Asset update time.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr: {kind: path, path: [updated_at]}
+        description: Rack metadata when returned by Freshservice ITAM.
 
   - name: locations
     description: Freshservice locations.
