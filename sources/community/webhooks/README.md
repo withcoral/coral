@@ -20,8 +20,17 @@ secrets are required by the receiver for ingestion.
 
 | Table | Key Columns |
 |---|---|
-| `deliveries` | `id`, `source`, `event_type`, `payload`, `received_at` |
-| `subscriptions` | `source`, `receiver_url`, `secret_alias`, `active` |
+| `deliveries` | `id`, `source`, `event_type`, `payload`, `received_at`, `hmac_valid`, `delivery_id`, `content_length_bytes` |
+| `subscriptions` | `source`, `receiver_url`, `secret_alias`, `events`, `active`, `registered_at` |
+
+---
+
+## Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `WEBHOOKS_PATH` | `~/.webhooks/deliveries.jsonl` | Path to the JSONL file the receiver writes deliveries to |
+| `WEBHOOK_SUBSCRIPTIONS_PATH` | `~/.webhooks/subscriptions.jsonl` | Path to the JSONL file storing subscription configuration rows |
 
 ---
 
@@ -91,7 +100,9 @@ the corresponding secret environment variable.
 
 ---
 
-## JSONL row schema
+## JSONL row schemas
+
+### deliveries (`WEBHOOKS_PATH`)
 
 Each row written to `WEBHOOKS_PATH` must be a JSON object with these fields:
 
@@ -105,6 +116,19 @@ Each row written to `WEBHOOKS_PATH` must be a JSON object with these fields:
 | `hmac_valid` | boolean | Whether HMAC signature was verified before writing |
 | `delivery_id` | string | Provider-assigned delivery ID, if present |
 | `content_length_bytes` | integer | Byte length of the raw payload |
+
+### subscriptions (`WEBHOOK_SUBSCRIPTIONS_PATH`)
+
+Each row written to `WEBHOOK_SUBSCRIPTIONS_PATH` must be a JSON object with these fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `source` | string | Service name this subscription is for, e.g. `github` |
+| `receiver_url` | string | Public URL where the provider will deliver webhooks |
+| `secret_alias` | string | Name of the credential alias holding the HMAC secret for this source |
+| `events` | string | Comma-separated list of event types this subscription covers |
+| `active` | boolean | Whether this subscription is currently active |
+| `registered_at` | ISO 8601 string | UTC timestamp when this subscription was registered |
 
 ---
 
