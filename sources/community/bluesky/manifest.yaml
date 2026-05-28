@@ -1,0 +1,938 @@
+name: bluesky
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query public Bluesky / AT Protocol profiles, feeds, post search, and social
+  graph endpoints.
+base_url: "{{input.BLUESKY_BASE_URL}}"
+
+inputs:
+  BLUESKY_BASE_URL:
+    kind: variable
+    default: https://api.bsky.app/xrpc
+    hint: >-
+      Bluesky AppView XRPC base URL. Use https://public.api.bsky.app/xrpc when
+      it is reachable from your network.
+
+test_queries:
+  - SELECT uri, author__handle, text FROM bluesky.search_posts(q => 'bluesky') LIMIT 5
+  - SELECT did, handle FROM bluesky.profile(actor => 'bsky.app') LIMIT 1
+
+functions:
+  - name: search_posts
+    kind: search
+    description: Search public Bluesky posts with provider-ranked results.
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: sort
+        bind:
+          arg: sort
+      - name: lang
+        bind:
+          arg: lang
+      - name: since
+        bind:
+          arg: since
+      - name: until
+        bind:
+          arg: until
+      - name: mentions
+        bind:
+          arg: mentions
+      - name: author
+        bind:
+          arg: author
+      - name: domain
+        bind:
+          arg: domain
+      - name: url
+        bind:
+          arg: url
+      - name: tag
+        bind:
+          arg: tag
+    request:
+      method: GET
+      path: /app.bsky.feed.searchPosts
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: sort
+          from: arg
+          key: sort
+        - name: lang
+          from: arg
+          key: lang
+        - name: since
+          from: arg
+          key: since
+        - name: until
+          from: arg
+          key: until
+        - name: mentions
+          from: arg
+          key: mentions
+        - name: author
+          from: arg
+          key: author
+        - name: domain
+          from: arg
+          key: domain
+        - name: url
+          from: arg
+          key: url
+        - name: tag
+          from: arg
+          key: tag
+    response:
+      rows_path: [posts]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [cursor]
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: uri
+        type: Utf8
+        nullable: false
+        description: AT Protocol post URI.
+      - name: cid
+        type: Utf8
+        nullable: true
+        description: Content ID.
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Post text.
+        expr: {kind: path, path: [record, text]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp declared by the post record.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [record, createdAt]}
+      - name: indexed_at
+        type: Timestamp
+        nullable: true
+        description: Index timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [indexedAt]}
+      - name: author__did
+        type: Utf8
+        nullable: true
+        description: Author DID.
+        expr: {kind: path, path: [author, did]}
+      - name: author__handle
+        type: Utf8
+        nullable: true
+        description: Author handle.
+        expr: {kind: path, path: [author, handle]}
+      - name: author__display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr: {kind: path, path: [author, displayName]}
+      - name: author__avatar
+        type: Utf8
+        nullable: true
+        description: Author avatar URL.
+        expr: {kind: path, path: [author, avatar]}
+      - name: embed_type
+        type: Utf8
+        nullable: true
+        description: AT Protocol embed view type.
+        expr: {kind: path, path: [embed, "$type"]}
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Reply count.
+        expr: {kind: path, path: [replyCount]}
+      - name: repost_count
+        type: Int64
+        nullable: true
+        description: Repost count.
+        expr: {kind: path, path: [repostCount]}
+      - name: like_count
+        type: Int64
+        nullable: true
+        description: Like count.
+        expr: {kind: path, path: [likeCount]}
+      - name: quote_count
+        type: Int64
+        nullable: true
+        description: Quote count.
+        expr: {kind: path, path: [quoteCount]}
+      - name: bookmark_count
+        type: Int64
+        nullable: true
+        description: Bookmark count when returned by the AppView.
+        expr: {kind: path, path: [bookmarkCount]}
+      - name: langs
+        type: Json
+        nullable: true
+        description: Language tags declared on the post record.
+        expr: {kind: path, path: [record, langs]}
+      - name: labels
+        type: Json
+        nullable: true
+        description: Moderation labels attached to the post.
+        expr: {kind: path, path: [labels]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw post view object.
+        expr:
+          kind: current_row
+
+  - name: search_actors
+    kind: search
+    description: Search public Bluesky actors and profiles.
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /app.bsky.actor.searchActors
+      query:
+        - name: q
+          from: arg
+          key: q
+    response:
+      rows_path: [actors]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [cursor]
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: did
+        type: Utf8
+        nullable: false
+        description: Actor DID.
+      - name: handle
+        type: Utf8
+        nullable: false
+        description: Actor handle.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Profile description.
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Avatar URL.
+      - name: followers_count
+        type: Int64
+        nullable: true
+        description: Follower count when returned.
+        expr: {kind: path, path: [followersCount]}
+      - name: follows_count
+        type: Int64
+        nullable: true
+        description: Following count when returned.
+        expr: {kind: path, path: [followsCount]}
+      - name: posts_count
+        type: Int64
+        nullable: true
+        description: Post count when returned.
+        expr: {kind: path, path: [postsCount]}
+      - name: labels
+        type: Json
+        nullable: true
+        description: Moderation labels attached to the actor.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw actor profile object.
+        expr:
+          kind: current_row
+
+  - name: author_feed
+    description: Public feed for a Bluesky actor.
+    args:
+      - name: actor
+        required: true
+        bind:
+          arg: actor
+      - name: filter
+        bind:
+          arg: filter
+      - name: include_pins
+        bind:
+          arg: include_pins
+    request:
+      method: GET
+      path: /app.bsky.feed.getAuthorFeed
+      query:
+        - name: actor
+          from: arg
+          key: actor
+        - name: filter
+          from: arg
+          key: filter
+        - name: includePins
+          from: arg
+          key: include_pins
+    response:
+      rows_path: [feed]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [cursor]
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: uri
+        type: Utf8
+        nullable: false
+        description: Post URI.
+        expr: {kind: path, path: [post, uri]}
+      - name: cid
+        type: Utf8
+        nullable: true
+        description: Post content ID.
+        expr: {kind: path, path: [post, cid]}
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Post text.
+        expr: {kind: path, path: [post, record, text]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp declared by the post record.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [post, record, createdAt]}
+      - name: indexed_at
+        type: Timestamp
+        nullable: true
+        description: Index timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [post, indexedAt]}
+      - name: author__handle
+        type: Utf8
+        nullable: true
+        description: Author handle.
+        expr: {kind: path, path: [post, author, handle]}
+      - name: author__did
+        type: Utf8
+        nullable: true
+        description: Author DID.
+        expr: {kind: path, path: [post, author, did]}
+      - name: author__display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr: {kind: path, path: [post, author, displayName]}
+      - name: reason_type
+        type: Utf8
+        nullable: true
+        description: Reason type, such as repost or pin.
+        expr: {kind: path, path: [reason, "$type"]}
+      - name: reason_by__handle
+        type: Utf8
+        nullable: true
+        description: Actor handle responsible for the feed reason.
+        expr: {kind: path, path: [reason, by, handle]}
+      - name: reply__root__uri
+        type: Utf8
+        nullable: true
+        description: Root post URI when the feed item is a reply.
+        expr: {kind: path, path: [reply, root, uri]}
+      - name: reply__parent__uri
+        type: Utf8
+        nullable: true
+        description: Parent post URI when the feed item is a reply.
+        expr: {kind: path, path: [reply, parent, uri]}
+      - name: embed_type
+        type: Utf8
+        nullable: true
+        description: AT Protocol embed view type.
+        expr: {kind: path, path: [post, embed, "$type"]}
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Reply count.
+        expr: {kind: path, path: [post, replyCount]}
+      - name: repost_count
+        type: Int64
+        nullable: true
+        description: Repost count.
+        expr: {kind: path, path: [post, repostCount]}
+      - name: like_count
+        type: Int64
+        nullable: true
+        description: Like count.
+        expr: {kind: path, path: [post, likeCount]}
+      - name: quote_count
+        type: Int64
+        nullable: true
+        description: Quote count.
+        expr: {kind: path, path: [post, quoteCount]}
+      - name: labels
+        type: Json
+        nullable: true
+        description: Moderation labels attached to the post.
+        expr: {kind: path, path: [post, labels]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw feed view object.
+        expr:
+          kind: current_row
+
+  - name: list_feed
+    description: Public feed for a Bluesky list URI.
+    args:
+      - name: list
+        required: true
+        bind:
+          arg: list
+    request:
+      method: GET
+      path: /app.bsky.feed.getListFeed
+      query:
+        - name: list
+          from: arg
+          key: list
+    response:
+      rows_path: [feed]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: uri
+        type: Utf8
+        nullable: false
+        description: Post URI.
+        expr: {kind: path, path: [post, uri]}
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Post text.
+        expr: {kind: path, path: [post, record, text]}
+      - name: indexed_at
+        type: Timestamp
+        nullable: true
+        description: Index timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [post, indexedAt]}
+      - name: author__handle
+        type: Utf8
+        nullable: true
+        description: Author handle.
+        expr: {kind: path, path: [post, author, handle]}
+      - name: reason_type
+        type: Utf8
+        nullable: true
+        description: Reason type, such as repost.
+        expr: {kind: path, path: [reason, "$type"]}
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Reply count.
+        expr: {kind: path, path: [post, replyCount]}
+      - name: repost_count
+        type: Int64
+        nullable: true
+        description: Repost count.
+        expr: {kind: path, path: [post, repostCount]}
+      - name: like_count
+        type: Int64
+        nullable: true
+        description: Like count.
+        expr: {kind: path, path: [post, likeCount]}
+      - name: quote_count
+        type: Int64
+        nullable: true
+        description: Quote count.
+        expr: {kind: path, path: [post, quoteCount]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw feed view object.
+        expr:
+          kind: current_row
+
+  - name: feed
+    description: Public feed generated by a Bluesky feed generator URI.
+    args:
+      - name: feed
+        required: true
+        bind:
+          arg: feed
+    request:
+      method: GET
+      path: /app.bsky.feed.getFeed
+      query:
+        - name: feed
+          from: arg
+          key: feed
+    response:
+      rows_path: [feed]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: uri
+        type: Utf8
+        nullable: false
+        description: Post URI.
+        expr: {kind: path, path: [post, uri]}
+      - name: cid
+        type: Utf8
+        nullable: true
+        description: Post content ID.
+        expr: {kind: path, path: [post, cid]}
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Post text.
+        expr: {kind: path, path: [post, record, text]}
+      - name: indexed_at
+        type: Timestamp
+        nullable: true
+        description: Index timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [post, indexedAt]}
+      - name: author__did
+        type: Utf8
+        nullable: true
+        description: Author DID.
+        expr: {kind: path, path: [post, author, did]}
+      - name: author__handle
+        type: Utf8
+        nullable: true
+        description: Author handle.
+        expr: {kind: path, path: [post, author, handle]}
+      - name: author__display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr: {kind: path, path: [post, author, displayName]}
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Reply count.
+        expr: {kind: path, path: [post, replyCount]}
+      - name: repost_count
+        type: Int64
+        nullable: true
+        description: Repost count.
+        expr: {kind: path, path: [post, repostCount]}
+      - name: like_count
+        type: Int64
+        nullable: true
+        description: Like count.
+        expr: {kind: path, path: [post, likeCount]}
+      - name: quote_count
+        type: Int64
+        nullable: true
+        description: Quote count.
+        expr: {kind: path, path: [post, quoteCount]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw feed view object.
+        expr:
+          kind: current_row
+
+  - name: quotes
+    description: Posts that quote a given post URI.
+    args:
+      - name: uri
+        required: true
+        bind:
+          arg: uri
+    request:
+      method: GET
+      path: /app.bsky.feed.getQuotes
+      query:
+        - name: uri
+          from: arg
+          key: uri
+    response:
+      rows_path: [posts]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: uri
+        type: Utf8
+        nullable: false
+        description: Quote post URI.
+      - name: cid
+        type: Utf8
+        nullable: true
+        description: Quote post content ID.
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Quote post text.
+        expr: {kind: path, path: [record, text]}
+      - name: indexed_at
+        type: Timestamp
+        nullable: true
+        description: Index timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [indexedAt]}
+      - name: author__handle
+        type: Utf8
+        nullable: true
+        description: Author handle.
+        expr: {kind: path, path: [author, handle]}
+      - name: like_count
+        type: Int64
+        nullable: true
+        description: Like count.
+        expr: {kind: path, path: [likeCount]}
+      - name: repost_count
+        type: Int64
+        nullable: true
+        description: Repost count.
+        expr: {kind: path, path: [repostCount]}
+      - name: quote_count
+        type: Int64
+        nullable: true
+        description: Quote count.
+        expr: {kind: path, path: [quoteCount]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw post view object.
+        expr:
+          kind: current_row
+
+  - name: post_thread
+    description: Root post and raw surrounding thread for a post URI.
+    args:
+      - name: uri
+        required: true
+        bind:
+          arg: uri
+      - name: depth
+        bind:
+          arg: depth
+      - name: parent_height
+        bind:
+          arg: parent_height
+    request:
+      method: GET
+      path: /app.bsky.feed.getPostThread
+      query:
+        - name: uri
+          from: arg
+          key: uri
+        - name: depth
+          from: arg
+          key: depth
+        - name: parentHeight
+          from: arg
+          key: parent_height
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Root thread post URI.
+        expr: {kind: path, path: [thread, post, uri]}
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Root thread post text.
+        expr: {kind: path, path: [thread, post, record, text]}
+      - name: indexed_at
+        type: Timestamp
+        nullable: true
+        description: Root thread post index timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [thread, post, indexedAt]}
+      - name: author__handle
+        type: Utf8
+        nullable: true
+        description: Root thread post author handle.
+        expr: {kind: path, path: [thread, post, author, handle]}
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Root thread post reply count.
+        expr: {kind: path, path: [thread, post, replyCount]}
+      - name: replies
+        type: Json
+        nullable: true
+        description: Raw reply tree returned for the thread.
+        expr: {kind: path, path: [thread, replies]}
+      - name: parent
+        type: Json
+        nullable: true
+        description: Raw parent tree returned for the thread.
+        expr: {kind: path, path: [thread, parent]}
+      - name: threadgate
+        type: Json
+        nullable: true
+        description: Threadgate metadata returned by the AppView.
+        expr: {kind: path, path: [threadgate]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw thread response.
+        expr:
+          kind: current_row
+
+  - name: profile
+    description: Public profile for a Bluesky actor.
+    args:
+      - name: actor
+        required: true
+        bind:
+          arg: actor
+    request:
+      method: GET
+      path: /app.bsky.actor.getProfile
+      query:
+        - name: actor
+          from: arg
+          key: actor
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: did
+        type: Utf8
+        nullable: false
+        description: Actor DID.
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Actor handle.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Profile description.
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Avatar URL.
+      - name: banner
+        type: Utf8
+        nullable: true
+        description: Banner image URL.
+      - name: followers_count
+        type: Int64
+        nullable: true
+        description: Follower count.
+        expr: {kind: path, path: [followersCount]}
+      - name: follows_count
+        type: Int64
+        nullable: true
+        description: Following count.
+        expr: {kind: path, path: [followsCount]}
+      - name: posts_count
+        type: Int64
+        nullable: true
+        description: Post count.
+        expr: {kind: path, path: [postsCount]}
+      - name: associated
+        type: Json
+        nullable: true
+        description: Associated actor metadata.
+      - name: labels
+        type: Json
+        nullable: true
+        description: Moderation labels attached to the actor.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw profile response.
+        expr:
+          kind: current_row
+
+  - name: followers
+    description: Public followers for a Bluesky actor.
+    args:
+      - name: actor
+        required: true
+        bind:
+          arg: actor
+    request:
+      method: GET
+      path: /app.bsky.graph.getFollowers
+      query:
+        - name: actor
+          from: arg
+          key: actor
+    response:
+      rows_path: [followers]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: did
+        type: Utf8
+        nullable: false
+        description: Follower DID.
+      - name: handle
+        type: Utf8
+        nullable: false
+        description: Follower handle.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Profile description.
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Avatar URL.
+      - name: associated
+        type: Json
+        nullable: true
+        description: Associated actor metadata.
+      - name: labels
+        type: Json
+        nullable: true
+        description: Moderation labels attached to the actor.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw actor profile object.
+        expr:
+          kind: current_row
+
+  - name: follows
+    description: Public accounts followed by a Bluesky actor.
+    args:
+      - name: actor
+        required: true
+        bind:
+          arg: actor
+    request:
+      method: GET
+      path: /app.bsky.graph.getFollows
+      query:
+        - name: actor
+          from: arg
+          key: actor
+    response:
+      rows_path: [follows]
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: did
+        type: Utf8
+        nullable: false
+        description: Followed actor DID.
+      - name: handle
+        type: Utf8
+        nullable: false
+        description: Followed actor handle.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Profile description.
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Avatar URL.
+      - name: associated
+        type: Json
+        nullable: true
+        description: Associated actor metadata.
+      - name: labels
+        type: Json
+        nullable: true
+        description: Moderation labels attached to the actor.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw actor profile object.
+        expr:
+          kind: current_row
