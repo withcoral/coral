@@ -193,6 +193,12 @@ feature is listed in [Configuration](/reference/configuration#runtime-features).
 coral features enable feedback
 ```
 
+Enable preview DSL v4 source specs with:
+
+```shellscript
+coral features enable dsl_v4
+```
+
 ### `coral features disable <FEATURE>`
 
 Persistently disables an experimental runtime feature.
@@ -200,6 +206,9 @@ Persistently disables an experimental runtime feature.
 ```shellscript
 coral features disable feedback
 ```
+
+Disabling `dsl_v4` leaves already-installed v4 sources in config, but they
+cannot be used again until the feature is re-enabled.
 
 ## `coral ui`
 

@@ -46,6 +46,11 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
+- Experimental DSL v4 source specs are gated by the `dsl_v4` runtime feature.
+  Keep stable bundled sources under `sources/core/**`; put preview bundled v4
+  sources under `sources/core-v4/**` with distinct manifest names such as
+  `<name>_v4`. Do not replace or migrate an existing v3 source merely because
+  the feature is enabled.
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.

@@ -16,11 +16,12 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::features::Features;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
 use crate::sources::SourceName;
-use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::catalog::{is_dsl_v4_feature_required_error, resolve_installed_manifest};
 use crate::sources::materialization::{load_v4_materialization, stale_materialization_error};
 use crate::sources::model::InstalledSource;
 use crate::state::{AppStateLayout, ConfigStore};
@@ -44,9 +45,11 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    features: Features,
 }
 
 impl QueryManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -54,12 +57,31 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
+        Self::new_with_features(
+            config_store,
+            credential_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+            Features::default(),
+        )
+    }
+
+    pub(crate) fn new_with_features(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
+    ) -> Self {
         Self {
             config_store,
             credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
+            features,
         }
     }
 
@@ -181,6 +203,9 @@ impl QueryManager {
                 {
                     return Err(error);
                 }
+                Err(error) if is_dsl_v4_feature_required_error(&error) => {
+                    return Err(error);
+                }
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -198,7 +223,8 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
     ) -> Result<(QuerySource, String), AppError> {
-        let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
+        let installed =
+            resolve_installed_manifest(workspace_name, source, &self.layout, &self.features)?;
         let source_spec = installed.source_spec;
         let v4_materialization = if let Some(v4) = source_spec.as_v4() {
             Some(

@@ -28,6 +28,19 @@ at query time. Query loading does not fetch OpenAPI documents, rerun importers,
 or regenerate projections. GraphQL and other surface types are reserved for a
 future release.
 
+DSL v4 is currently experimental and gated behind the `dsl_v4` runtime feature.
+Enable it before installing preview bundled sources or importing a custom
+`dsl_version: 4` manifest:
+
+```shellscript
+coral features enable dsl_v4
+```
+
+Preview bundled v4 sources use distinct schema names such as `github_v4`, so
+they can coexist with stable v3 sources such as `github`. Enabling the feature
+does not migrate or replace installed sources. Any migration from a v3 source
+to a v4 source is explicit and source-specific.
+
 ## Top-level fields
 
 Every source spec starts with:
@@ -89,7 +102,7 @@ Each surface requires:
 
 - `id`: stable source-local identifier matching `[a-z][a-z0-9_]*`
 - `type`: currently only `openapi`
-- exactly one descriptor location, either `url` or absolute `file`
+- exactly one descriptor location, either `url` or `file`
 - `sha256`: lowercase hex SHA-256 of the exact descriptor bytes
 - `base_url`: runtime base URL template
 
