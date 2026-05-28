@@ -23,6 +23,8 @@ inputs:
 
 test_queries:
   - SELECT id, name, created_at FROM railway.projects LIMIT 5
+  - SELECT id, name, project_id FROM railway.services WHERE project_id = 'proj-placeholder' LIMIT 5
+  - SELECT id, name, project_id FROM railway.environments WHERE project_id = 'proj-placeholder' LIMIT 5
   - SELECT id, status, created_at FROM railway.deployments LIMIT 5
 
 tables:
