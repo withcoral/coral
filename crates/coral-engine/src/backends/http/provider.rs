@@ -71,6 +71,7 @@ struct HttpFetchPlan {
     filter_values: Arc<HashMap<String, String>>,
     arg_values: Arc<HashMap<String, String>>,
     limit: Option<usize>,
+    projection: Option<Vec<usize>>,
 }
 
 pub(crate) struct HttpJsonExecRequest<'a> {
@@ -93,6 +94,7 @@ impl RowFetcher for HttpFetchPlan {
                 &self.filter_values,
                 &self.arg_values,
                 self.limit,
+                self.projection.as_deref(),
             )
             .await
     }
@@ -118,6 +120,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         filter_values: filter_values.clone(),
         arg_values: arg_values.clone(),
         limit,
+        projection: projection.cloned(),
     });
 
     let converter = {

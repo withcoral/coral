@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
@@ -385,6 +386,103 @@ async fn select_with_limit() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["id"], 1);
     assert_eq!(rows[1]["id"], 2);
+}
+
+#[tokio::test]
+async fn different_projections_do_not_share_inflight_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "data": users_rows() }))
+                .set_delay(Duration::from_millis(100)),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest("http_projection_key", &server.uri()));
+
+    let rows = execution_to_rows(
+        &tokio::time::timeout(
+            Duration::from_secs(5),
+            CoralQuery::execute_sql(
+                &[source],
+                test_runtime(),
+                "SELECT a.name, b.email \
+                 FROM http_projection_key.users AS a \
+                 JOIN http_projection_key.users AS b ON a.id = b.id \
+                 ORDER BY a.name",
+            ),
+        )
+        .await
+        .expect("projection-key query should not hang")
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"name": "Ada", "email": "ada@example.com"}),
+            json!({"name": "Grace", "email": "grace@example.com"}),
+            json!({"name": "Linus", "email": "linus@example.com"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn different_limits_fetch_distinct_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest("http_limit_key", &server.uri()));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id FROM (SELECT id FROM http_limit_key.users LIMIT 1) AS one \
+             UNION ALL \
+             SELECT id FROM (SELECT id FROM http_limit_key.users LIMIT 2) AS two \
+             ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({"id": 1}), json!({"id": 1}), json!({"id": 2})]
+    );
+}
+
+#[tokio::test]
+async fn completed_inflight_requests_are_not_memoized() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest("http_cleanup", &server.uri()));
+    let sql = "SELECT COUNT(*) AS n FROM http_cleanup.users";
+
+    for _ in 0..2 {
+        let rows = execution_to_rows(
+            &CoralQuery::execute_sql(std::slice::from_ref(&source), test_runtime(), sql)
+                .await
+                .expect("query should succeed"),
+        );
+        assert_eq!(rows, vec![json!({"n": 3})]);
+    }
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ use datafusion::error::{DataFusionError, Result};
 use serde_json::Value;
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::client::HttpSourceClient;
+use crate::backends::http::client::{HttpRequestKey, HttpSourceClient};
 use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::{
     PageState, apply_pagination_body_fields, apply_pagination_query_pairs, page_is_exhausted,
@@ -30,6 +30,21 @@ struct FetchLimits {
     max_search_calls: Option<usize>,
 }
 
+struct HttpRequestKeyInput<'a> {
+    client: &'a HttpSourceClient,
+    target: &'a HttpFetchTarget,
+    active_request: &'a coral_spec::RequestSpec,
+    base_url: &'a str,
+    url: &'a str,
+    query_pairs: &'a [(String, String)],
+    body: Option<&'a crate::backends::http::request::RequestBody>,
+    filter_values: &'a HashMap<String, String>,
+    arg_values: &'a HashMap<String, String>,
+    sql_limit: Option<usize>,
+    projection: Option<&'a [usize]>,
+    link_header_require_results: bool,
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
@@ -40,6 +55,7 @@ pub(super) async fn fetch_rows(
     filter_values: &HashMap<String, String>,
     arg_values: &HashMap<String, String>,
     sql_limit: Option<usize>,
+    projection: Option<&[usize]>,
 ) -> Result<Vec<Value>> {
     let mut all_rows = Vec::new();
     let limits = resolve_fetch_limits(target, sql_limit);
@@ -144,30 +160,55 @@ pub(super) async fn fetch_rows(
             (query_pairs, body)
         };
 
-        let request = execute_request(
-            &client.http,
-            client.request_timeout,
-            OutgoingHttpRequest {
-                auth: &client.auth,
-                request_headers: &client.request_headers,
-                request_authenticators: &client.request_authenticators,
-                table_headers: &active_request.headers,
-                table_name: target.name(),
-                method: active_request.method,
-                base_url: &base_url,
-                url: &url,
-                query_pairs: &query_pairs,
-                body: body.as_ref(),
-                response_format: target.response().format,
-                source_schema: &client.source_schema,
-                rate_limit: &client.rate_limit,
-                body_capture: client.body_capture,
-                render_context,
-                allow_404_empty: target.response().allow_404_empty,
-                link_header_require_results: pagination.link_header_require_results,
-            },
-        )
-        .await?;
+        let request_key = http_request_key(&HttpRequestKeyInput {
+            client,
+            target,
+            active_request,
+            base_url: &base_url,
+            url: &url,
+            query_pairs: &query_pairs,
+            body: body.as_ref(),
+            filter_values,
+            arg_values,
+            sql_limit,
+            projection,
+            link_header_require_results: pagination.link_header_require_results,
+        })?;
+
+        let request = client
+            .execute_inflight(request_key, || async {
+                let render_context = RenderContext::new(
+                    filter_values,
+                    arg_values,
+                    &state_values,
+                    client.resolved_inputs.as_ref(),
+                );
+                execute_request(
+                    &client.http,
+                    client.request_timeout,
+                    OutgoingHttpRequest {
+                        auth: &client.auth,
+                        request_headers: &client.request_headers,
+                        request_authenticators: &client.request_authenticators,
+                        table_headers: &active_request.headers,
+                        table_name: target.name(),
+                        method: active_request.method,
+                        base_url: &base_url,
+                        url: &url,
+                        query_pairs: &query_pairs,
+                        body: body.as_ref(),
+                        response_format: target.response().format,
+                        source_schema: &client.source_schema,
+                        rate_limit: &client.rate_limit,
+                        body_capture: client.body_capture,
+                        render_context,
+                        allow_404_empty: target.response().allow_404_empty,
+                        link_header_require_results: pagination.link_header_require_results,
+                    },
+                )
+                .await
+            })
+            .await?;
 
         let Some((payload, next_url)) = request else {
             break;
@@ -263,6 +304,58 @@ pub(super) async fn fetch_rows(
     }
 
     Ok(all_rows)
+}
+
+fn http_request_key(input: &HttpRequestKeyInput<'_>) -> Result<HttpRequestKey> {
+    let HttpRequestKeyInput {
+        client,
+        target,
+        active_request,
+        base_url,
+        url,
+        query_pairs,
+        body,
+        filter_values,
+        arg_values,
+        sql_limit,
+        projection,
+        link_header_require_results,
+    } = input;
+
+    Ok(HttpRequestKey {
+        source_schema: client.source_schema.clone(),
+        table_name: target.name().to_string(),
+        method: format!("{:?}", active_request.method),
+        base_url: base_url.to_string(),
+        url: url.to_string(),
+        query_pairs: query_pairs.to_vec(),
+        body: body.map(request_body_key).transpose()?,
+        response_format: format!("{:?}", target.response().format),
+        allow_404_empty: target.response().allow_404_empty,
+        link_header_require_results: *link_header_require_results,
+        filters: filter_values
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        args: arg_values
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        sql_limit: *sql_limit,
+        projection: projection.map(<[usize]>::to_vec),
+    })
+}
+
+fn request_body_key(body: &crate::backends::http::request::RequestBody) -> Result<String> {
+    match body {
+        crate::backends::http::request::RequestBody::Json(value) => serde_json::to_string(value)
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "failed to encode HTTP request body key: {error}"
+                ))
+            }),
+        crate::backends::http::request::RequestBody::Text(value) => Ok(value.clone()),
+    }
 }
 
 fn resolve_fetch_limits(target: &HttpFetchTarget, sql_limit: Option<usize>) -> FetchLimits {
