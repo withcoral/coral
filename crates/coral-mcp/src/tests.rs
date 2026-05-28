@@ -835,8 +835,7 @@ async fn list_catalog_surfaces_table_functions() {
             .as_array()
             .expect("provider statuses")
             .iter()
-            .any(|status| status["provider"] == "observed_values"
-                && status["state"] == "not_enabled")
+            .any(|status| status["provider"] == "observed_values" && status["state"] == "empty")
     );
     assert!(
         universal_search["results"]

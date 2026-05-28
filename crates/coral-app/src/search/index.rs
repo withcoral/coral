@@ -9,6 +9,7 @@ use coral_engine::{
 };
 use rusqlite::{Connection, params};
 
+use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::storage::fs::ensure_dir;
 use crate::workspaces::WorkspaceName;
@@ -27,6 +28,17 @@ impl SearchIndexStore {
         workspace_name: &WorkspaceName,
     ) -> Result<Self, SearchIndexError> {
         Self::open(layout.search_index_file(workspace_name))
+    }
+
+    pub(crate) fn open_existing_workspace(
+        layout: &AppStateLayout,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<Self>, SearchIndexError> {
+        let path = layout.search_index_file(workspace_name);
+        if !path.exists() {
+            return Ok(None);
+        }
+        Self::open(path).map(Some)
     }
 
     pub(crate) fn open(path: impl Into<PathBuf>) -> Result<Self, SearchIndexError> {
@@ -233,6 +245,310 @@ impl SearchIndexStore {
         }
         Ok(hits)
     }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Observed-value SQLite upsert keeps paired table/FTS writes in one transaction."
+    )]
+    pub(crate) fn upsert_observed_values(
+        &self,
+        workspace_name: &WorkspaceName,
+        records: Vec<ObservedValueRecord>,
+    ) -> Result<(), SearchIndexError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+
+        {
+            let mut value_upsert = transaction.prepare(
+                "
+                INSERT INTO observed_values (
+                    workspace,
+                    source_name,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    normalized_value_key,
+                    display_value,
+                    sensitivity_tier,
+                    suggested_operator,
+                    first_observed_at,
+                    last_observed_at,
+                    observed_count,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    ?10,
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                ON CONFLICT (
+                    workspace,
+                    source_name,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    normalized_value_key
+                )
+                DO UPDATE SET
+                    display_value = excluded.display_value,
+                    sensitivity_tier = excluded.sensitivity_tier,
+                    suggested_operator = excluded.suggested_operator,
+                    last_observed_at = excluded.last_observed_at,
+                    observed_count = observed_values.observed_count + excluded.observed_count,
+                    updated_at = excluded.updated_at
+                ",
+            )?;
+            let mut fts_delete = transaction.prepare(
+                "
+                DELETE FROM observed_values_fts
+                WHERE workspace = ?1
+                    AND source_name = ?2
+                    AND surface_kind = ?3
+                    AND surface_name = ?4
+                    AND column_name = ?5
+                    AND normalized_value_key = ?6
+                ",
+            )?;
+            let mut fts_insert = transaction.prepare(
+                "
+                INSERT INTO observed_values_fts (
+                    workspace,
+                    source_name,
+                    surface_kind,
+                    surface_name,
+                    column_name,
+                    normalized_value_key,
+                    display_value,
+                    searchable_text
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ",
+            )?;
+
+            for record in records {
+                value_upsert.execute(params![
+                    workspace_name.as_str(),
+                    &record.source_name,
+                    record.surface_kind.as_str(),
+                    &record.surface_name,
+                    &record.column_name,
+                    &record.normalized_value_key,
+                    &record.display_value,
+                    record.sensitivity_tier.as_str(),
+                    record.suggested_operator.as_str(),
+                    i64::try_from(record.observed_count).unwrap_or(i64::MAX),
+                ])?;
+                fts_delete.execute(params![
+                    workspace_name.as_str(),
+                    &record.source_name,
+                    record.surface_kind.as_str(),
+                    &record.surface_name,
+                    &record.column_name,
+                    &record.normalized_value_key,
+                ])?;
+                fts_insert.execute(params![
+                    workspace_name.as_str(),
+                    &record.source_name,
+                    record.surface_kind.as_str(),
+                    &record.surface_name,
+                    &record.column_name,
+                    &record.normalized_value_key,
+                    &record.display_value,
+                    &record.searchable_text,
+                ])?;
+            }
+        }
+
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn search_observed_values(
+        &self,
+        workspace_name: &WorkspaceName,
+        terms: &[String],
+        limit: usize,
+    ) -> Result<Vec<ObservedValueSearchHit>, SearchIndexError> {
+        let Some(match_query) = fts_match_query(terms) else {
+            return Ok(Vec::new());
+        };
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "
+            SELECT
+                o.source_name,
+                o.surface_name,
+                o.column_name,
+                o.normalized_value_key,
+                o.display_value,
+                o.last_observed_at,
+                f.display_value,
+                f.searchable_text,
+                bm25(observed_values_fts, 4.0, 2.0) AS rank
+            FROM observed_values_fts f
+            JOIN observed_values o
+                ON o.workspace = f.workspace
+                AND o.source_name = f.source_name
+                AND o.surface_kind = f.surface_kind
+                AND o.surface_name = f.surface_name
+                AND o.column_name = f.column_name
+                AND o.normalized_value_key = f.normalized_value_key
+            WHERE f.workspace = ?1 AND observed_values_fts MATCH ?2
+            ORDER BY rank ASC, o.last_observed_at DESC, o.source_name ASC,
+                o.surface_name ASC, o.column_name ASC
+            LIMIT ?3
+            ",
+        )?;
+        let rows = statement.query_map(
+            params![
+                workspace_name.as_str(),
+                match_query,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+            ],
+            |row| {
+                let display_field: String = row.get(6)?;
+                let searchable_text: String = row.get(7)?;
+                Ok(ObservedValueSearchHit {
+                    source_name: row.get(0)?,
+                    surface_name: row.get(1)?,
+                    column_name: row.get(2)?,
+                    normalized_value_key: row.get(3)?,
+                    display_value: row.get(4)?,
+                    last_observed_at: row.get(5)?,
+                    matched_fields: matched_fields(
+                        terms,
+                        [
+                            ("value", display_field.as_str()),
+                            ("source_name", ""),
+                            ("surface_name", ""),
+                            ("column_name", ""),
+                            ("searchable_text", searchable_text.as_str()),
+                        ],
+                    ),
+                    score: 0,
+                })
+            },
+        )?;
+
+        let mut hits = Vec::new();
+        for row in rows {
+            let mut hit = row?;
+            hit.matched_fields.extend(matched_fields(
+                terms,
+                [
+                    ("source_name", hit.source_name.as_str()),
+                    ("surface_name", hit.surface_name.as_str()),
+                    ("column_name", hit.column_name.as_str()),
+                ],
+            ));
+            hit.matched_fields.sort();
+            hit.matched_fields.dedup();
+            hits.push(hit);
+        }
+        let hit_count = u32::try_from(hits.len()).unwrap_or(u32::MAX);
+        for (position, hit) in hits.iter_mut().enumerate() {
+            let position = u32::try_from(position).unwrap_or(u32::MAX);
+            hit.score = hit_count.saturating_sub(position);
+        }
+        Ok(hits)
+    }
+
+    pub(crate) fn delete_observed_values_for_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), SearchIndexError> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "
+            DELETE FROM observed_values_fts
+            WHERE workspace = ?1 AND source_name = ?2
+            ",
+            params![workspace_name.as_str(), source_name.as_str()],
+        )?;
+        transaction.execute(
+            "
+            DELETE FROM observed_values
+            WHERE workspace = ?1 AND source_name = ?2
+            ",
+            params![workspace_name.as_str(), source_name.as_str()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn purge_observed_values_before(
+        &self,
+        workspace_name: &WorkspaceName,
+        cutoff: &str,
+    ) -> Result<(), SearchIndexError> {
+        let mut connection = self.connect()?;
+        let rows_to_purge = {
+            let mut statement = connection.prepare(
+                "
+                SELECT source_name, surface_kind, surface_name, column_name, normalized_value_key
+                FROM observed_values
+                WHERE workspace = ?1 AND last_observed_at < ?2
+                ",
+            )?;
+            let rows = statement.query_map(params![workspace_name.as_str(), cutoff], |row| {
+                Ok(ObservedValueKey {
+                    source_name: row.get(0)?,
+                    surface_kind: row.get(1)?,
+                    surface_name: row.get(2)?,
+                    column_name: row.get(3)?,
+                    normalized_value_key: row.get(4)?,
+                })
+            })?;
+            let mut rows_to_purge = Vec::new();
+            for row in rows {
+                rows_to_purge.push(row?);
+            }
+            rows_to_purge
+        };
+        if rows_to_purge.is_empty() {
+            return Ok(());
+        }
+
+        let transaction = connection.transaction()?;
+        {
+            let mut fts_delete = transaction.prepare(
+                "
+                DELETE FROM observed_values_fts
+                WHERE workspace = ?1
+                    AND source_name = ?2
+                    AND surface_kind = ?3
+                    AND surface_name = ?4
+                    AND column_name = ?5
+                    AND normalized_value_key = ?6
+                ",
+            )?;
+            for row in &rows_to_purge {
+                fts_delete.execute(params![
+                    workspace_name.as_str(),
+                    &row.source_name,
+                    &row.surface_kind,
+                    &row.surface_name,
+                    &row.column_name,
+                    &row.normalized_value_key,
+                ])?;
+            }
+        }
+        transaction.execute(
+            "
+            DELETE FROM observed_values
+            WHERE workspace = ?1 AND last_observed_at < ?2
+            ",
+            params![workspace_name.as_str(), cutoff],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +619,82 @@ impl CatalogSearchResultType {
 pub(crate) enum CatalogSearchSurfaceKind {
     Table,
     TableFunction,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ObservedValueRecord {
+    pub(crate) source_name: String,
+    pub(crate) surface_kind: ObservedValueSurfaceKind,
+    pub(crate) surface_name: String,
+    pub(crate) column_name: String,
+    pub(crate) normalized_value_key: String,
+    pub(crate) display_value: String,
+    pub(crate) searchable_text: String,
+    pub(crate) sensitivity_tier: ObservedValueSensitivityTier,
+    pub(crate) suggested_operator: ObservedValueSuggestedOperator,
+    pub(crate) observed_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ObservedValueSearchHit {
+    pub(crate) source_name: String,
+    pub(crate) surface_name: String,
+    pub(crate) column_name: String,
+    pub(crate) normalized_value_key: String,
+    pub(crate) display_value: String,
+    pub(crate) last_observed_at: String,
+    pub(crate) matched_fields: Vec<String>,
+    pub(crate) score: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ObservedValueSurfaceKind {
+    Table,
+    TableFunction,
+}
+
+impl ObservedValueSurfaceKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::TableFunction => "table_function",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ObservedValueSensitivityTier {
+    LowRisk,
+}
+
+impl ObservedValueSensitivityTier {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::LowRisk => "low_risk",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ObservedValueSuggestedOperator {
+    Exact,
+}
+
+impl ObservedValueSuggestedOperator {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ObservedValueKey {
+    source_name: String,
+    surface_kind: String,
+    surface_name: String,
+    column_name: String,
+    normalized_value_key: String,
 }
 
 impl CatalogSearchSurfaceKind {
@@ -762,7 +1154,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        CatalogSearchResultType, SEARCH_INDEX_SCHEMA_VERSION, SearchIndexStore, fts_match_query,
+        CatalogSearchResultType, ObservedValueRecord, ObservedValueSensitivityTier,
+        ObservedValueSuggestedOperator, ObservedValueSurfaceKind, SEARCH_INDEX_SCHEMA_VERSION,
+        SearchIndexStore, fts_match_query,
     };
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
@@ -887,6 +1281,105 @@ mod tests {
         );
     }
 
+    #[test]
+    fn observed_values_upsert_count_and_search() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("search.sqlite")).expect("store");
+
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![
+                    observed_record("payments-api", 2),
+                    observed_record("payments-api", 1),
+                ],
+            )
+            .expect("upsert observed");
+
+        let hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search observed");
+        assert_eq!(hits.len(), 1);
+        let hit = hits.first().expect("observed hit");
+        assert_eq!(hit.column_name, "service");
+        let observed_count: i64 = store
+            .connect()
+            .expect("connect")
+            .query_row(
+                "
+                SELECT observed_count
+                FROM observed_values
+                WHERE workspace = 'default' AND display_value = 'payments-api'
+                ",
+                [],
+                |row| row.get(0),
+            )
+            .expect("observed count");
+        assert_eq!(observed_count, 3);
+    }
+
+    #[test]
+    fn observed_values_purge_by_source_and_last_observed_at() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = crate::sources::SourceName::parse("notion").expect("source");
+        let store = SearchIndexStore::open(temp.path().join("search.sqlite")).expect("store");
+
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![
+                    observed_record("stale-value", 1),
+                    ObservedValueRecord {
+                        source_name: "notion".to_string(),
+                        display_value: "notion-value".to_string(),
+                        searchable_text: "notion page notion-value".to_string(),
+                        ..observed_record("notion-value", 1)
+                    },
+                ],
+            )
+            .expect("upsert observed");
+        store
+            .connect()
+            .expect("connect")
+            .execute(
+                "
+                UPDATE observed_values
+                SET last_observed_at = '2000-01-01T00:00:00.000Z'
+                WHERE source_name = 'github'
+                ",
+                [],
+            )
+            .expect("age observed value");
+
+        store
+            .purge_observed_values_before(&workspace, "2001-01-01T00:00:00.000Z")
+            .expect("purge stale");
+        assert!(
+            store
+                .search_observed_values(&workspace, &["stale-value".to_string()], 10)
+                .expect("search stale")
+                .is_empty()
+        );
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["notion-value".to_string()], 10)
+                .expect("search fresh")
+                .is_empty()
+        );
+
+        store
+            .delete_observed_values_for_source(&workspace, &source)
+            .expect("delete source values");
+        assert!(
+            store
+                .search_observed_values(&workspace, &["notion-value".to_string()], 10)
+                .expect("search deleted")
+                .is_empty()
+        );
+    }
+
     fn catalog_with_search_function() -> CatalogInfo {
         CatalogInfo {
             tables: Vec::new(),
@@ -908,6 +1401,21 @@ mod tests {
                 kind: "search".to_string(),
                 search_limits_json: None,
             }],
+        }
+    }
+
+    fn observed_record(value: &str, observed_count: u64) -> ObservedValueRecord {
+        ObservedValueRecord {
+            source_name: "github".to_string(),
+            surface_kind: ObservedValueSurfaceKind::Table,
+            surface_name: "deployments".to_string(),
+            column_name: "service".to_string(),
+            normalized_value_key: value.to_ascii_lowercase(),
+            display_value: value.to_string(),
+            searchable_text: format!("github deployments service {value}"),
+            sensitivity_tier: ObservedValueSensitivityTier::LowRisk,
+            suggested_operator: ObservedValueSuggestedOperator::Exact,
+            observed_count,
         }
     }
 }

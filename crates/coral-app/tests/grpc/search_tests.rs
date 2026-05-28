@@ -12,7 +12,9 @@ use coral_client::default_workspace;
 use rusqlite::Connection;
 use tonic::Request;
 
-use super::harness::{GrpcHarness, fixture_manifest_with_functions_yaml};
+use super::harness::{
+    GrpcHarness, fixture_manifest_with_functions_yaml, fixture_manifest_with_test_queries_yaml,
+};
 
 #[tokio::test]
 async fn search_returns_typed_metadata_and_native_search_results() {
@@ -44,7 +46,7 @@ async fn search_returns_typed_metadata_and_native_search_results() {
     assert_provider_state(
         &response,
         SearchProvider::ObservedValues,
-        SearchProviderState::NotEnabled,
+        SearchProviderState::Empty,
     );
     assert!(!response.truncation.expect("truncation").truncated);
     assert!(
@@ -118,6 +120,50 @@ async fn search_rejects_empty_and_too_large_queries() {
         .expect_err("long query should fail");
     assert_eq!(too_long.code(), tonic::Code::InvalidArgument);
     assert!(too_long.message().contains("at most 512 bytes"));
+}
+
+#[tokio::test]
+async fn search_returns_observed_values_after_successful_sql() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_test_queries_yaml(harness.temp_path(), &[]),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let rows = harness
+        .execute_sql_rows("SELECT text FROM local_messages.messages WHERE text = 'hello'")
+        .await;
+    assert_eq!(rows.len(), 1);
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "hello".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert_provider_state(
+        &response,
+        SearchProvider::ObservedValues,
+        SearchProviderState::ResultsFound,
+    );
+    assert!(response.results.iter().any(|result| result.r#type
+        == SearchResultType::ObservedValue as i32
+        && matches!(
+            result.payload.as_ref(),
+            Some(Payload::ObservedValue(value))
+                if value.schema_name == "local_messages"
+                    && value.surface_name == "messages"
+                    && value.column_name == "text"
+                    && value.value == "hello"
+        )));
 }
 
 #[tokio::test]

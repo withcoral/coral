@@ -4,12 +4,13 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use chrono::{Duration, SecondsFormat, Utc};
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::search_service_server::SearchService as SearchServiceApi;
 use coral_api::v1::{
-    ColumnHint, NativeSearchPath, SearchProvider, SearchProviderState, SearchProviderStatus,
-    SearchRequest, SearchResponse, SearchResult, SearchResultTruncation, SearchResultType,
-    SearchSurfaceKind,
+    ColumnHint, NativeSearchPath, ObservedValue, SearchProvider, SearchProviderState,
+    SearchProviderStatus, SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchResultType, SearchSurfaceKind,
 };
 use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 use tonic::{Request, Response, Status};
@@ -17,9 +18,10 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::{AppError, app_status};
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::search::index::{
-    CatalogSearchHit, CatalogSearchResultType, CatalogSearchSurfaceKind, SearchIndexError,
-    SearchIndexStore,
+    CatalogSearchHit, CatalogSearchResultType, CatalogSearchSurfaceKind, ObservedValueSearchHit,
+    SearchIndexError, SearchIndexStore,
 };
+use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::transport::{
     catalog_item_to_proto, grpc_span, instrument_grpc, query_status, table_function_to_proto,
@@ -32,6 +34,7 @@ const DEFAULT_SEARCH_LIMIT: u32 = 10;
 const MAX_SEARCH_LIMIT: u32 = 50;
 const MAX_QUERY_BYTES: usize = 512;
 const MAX_COLUMN_HINTS_PER_SURFACE: usize = 2;
+const OBSERVED_VALUE_RETENTION_DAYS: i64 = 90;
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
@@ -79,6 +82,36 @@ impl SearchIndexRefresher {
             .lock()
             .await
             .remove(workspace_name);
+    }
+
+    pub(crate) fn discard_source_observed_values(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        match SearchIndexStore::open_existing_workspace(&self.layout, workspace_name) {
+            Ok(Some(index)) => {
+                if let Err(error) =
+                    index.delete_observed_values_for_source(workspace_name, source_name)
+                {
+                    tracing::warn!(
+                        workspace = %workspace_name,
+                        source = %source_name,
+                        error = %error,
+                        "failed to discard observed values for mutated source"
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    source = %source_name,
+                    error = %error,
+                    "failed to open search index while discarding observed values"
+                );
+            }
+        }
     }
 }
 
@@ -129,6 +162,9 @@ impl UniversalSearch {
         let (mut candidates, catalog_status) = self
             .catalog_metadata_candidates(workspace_name, &catalog, &terms, limit)
             .await;
+        let (observed_candidates, observed_status) =
+            self.observed_value_candidates(workspace_name, &catalog, &terms, limit);
+        candidates.extend(observed_candidates);
         candidates.sort();
 
         let total_count = candidates.len();
@@ -150,8 +186,8 @@ impl UniversalSearch {
                 },
                 SearchProviderStatus {
                     provider: SearchProvider::ObservedValues as i32,
-                    state: SearchProviderState::NotEnabled as i32,
-                    note: "Observed-value search is not enabled in this release".to_string(),
+                    state: observed_status.state as i32,
+                    note: observed_status.note,
                 },
             ],
             truncation: Some(SearchResultTruncation {
@@ -204,9 +240,56 @@ impl UniversalSearch {
         let note = catalog_provider_note(state, candidates.len());
         (candidates, CatalogProviderStatus { state, note })
     }
+
+    fn observed_value_candidates(
+        &self,
+        workspace_name: &WorkspaceName,
+        catalog: &CatalogInfo,
+        terms: &QueryTerms,
+        limit: u32,
+    ) -> (Vec<Candidate>, ObservedProviderStatus) {
+        let index = match SearchIndexStore::open_workspace(&self.indexes.layout, workspace_name) {
+            Ok(index) => index,
+            Err(error) => return (Vec::new(), observed_index_error_status(&error)),
+        };
+        let retention_cutoff = observed_value_retention_cutoff();
+        if let Err(error) = index.purge_observed_values_before(workspace_name, &retention_cutoff) {
+            tracing::warn!(
+                workspace = %workspace_name,
+                error = %error,
+                "failed to purge stale observed values before search"
+            );
+        }
+        let search_limit = usize::try_from(limit)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(3)
+            .max(25);
+        let hits = match index.search_observed_values(workspace_name, &terms.terms, search_limit) {
+            Ok(hits) => hits,
+            Err(error) => return (Vec::new(), observed_index_error_status(&error)),
+        };
+        let live_sources = catalog_source_names(catalog);
+        let candidates = hits
+            .into_iter()
+            .filter(|hit| live_sources.contains(&hit.source_name))
+            .map(|hit| observed_value_candidate(workspace_name, hit))
+            .collect::<Vec<_>>();
+        let state = if candidates.is_empty() {
+            SearchProviderState::Empty
+        } else {
+            SearchProviderState::ResultsFound
+        };
+        let note = observed_provider_note(state, candidates.len());
+        (candidates, ObservedProviderStatus { state, note })
+    }
 }
 
 struct CatalogProviderStatus {
+    state: SearchProviderState,
+    note: String,
+}
+
+struct ObservedProviderStatus {
     state: SearchProviderState,
     note: String,
 }
@@ -479,6 +562,45 @@ fn native_search_path_candidate(
     }
 }
 
+fn observed_value_candidate(
+    _workspace_name: &WorkspaceName,
+    hit: ObservedValueSearchHit,
+) -> Candidate {
+    let value = observed_value_display(&hit.display_value);
+    Candidate {
+        key: format!(
+            "observed:{}:{}:{}:{}:{}",
+            hit.source_name,
+            hit.surface_name,
+            hit.column_name,
+            hit.normalized_value_key,
+            hit.last_observed_at
+        ),
+        score: hit.score,
+        type_order: 0,
+        result: SearchResult {
+            r#type: SearchResultType::ObservedValue as i32,
+            payload: Some(Payload::ObservedValue(ObservedValue {
+                value,
+                schema_name: hit.source_name,
+                surface_name: hit.surface_name,
+                column_name: hit.column_name,
+            })),
+        },
+    }
+}
+
+fn observed_value_display(value: &str) -> String {
+    const MAX_DISPLAY_CHARS: usize = 240;
+    let mut chars = value.chars();
+    let display = chars.by_ref().take(MAX_DISPLAY_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{display}...")
+    } else {
+        display
+    }
+}
+
 fn table_summary(table: &TableInfo) -> TableInfo {
     let mut table = table.clone();
     table.columns.clear();
@@ -531,6 +653,16 @@ fn catalog_provider_note(state: SearchProviderState, total_count: usize) -> Stri
     }
 }
 
+fn observed_provider_note(state: SearchProviderState, total_count: usize) -> String {
+    match state {
+        SearchProviderState::ResultsFound => {
+            format!("Observed values returned {total_count} candidate search hints")
+        }
+        SearchProviderState::Empty => "Observed values returned no search hints".to_string(),
+        _ => String::new(),
+    }
+}
+
 fn catalog_index_error_status(error: &SearchIndexError) -> CatalogProviderStatus {
     let state = match error {
         SearchIndexError::UnsupportedCapability { .. } => SearchProviderState::Partial,
@@ -540,6 +672,36 @@ fn catalog_index_error_status(error: &SearchIndexError) -> CatalogProviderStatus
         state,
         note: format!("Catalog metadata search index is unavailable: {error}"),
     }
+}
+
+fn observed_index_error_status(error: &SearchIndexError) -> ObservedProviderStatus {
+    let state = match error {
+        SearchIndexError::UnsupportedCapability { .. } => SearchProviderState::Partial,
+        SearchIndexError::Io(_) | SearchIndexError::Sqlite(_) => SearchProviderState::Error,
+    };
+    ObservedProviderStatus {
+        state,
+        note: format!("Observed-value search index is unavailable: {error}"),
+    }
+}
+
+fn catalog_source_names(catalog: &CatalogInfo) -> BTreeSet<String> {
+    catalog
+        .tables
+        .iter()
+        .map(|table| table.schema_name.clone())
+        .chain(
+            catalog
+                .table_functions
+                .iter()
+                .map(|function| function.schema_name.clone()),
+        )
+        .collect()
+}
+
+fn observed_value_retention_cutoff() -> String {
+    (Utc::now() - Duration::days(OBSERVED_VALUE_RETENTION_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 fn truncation_note(truncated: bool, total_count: usize, max_results: usize) -> String {
