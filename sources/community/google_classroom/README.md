@@ -27,7 +27,7 @@ To connect Google Classroom, you must configure a Google Cloud Console project:
 ### 🚀 Connection Options
 
 #### Option A: Guided OAuth Connection (Recommended)
-This uses your Desktop app Client ID/Secret. Coral requests offline access (`access_type=offline`) which returns a refresh token. This allows Coral to silently refresh your access token when it expires.
+This uses your Desktop app Client ID/Secret. The OAuth flow requests offline access (`access_type=offline`) so Google returns refresh-token metadata. Note that because automatic background token refresh is not yet fully implemented in Coral, you may still need to reconnect or re-add the source when the stored access token expires (typically after 1 hour).
 Run:
 ```sh
 coral source add --file sources/community/google_classroom/manifest.yaml --interactive
@@ -37,7 +37,7 @@ Select **Connect Google Classroom** and provide your Client ID and Client Secret
 #### Option B: Pasted Access Token
 You can paste a pre-generated access token.
 > [!WARNING]
-> Pasted access tokens are short-lived and will expire in **1 hour**. Once expired, you will need to re-generate the token and re-add the source.
+> Like the guided OAuth flow, pasted access tokens are short-lived and will expire in **1 hour**. Once expired, you will need to re-generate the token and re-add the source.
 
 To connect:
 ```sh
