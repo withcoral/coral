@@ -1,0 +1,736 @@
+name: twitch
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Twitch Helix users, streams, channels, videos, clips, games, and search
+  endpoints for creator analytics.
+base_url: https://api.twitch.tv/helix
+
+inputs:
+  TWITCH_CLIENT_ID:
+    kind: variable
+    hint: Twitch application client ID.
+  TWITCH_ACCESS_TOKEN:
+    kind: secret
+    hint: Twitch OAuth app or user access token, without a `Bearer` prefix.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.TWITCH_ACCESS_TOKEN}}
+    - name: Client-Id
+      from: template
+      template: "{{input.TWITCH_CLIENT_ID}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, login, display_name FROM twitch.users LIMIT 1
+  - SELECT id, user_name, game_name FROM twitch.streams LIMIT 1
+  - SELECT id, name FROM twitch.top_games LIMIT 1
+
+tables:
+  - name: users
+    description: Twitch users. With no filters, returns the authenticated user.
+    filters:
+      - name: id
+      - name: login
+    request:
+      method: GET
+      path: /users
+      query:
+        - name: id
+          from: filter
+          key: id
+        - name: login
+          from: filter
+          key: login
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID.
+      - name: login
+        type: Utf8
+        nullable: true
+        description: Login name.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: User type.
+      - name: broadcaster_type
+        type: Utf8
+        nullable: true
+        description: Broadcaster type.
+      - name: view_count
+        type: Int64
+        nullable: true
+        description: View count.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Account creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: profile_image_url
+        type: Utf8
+        nullable: true
+        description: Profile image URL.
+      - name: offline_image_url
+        type: Utf8
+        nullable: true
+        description: Offline image URL.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw user object.
+        expr: {kind: path, path: []}
+
+  - name: channels
+    description: Twitch channel information for one or more broadcasters.
+    guide: |
+      Requires `broadcaster_id`, for example `WHERE broadcaster_id = '1234'`.
+    filters:
+      - name: broadcaster_id
+        required: true
+    request:
+      method: GET
+      path: /channels
+      query:
+        - name: broadcaster_id
+          from: filter
+          key: broadcaster_id
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: broadcaster_id
+        type: Utf8
+        nullable: false
+        description: Broadcaster user ID.
+      - name: broadcaster_login
+        type: Utf8
+        nullable: true
+        description: Broadcaster login.
+      - name: broadcaster_name
+        type: Utf8
+        nullable: true
+        description: Broadcaster display name.
+      - name: broadcaster_language
+        type: Utf8
+        nullable: true
+        description: Channel language.
+      - name: game_id
+        type: Utf8
+        nullable: true
+        description: Current game ID.
+      - name: game_name
+        type: Utf8
+        nullable: true
+        description: Current game name.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Channel title.
+      - name: delay
+        type: Int64
+        nullable: true
+        description: Stream delay in seconds.
+      - name: tags_json
+        type: Json
+        nullable: true
+        description: Channel tags.
+        expr: {kind: path, path: [tags]}
+      - name: content_classification_labels_json
+        type: Json
+        nullable: true
+        description: Content classification labels.
+        expr: {kind: path, path: [content_classification_labels]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw channel object.
+        expr: {kind: path, path: []}
+
+  - name: streams
+    description: Live Twitch streams.
+    fetch_limit_default: 100
+    filters:
+      - name: user_id
+      - name: user_login
+      - name: game_id
+      - name: language
+    request:
+      method: GET
+      path: /streams
+      query:
+        - name: user_id
+          from: filter
+          key: user_id
+        - name: user_login
+          from: filter
+          key: user_login
+        - name: game_id
+          from: filter
+          key: game_id
+        - name: language
+          from: filter
+          key: language
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stream ID.
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Broadcaster user ID.
+      - name: user_login
+        type: Utf8
+        nullable: true
+        description: Broadcaster login.
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: Broadcaster display name.
+      - name: game_id
+        type: Utf8
+        nullable: true
+        description: Game ID.
+      - name: game_name
+        type: Utf8
+        nullable: true
+        description: Game name.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Stream title.
+      - name: viewer_count
+        type: Int64
+        nullable: true
+        description: Current viewer count.
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Stream start timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [started_at]}
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Stream language.
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Thumbnail URL template.
+      - name: tags_json
+        type: Json
+        nullable: true
+        description: Stream tags.
+        expr: {kind: path, path: [tags]}
+      - name: is_mature
+        type: Boolean
+        nullable: true
+        description: Whether the stream is marked mature.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw stream object.
+        expr: {kind: path, path: []}
+
+  - name: games
+    description: Twitch games/categories.
+    filters:
+      - name: id
+      - name: name
+    request:
+      method: GET
+      path: /games
+      query:
+        - name: id
+          from: filter
+          key: id
+        - name: name
+          from: filter
+          key: name
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Game ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Game/category name.
+      - name: box_art_url
+        type: Utf8
+        nullable: true
+        description: Box art URL template.
+      - name: igdb_id
+        type: Utf8
+        nullable: true
+        description: IGDB game ID, when available.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw game object.
+        expr: {kind: path, path: []}
+
+  - name: top_games
+    description: Top Twitch games/categories by current viewer activity.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /games/top
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Game/category ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Game/category name.
+      - name: box_art_url
+        type: Utf8
+        nullable: true
+        description: Box art URL template.
+      - name: igdb_id
+        type: Utf8
+        nullable: true
+        description: IGDB game ID, when available.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw top-game object.
+        expr: {kind: path, path: []}
+
+  - name: videos
+    description: Twitch published videos by ID, broadcaster, or game/category.
+    guide: |
+      Twitch requires one of `id`, `user_id`, or `game_id`. When using `user_id`
+      or `game_id`, optional `language`, `period`, `sort`, and `type` filters
+      can narrow results.
+    fetch_limit_default: 100
+    filters:
+      - name: id
+      - name: user_id
+      - name: game_id
+      - name: language
+      - name: period
+      - name: sort
+      - name: type
+    request:
+      method: GET
+      path: /videos
+      query:
+        - name: id
+          from: filter
+          key: id
+        - name: user_id
+          from: filter
+          key: user_id
+        - name: game_id
+          from: filter
+          key: game_id
+        - name: language
+          from: filter
+          key: language
+        - name: period
+          from: filter
+          key: period
+        - name: sort
+          from: filter
+          key: sort
+        - name: type
+          from: filter
+          key: type
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Video ID.
+      - name: stream_id
+        type: Utf8
+        nullable: true
+        description: Source stream ID.
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Broadcaster user ID.
+      - name: user_login
+        type: Utf8
+        nullable: true
+        description: Broadcaster login.
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: Broadcaster display name.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Video title.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Video description.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: published_at
+        type: Timestamp
+        nullable: true
+        description: Publish timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [published_at]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Twitch video URL.
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Thumbnail URL template.
+      - name: viewable
+        type: Utf8
+        nullable: true
+        description: Viewability state.
+      - name: view_count
+        type: Int64
+        nullable: true
+        description: View count.
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Video language.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Video type.
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: Video duration.
+      - name: muted_segments_json
+        type: Json
+        nullable: true
+        description: Muted video segments.
+        expr: {kind: path, path: [muted_segments]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw video object.
+        expr: {kind: path, path: []}
+
+  - name: clips
+    description: Twitch clips by ID, broadcaster, or game/category.
+    guide: |
+      Twitch requires one of `id`, `broadcaster_id`, or `game_id`. When using
+      broadcaster or game filters, optional `started_at` and `ended_at` filters
+      narrow the clip time range.
+    fetch_limit_default: 100
+    filters:
+      - name: id
+      - name: broadcaster_id
+      - name: game_id
+      - name: started_at
+      - name: ended_at
+      - name: is_featured
+    request:
+      method: GET
+      path: /clips
+      query:
+        - name: id
+          from: filter
+          key: id
+        - name: broadcaster_id
+          from: filter
+          key: broadcaster_id
+        - name: game_id
+          from: filter
+          key: game_id
+        - name: started_at
+          from: filter
+          key: started_at
+        - name: ended_at
+          from: filter
+          key: ended_at
+        - name: is_featured
+          from: filter
+          key: is_featured
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Clip ID.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Clip URL.
+      - name: embed_url
+        type: Utf8
+        nullable: true
+        description: Embeddable clip URL.
+      - name: broadcaster_id
+        type: Utf8
+        nullable: true
+        description: Broadcaster user ID.
+      - name: broadcaster_name
+        type: Utf8
+        nullable: true
+        description: Broadcaster display name.
+      - name: creator_id
+        type: Utf8
+        nullable: true
+        description: Clip creator user ID.
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: Clip creator display name.
+      - name: video_id
+        type: Utf8
+        nullable: true
+        description: Source video ID.
+      - name: game_id
+        type: Utf8
+        nullable: true
+        description: Game/category ID.
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Clip language.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Clip title.
+      - name: view_count
+        type: Int64
+        nullable: true
+        description: View count.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Clip creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Thumbnail URL.
+      - name: duration
+        type: Float64
+        nullable: true
+        description: Clip duration in seconds.
+      - name: vod_offset
+        type: Int64
+        nullable: true
+        description: Offset in the source VOD.
+      - name: is_featured
+        type: Boolean
+        nullable: true
+        description: Whether the clip is featured.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw clip object.
+        expr: {kind: path, path: []}
+
+functions:
+  - name: search_channels
+    kind: search
+    description: Search Twitch channels by provider-ranked query.
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: live_only
+        bind:
+          arg: live_only
+    request:
+      method: GET
+      path: /search/channels
+      query:
+        - name: query
+          from: arg
+          key: query
+        - name: live_only
+          from: arg_bool
+          key: live_only
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 20
+        max: 100
+        query_param: first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Channel ID.
+      - name: broadcaster_login
+        type: Utf8
+        nullable: true
+        description: Broadcaster login.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Channel display name.
+      - name: game_name
+        type: Utf8
+        nullable: true
+        description: Current game name.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Stream title.
+      - name: is_live
+        type: Boolean
+        nullable: true
+        description: Whether the channel is live.
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Channel thumbnail URL.
+      - name: broadcaster_language
+        type: Utf8
+        nullable: true
+        description: Broadcaster language.
+      - name: tags_json
+        type: Json
+        nullable: true
+        description: Channel tags.
+        expr: {kind: path, path: [tags]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw search result object.
+        expr: {kind: path, path: []}
+
+  - name: search_categories
+    kind: search
+    description: Search Twitch games/categories by provider-ranked query.
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /search/categories
+      query:
+        - name: query
+          from: arg
+          key: query
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 20
+        max: 100
+        query_param: first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Game/category ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Game/category name.
+      - name: box_art_url
+        type: Utf8
+        nullable: true
+        description: Box art URL template.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw search result object.
+        expr: {kind: path, path: []}
