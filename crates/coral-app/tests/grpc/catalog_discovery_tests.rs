@@ -107,6 +107,9 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
     assert_eq!(pagination.offset, 0);
     assert!(pagination.has_more);
     assert_eq!(pagination.next_offset, 2);
+    let counts = response.counts.as_ref().expect("catalog counts");
+    assert_eq!(counts.table_count, 1);
+    assert_eq!(counts.table_function_count, 2);
     assert_eq!(response.items.len(), 2);
     let function = match response.items[0].item.as_ref().expect("catalog item") {
         catalog_item::Item::TableFunction(function) => function,
@@ -144,6 +147,9 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
             .total_count,
         2
     );
+    let counts = function_only.counts.as_ref().expect("catalog counts");
+    assert_eq!(counts.table_count, 1);
+    assert_eq!(counts.table_function_count, 2);
     assert!(function_only.items.iter().all(|item| {
         matches!(
             item.item.as_ref().expect("catalog item"),
