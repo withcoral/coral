@@ -13,6 +13,10 @@ inputs:
     hint: |
       Shortcut API token. Generate one at
       https://app.shortcut.com/settings/account/api-tokens.
+
+      Shortcut API tokens inherit the permissions of the user who created
+      them and may access all workspace data visible to that user.
+
       The token is sent as the Shortcut-Token request header.
 
 auth:
@@ -295,18 +299,22 @@ tables:
   - name: stories
     description: >-
       Stories (work items) in the Shortcut workspace discovered via the
-      search API. Each row is one story. Use query filter for Shortcut
-      search syntax pushdown.
+      Shortcut search API. Each row is one story. Requires a `query`
+      filter using Shortcut search syntax.
     guide: |
-      Optional `query` filter pushes down to the Shortcut search API.
-      Use Shortcut search operators such as `is:started`, `type:bug`,
-      `epic:my-epic`, or `iteration:current`. Without a query filter,
-      returns all stories. Results are paginated with a maximum of 25
-      stories per page. Use `epic_id` to join with `shortcut.epics` and
-      `iteration_id` to join with `shortcut.iterations`.
+      Required `query` filter pushes down directly to the Shortcut
+      search API. Use Shortcut search operators such as `is:started`,
+      `type:bug`, `epic:my-epic`, or `iteration:current`.
+
+      Use `epic_id` to join with `shortcut.epics` and `iteration_id`
+      to join with `shortcut.iterations`.
+
+      Examples:
+      WHERE query = 'is:started'
+      WHERE query = 'type:bug state:unstarted'
     filters:
       - name: query
-        required: false
+        required: true
     request:
       method: GET
       path: /search/stories
@@ -317,15 +325,6 @@ tables:
     response:
       rows_path:
         - data
-    pagination:
-      mode: cursor_query
-      cursor_param: next
-      response_cursor_path:
-        - next
-      page_size:
-        default: 25
-        max: 25
-        query_param: page_size
     columns:
       - name: id
         type: Int64
@@ -456,11 +455,11 @@ tables:
             kind: path
             path:
               - completed_at
-      - name: query_filter
+      - name: query
         type: Utf8
         nullable: true
         virtual: true
-        description: Search query passed as the filter; echoed onto every row.
+        description: Search query passed to the Shortcut search API; echoed onto every row.
         expr:
           kind: from_filter
           key: query
