@@ -22,7 +22,7 @@ use crate::query::extensions::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::load_v4_materialization;
+use crate::sources::materialization::{load_v4_materialization, stale_materialization_error};
 use crate::sources::model::InstalledSource;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
@@ -224,13 +224,21 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         let v4_materialization = if let Some(v4) = source_spec.as_v4() {
-            Some(load_v4_materialization(
-                &self.layout,
-                workspace_name,
-                &source.name,
-                &installed.manifest_yaml,
-                v4,
-            )?)
+            Some(
+                load_v4_materialization(
+                    &self.layout,
+                    workspace_name,
+                    &source.name,
+                    &installed.manifest_yaml,
+                    v4,
+                )
+                .map_err(|error| {
+                    stale_materialization_error(
+                        &source.name,
+                        format!("failed to load materialized artifacts: {error}"),
+                    )
+                })?,
+            )
         } else {
             None
         };
@@ -404,6 +412,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
+        AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
         AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
