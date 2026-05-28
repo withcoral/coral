@@ -47,15 +47,15 @@ SELECT name, base_model_id, display_name, supported_generation_methods
 FROM gemini.models
 LIMIT 5;
 /*
-+----------------------------------+---------------------------+---------------------------+------------------------------------+
-| name                             | base_model_id             | display_name              | supported_generation_methods       |
-+----------------------------------+---------------------------+---------------------------+------------------------------------+
-| models/gemini-2.5-flash          | gemini-2.5-flash          | Gemini 2.5 Flash          | ["generateContent", "countTokens"] |
-| models/gemini-2.5-pro            | gemini-2.5-pro            | Gemini 2.5 Pro            | ["generateContent", "countTokens"] |
-| models/gemini-2.0-flash          | gemini-2.0-flash          | Gemini 2.0 Flash          | ["generateContent", "countTokens"] |
-| models/gemini-2.0-flash-001      | gemini-2.0-flash-001      | Gemini 2.0 Flash 001      | ["generateContent", "countTokens"] |
-| models/gemini-2.0-flash-lite-001 | gemini-2.0-flash-lite-001 | Gemini 2.0 Flash-Lite 001 | ["generateContent", "countTokens"] |
-+----------------------------------+---------------------------+---------------------------+------------------------------------+
++----------------------------------+---------------+---------------------------+--------------------------------------------------------------------------------+
+| name                             | base_model_id | display_name              | supported_generation_methods                                                   |
++----------------------------------+---------------+---------------------------+--------------------------------------------------------------------------------+
+| models/gemini-2.5-flash          |               | Gemini 2.5 Flash          | ["generateContent","countTokens","createCachedContent","batchGenerateContent"] |
+| models/gemini-2.5-pro            |               | Gemini 2.5 Pro            | ["generateContent","countTokens","createCachedContent","batchGenerateContent"] |
+| models/gemini-2.0-flash          |               | Gemini 2.0 Flash          | ["generateContent","countTokens","createCachedContent","batchGenerateContent"] |
+| models/gemini-2.0-flash-001      |               | Gemini 2.0 Flash 001      | ["generateContent","countTokens","createCachedContent","batchGenerateContent"] |
+| models/gemini-2.0-flash-lite-001 |               | Gemini 2.0 Flash-Lite 001 | ["generateContent","countTokens","createCachedContent","batchGenerateContent"] |
++----------------------------------+---------------+---------------------------+--------------------------------------------------------------------------------+
 */
 
 -- Generate text using gemini-2.5-flash
@@ -65,11 +65,11 @@ FROM gemini.generate(
   prompt => 'Explain how a SQL JOIN works in one short paragraph.'
 );
 /*
-+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+
-| response                                                                                                                                                                                                                                                                                                                                                                | prompt_token_count | candidates_token_count |
-+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+
-| A SQL JOIN combines data from two or more tables into a single result by matching rows based on a shared column, typically a unique identifier like an ID. By linking these common values, the database horizontally merges the related records, allowing you to query and analyze connected information from different tables as if it were a single, unified dataset. | 13                 | 66                     |
-+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+
++-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+
+| response                                                                                                                                                                                                                                                                                                                      | prompt_token_count | candidates_token_count |
++-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+
+| A SQL JOIN combines rows from two or more tables into a single result set by matching values in a specified common column (or columns) between them. This allows you to retrieve a comprehensive view of related data that is logically separated across different tables, linking them based on their defined relationships. | 12                 | 57                     |
++-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+
 */
 
 -- Generate text with a custom temperature
@@ -80,13 +80,13 @@ FROM gemini.generate(
   temperature => '0.9'
 );
 /*
-+----------------------------------------------+
-| response                                     |
-+----------------------------------------------+
-| Tables neatly joined,                        |
-| Queries hum through silver rows—             |
-| Data finds its home.                         |
-+----------------------------------------------+
++-----------------------------------+
+| response                          |
++-----------------------------------+
+| Data kept so safe,                |
+| Rows and tables, structured vast, |
+| Ready for your call.              |
++-----------------------------------+
 */
 ```
 
@@ -104,35 +104,18 @@ GEMINI_API_KEY=<key> coral source add --file sources/community/gemini/manifest.y
 #
 #   ✓ gemini connected successfully
 #
-#     gemini (1 table, 1 function)
-#     ├─ models
-#     └─ generate()
+#     gemini (1 table)
+#     └─ models
 #     Query tests
 #     1 declared · 1 passed · 0 failed
 #
 #     ✓ SELECT name, version FROM gemini.models LIMIT 5
 #       5 rows
 
-coral source test gemini
-#   ✓ gemini connected successfully
-#
-#     gemini (1 table, 1 function)
-#     ├─ models
-#     └─ generate()
-#     Query tests
-#     1 declared · 1 passed · 0 failed
-#
-#     ✓ SELECT name, version FROM gemini.models LIMIT 5
-#       5 rows
-
-coral sql "SELECT response FROM gemini.generate(model => 'gemini-2.5-flash', prompt => 'What is SQL?') LIMIT 1"
-# +-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-# | response                                                                                                                                                                                                                                |
-# +-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-# | **SQL** (pronounced either **"S-Q-L"** or **"Sequel"**) stands for **Structured Query Language**.                                                                                                                                       |
-# |                                                                                                                                                                                                                                         |
-# | In simple terms, SQL is the standard language used to communicate with, manage, and manipulate **relational databases**.                                                                                                                |
-# |                                                                                                                                                                                                                                         |
-# | If you think of a database as a giant, highly organized digital filing cabinet, SQL is the language you use to ask the filing cabinet clerk to store, retrieve, change, or delete information...                                        |
-# +-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+coral sql "SELECT response FROM gemini.generate(model => 'gemini-2.5-flash', prompt => 'What is 2+2? Reply with just the number.')"
+# +----------+
+# | response |
+# +----------+
+# | 4        |
+# +----------+
 ```
