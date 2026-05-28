@@ -115,7 +115,8 @@ functions:
     description: >
       Run prompt inference against a specific Gemini model (e.g. gemini-flash-latest).
     guide: >
-      Use this function to execute LLM prompts. `SELECT response FROM gemini.generate(model => 'gemini-flash-latest', prompt => 'Explain SQL joins.')`.
+      Execute LLM prompts against Gemini models. Example: `SELECT response FROM
+      gemini.generate(model => 'gemini-flash-latest', prompt => 'Explain SQL joins.')`.
     args:
       - name: model
         required: true
