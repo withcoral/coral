@@ -31,7 +31,7 @@ request_headers:
 
 test_queries:
   - SELECT id, subject, status FROM freshservice.tickets LIMIT 1
-  - SELECT id, email FROM freshservice.requesters LIMIT 1
+  - SELECT id, primary_email FROM freshservice.requesters LIMIT 1
 
 tables:
   - name: tickets
@@ -250,10 +250,6 @@ tables:
         type: Utf8
         nullable: true
         description: Requester primary email.
-      - name: email
-        type: Utf8
-        nullable: true
-        description: Requester email when returned.
       - name: first_name
         type: Utf8
         nullable: true
@@ -293,10 +289,20 @@ tables:
 
   - name: departments
     description: Freshservice departments.
+    guide: |
+      Freshservice workspace and MSP accounts default to the primary workspace
+      when `workspace_id` is omitted. Use `workspace_id` to query a specific
+      workspace.
+    filters:
+      - name: workspace_id
     fetch_limit_default: 100
     request:
       method: GET
       path: /departments
+      query:
+        - name: workspace_id
+          from: filter
+          key: workspace_id
     response:
       rows_path: [departments]
       row_strategy: direct
@@ -329,6 +335,12 @@ tables:
         type: Int64
         nullable: true
         description: Prime user ID.
+      - name: workspace_id
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional workspace filter.
+        expr: {kind: from_filter, key: workspace_id}
       - name: created_at
         type: Timestamp
         nullable: true
@@ -349,18 +361,24 @@ tables:
   - name: assets
     description: Freshservice assets visible to the API key.
     guide: |
-      Asset inventories can be large. This table uses a conservative default
-      fetch limit and exposes metadata only, not sensitive custom fields.
+      Uses the current Freshservice ITAM assets endpoint. Asset inventories can
+      be large, so use `last_updated_gt`, `last_updated_lt`, and SQL LIMIT to
+      narrow production queries. Legacy `/assets` accounts created before
+      March 31, 2026 are intentionally not modeled by this v1 source.
     filters:
-      - name: updated_since
+      - name: last_updated_gt
+      - name: last_updated_lt
     fetch_limit_default: 100
     request:
       method: GET
-      path: /assets
+      path: /itam/assets
       query:
-        - name: updated_since
+        - name: last_updated_gt
           from: filter
-          key: updated_since
+          key: last_updated_gt
+        - name: last_updated_lt
+          from: filter
+          key: last_updated_lt
     response:
       rows_path: [assets]
       row_strategy: direct
@@ -428,10 +446,20 @@ tables:
 
   - name: locations
     description: Freshservice locations.
+    guide: |
+      Freshservice workspace and MSP accounts default to the primary workspace
+      when `workspace_id` is omitted. Use `workspace_id` to query a specific
+      workspace.
+    filters:
+      - name: workspace_id
     fetch_limit_default: 100
     request:
       method: GET
       path: /locations
+      query:
+        - name: workspace_id
+          from: filter
+          key: workspace_id
     response:
       rows_path: [locations]
       row_strategy: direct
@@ -456,6 +484,12 @@ tables:
         type: Int64
         nullable: true
         description: Parent location ID.
+      - name: workspace_id
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional workspace filter.
+        expr: {kind: from_filter, key: workspace_id}
       - name: created_at
         type: Timestamp
         nullable: true

@@ -21,7 +21,7 @@ Official docs:
 
 - <https://api.freshservice.com/>
 - <https://api.freshservice.com/#tickets>
-- <https://api.freshservice.com/#assets>
+- <https://api.freshservice.com/v2/#view_all_assets_for_freshservice_itam>
 
 ## Tables
 
@@ -30,9 +30,9 @@ Official docs:
 | `freshservice.tickets` | Ticket metadata. Supports `updated_since`, `requester_id`, `email`, and `workspace_id`. |
 | `freshservice.agents` | Agents. |
 | `freshservice.requesters` | Requesters. |
-| `freshservice.departments` | Departments. |
-| `freshservice.assets` | Assets. Supports `updated_since`. |
-| `freshservice.locations` | Locations. |
+| `freshservice.departments` | Departments. Supports `workspace_id`. |
+| `freshservice.assets` | Current Freshservice ITAM assets. Supports `last_updated_gt` and `last_updated_lt`. |
+| `freshservice.locations` | Locations. Supports `workspace_id`. |
 
 ## Examples
 
@@ -61,6 +61,7 @@ Review asset ownership:
 ```sql
 SELECT id, display_id, name, user_id, department_id, location_id
 FROM freshservice.assets
+WHERE last_updated_gt = '2026-05-01T00:00:00Z'
 LIMIT 25;
 ```
 
@@ -71,8 +72,14 @@ LIMIT 25;
 - Ticket conversations, notes, and asset custom-field payloads are intentionally
   omitted from v1 to keep the source read-only and avoid exposing sensitive
   text or credentials.
+- `freshservice.assets` uses the current Freshservice ITAM endpoint
+  `/api/v2/itam/assets`. The legacy `/api/v2/assets` endpoint for older
+  signups is not modeled by this source.
 - Ticket and asset tables have conservative default fetch limits. Use provider
   filters and SQL `LIMIT` for production service desks.
+- Freshservice workspace and MSP accounts may default departments and locations
+  to a primary workspace when `workspace_id` is omitted. Provide `workspace_id`
+  to query a specific workspace.
 - Results depend on the API key owner's Freshservice role and workspace access.
 
 ## Validation
