@@ -9,9 +9,12 @@ inputs:
   RAILWAY_API_TOKEN:
     kind: secret
     hint: |
-      Create an account-level API token at
-      https://railway.com/account/tokens.
-      Account tokens provide access to all projects across all workspaces.
+      Railway API token for the Management API. Both account tokens and
+      workspace tokens use `Authorization: Bearer <token>` and are
+      supported. Workspace tokens are recommended when you only need
+      access to a single workspace; account tokens grant access to all
+      projects across all workspaces.
+      Create a token at https://railway.com/account/tokens.
       See [Railway API docs](https://docs.railway.com/integrations/api).
 base_url: https://backboard.railway.com/graphql/v2
 auth:
@@ -421,9 +424,12 @@ tables:
   # ─────────────────────────────────────────────────────────────
   - name: deployments
     description: Deployments for a Railway project
+    fetch_limit_default: 100
     guide: |
       Lists deployments scoped to a project. Optionally narrow results
-      with `environment_id` or `service_id` filters.
+      with `environment_id` or `service_id` filters. Deployment history
+      can be large; the source caps the default fetch to 100 rows. Use
+      `LIMIT`, `service_id`, or `environment_id` to control volume.
     filters:
       - name: project_id
         required: true

@@ -18,16 +18,20 @@ Railway's [public GraphQL API](https://docs.railway.com/integrations/api).
 
 ## Authentication
 
-This source uses **account-level API tokens** authenticated via
-`Authorization: Bearer <token>`.
+This source uses API tokens authenticated via `Authorization: Bearer <token>`.
+Both **account tokens** and **workspace tokens** are supported.
 
-Create an account token at
+- **Workspace tokens** (recommended) — scoped to a single workspace.
+  Sufficient for most use cases and the safer default.
+- **Account tokens** — grant access to all projects across all workspaces.
+  Use only when you need cross-workspace visibility.
+
+Create either token type at
 [railway.com/account/tokens](https://railway.com/account/tokens).
-Account tokens provide access to all projects across all workspaces.
 
 > **Note:** Project-scoped tokens use a different header
 > (`Project-Access-Token`) and are **not supported** by this source.
-> Use an account token instead.
+> Use a workspace or account token instead.
 
 ## Setup
 
@@ -92,8 +96,8 @@ SELECT id, name, is_ephemeral
 ### Service-scoped variables
 
 > **Warning:** Querying `railway.variables.value` can expose secret environment variables
-> or credentials in plain text. Railway account tokens can access all resources across
-> workspaces. Only select `value` if you intentionally need to read secrets.
+> or credentials in plain text. Railway API tokens can access all variables in their
+> scope (workspace or account). Only select `value` if you intentionally need to read secrets.
 
 ```sql
 SELECT name
@@ -158,12 +162,13 @@ pagination because the API returns all items in a single response.
 
 ## Rate limits
 
-Railway enforces API rate limits (see [Railway API Rate Limits](https://docs.railway.com/integrations/api#rate-limits)). Since this source uses pagination to fetch all items for a query, querying high-cardinality tables (like `deployments`) without filters can consume significant quota. Use `service_id`, `environment_id`, or `LIMIT` to narrow your queries and reduce the number of requests.
+Railway enforces API rate limits (see [Railway API Rate Limits](https://docs.railway.com/integrations/api#rate-limits)). Since this source uses pagination to fetch all items for a query, querying high-cardinality tables (like `deployments`) without filters can consume significant quota. The `deployments` table sets `fetch_limit_default: 100` to cap the default fetch. Use `service_id`, `environment_id`, or `LIMIT` to narrow your queries and reduce the number of requests.
 
 ## Known limitations
 
-- **Account tokens only** — project-scoped tokens use a different auth
-  header (`Project-Access-Token`) and are not supported by this manifest.
+- **Project-scoped tokens only unsupported** — project-scoped tokens use
+  a different auth header (`Project-Access-Token`) and are not supported.
+  Use a workspace or account token instead.
 - **Variables are returned as a flat JSON object** — the API returns
   `{ KEY: "value" }` rather than a connection. The source uses
   `row_strategy: dict_entries` to normalize this into rows.
