@@ -472,7 +472,7 @@ impl Default for MockServerConfig {
                     source_name: "github".to_string(),
                     source_version: "1.0.0".to_string(),
                     manifest_sha256: "00".to_string(),
-                    importer_version: "openapi-v1".to_string(),
+                    importer_version: "openapi-v2".to_string(),
                     projection_generator_version: "derive-read-v1".to_string(),
                     surface_count: 1,
                     projection_count: 3,
