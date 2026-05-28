@@ -1,0 +1,514 @@
+name: canny
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Canny boards, posts, comments, users, companies, tags, and votes for
+  product-feedback analysis.
+base_url: https://canny.io
+
+inputs:
+  CANNY_API_KEY:
+    kind: secret
+    hint: |
+      Canny API key from your workspace API settings.
+      The key is sent in the JSON request body as `apiKey`, as required by the
+      Canny API.
+
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM canny.boards LIMIT 1
+  - SELECT id, title, status FROM canny.posts LIMIT 1
+
+tables:
+  - name: boards
+    description: Feedback boards in a Canny workspace.
+    guide: |
+      Use boards to scope feedback analysis and join `canny.posts.board_id`.
+    request:
+      method: POST
+      path: /api/v1/boards/list
+      body:
+        - path: [apiKey]
+          from: input
+          key: CANNY_API_KEY
+    response:
+      rows_path: [boards]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Board ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Board name.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Public board URL.
+      - name: post_count
+        type: Int64
+        nullable: true
+        description: Number of posts on the board.
+        expr:
+          kind: path
+          path: [postCount]
+
+  - name: posts
+    description: Canny feedback posts with score, status, board, author, owner, and tag metadata.
+    guide: |
+      Use `board_id`, `status`, or `owner_id` filters to narrow post lists.
+      `author__*`, `owner__*`, and `board__*` flatten nested Canny response
+      objects.
+    fetch_limit_default: 100
+    filters:
+      - name: board_id
+      - name: status
+      - name: owner_id
+    request:
+      method: POST
+      path: /api/v1/posts/list
+      body:
+        - path: [apiKey]
+          from: input
+          key: CANNY_API_KEY
+        - path: [boardID]
+          from: filter
+          key: board_id
+        - path: [status]
+          from: filter
+          key: status
+        - path: [ownerID]
+          from: filter
+          key: owner_id
+    response:
+      rows_path: [posts]
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 100
+        body_path: [limit]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Post ID.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Post title.
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Post description/details.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current Canny status.
+      - name: score
+        type: Int64
+        nullable: true
+        description: Canny score for the post.
+      - name: comment_count
+        type: Int64
+        nullable: true
+        description: Number of comments.
+        expr:
+          kind: path
+          path: [commentCount]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Post creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+      - name: board_id
+        type: Utf8
+        nullable: true
+        description: Board ID.
+        expr:
+          kind: path
+          path: [board, id]
+      - name: board__name
+        type: Utf8
+        nullable: true
+        description: Board name.
+        expr:
+          kind: path
+          path: [board, name]
+      - name: author__id
+        type: Utf8
+        nullable: true
+        description: Author user ID.
+        expr:
+          kind: path
+          path: [author, id]
+      - name: author__name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path: [author, name]
+      - name: owner__id
+        type: Utf8
+        nullable: true
+        description: Owner user ID.
+        expr:
+          kind: path
+          path: [owner, id]
+      - name: owner__name
+        type: Utf8
+        nullable: true
+        description: Owner display name.
+        expr:
+          kind: path
+          path: [owner, name]
+      - name: tags_json
+        type: Json
+        nullable: true
+        description: Raw Canny tags array.
+        expr:
+          kind: path
+          path: [tags]
+
+  - name: comments
+    description: Comments on a Canny post.
+    guide: |
+      Requires `post_id`, usually from `canny.posts.id`.
+    filters:
+      - name: post_id
+        required: true
+    request:
+      method: POST
+      path: /api/v2/comments/list
+      body:
+        - path: [apiKey]
+          from: input
+          key: CANNY_API_KEY
+        - path: [postID]
+          from: filter
+          key: post_id
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [cursor]
+      response_cursor_path: [cursor]
+      page_size:
+        default: 100
+        max: 100
+        body_path: [limit]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID.
+      - name: post_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Post ID supplied as a filter.
+        expr:
+          kind: from_filter
+          key: post_id
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Comment body.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Comment creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+      - name: author__id
+        type: Utf8
+        nullable: true
+        description: Author user ID.
+        expr:
+          kind: path
+          path: [author, id]
+      - name: author__name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path: [author, name]
+
+  - name: users
+    description: Canny users visible to the configured API key.
+    request:
+      method: POST
+      path: /api/v2/users/list
+      body:
+        - path: [apiKey]
+          from: input
+          key: CANNY_API_KEY
+    response:
+      rows_path: [users]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [cursor]
+      response_cursor_path: [cursor]
+      page_size:
+        default: 100
+        max: 100
+        body_path: [limit]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Canny user ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+
+  - name: companies
+    description: Canny companies visible to the configured API key.
+    request:
+      method: POST
+      path: /api/v2/companies/list
+      body:
+        - path: [apiKey]
+          from: input
+          key: CANNY_API_KEY
+    response:
+      rows_path: [companies]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [cursor]
+      response_cursor_path: [cursor]
+      page_size:
+        default: 100
+        max: 100
+        body_path: [limit]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Company ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Company name.
+      - name: monthly_spend
+        type: Float64
+        nullable: true
+        description: Monthly spend associated with the company.
+        expr:
+          kind: path
+          path: [monthlySpend]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Company creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+
+  - name: tags
+    description: Canny tags for organizing feedback posts.
+    filters:
+      - name: board_id
+    request:
+      method: POST
+      path: /api/v1/tags/list
+      body:
+        - path: [apiKey]
+          from: input
+          key: CANNY_API_KEY
+        - path: [limit]
+          from: literal
+          value: 10000
+        - path: [boardID]
+          from: filter
+          key: board_id
+    response:
+      rows_path: [tags]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tag ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tag name.
+      - name: post_count
+        type: Int64
+        nullable: true
+        description: Number of posts using the tag.
+        expr:
+          kind: path
+          path: [postCount]
+      - name: board_id
+        type: Utf8
+        nullable: true
+        description: Board ID.
+        expr:
+          kind: path
+          path: [board, id]
+      - name: board__name
+        type: Utf8
+        nullable: true
+        description: Board name.
+        expr:
+          kind: path
+          path: [board, name]
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Tag URL.
+
+  - name: votes
+    description: Canny votes with post, voter, board, and priority metadata.
+    filters:
+      - name: post_id
+      - name: board_id
+      - name: user_id
+      - name: company_id
+    request:
+      method: POST
+      path: /api/v2/votes/list
+      body:
+        - path: [apiKey]
+          from: input
+          key: CANNY_API_KEY
+        - path: [postID]
+          from: filter
+          key: post_id
+        - path: [boardID]
+          from: filter
+          key: board_id
+        - path: [userID]
+          from: filter
+          key: user_id
+        - path: [companyID]
+          from: filter
+          key: company_id
+    response:
+      rows_path: [items]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [cursor]
+      response_cursor_path: [cursor]
+      page_size:
+        default: 100
+        max: 100
+        body_path: [limit]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Vote ID.
+      - name: vote_priority
+        type: Utf8
+        nullable: true
+        description: Canny vote priority value.
+        expr:
+          kind: path
+          path: [votePriority]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Vote creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+      - name: post_id
+        type: Utf8
+        nullable: true
+        description: Voted post ID.
+        expr:
+          kind: path
+          path: [post, id]
+      - name: post__title
+        type: Utf8
+        nullable: true
+        description: Voted post title.
+        expr:
+          kind: path
+          path: [post, title]
+      - name: post__status
+        type: Utf8
+        nullable: true
+        description: Voted post status.
+        expr:
+          kind: path
+          path: [post, status]
+      - name: voter__id
+        type: Utf8
+        nullable: true
+        description: Voter user ID.
+        expr:
+          kind: path
+          path: [voter, id]
+      - name: voter__name
+        type: Utf8
+        nullable: true
+        description: Voter display name.
+        expr:
+          kind: path
+          path: [voter, name]
+      - name: voter__email
+        type: Utf8
+        nullable: true
+        description: Voter email address.
+        expr:
+          kind: path
+          path: [voter, email]
+      - name: board_id
+        type: Utf8
+        nullable: true
+        description: Board ID.
+        expr:
+          kind: path
+          path: [board, id]
+      - name: board__name
+        type: Utf8
+        nullable: true
+        description: Board name.
+        expr:
+          kind: path
+          path: [board, name]
