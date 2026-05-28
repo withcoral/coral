@@ -1,0 +1,730 @@
+name: productboard
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Productboard REST API v2 entities, notes, members, teams, field
+  configurations, and member activity analytics for product discovery and
+  roadmap analysis.
+base_url: https://api.productboard.com/v2
+
+inputs:
+  PRODUCTBOARD_API_TOKEN:
+    kind: secret
+    hint: |
+      Productboard API token or OAuth access token with read scopes such as
+      entities:read, notes:read, members:read, teams:read, and analytics:read.
+      Paste only the token value, without a `Bearer` prefix.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.PRODUCTBOARD_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, entity_type, name FROM productboard.entities LIMIT 1
+  - SELECT id, note_type, name FROM productboard.notes LIMIT 1
+  - SELECT type FROM productboard.entity_configurations LIMIT 1
+
+tables:
+  - name: entities
+    description: Productboard product-management entities across all supported types.
+    guide: |
+      Use `entity_type` to select products, components, features, subfeatures,
+      initiatives, objectives, key results, releases, release groups, users, or
+      companies. Productboard custom fields are exposed in `fields_json`.
+    fetch_limit_default: 100
+    filters:
+      - name: entity_type
+      - name: name
+      - name: owner_id
+      - name: owner_email
+      - name: status_id
+      - name: status_name
+      - name: archived
+      - name: parent_id
+    request:
+      method: GET
+      path: /entities
+      query:
+        - name: type[]
+          from: filter
+          key: entity_type
+        - name: name
+          from: filter
+          key: name
+        - name: owner[id]
+          from: filter
+          key: owner_id
+        - name: owner[email]
+          from: filter
+          key: owner_email
+        - name: status[id]
+          from: filter
+          key: status_id
+        - name: status[name]
+          from: filter
+          key: status_name
+        - name: archived
+          from: filter
+          key: archived
+        - name: parent[id]
+          from: filter
+          key: parent_id
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns: &entity_columns
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Entity UUID.
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: Productboard entity type.
+        expr: {kind: path, path: [type]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Entity name.
+        expr: {kind: path, path: [fields, name]}
+      - name: status__id
+        type: Utf8
+        nullable: true
+        description: Status ID.
+        expr: {kind: path, path: [fields, status, id]}
+      - name: status__name
+        type: Utf8
+        nullable: true
+        description: Status name.
+        expr: {kind: path, path: [fields, status, name]}
+      - name: owner__id
+        type: Utf8
+        nullable: true
+        description: Owner member ID.
+        expr: {kind: path, path: [fields, owner, id]}
+      - name: owner__email
+        type: Utf8
+        nullable: true
+        description: Owner email, redacted without PII scope.
+        expr: {kind: path, path: [fields, owner, email]}
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the entity is archived.
+        expr: {kind: path, path: [fields, archived]}
+      - name: health__status
+        type: Utf8
+        nullable: true
+        description: Health status.
+        expr: {kind: path, path: [fields, health, status]}
+      - name: work_progress__value
+        type: Float64
+        nullable: true
+        description: Work progress value.
+        expr: {kind: path, path: [fields, workProgress, value]}
+      - name: links__self
+        type: Utf8
+        nullable: true
+        description: API self link.
+        expr: {kind: path, path: [links, self]}
+      - name: links__html
+        type: Utf8
+        nullable: true
+        description: Productboard app deep link.
+        expr: {kind: path, path: [links, html]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updatedAt]}
+      - name: fields_json
+        type: Json
+        nullable: true
+        description: Dynamic configured fields, including custom UUID fields.
+        expr: {kind: path, path: [fields]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw entity object.
+        expr: {kind: path, path: []}
+
+  - name: features
+    description: Productboard feature entities.
+    fetch_limit_default: 100
+    filters:
+      - name: name
+      - name: owner_email
+      - name: status_name
+      - name: archived
+      - name: parent_id
+    request:
+      method: GET
+      path: /entities
+      query:
+        - name: type[]
+          from: literal
+          value: feature
+        - name: name
+          from: filter
+          key: name
+        - name: owner[email]
+          from: filter
+          key: owner_email
+        - name: status[name]
+          from: filter
+          key: status_name
+        - name: archived
+          from: filter
+          key: archived
+        - name: parent[id]
+          from: filter
+          key: parent_id
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns: *entity_columns
+
+  - name: initiatives
+    description: Productboard initiative entities.
+    fetch_limit_default: 100
+    filters:
+      - name: name
+      - name: owner_email
+      - name: status_name
+      - name: archived
+    request:
+      method: GET
+      path: /entities
+      query:
+        - name: type[]
+          from: literal
+          value: initiative
+        - name: name
+          from: filter
+          key: name
+        - name: owner[email]
+          from: filter
+          key: owner_email
+        - name: status[name]
+          from: filter
+          key: status_name
+        - name: archived
+          from: filter
+          key: archived
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns: *entity_columns
+
+  - name: companies
+    description: Productboard company customer entities.
+    fetch_limit_default: 100
+    filters:
+      - name: name
+      - name: archived
+    request:
+      method: GET
+      path: /entities
+      query:
+        - name: type[]
+          from: literal
+          value: company
+        - name: name
+          from: filter
+          key: name
+        - name: archived
+          from: filter
+          key: archived
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns: *entity_columns
+
+  - name: users
+    description: Productboard customer user entities.
+    fetch_limit_default: 100
+    filters:
+      - name: name
+      - name: archived
+    request:
+      method: GET
+      path: /entities
+      query:
+        - name: type[]
+          from: literal
+          value: user
+        - name: name
+          from: filter
+          key: name
+        - name: archived
+          from: filter
+          key: archived
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns: *entity_columns
+
+  - name: notes
+    description: Productboard notes and customer feedback records.
+    fetch_limit_default: 100
+    filters:
+      - name: archived
+      - name: processed
+      - name: owner_id
+      - name: owner_email
+      - name: creator_id
+      - name: creator_email
+      - name: source_system
+      - name: source_record_id
+      - name: created_from
+      - name: created_to
+      - name: updated_from
+      - name: updated_to
+    request:
+      method: GET
+      path: /notes
+      query:
+        - name: archived
+          from: filter
+          key: archived
+        - name: processed
+          from: filter
+          key: processed
+        - name: owner[id]
+          from: filter
+          key: owner_id
+        - name: owner[email]
+          from: filter
+          key: owner_email
+        - name: creator[id]
+          from: filter
+          key: creator_id
+        - name: creator[email]
+          from: filter
+          key: creator_email
+        - name: metadata[source][system]
+          from: filter
+          key: source_system
+        - name: metadata[source][recordId]
+          from: filter
+          key: source_record_id
+        - name: createdFrom
+          from: filter
+          key: created_from
+        - name: createdTo
+          from: filter
+          key: created_to
+        - name: updatedFrom
+          from: filter
+          key: updated_from
+        - name: updatedTo
+          from: filter
+          key: updated_to
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Note UUID.
+      - name: note_type
+        type: Utf8
+        nullable: true
+        description: Note type such as textNote or conversationNote.
+        expr: {kind: path, path: [type]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Note name.
+        expr: {kind: path, path: [fields, name]}
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Text note content when represented as a string.
+        expr: {kind: path, path: [fields, content]}
+      - name: owner__id
+        type: Utf8
+        nullable: true
+        description: Owner member ID.
+        expr: {kind: path, path: [fields, owner, id]}
+      - name: owner__email
+        type: Utf8
+        nullable: true
+        description: Owner email, redacted without PII scope.
+        expr: {kind: path, path: [fields, owner, email]}
+      - name: creator__id
+        type: Utf8
+        nullable: true
+        description: Creator member ID.
+        expr: {kind: path, path: [fields, creator, id]}
+      - name: creator__email
+        type: Utf8
+        nullable: true
+        description: Creator email, redacted without PII scope.
+        expr: {kind: path, path: [fields, creator, email]}
+      - name: processed
+        type: Boolean
+        nullable: true
+        description: Whether the note is processed.
+        expr: {kind: path, path: [fields, processed]}
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the note is archived.
+        expr: {kind: path, path: [fields, archived]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [fields, createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [fields, updatedAt]}
+      - name: links__self
+        type: Utf8
+        nullable: true
+        description: API self link.
+        expr: {kind: path, path: [links, self]}
+      - name: links__html
+        type: Utf8
+        nullable: true
+        description: Productboard app note link.
+        expr: {kind: path, path: [links, html]}
+      - name: tags_json
+        type: Json
+        nullable: true
+        description: Note tags.
+        expr: {kind: path, path: [fields, tags]}
+      - name: relationships_json
+        type: Json
+        nullable: true
+        description: Customer and product relationships.
+        expr: {kind: path, path: [relationships]}
+      - name: fields_json
+        type: Json
+        nullable: true
+        description: Raw note fields.
+        expr: {kind: path, path: [fields]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw note object.
+        expr: {kind: path, path: []}
+
+  - name: entity_configurations
+    description: Entity type field, relationship, and filter configuration metadata.
+    filters:
+      - name: entity_type
+    request:
+      method: GET
+      path: /entities/configurations
+      query:
+        - name: type[]
+          from: filter
+          key: entity_type
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Entity type.
+      - name: fields_json
+        type: Json
+        nullable: true
+        description: Configured standard and custom fields.
+        expr: {kind: path, path: [fields]}
+      - name: relationships_json
+        type: Json
+        nullable: true
+        description: Available relationship definitions.
+        expr: {kind: path, path: [relationships]}
+      - name: filters_json
+        type: Json
+        nullable: true
+        description: Supported filter parameters for this entity type.
+        expr: {kind: path, path: [filters]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw configuration object.
+        expr: {kind: path, path: []}
+
+  - name: note_configurations
+    description: Note type field and validation configuration metadata.
+    filters:
+      - name: note_type
+    request:
+      method: GET
+      path: /notes/configurations
+      query:
+        - name: type
+          from: filter
+          key: note_type
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Note type.
+      - name: fields_json
+        type: Json
+        nullable: true
+        description: Configured note fields.
+        expr: {kind: path, path: [fields]}
+      - name: relationships_json
+        type: Json
+        nullable: true
+        description: Available note relationship definitions.
+        expr: {kind: path, path: [relationships]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw note configuration object.
+        expr: {kind: path, path: []}
+
+  - name: members
+    description: Productboard workspace members.
+    fetch_limit_default: 100
+    filters:
+      - name: query
+      - name: role
+      - name: include_disabled
+      - name: include_invitation_pending
+    request:
+      method: GET
+      path: /members
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: roles[]
+          from: filter
+          key: role
+        - name: includeDisabled
+          from: filter
+          key: include_disabled
+        - name: includeInvitationPending
+          from: filter
+          key: include_invitation_pending
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Member UUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Member name, redacted without PII scope.
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Member username, redacted without PII scope.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Member email, redacted without PII scope.
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Workspace role.
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Whether the member is disabled.
+      - name: invitation_pending
+        type: Boolean
+        nullable: true
+        description: Whether the member invitation is pending.
+      - name: teams_json
+        type: Json
+        nullable: true
+        description: Team assignments.
+        expr: {kind: path, path: [teams]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw member object.
+        expr: {kind: path, path: []}
+
+  - name: teams
+    description: Productboard teams.
+    fetch_limit_default: 100
+    filters:
+      - name: name
+      - name: handle
+      - name: query
+    request:
+      method: GET
+      path: /teams
+      query:
+        - name: name
+          from: filter
+          key: name
+        - name: handle
+          from: filter
+          key: handle
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team UUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Team name.
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Team handle.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Team description.
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Team avatar URL.
+      - name: links__self
+        type: Utf8
+        nullable: true
+        description: API self link.
+        expr: {kind: path, path: [links, self]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw team object.
+        expr: {kind: path, path: []}
+
+  - name: member_activities
+    description: Member activity analytics with optional date filtering.
+    fetch_limit_default: 100
+    filters:
+      - name: date_from
+      - name: date_to
+    request:
+      method: GET
+      path: /analytics/member-activities
+      query:
+        - name: dateFrom
+          from: filter
+          key: date_from
+        - name: dateTo
+          from: filter
+          key: date_to
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: pageCursor
+      response_cursor_path: [links, next]
+    columns:
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Activity date.
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Workspace domain.
+      - name: member_id
+        type: Utf8
+        nullable: true
+        description: Member UUID.
+        expr: {kind: path, path: [memberId]}
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Member role.
+      - name: active_flag
+        type: Boolean
+        nullable: true
+        description: Whether the member was active.
+        expr: {kind: path, path: [activeFlag]}
+      - name: feature_created_count
+        type: Int64
+        nullable: true
+        description: Features created.
+        expr: {kind: path, path: [featureCreatedCount]}
+      - name: note_created_count
+        type: Int64
+        nullable: true
+        description: Notes created.
+        expr: {kind: path, path: [noteCreatedCount]}
+      - name: board_opened_count
+        type: Int64
+        nullable: true
+        description: Boards opened.
+        expr: {kind: path, path: [boardOpenedCount]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw member activity object.
+        expr: {kind: path, path: []}
