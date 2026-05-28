@@ -1,0 +1,448 @@
+name: semaphore_ci
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query workflows, pipelines, and promotions for a Semaphore CI
+  project. All tables require a project_id or pipeline_id filter —
+  Semaphore's v1alpha API does not expose a list-projects endpoint,
+  so obtain IDs from the Semaphore dashboard or `sem` CLI.
+  Read-only; cloud-only (assumes *.semaphoreci.com).
+base_url: "https://{{input.SEMAPHORE_ORG_SLUG}}.semaphoreci.com/api/v1alpha"
+
+inputs:
+  SEMAPHORE_API_TOKEN:
+    kind: secret
+    hint: |
+      Your Semaphore CI API token. Generate one from
+      Account Settings → API Tokens.
+      See https://docs.semaphoreci.com/reference/api
+  SEMAPHORE_ORG_SLUG:
+    kind: variable
+    hint: |
+      Your Semaphore organization slug — the subdomain part of your
+      Semaphore URL. For example, if your dashboard URL is
+      https://mycompany.semaphoreci.com, enter: mycompany
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Token {{input.SEMAPHORE_API_TOKEN}}
+request_headers:
+  - name: User-Agent
+    from: literal
+    value: SemaphoreCI v2.0 Client
+
+test_queries:
+  - >-
+    SELECT wf_id, branch_name, commit_sha, initial_ppl_id
+    FROM semaphore_ci.workflows
+    WHERE project_id = 'your-project-uuid'
+    LIMIT 5
+  - >-
+    SELECT name, state, result, branch_name
+    FROM semaphore_ci.pipelines
+    WHERE project_id = 'your-project-uuid'
+    LIMIT 5
+  - >-
+    SELECT wf_id, branch_name, created_at
+    FROM semaphore_ci.workflows
+    WHERE project_id = 'your-project-uuid'
+    LIMIT 5
+  - >-
+    SELECT name, status, triggered_by
+    FROM semaphore_ci.promotions
+    WHERE pipeline_id = 'initial-ppl-id-from-workflows'
+    LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # workflows — list workflows for a project
+  # GET /api/v1alpha/plumber-workflows?project_id=<id>
+  # Pagination: HTTP Link header (default 30 per page).
+  # Response: root-level JSON array (no wrapper key).
+  # ──────────────────────────────────────────────────────────────────────
+  - name: workflows
+    description: >-
+      Workflow runs for a Semaphore CI project. Each row is one workflow
+      execution triggered by a push, tag, PR, or manual rerun. Requires
+      `project_id` filter — obtain from Semaphore UI or CLI.
+    guide: |
+      Requires `project_id` — find it in the Semaphore dashboard URL or
+      via `sem get project <name>`. Use `wf_id` from here as a filter on
+      `semaphore_ci.pipelines` to drill into a specific workflow.
+      Optional filters: `branch_name` to scope by branch,
+      `created_after` / `created_before` (Unix timestamps) for time-window
+      queries like "workflows in the last 24 h".
+      `created_at` is a UTC timestamp derived from the API's protobuf
+      `{seconds, nanos}` object.
+    filters:
+      - name: project_id
+        required: true
+      - name: branch_name
+        required: false
+      - name: created_after
+        required: false
+      - name: created_before
+        required: false
+    request:
+      method: GET
+      path: /plumber-workflows
+      query:
+        - name: project_id
+          from: filter
+          key: project_id
+        - name: branch_name
+          from: filter
+          key: branch_name
+        - name: created_after
+          from: filter
+          key: created_after
+        - name: created_before
+          from: filter
+          key: created_before
+    response: {}
+    pagination:
+      mode: link_header
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID (echoes the required filter).
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: wf_id
+        type: Utf8
+        nullable: false
+        description: Workflow UUID.
+        expr:
+          kind: path
+          path:
+            - wf_id
+      - name: requester_id
+        type: Utf8
+        nullable: true
+        description: UUID of the user or system that requested this workflow.
+        expr:
+          kind: path
+          path:
+            - requester_id
+      - name: repository_id
+        type: Utf8
+        nullable: true
+        description: Repository UUID associated with this workflow.
+        expr:
+          kind: path
+          path:
+            - repository_id
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: Organization UUID.
+        expr:
+          kind: path
+          path:
+            - organization_id
+      - name: initial_ppl_id
+        type: Utf8
+        nullable: true
+        description: UUID of the initial pipeline created by this workflow.
+        expr:
+          kind: path
+          path:
+            - initial_ppl_id
+      - name: hook_id
+        type: Utf8
+        nullable: true
+        description: UUID of the webhook event that triggered this workflow.
+        expr:
+          kind: path
+          path:
+            - hook_id
+      - name: branch_name
+        type: Utf8
+        nullable: true
+        description: Git branch name for this workflow run.
+        expr:
+          kind: path
+          path:
+            - branch_name
+      - name: branch_id
+        type: Utf8
+        nullable: true
+        description: Semaphore branch UUID.
+        expr:
+          kind: path
+          path:
+            - branch_id
+      - name: commit_sha
+        type: Utf8
+        nullable: true
+        description: Git commit SHA that triggered this workflow.
+        expr:
+          kind: path
+          path:
+            - commit_sha
+      - name: triggered_by
+        type: Int64
+        nullable: true
+        description: >-
+          How the workflow was triggered. Integer enum from the list
+          endpoint (e.g. 0 = unknown, 1 = hook/push). The describe
+          endpoint returns a string instead, but this table uses the
+          list endpoint which always returns an integer.
+        expr:
+          kind: path
+          path:
+            - triggered_by
+      - name: rerun_of
+        type: Utf8
+        nullable: true
+        description: UUID of the original workflow if this is a rerun, empty string otherwise.
+        expr:
+          kind: path
+          path:
+            - rerun_of
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: >-
+          Workflow creation time (UTC). Extracted from the API's protobuf
+          {seconds, nanos} object — nanos are truncated.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+              - seconds
+
+  # ──────────────────────────────────────────────────────────────────────
+  # pipelines — list pipelines for a project or workflow
+  # GET /api/v1alpha/pipelines?project_id=<id>[&wf_id=<id>]
+  # Pagination: HTTP Link header (default 30 per page).
+  # Response: root-level JSON array (no wrapper key).
+  # ──────────────────────────────────────────────────────────────────────
+  - name: pipelines
+    description: >-
+      Pipelines for a Semaphore CI project. Each row is one pipeline
+      execution within a workflow. This Coral source requires `project_id`
+      for a safe default query path; Semaphore's API also accepts `wf_id`
+      alone, but this source always requires `project_id`. Optionally pass
+      `wf_id` to narrow to a single workflow. Note: the list endpoint
+      does not return `ppl_id`; use `initial_ppl_id` from
+      `semaphore_ci.workflows` to obtain the initial pipeline ID for
+      promotions.
+    guide: |
+      This source requires `project_id` as a Coral-side restriction for a
+      safe first-query experience. Semaphore's API contract accepts either
+      `project_id` or `wf_id` (or both); this source always requires
+      `project_id` and treats `wf_id` as an optional narrowing filter.
+      The list endpoint does NOT return `ppl_id` — to get a pipeline ID
+      for the promotions table, use `initial_ppl_id` from
+      `semaphore_ci.workflows` (which gives the first pipeline for each
+      workflow).
+      `state` values: pending, queuing, running, done, stopping.
+      `result` values: passed, failed, stopped, canceled.
+      Time-window filters `created_after`, `created_before`, `done_after`,
+      `done_before` accept Unix timestamps for server-side pushdown.
+    filters:
+      - name: project_id
+        required: true
+      - name: wf_id
+        required: false
+      - name: branch_name
+        required: false
+      - name: yml_file_path
+        required: false
+      - name: created_after
+        required: false
+      - name: created_before
+        required: false
+      - name: done_after
+        required: false
+      - name: done_before
+        required: false
+    request:
+      method: GET
+      path: /pipelines
+      query:
+        - name: project_id
+          from: filter
+          key: project_id
+        - name: wf_id
+          from: filter
+          key: wf_id
+        - name: branch_name
+          from: filter
+          key: branch_name
+        - name: yml_file_path
+          from: filter
+          key: yml_file_path
+        - name: created_after
+          from: filter
+          key: created_after
+        - name: created_before
+          from: filter
+          key: created_before
+        - name: done_after
+          from: filter
+          key: done_after
+        - name: done_before
+          from: filter
+          key: done_before
+    response: {}
+    pagination:
+      mode: link_header
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID (required filter).
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Pipeline name as defined in the YAML config.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: yaml_file_name
+        type: Utf8
+        nullable: true
+        description: YAML file that defines this pipeline (e.g. semaphore.yml).
+        expr:
+          kind: path
+          path:
+            - yaml_file_name
+      - name: working_directory
+        type: Utf8
+        nullable: true
+        description: Working directory for the pipeline (e.g. .semaphore).
+        expr:
+          kind: path
+          path:
+            - working_directory
+      - name: wf_id
+        type: Utf8
+        nullable: true
+        description: Parent workflow UUID.
+        expr:
+          kind: path
+          path:
+            - wf_id
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Pipeline state (pending, queuing, running, stopping, done).
+          Transient states pending/queuing appear during initialization.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: result
+        type: Utf8
+        nullable: true
+        description: Pipeline result (passed, failed, stopped, canceled).
+        expr:
+          kind: path
+          path:
+            - result
+      - name: branch_name
+        type: Utf8
+        nullable: true
+        description: Git branch name.
+        expr:
+          kind: path
+          path:
+            - branch_name
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: >-
+          Pipeline creation time (UTC). Extracted from the API's protobuf
+          {seconds, nanos} object — nanos are truncated.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - created_at
+              - seconds
+
+  # ──────────────────────────────────────────────────────────────────────
+  # promotions — list promotions for a pipeline
+  # GET /api/v1alpha/promotions?pipeline_id=<id>
+  # Pagination: none (small result sets per pipeline).
+  # Response: root-level JSON array (no wrapper key).
+  # ──────────────────────────────────────────────────────────────────────
+  - name: promotions
+    description: >-
+      Promotions triggered from a Semaphore CI pipeline. Each row is one
+      promotion (e.g. deploy to production). Requires `pipeline_id` filter.
+    guide: |
+      Requires `pipeline_id` — obtain via `initial_ppl_id` from
+      `semaphore_ci.workflows`. A promotion represents a triggered
+      deployment or downstream pipeline.
+      `status` values: passed, failed. `triggered_by` describes what
+      triggered the promotion (e.g. "Pipeline Done request"). The API
+      response only includes name, status, and triggered_by; timestamp
+      and auto-promotion metadata are not exposed by this endpoint.
+      Known limitation: Semaphore returns a server error (500) for
+      pipelines that have no promotions configured. An empty result
+      set is the expected outcome for pipelines without promotions,
+      but the upstream API does not return one.
+    filters:
+      - name: pipeline_id
+        required: true
+    request:
+      method: GET
+      path: /promotions
+      query:
+        - name: pipeline_id
+          from: filter
+          key: pipeline_id
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: pipeline_id
+        type: Utf8
+        nullable: false
+        description: Pipeline ID (echoes the required filter).
+        expr:
+          kind: from_filter
+          key: pipeline_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Promotion name (e.g. production, staging).
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Promotion status (passed, failed).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: triggered_by
+        type: Utf8
+        nullable: true
+        description: What triggered the promotion (e.g. Pipeline Done request).
+        expr:
+          kind: path
+          path:
+            - triggered_by
