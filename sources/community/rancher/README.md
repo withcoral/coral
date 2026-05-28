@@ -7,7 +7,7 @@
 
 Query downstream Kubernetes cluster inventory and control plane metadata directly through Coral SQL using the Rancher API.
 
-This integration is designed for operational auditing workflows, helping administrators inspect provisioning states, infrastructure providers, Kubernetes versions, and cluster topology footprints across environments managed through Rancher.
+This integration is intended for operational auditing workflows, helping administrators inspect provisioning states, infrastructure providers, Kubernetes versions, and cluster topology footprints across environments managed through Rancher.
 
 Coral exposes read-only `GET` tables. Cluster mutation, deletion, provisioning, or downstream workload management operations are out of scope.
 
@@ -36,7 +36,10 @@ coral source add --file <path-to-manifest>
 | Input | Kind | Required | Description |
 |---|---|---|---|
 | `RANCHER_URL` | variable | yes | Rancher Manager URL without trailing slash and without `/v3`, for example `https://rancher.infra.local` |
-| `RANCHER_TOKEN` | secret | yes | Rancher API Bearer Token (for example `token-xxxxx:yyyyyyyyyyyyyyyy`) |
+| `RANCHER_TOKEN` | secret | yes | Rancher API Bearer Token generated from the Rancher API Keys UI (for example `token-xxxxx:yyyyyyyyyyyyyyyy`) |
+
+> **Access Control Note**
+> The data returned by `/v3/clusters` is scoped by the cluster and project role bindings assigned to the provided token. Ensure the token has sufficient visibility when performing infrastructure-wide audits.
 
 ---
 
@@ -44,7 +47,7 @@ coral source add --file <path-to-manifest>
 
 | Table | API Endpoint | Required Filters | Pagination |
 |---|---|---|---|
-| `clusters` | `GET /clusters` | — | None (maps from the `data` array) |
+| `clusters` | `GET /clusters` | — | None (supports server-side query pushdowns) |
 
 ---
 
@@ -140,7 +143,10 @@ $ coral source test rancher
 # Limitations
 
 - Read-only retrieval scope
-- Cluster provisioning, mutation, deletion, or scaling workflows are out of scope
+- Cluster provisioning, mutation, deletion, or downstream scaling workflows are out of scope
 - Exposes top-level cluster inventory metadata only
 - Does not expose downstream Kubernetes workload resources such as Pods, Deployments, ConfigMaps, Events, or Logs
-- Intended for Rancher control plane auditing and operational inventory visibility
+- Filtering is handled server-side for supported fields such as `name` and `state`
+- Rancher collection endpoints may paginate large cluster inventories depending on server configuration
+- This source currently targets smaller operational inventories and does not yet implement Rancher pagination traversal
+- For large deployments, use server-side pushdown filters such as `WHERE name = 'cluster-name'` whenever possible

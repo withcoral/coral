@@ -15,7 +15,8 @@ inputs:
   RANCHER_TOKEN:
     kind: secret
     hint: |
-      Rancher API Bearer Token (e.g., token-xxxxx:yyyyyyyyyyyyyyyy).
+      Rancher API Bearer Token value from the UI (e.g., token-xxxxx:yyyyyyyyyyyyyyyy).
+      Note: Returned results are strictly scoped by this token's cluster/project roles.
 
 auth:
   type: HeaderAuth
@@ -38,8 +39,15 @@ tables:
     request:
       method: GET
       path: /clusters
+      query:
+        - name: name
+          from: query
+          key: name
+        - name: state
+          from: query
+          key: state
     response:
-      row_strategy: array
+      row_strategy: direct
       rows_path: [data]
     pagination:
       mode: none
