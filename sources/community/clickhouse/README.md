@@ -1,125 +1,195 @@
-# ClickHouse source
+# Netdata (Community)
 
-Query ClickHouse databases, tables, columns, query history, running processes,
-server metrics, storage parts, and replication health via the ClickHouse HTTP
-interface (port 8123).
+**Version:** 0.1.0
+**Backend:** HTTP (Netdata Agent v1 REST API)
+**Tables:** 3
+**Base URL:** `{{input.NETDATA_URL}}/api/v1`
 
-## Setup
+Query Netdata host metadata, active alarms, and metrics catalog definitions directly through Coral SQL using the Netdata agent API.
 
-### 1. Prerequisites
+This integration is intended for infrastructure observability and operational auditing workflows across monitored systems.
 
-- ClickHouse instance accessible over HTTP or HTTPS
-- A ClickHouse user with `SELECT` access to the `system` database
+Coral exposes read-only `GET` tables. Modifying alarm definitions, collector configuration, telemetry pipelines, or querying raw historical timeseries streams is out of scope.
 
-### 2. Create a dedicated user (recommended)
+---
 
-```sql
-CREATE USER coral_reader IDENTIFIED BY 'your_password';
-GRANT SELECT ON system.* TO coral_reader;
-```
+# Install
 
-### 3. Password requirement
+Community sources are not bundled with the Coral binary.
 
-Coral requires a non-empty password for secret inputs. If your default user
-has no password, set one first:
-
-```sql
-ALTER USER default IDENTIFIED BY 'your_password';
-```
-
-### 4. Install the source
+From the Coral repository root:
 
 ```bash
-CLICKHOUSE_HOST=http://localhost:8123 \
-CLICKHOUSE_USER=coral_reader \
-CLICKHOUSE_PASSWORD=your_password \
-coral source add --file manifest.yaml
+coral source add --file sources/community/netdata/manifest.yaml
 ```
 
-For ClickHouse Cloud, use `https://<host>.clickhouse.cloud:8443` as the host.
-Do not include a trailing slash.
+Or copy `manifest.yaml` into your workspace and pass that path to:
 
-## Tables
+```bash
+coral source add --file <path-to-manifest>
+```
 
-| Table | Description |
-|---|---|
-| `databases` | All databases visible to the configured user |
-| `tables` | Tables across all databases with engine, row count, size, and key expressions |
-| `columns` | Column names, types, key membership, and compression stats |
-| `query_log` | Last 1000 query log entries across all event types including failures |
-| `processes` | Live snapshot of currently executing queries |
-| `metrics` | Instantaneous server counters (connections, merges, memory) |
-| `parts` | Active MergeTree data parts with partition and storage statistics |
-| `replicas` | Replication queue depth and health (returns 0 rows on standalone instances) |
+---
 
-## Example queries
+# Inputs
+
+| Input | Kind | Required | Description |
+|---|---|---|---|
+| `NETDATA_URL` | variable | yes | Netdata agent base URL with port, for example `http://localhost:19999` |
+| `NETDATA_TOKEN` | secret | no | Optional bearer token if the Netdata endpoint is protected behind an authentication proxy |
+
+---
+
+# Tables Overview
+
+| Table | API Endpoint | Required Filters | Pagination |
+|---|---|---|---|
+| `nodes` | `GET /info` | — | None (returns a single object response) |
+| `alarms` | `GET /alarms?all=true` | — | None (iterates over alarm dictionary entries) |
+| `metrics_metadata` | `GET /charts` | — | None (iterates over chart dictionary entries) |
+
+---
+
+# Table Reference
+
+## netdata.nodes
+
+Host runtime metadata and operating system information.
+
+| Column | Type | Description |
+|---|---|---|
+| `version` | Utf8 | Netdata agent version |
+| `os_name` | Utf8 | Operating system distribution name |
+| `os_version` | Utf8 | Operating system version |
+| `kernel_version` | Utf8 | Running kernel version |
+| `cpu_cores` | Int64 | Total monitored CPU cores |
+
+---
+
+## netdata.alarms
+
+Active and configured system alarm definitions.
+
+| Column | Type | Description |
+|---|---|---|
+| `alarm_id` | Utf8 | Alarm dictionary entry key |
+| `alarm_name` | Utf8 | Technical alarm name |
+| `chart` | Utf8 | Chart associated with the alarm |
+| `status` | Utf8 | Current alarm state |
+| `value` | Float64 | Most recent evaluated alarm value |
+| `family` | Utf8 | Alarm subsystem classification |
+| `recipient` | Utf8 | Notification routing target |
+
+---
+
+## netdata.metrics_metadata
+
+Chart catalog and metric metadata definitions.
+
+| Column | Type | Description |
+|---|---|---|
+| `chart_id` | Utf8 | Unique chart identifier |
+| `chart_name` | Utf8 | Human-readable chart name |
+| `title` | Utf8 | Chart display title |
+| `unit` | Utf8 | Metric measurement unit |
+| `chart_type` | Utf8 | Visualization chart type |
+
+---
+
+# Example Queries
+
+## Find Active Warning or Critical Alarms
 
 ```sql
--- Find the largest tables by size
-SELECT database, name, engine, total_rows, total_bytes
-FROM clickhouse.tables
-WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
-ORDER BY total_bytes DESC
-LIMIT 20;
-
--- Slowest recent queries
-SELECT query, user, query_duration_ms, read_rows, memory_usage
-FROM clickhouse.query_log
-WHERE type = 'QueryFinish'
-ORDER BY query_duration_ms DESC
-LIMIT 10;
-
--- Failed queries with errors
-SELECT event_time, user, query, exception
-FROM clickhouse.query_log
-WHERE type = 'ExceptionWhileProcessing'
-ORDER BY event_time DESC
-LIMIT 20;
-
--- Correlate query start and finish rows
 SELECT
-  s.query_id,
-  s.query,
-  s.event_time AS started_at,
-  f.event_time AS finished_at,
-  f.query_duration_ms
-FROM clickhouse.query_log s
-JOIN clickhouse.query_log f ON s.query_id = f.query_id
-WHERE s.type = 'QueryStart'
-  AND f.type = 'QueryFinish'
-LIMIT 10;
-
--- Tables with the most parts (merge pressure indicator)
-SELECT database, table, COUNT(*) AS part_count, SUM(rows) AS total_rows
-FROM clickhouse.parts
-WHERE database NOT IN ('system')
-GROUP BY database, table
-ORDER BY part_count DESC
-LIMIT 20;
-
--- Check replication lag
-SELECT database, table, absolute_delay, queue_size, active_replicas, total_replicas
-FROM clickhouse.replicas
-WHERE absolute_delay > 0
-ORDER BY absolute_delay DESC;
-
--- Live running queries
-SELECT query_id, user, elapsed, read_rows, memory_usage, query
-FROM clickhouse.processes
-ORDER BY elapsed DESC;
+  alarm_id,
+  alarm_name,
+  chart,
+  family,
+  status,
+  value
+FROM netdata.alarms
+WHERE status IN ('WARNING', 'CRITICAL')
+ORDER BY value DESC;
 ```
 
-## Notes
+---
 
-- **`query_log`** is only populated when `log_queries = 1` is set in the
-  ClickHouse server configuration. An empty result may mean logging is disabled.
-- **`parts`** can return very large result sets on busy production clusters.
-  Always filter by `database` or `table` in WHERE clauses for specific lookups,
-  and use LIMIT for exploratory queries.
-- **`replicas`** returns 0 rows on standalone (non-replicated) instances —
-  this is expected, not an error.
-- **`processes`** includes the Coral query fetching the table as one of the
-  returned rows.
-- Statistics columns (`viewCount`, `total_rows`, `total_bytes`) are typed
-  `Int64` — very large tables (petabyte scale) could theoretically overflow,
-  but this is not a practical concern for most deployments.
+## Inventory Percentage-Based Metrics
+
+```sql
+SELECT
+  chart_id,
+  chart_name,
+  title,
+  chart_type
+FROM netdata.metrics_metadata
+WHERE unit = 'percentage'
+ORDER BY chart_id ASC;
+```
+
+---
+
+# Validation
+
+Run formatting and schema validation locally before opening a pull request.
+
+## Lint Sources
+
+```bash
+make lint-sources
+```
+
+## Validate Coral Source Schema
+
+```bash
+coral source lint sources/community/netdata/manifest.yaml
+```
+
+## Execute Live Connection Test
+
+```bash
+export NETDATA_URL=http://localhost:19999
+export NETDATA_TOKEN=your_optional_bearer_token
+
+coral source add --file sources/community/netdata/manifest.yaml
+coral source test netdata
+```
+
+---
+
+# Representative Live Output
+
+```text
+$ coral source test netdata
+
+✓ netdata connected successfully
+
+  netdata (3 tables)
+  ├─ nodes
+  ├─ alarms
+  └─ metrics_metadata
+
+  Query tests
+  1 declared · 1 passed · 0 failed
+
+✓ SELECT os_name, kernel_version FROM netdata.nodes LIMIT 1
+
++---------+--------------------+
+| os_name | kernel_version     |
++---------+--------------------+
+| ubuntu  | 5.15.0-101-generic |
++---------+--------------------+
+
+1 row
+```
+
+---
+
+# Limitations
+
+- Read-only retrieval scope
+- Does not expose raw historical timeseries data (`/data`) APIs
+- Intended for metadata inventory and operational monitoring workflows
+- `/alarms` and `/charts` endpoints are modeled using Coral `dict_entries` response traversal because Netdata returns dictionary-based payloads rather than flat arrays
+- Large monitoring environments with extensive chart catalogs may require targeted SQL filtering for optimal performance
