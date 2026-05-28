@@ -152,17 +152,26 @@ pub fn format_batches_json(batches: &[RecordBatch]) -> Result<String, QueryResul
 
 /// Converts batches into JSON row objects.
 ///
-/// `Int64` and `UInt64` columns are emitted as JSON strings rather than numbers
-/// so the exact value survives consumers (e.g. JS `JSON.parse`) that decode
-/// JSON numbers as IEEE-754 doubles and would silently truncate values past
-/// 2^53.
-///
 /// # Errors
 ///
 /// Returns [`QueryResultError`] if the batches cannot be encoded as JSON rows.
 pub fn batches_to_json_rows(batches: &[RecordBatch]) -> Result<Vec<Value>, QueryResultError> {
     let json = format_batches_json(batches)?;
-    let mut rows: Vec<Value> = serde_json::from_str(&json)?;
+    serde_json::from_str(&json).map_err(Into::into)
+}
+
+/// Converts batches into JSON row objects, stringifying `Int64` and `UInt64`
+/// columns so the exact value survives consumers that decode JSON numbers as
+/// IEEE-754 doubles (e.g. JS `JSON.parse`) and would silently truncate values
+/// past 2^53.
+///
+/// # Errors
+///
+/// Returns [`QueryResultError`] if the batches cannot be encoded as JSON rows.
+pub fn batches_to_json_rows_int64_safe(
+    batches: &[RecordBatch],
+) -> Result<Vec<Value>, QueryResultError> {
+    let mut rows = batches_to_json_rows(batches)?;
     stringify_int64_columns(batches, &mut rows);
     Ok(rows)
 }
@@ -202,8 +211,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        CollectedQueryResult, batches_to_json_rows, decode_execute_sql_response,
-        format_batches_json, format_batches_table,
+        CollectedQueryResult, batches_to_json_rows, batches_to_json_rows_int64_safe,
+        decode_execute_sql_response, format_batches_json, format_batches_table,
     };
 
     fn response() -> ExecuteSqlResponse {
@@ -279,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn batches_to_json_rows_stringifies_int64_values() {
+    fn batches_to_json_rows_int64_safe_stringifies_int64_values() {
         use arrow::array::UInt64Array;
 
         let schema = Arc::new(Schema::new(vec![
@@ -297,7 +306,7 @@ mod tests {
         )
         .expect("batch");
 
-        let rows = batches_to_json_rows(&[batch]).expect("rows");
+        let rows = batches_to_json_rows_int64_safe(&[batch]).expect("rows");
         let first = rows.first().expect("first row");
         assert_eq!(
             first.get("user_id"),
@@ -308,6 +317,14 @@ mod tests {
             Some(&Value::String("18446744073709551000".to_string())),
         );
         assert_eq!(first.get("name"), Some(&Value::String("a".to_string())));
+    }
+
+    #[test]
+    fn batches_to_json_rows_keeps_int64_as_number() {
+        let decoded = decode_execute_sql_response(&response()).expect("decode");
+        let rows = batches_to_json_rows(decoded.batches()).expect("rows");
+        let first = rows.first().expect("first row");
+        assert_eq!(first.get("id"), Some(&serde_json::json!(1)));
     }
 
     #[test]
