@@ -1,0 +1,122 @@
+name: webhooks
+version: 0.1.0
+dsl_version: 3
+description: >
+  Incoming webhook deliveries as a queryable Coral SQL table. A local
+  HMAC-validating receiver listens on an HTTP port, verifies per-source
+  signatures, and appends each accepted delivery as a JSONL row to disk.
+  Coral reads that file as this source, enabling federated SQL queries over
+  real-time event data from GitHub, Sentry, Stripe, PagerDuty, Linear, and
+  any other provider that supports webhook delivery.
+backend: file
+
+inputs:
+  WEBHOOKS_PATH:
+    kind: variable
+    default: "~/.webhooks/deliveries.jsonl"
+    hint: >
+      Path to the JSONL file where your webhook receiver appends validated
+      deliveries. The receiver must be running and writing rows that conform
+      to the deliveries table schema before this source returns data.
+  WEBHOOK_SUBSCRIPTIONS_PATH:
+    kind: variable
+    default: "~/.webhooks/subscriptions.jsonl"
+    hint: >
+      Path to the JSONL file that stores subscription configuration rows —
+      one per registered webhook source. Written by your registration tooling
+      and read by the receiver on startup.
+
+tables:
+  # ── deliveries ─────────────────────────────────────────────────────────────
+  - name: deliveries
+    description: >
+      One row per webhook delivery accepted by the receiver.
+      The payload column contains the raw JSON body as a string — use
+      json_extract_string(payload, '$.field') in Coral SQL to reach into it.
+      The receiver only appends deliveries that passed HMAC validation, so
+      hmac_valid will be true for all rows written by the receiver; this is
+      a convention enforced by the receiver, not a constraint of this spec or
+      the file backend. Rows are appended in arrival order; use received_at
+      for time-series filtering.
+    source:
+      location: "file://{{input.WEBHOOKS_PATH}}"
+      glob: "*.jsonl"
+    format: jsonl
+    columns:
+      - name: id
+        type: Utf8
+        description: "Delivery UUID assigned by the receiver"
+      - name: source
+        type: Utf8
+        description: "Originating service name, e.g. github, sentry, stripe, pagerduty, linear"
+      - name: event_type
+        type: Utf8
+        description: "Provider-specific event type, e.g. push, issues.opened, payment_intent.failed"
+      - name: payload
+        type: Utf8
+        description: "Raw JSON body of the webhook delivery as a string"
+      - name: received_at
+        type: Timestamp
+        description: "UTC timestamp when the receiver accepted this delivery"
+      - name: hmac_valid
+        type: Boolean
+        description: "Whether HMAC signature was verified before writing; the receiver only writes entries where this is true"
+      - name: delivery_id
+        type: Utf8
+        description: "Provider-assigned delivery ID from the X-Delivery-ID or X-GitHub-Delivery header, if present"
+      - name: content_length_bytes
+        type: Int64
+        description: "Byte length of the raw payload"
+    filters:
+      - name: received_at
+        mode: exact
+        operators: [">=", "<=", ">", "<"]
+        description: "Filter by delivery receipt time — always include a date filter for production queries"
+      - name: source
+        mode: exact
+        operators: ["=", "IN"]
+        description: "Filter by originating service name, e.g. source = 'github'"
+      - name: event_type
+        mode: exact
+        operators: ["=", "LIKE", "IN"]
+        description: "Filter by event type, e.g. event_type = 'push'"
+
+  # ── subscriptions ──────────────────────────────────────────────────────────
+  - name: subscriptions
+    description: >
+      Configuration rows declaring which webhook sources are active, their
+      receiver URLs, and which secret alias to use for HMAC validation.
+      Written by your registration tooling and read by the receiver on startup.
+      One row per registered source.
+    source:
+      location: "file://{{input.WEBHOOK_SUBSCRIPTIONS_PATH}}"
+      glob: "*.jsonl"
+    format: jsonl
+    columns:
+      - name: source
+        type: Utf8
+        description: "Service name this subscription is for, e.g. github"
+      - name: receiver_url
+        type: Utf8
+        description: "Public URL where the provider will deliver webhooks"
+      - name: secret_alias
+        type: Utf8
+        description: "Name of the credential alias that holds the HMAC secret for this source"
+      - name: events
+        type: Utf8
+        description: "Comma-separated list of event types this subscription covers"
+      - name: active
+        type: Boolean
+        description: "Whether this subscription is currently active"
+      - name: registered_at
+        type: Timestamp
+        description: "UTC timestamp when this subscription was registered"
+    filters:
+      - name: source
+        mode: exact
+        operators: ["="]
+        description: "Look up subscription config for a specific source"
+      - name: active
+        mode: exact
+        operators: ["="]
+        description: "Filter to active subscriptions only"
