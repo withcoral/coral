@@ -30,6 +30,7 @@ use tokio::process::Command;
 use tracing::Instrument as _;
 use tracing::field;
 
+use super::McpSourceInputs;
 use super::client::McpToolCaller;
 use super::error::McpProviderQueryError;
 use super::response::normalize_tool_result;
@@ -44,8 +45,32 @@ use crate::backends::shared::trace::{
 pub(super) struct StdioMcpToolCaller {
     pub(super) source_name: String,
     pub(super) server: McpServerSpec,
-    pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
+    pub(super) source_inputs: Arc<McpSourceInputs>,
     pub(super) body_capture: McpBodyCapture,
+}
+
+impl StdioMcpToolCaller {
+    pub(super) async fn resolved_server_env(&self) -> Result<Vec<(String, String)>> {
+        let server_env = match &self.server {
+            McpServerSpec::Stdio { env, .. } => env,
+            McpServerSpec::StreamableHttp { .. } => {
+                return Ok(Vec::new());
+            }
+        };
+        if server_env.is_empty() {
+            return Ok(Vec::new());
+        }
+        let resolved_inputs = self.source_inputs.resolve_for_request().await?;
+        let render_context = RenderContext::source_scoped(&resolved_inputs);
+        let mut env = Vec::with_capacity(server_env.len());
+        for spec in server_env {
+            let Some(value) = resolve_value_source(&spec.value, &render_context)? else {
+                continue;
+            };
+            env.push((spec.name.clone(), value_to_env_string(value)));
+        }
+        Ok(env)
+    }
 }
 
 #[async_trait]
@@ -59,7 +84,7 @@ impl McpToolCaller for StdioMcpToolCaller {
         let McpServerSpec::Stdio {
             command: program,
             args,
-            env,
+            ..
         } = &self.server
         else {
             unreachable!("StdioMcpToolCaller requires a stdio MCP server spec");
@@ -86,9 +111,7 @@ impl McpToolCaller for StdioMcpToolCaller {
         );
 
         let result = self
-            .call_tool_inner(
-                program, args, env, relation, tool_name, arguments, request_id,
-            )
+            .call_tool_inner(program, args, relation, tool_name, arguments, request_id)
             .instrument(request_span.clone())
             .await;
         if let Err(error) = &result {
@@ -99,15 +122,10 @@ impl McpToolCaller for StdioMcpToolCaller {
 }
 
 impl StdioMcpToolCaller {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Internal helper threading stdio spec fields + per-call IDs from call_tool"
-    )]
     async fn call_tool_inner(
         &self,
         program: &str,
         args: &[String],
-        env: &[coral_spec::backends::mcp::McpEnvSpec],
         relation: &str,
         tool_name: &str,
         arguments: JsonObject,
@@ -120,12 +138,8 @@ impl StdioMcpToolCaller {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
-        let render_context = RenderContext::source_scoped(&self.resolved_inputs);
-        for env in env {
-            let Some(value) = resolve_value_source(&env.value, &render_context)? else {
-                continue;
-            };
-            command.env(&env.name, value_to_env_string(value));
+        for (name, value) in self.resolved_server_env().await? {
+            command.env(name, value);
         }
 
         let span = tracing::Span::current();

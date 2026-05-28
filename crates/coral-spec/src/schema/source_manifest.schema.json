@@ -698,6 +698,11 @@
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
         },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/value_source" }
+        },
         "default": {},
         "seconds": { "type": "integer" },
         "separator": { "type": "string", "minLength": 1 },
@@ -767,6 +772,11 @@
           "type": "array",
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/value_source" }
         },
         "default": {},
         "seconds": { "type": "integer" },
@@ -859,6 +869,11 @@
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
         },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/value_source" }
+        },
         "default": {},
         "seconds": { "type": "integer" },
         "separator": { "type": "string", "minLength": 1 },
@@ -881,6 +896,11 @@
           "type": "array",
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/value_source" }
         },
         "default": {},
         "seconds": { "type": "integer" },
@@ -909,6 +929,11 @@
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
         },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/value_source" }
+        },
         "default": {},
         "seconds": { "type": "integer" },
         "separator": { "type": "string", "minLength": 1 },
@@ -931,6 +956,37 @@
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
         },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/value_source" }
+        },
+        "default": {},
+        "seconds": { "type": "integer" },
+        "separator": { "type": "string", "minLength": 1 },
+        "part": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
+    },
+    "value_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from"],
+      "properties": {
+        "from": { "type": "string" },
+        "template": { "type": "string" },
+        "value": {},
+        "key": { "type": "string", "minLength": 1 },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/value_source" }
+        },
         "default": {},
         "seconds": { "type": "integer" },
         "separator": { "type": "string", "minLength": 1 },
@@ -946,6 +1002,17 @@
             "template": { "type": "string" }
           },
           "required": ["template"]
+        },
+        {
+          "properties": {
+            "from": { "const": "one_of" },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/value_source" }
+            }
+          },
+          "required": ["values"]
         },
         {
           "properties": {
@@ -1039,6 +1106,13 @@
         {
           "properties": {
             "from": { "const": "input" },
+            "key": { "type": "string", "minLength": 1 }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
+            "from": { "const": "bearer" },
             "key": { "type": "string", "minLength": 1 }
           },
           "required": ["key"]

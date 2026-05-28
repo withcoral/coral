@@ -14,8 +14,11 @@ use crate::{
     ColumnSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestError, ManifestInputKind,
     ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend,
     SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
-    TableFunctionArgSpec, ValueSourceSpec, inputs::collect_source_inputs_value, validate_columns,
-    validate_filters_and_column_exprs, validate_test_queries,
+    TableFunctionArgSpec, ValueSourceSpec,
+    inputs::{
+        collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
+    },
+    validate_columns, validate_filters_and_column_exprs, validate_test_queries,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -361,13 +364,14 @@ impl RawMcpTableSpec {
 }
 
 impl McpSourceManifest {
+    /// Returns all source secrets declared by this manifest.
+    pub fn declared_secret_names(&self) -> BTreeSet<String> {
+        declared_secret_input_names(&self.declared_inputs)
+    }
+
     /// Returns the source secrets required by this manifest.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        self.declared_inputs
-            .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret)
-            .map(|input| input.key.clone())
-            .collect()
+        required_secret_input_names(&self.declared_inputs)
     }
 
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
@@ -840,6 +844,17 @@ fn validate_table_tool_arg_value_source(
             }
             Ok(())
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for value in values {
+                validate_table_tool_arg_value_source(source_name, table_name, arg_name, value)?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -895,8 +910,20 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
             }
             Ok(())
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for value in values {
+                validate_source_scoped_value_source(value, context)?;
+            }
+            Ok(())
+        }
         ValueSourceSpec::Literal { .. }
         | ValueSourceSpec::Input { .. }
+        | ValueSourceSpec::Bearer { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }
 }
@@ -955,8 +982,11 @@ fn validate_identifier(value: &str, context: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpServerSpec, McpSourceManifest};
+    use std::collections::BTreeSet;
+
     use serde_json::json;
+
+    use super::{McpServerSpec, McpSourceManifest};
 
     #[test]
     fn parses_mcp_manifest_with_secret_input() {
@@ -966,7 +996,8 @@ mod tests {
             "version": "0.1.0",
             "backend": "mcp",
             "inputs": {
-                "GITHUB_TOKEN": { "kind": "secret" }
+                "GITHUB_TOKEN": { "kind": "secret" },
+                "OPTIONAL_TOKEN": { "kind": "secret", "required": false }
             },
             "server": {
                 "transport": "stdio",
@@ -993,7 +1024,14 @@ mod tests {
         assert_eq!(manifest.common.name, "github_mcp");
         let function = manifest.functions.first().expect("function should parse");
         assert_eq!(function.tool, "search_issues");
-        assert!(manifest.required_secret_names().contains("GITHUB_TOKEN"));
+        assert_eq!(
+            manifest.declared_secret_names(),
+            BTreeSet::from(["GITHUB_TOKEN".to_string(), "OPTIONAL_TOKEN".to_string()])
+        );
+        assert_eq!(
+            manifest.required_secret_names(),
+            BTreeSet::from(["GITHUB_TOKEN".to_string()])
+        );
     }
 
     #[test]

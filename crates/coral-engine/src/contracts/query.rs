@@ -60,7 +60,7 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns resolved source secrets required by the manifest.
+    /// Returns resolved declared source secrets that are available at runtime.
     pub fn secrets(&self) -> &BTreeMap<String, String> {
         &self.secrets
     }
