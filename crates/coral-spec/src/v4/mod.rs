@@ -1,0 +1,1984 @@
+#![allow(
+    missing_docs,
+    reason = "DSL v4 contracts are field-heavy artifact models documented in the PRD."
+)]
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use crate::backends::http::{AuthSpec, RateLimitSpec};
+use crate::inputs::{collect_declared_inputs, validate_input_references};
+use crate::{
+    ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec,
+    ManifestDataType, ManifestError, ManifestInputSpec, PageSizeSpec, PaginationMode,
+    PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, Result, SearchLimitsSpec,
+    SourceManifestCommon, SourceTableFunctionKind, TableFunctionArgSpec, validate_test_queries,
+};
+
+pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 1;
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v1";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v1";
+
+#[derive(Debug, Clone)]
+pub struct V4SourceManifest {
+    pub common: SourceManifestCommon,
+    pub surfaces: Vec<V4Surface>,
+    pub declared_inputs: Vec<ManifestInputSpec>,
+    pub projection_policy: ProjectionPolicy,
+}
+
+#[derive(Debug, Clone)]
+pub struct V4Surface {
+    pub id: String,
+    pub surface_type: SurfaceType,
+    pub descriptor: SurfaceDescriptor,
+    pub inputs: Vec<ManifestInputSpec>,
+    pub openapi_runtime: OpenApiRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceType {
+    OpenApi,
+}
+
+#[derive(Debug, Clone)]
+pub enum SurfaceDescriptor {
+    Url { url: String, sha256: String },
+    File { file: PathBuf, sha256: String },
+}
+
+impl SurfaceDescriptor {
+    pub fn sha256(&self) -> &str {
+        match self {
+            Self::Url { sha256, .. } | Self::File { sha256, .. } => sha256,
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Url { .. } => "url",
+            Self::File { .. } => "file",
+        }
+    }
+
+    pub fn location(&self) -> String {
+        match self {
+            Self::Url { url, .. } => url.clone(),
+            Self::File { file, .. } => file.display().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenApiRuntimeConfig {
+    pub base_url: ParsedTemplate,
+    pub auth: AuthSpec,
+    pub request_headers: Vec<HeaderSpec>,
+    pub rate_limit: RateLimitSpec,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectionPolicy {
+    pub default: ProjectionPolicyDefault,
+}
+
+impl Default for ProjectionPolicy {
+    fn default() -> Self {
+        Self {
+            default: ProjectionPolicyDefault::DeriveReadOperations,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionPolicyDefault {
+    DeriveReadOperations,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawV4SourceManifest {
+    dsl_version: u32,
+    name: String,
+    version: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    test_queries: Vec<String>,
+    surfaces: Vec<RawV4Surface>,
+    #[serde(default)]
+    projection_policy: RawProjectionPolicy,
+    #[serde(default)]
+    onboarding: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawV4Surface {
+    id: String,
+    #[serde(rename = "type")]
+    _surface_type: RawSurfaceType,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    file: Option<PathBuf>,
+    sha256: String,
+    #[serde(default, rename = "inputs")]
+    _inputs: Option<Value>,
+    base_url: ParsedTemplate,
+    #[serde(default)]
+    auth: AuthSpec,
+    #[serde(default)]
+    request_headers: Vec<HeaderSpec>,
+    #[serde(default)]
+    rate_limit: RateLimitSpec,
+}
+
+#[derive(Debug, Deserialize)]
+enum RawSurfaceType {
+    #[serde(rename = "openapi")]
+    OpenApi,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProjectionPolicy {
+    #[serde(default)]
+    default: Option<String>,
+}
+
+impl V4SourceManifest {
+    pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
+        let raw_value = value.clone();
+        let raw: RawV4SourceManifest =
+            serde_json::from_value(value).map_err(ManifestError::deserialize)?;
+        let RawV4SourceManifest {
+            dsl_version,
+            name,
+            version,
+            description,
+            test_queries,
+            surfaces,
+            projection_policy,
+            onboarding: _onboarding,
+        } = raw;
+        if dsl_version != 4 {
+            return Err(ManifestError::validation(format!(
+                "source '{name}' declares dsl_version {dsl_version}; expected 4"
+            )));
+        }
+        if surfaces.is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{name}' must declare at least one surface"
+            )));
+        }
+        validate_test_queries(&name, &test_queries)?;
+        let policy = parse_projection_policy(&name, projection_policy)?;
+        let common = SourceManifestCommon::new(
+            dsl_version,
+            name.clone(),
+            version,
+            description,
+            test_queries,
+        );
+        let surface_values = raw_value
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ManifestError::validation("v4 manifest surfaces must be a list"))?;
+        let mut seen_surface_ids = HashSet::new();
+        let mut validated_surfaces = Vec::with_capacity(surfaces.len());
+        let mut declared_inputs = Vec::new();
+        let mut input_by_key: BTreeMap<String, (String, ManifestInputSpec)> = BTreeMap::new();
+
+        for (index, raw_surface) in surfaces.into_iter().enumerate() {
+            let surface_value = surface_values.get(index).ok_or_else(|| {
+                ManifestError::validation(format!("source '{name}' surface[{index}] is missing"))
+            })?;
+            validate_surface_id(&name, &raw_surface.id)?;
+            if !seen_surface_ids.insert(raw_surface.id.clone()) {
+                return Err(ManifestError::validation(format!(
+                    "source '{name}' has duplicate surface id '{}'",
+                    raw_surface.id
+                )));
+            }
+            let inputs = collect_declared_inputs(surface_value)?;
+            validate_input_references(surface_value, &inputs)?;
+            merge_surface_inputs(&name, &raw_surface.id, &inputs, &mut input_by_key)?;
+            declared_inputs.extend(inputs.clone());
+            let descriptor = parse_descriptor(&name, &raw_surface)?;
+            if raw_surface.base_url.raw().trim().is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "source '{name}' surface '{}' must define a non-empty base_url",
+                    raw_surface.id
+                )));
+            }
+            validated_surfaces.push(V4Surface {
+                id: raw_surface.id,
+                surface_type: SurfaceType::OpenApi,
+                descriptor,
+                inputs,
+                openapi_runtime: OpenApiRuntimeConfig {
+                    base_url: raw_surface.base_url,
+                    auth: raw_surface.auth,
+                    request_headers: raw_surface.request_headers,
+                    rate_limit: raw_surface.rate_limit,
+                },
+            });
+        }
+
+        let declared_inputs = input_by_key.into_values().map(|(_, input)| input).collect();
+        Ok(Self {
+            common,
+            surfaces: validated_surfaces,
+            declared_inputs,
+            projection_policy: policy,
+        })
+    }
+
+    pub fn surface(&self, surface_id: &str) -> Option<&V4Surface> {
+        self.surfaces
+            .iter()
+            .find(|surface| surface.id == surface_id)
+    }
+}
+
+fn parse_projection_policy(
+    source_name: &str,
+    raw: RawProjectionPolicy,
+) -> Result<ProjectionPolicy> {
+    match raw.default.as_deref().unwrap_or("derive_read_operations") {
+        "derive_read_operations" => Ok(ProjectionPolicy::default()),
+        other => Err(ManifestError::validation(format!(
+            "source '{source_name}' projection_policy.default '{other}' is unsupported"
+        ))),
+    }
+}
+
+fn validate_surface_id(source_name: &str, id: &str) -> Result<()> {
+    let mut chars = id.chars();
+    let valid = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(ManifestError::validation(format!(
+            "source '{source_name}' surface id '{id}' must match [a-z][a-z0-9_]*"
+        )))
+    }
+}
+
+fn parse_descriptor(source_name: &str, surface: &RawV4Surface) -> Result<SurfaceDescriptor> {
+    match (&surface.url, &surface.file) {
+        (Some(url), None) => {
+            if !url.starts_with("https://") {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' surface '{}' url descriptors must use https",
+                    surface.id
+                )));
+            }
+            validate_sha256(source_name, &surface.id, &surface.sha256)?;
+            Ok(SurfaceDescriptor::Url {
+                url: url.clone(),
+                sha256: surface.sha256.clone(),
+            })
+        }
+        (None, Some(file)) => {
+            if !file.is_absolute() {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' surface '{}' file descriptor must be absolute",
+                    surface.id
+                )));
+            }
+            validate_sha256(source_name, &surface.id, &surface.sha256)?;
+            Ok(SurfaceDescriptor::File {
+                file: file.clone(),
+                sha256: surface.sha256.clone(),
+            })
+        }
+        (Some(_), Some(_)) | (None, None) => Err(ManifestError::validation(format!(
+            "source '{source_name}' surface '{}' must declare exactly one of url or file",
+            surface.id
+        ))),
+    }
+}
+
+fn validate_sha256(source_name: &str, surface_id: &str, sha256: &str) -> Result<()> {
+    let valid = sha256.len() == 64
+        && sha256
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+    if valid {
+        Ok(())
+    } else {
+        Err(ManifestError::validation(format!(
+            "source '{source_name}' surface '{surface_id}' sha256 must be lowercase hex SHA-256"
+        )))
+    }
+}
+
+fn merge_surface_inputs(
+    source_name: &str,
+    surface_id: &str,
+    inputs: &[ManifestInputSpec],
+    input_by_key: &mut BTreeMap<String, (String, ManifestInputSpec)>,
+) -> Result<()> {
+    for input in inputs {
+        if let Some((existing_surface, existing)) = input_by_key.get(&input.key) {
+            if existing != input {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' surfaces '{existing_surface}' and '{surface_id}' declare incompatible input '{}'",
+                    input.key
+                )));
+            }
+            continue;
+        }
+        input_by_key.insert(input.key.clone(), (surface_id.to_string(), input.clone()));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticIr {
+    pub artifact_schema_version: u32,
+    pub source_name: String,
+    pub source_version: String,
+    pub surface_id: String,
+    pub surface_type: SurfaceType,
+    pub importer_version: String,
+    pub operations: Vec<IrOperation>,
+    pub types: Vec<IrType>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperation {
+    pub id: String,
+    pub method_name: String,
+    pub description: String,
+    pub deprecated: bool,
+    pub read_only: bool,
+    pub inputs: Vec<IrOperationInput>,
+    pub output: IrOperationOutput,
+    pub entity: Option<IrEntityCandidate>,
+    pub execution: IrExecutionAttachment,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperationInput {
+    pub name: String,
+    pub location: OpenApiParameterLocation,
+    pub required: bool,
+    pub data_type: IrScalarType,
+    pub default_value: Option<String>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperationOutput {
+    pub cardinality: OutputCardinality,
+    pub type_ref: String,
+    pub row_path: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrEntityCandidate {
+    pub name: String,
+    pub type_ref: String,
+    pub identity_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputCardinality {
+    None,
+    Singleton,
+    List,
+    WrappedList,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrType {
+    pub id: String,
+    pub shape: IrTypeShape,
+    pub nullable: bool,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IrTypeShape {
+    Scalar(IrScalarType),
+    Object { fields: Vec<IrField> },
+    List { item_type_ref: String },
+    Map { value_type_ref: String },
+    Enum { values: Vec<String> },
+    Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrField {
+    pub name: String,
+    pub type_ref: String,
+    pub required: bool,
+    pub nullable: bool,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IrScalarType {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    Id,
+    Timestamp,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenApiParameterLocation {
+    Path,
+    Query,
+    Header,
+    Cookie,
+    Body,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpMethod {
+    Get,
+    Head,
+    Options,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Trace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IrExecutionAttachment {
+    Rest(RestExecutionAttachment),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestExecutionAttachment {
+    pub method: HttpMethod,
+    pub path_template: String,
+    pub parameters: Vec<RestParameterBinding>,
+    pub request_body: Option<RestRequestBody>,
+    pub response: RestResponseAttachment,
+    pub pagination: PaginationSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestRequestBody {
+    pub required: bool,
+    pub media_type: String,
+    pub type_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestParameterBinding {
+    pub input_name: String,
+    pub location: OpenApiParameterLocation,
+    pub wire_name: String,
+    pub required: bool,
+    pub data_type: IrScalarType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestResponseAttachment {
+    pub status_code: u16,
+    pub media_type: String,
+    pub response: ResponseSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionCatalog {
+    pub artifact_schema_version: u32,
+    pub source_name: String,
+    pub source_version: String,
+    pub generator_version: String,
+    pub projections: Vec<Projection>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Projection {
+    pub name: String,
+    pub kind: ProjectionKind,
+    pub description: String,
+    pub guide: String,
+    pub surface_id: String,
+    pub operation_id: String,
+    pub visibility: ProjectionVisibility,
+    pub inputs: Vec<ProjectionInput>,
+    pub columns: Vec<ProjectionColumn>,
+    pub pagination: PaginationSpec,
+    pub search_limits: Option<SearchLimitsSpec>,
+    pub detail_hints: Vec<DetailHintSpec>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionKind {
+    Table,
+    TableFunction {
+        function_kind: SourceTableFunctionKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionVisibility {
+    Published,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionInput {
+    pub name: String,
+    pub sql_exposure: SqlInputExposure,
+    pub source_location: OpenApiParameterLocation,
+    pub wire_name: String,
+    pub required: bool,
+    pub data_type: ManifestDataType,
+    pub default_value: Option<String>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SqlInputExposure {
+    Filter,
+    FunctionArg,
+    Internal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionColumn {
+    pub name: String,
+    pub data_type: ManifestDataType,
+    pub source_path: Vec<String>,
+    pub nullable: bool,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub code: String,
+    pub severity: DiagnosticSeverity,
+    pub message: String,
+    pub surface_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub projection_name: Option<String>,
+}
+
+impl Diagnostic {
+    fn warning(
+        code: &str,
+        message: impl Into<String>,
+        surface_id: impl Into<String>,
+        operation_id: Option<String>,
+    ) -> Self {
+        Self {
+            code: code.to_string(),
+            severity: DiagnosticSeverity::Warning,
+            message: message.into(),
+            surface_id: Some(surface_id.into()),
+            operation_id,
+            projection_name: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V4MaterializedSource {
+    pub fingerprint: Fingerprint,
+    pub surfaces: Vec<MaterializedSurface>,
+    pub projections: ProjectionCatalog,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaterializedSurface {
+    pub surface_id: String,
+    pub semantic_ir: SemanticIr,
+    pub source_document_sha256: String,
+    pub normalized_source_document_path: PathBuf,
+    pub raw_source_document_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Fingerprint {
+    pub artifact_schema_version: u32,
+    pub source_name: String,
+    pub source_version: String,
+    pub manifest_sha256: String,
+    pub surfaces: Vec<FingerprintSurface>,
+    pub importer_version: String,
+    pub projection_generator_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FingerprintSurface {
+    pub surface_id: String,
+    pub surface_type: SurfaceType,
+    pub descriptor_kind: String,
+    pub descriptor_location: String,
+    pub descriptor_sha256: String,
+    pub input_declarations_sha256: String,
+}
+
+pub fn normalize_source_document(bytes: &[u8]) -> Result<String> {
+    let value: Value = serde_yaml::from_slice(bytes).map_err(ManifestError::parse_yaml)?;
+    serde_yaml::to_string(&value).map_err(ManifestError::parse_yaml)
+}
+
+pub fn import_openapi_surface(
+    manifest: &V4SourceManifest,
+    surface: &V4Surface,
+    document_bytes: &[u8],
+) -> Result<SemanticIr> {
+    let document: Value =
+        serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
+    let openapi = document
+        .get("openapi")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
+    if !openapi.starts_with("3.0.") {
+        return Err(ManifestError::validation(format!(
+            "OpenAPI document for surface '{}' uses unsupported version '{openapi}'",
+            surface.id
+        )));
+    }
+
+    let mut importer = OpenApiImporter::new(manifest, surface, &document);
+    importer.import()
+}
+
+struct OpenApiImporter<'a> {
+    manifest: &'a V4SourceManifest,
+    surface: &'a V4Surface,
+    document: &'a Value,
+    types: BTreeMap<String, IrType>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl<'a> OpenApiImporter<'a> {
+    fn new(manifest: &'a V4SourceManifest, surface: &'a V4Surface, document: &'a Value) -> Self {
+        Self {
+            manifest,
+            surface,
+            document,
+            types: BTreeMap::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn import(&mut self) -> Result<SemanticIr> {
+        let paths = self
+            .document
+            .get("paths")
+            .and_then(Value::as_object)
+            .ok_or_else(|| ManifestError::validation("OpenAPI document is missing paths"))?;
+        let mut operations = Vec::new();
+        let mut operation_ids = HashSet::new();
+        for (path, path_item) in paths {
+            let Some(path_item) = path_item.as_object() else {
+                continue;
+            };
+            for method_name in [
+                "get", "head", "options", "post", "put", "patch", "delete", "trace",
+            ] {
+                let Some(operation_value) = path_item.get(method_name) else {
+                    continue;
+                };
+                let operation =
+                    self.import_operation(path, path_item, method_name, operation_value)?;
+                if !operation_ids.insert(operation.id.clone()) {
+                    return Err(ManifestError::validation(format!(
+                        "source '{}' surface '{}' imports duplicate operation id '{}'",
+                        self.manifest.common.name, self.surface.id, operation.id
+                    )));
+                }
+                operations.push(operation);
+            }
+        }
+        Ok(SemanticIr {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: self.manifest.common.name.clone(),
+            source_version: self.manifest.common.version.clone(),
+            surface_id: self.surface.id.clone(),
+            surface_type: self.surface.surface_type,
+            importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+            operations,
+            types: self.types.values().cloned().collect(),
+            diagnostics: self.diagnostics.clone(),
+        })
+    }
+
+    fn import_operation(
+        &mut self,
+        path: &str,
+        path_item: &Map<String, Value>,
+        method_name: &str,
+        operation: &Value,
+    ) -> Result<IrOperation> {
+        let op_obj = operation.as_object().ok_or_else(|| {
+            ManifestError::validation(format!(
+                "OpenAPI operation {method_name} {path} must be a mapping"
+            ))
+        })?;
+        let operation_id = op_obj
+            .get("operationId")
+            .and_then(Value::as_str)
+            .map(|raw| normalize_identifier(raw, "operation"))
+            .unwrap_or_else(|| fallback_operation_id(method_name, path));
+        let method = parse_http_method(method_name);
+        let mut diagnostics = Vec::new();
+        let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
+        let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
+        let (output, response, entity) =
+            self.import_response(path, op_obj, &operation_id, &mut diagnostics)?;
+        let pagination = detect_pagination(&parameters);
+        let rest_parameters = parameters
+            .iter()
+            .map(|input| RestParameterBinding {
+                input_name: input.name.clone(),
+                location: input.location,
+                wire_name: input.name.clone(),
+                required: input.required,
+                data_type: input.data_type,
+            })
+            .collect();
+        Ok(IrOperation {
+            id: operation_id.clone(),
+            method_name: op_obj
+                .get("operationId")
+                .and_then(Value::as_str)
+                .unwrap_or(method_name)
+                .to_string(),
+            description: op_obj
+                .get("description")
+                .or_else(|| op_obj.get("summary"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            deprecated: op_obj
+                .get("deprecated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            read_only: method == HttpMethod::Get,
+            inputs: parameters,
+            output,
+            entity,
+            execution: IrExecutionAttachment::Rest(RestExecutionAttachment {
+                method,
+                path_template: path.to_string(),
+                parameters: rest_parameters,
+                request_body,
+                response,
+                pagination,
+            }),
+            diagnostics,
+        })
+    }
+
+    fn import_parameters(
+        &mut self,
+        path_item: &Map<String, Value>,
+        operation: &Map<String, Value>,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Vec<IrOperationInput> {
+        let mut merged: BTreeMap<(OpenApiParameterLocation, String), Value> = BTreeMap::new();
+        for parameter in path_item
+            .get("parameters")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(
+                operation
+                    .get("parameters")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            )
+        {
+            let resolved = match self.resolve_ref(parameter, operation_id, diagnostics) {
+                Some(value) => value,
+                None => continue,
+            };
+            let Some(parameter_obj) = resolved.as_object() else {
+                continue;
+            };
+            let Some(name) = parameter_obj.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(location) = parameter_obj
+                .get("in")
+                .and_then(Value::as_str)
+                .and_then(parse_parameter_location)
+            else {
+                diagnostics.push(Diagnostic::warning(
+                    "OPENAPI_PARAMETER_SERIALIZATION_UNSUPPORTED",
+                    format!("operation '{operation_id}' has unsupported parameter location"),
+                    self.surface.id.clone(),
+                    Some(operation_id.to_string()),
+                ));
+                continue;
+            };
+            merged.insert((location, name.to_string()), resolved.clone());
+        }
+
+        merged
+            .into_values()
+            .filter_map(|parameter| {
+                let parameter_obj = parameter.as_object()?;
+                let name = parameter_obj.get("name")?.as_str()?.to_string();
+                let location = parameter_obj
+                    .get("in")
+                    .and_then(Value::as_str)
+                    .and_then(parse_parameter_location)?;
+                let schema = parameter_obj.get("schema").unwrap_or(&Value::Null);
+                let scalar =
+                    self.import_parameter_scalar(schema, &name, operation_id, diagnostics)?;
+                Some(IrOperationInput {
+                    name,
+                    location,
+                    required: parameter_obj
+                        .get("required")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    data_type: scalar,
+                    default_value: schema
+                        .get("default")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    description: parameter_obj
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+            })
+            .collect()
+    }
+
+    fn import_parameter_scalar(
+        &mut self,
+        schema: &Value,
+        name: &str,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<IrScalarType> {
+        let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        let schema_type = resolved
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("string");
+        let scalar = match schema_type {
+            "string" => {
+                if resolved.get("format").and_then(Value::as_str) == Some("date-time") {
+                    IrScalarType::Timestamp
+                } else {
+                    IrScalarType::String
+                }
+            }
+            "integer" => IrScalarType::Integer,
+            "number" => IrScalarType::Number,
+            "boolean" => IrScalarType::Boolean,
+            other => {
+                diagnostics.push(Diagnostic::warning(
+                    "PROJECTION_INPUT_UNSUPPORTED",
+                    format!("parameter '{name}' has unsupported schema type '{other}'"),
+                    self.surface.id.clone(),
+                    Some(operation_id.to_string()),
+                ));
+                return None;
+            }
+        };
+        Some(scalar)
+    }
+
+    fn import_request_body(
+        &mut self,
+        operation: &Map<String, Value>,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<RestRequestBody> {
+        let body = operation.get("requestBody")?;
+        let body = self.resolve_ref(body, operation_id, diagnostics)?;
+        let body_obj = body.as_object()?;
+        let content = body_obj.get("content")?.as_object()?;
+        let json = content.get("application/json")?;
+        let schema = json.get("schema").unwrap_or(&Value::Null);
+        let type_ref = self
+            .import_schema(
+                schema,
+                &format!("{operation_id}_request_body"),
+                operation_id,
+                diagnostics,
+            )
+            .unwrap_or_else(|| "json".to_string());
+        diagnostics.push(Diagnostic::warning(
+            "OPENAPI_REQUEST_BODY_UNPUBLISHED",
+            format!("operation '{operation_id}' has a request body and will not be published"),
+            self.surface.id.clone(),
+            Some(operation_id.to_string()),
+        ));
+        Some(RestRequestBody {
+            required: body_obj
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            media_type: "application/json".to_string(),
+            type_ref,
+        })
+    }
+
+    fn import_response(
+        &mut self,
+        path: &str,
+        operation: &Map<String, Value>,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<(
+        IrOperationOutput,
+        RestResponseAttachment,
+        Option<IrEntityCandidate>,
+    )> {
+        let Some((status_code, media_type, schema)) =
+            select_json_response(operation.get("responses").and_then(Value::as_object))
+        else {
+            let response = ResponseSpec::default();
+            return Ok((
+                IrOperationOutput {
+                    cardinality: OutputCardinality::None,
+                    type_ref: "none".to_string(),
+                    row_path: Vec::new(),
+                },
+                RestResponseAttachment {
+                    status_code: 204,
+                    media_type: "application/json".to_string(),
+                    response,
+                },
+                None,
+            ));
+        };
+
+        let resolved = self
+            .resolve_ref(schema, operation_id, diagnostics)
+            .unwrap_or(schema.clone());
+        let (cardinality, row_path, row_schema, entity_name) =
+            classify_response_schema(path, &resolved);
+        let type_ref = self
+            .import_schema(
+                &row_schema,
+                &format!("{operation_id}_row"),
+                operation_id,
+                diagnostics,
+            )
+            .unwrap_or_else(|| "json".to_string());
+        let response = ResponseSpec {
+            rows_path: row_path.clone(),
+            ..ResponseSpec::default()
+        };
+        let entity = (cardinality != OutputCardinality::None
+            && cardinality != OutputCardinality::Unknown)
+            .then(|| IrEntityCandidate {
+                name: entity_name.unwrap_or_else(|| entity_name_from_path(path)),
+                type_ref: type_ref.clone(),
+                identity_fields: vec!["id".to_string()],
+            });
+        Ok((
+            IrOperationOutput {
+                cardinality,
+                type_ref,
+                row_path,
+            },
+            RestResponseAttachment {
+                status_code,
+                media_type,
+                response,
+            },
+            entity,
+        ))
+    }
+
+    fn import_schema(
+        &mut self,
+        schema: &Value,
+        suggested_id: &str,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<String> {
+        let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+            return Some(type_id_from_ref(reference));
+        }
+        let type_id = normalize_identifier(suggested_id, "type");
+        if self.types.contains_key(&type_id) {
+            return Some(type_id);
+        }
+        let description = resolved
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let nullable = resolved
+            .get("nullable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let shape = if let Some(all_of) = resolved.get("allOf").and_then(Value::as_array) {
+            let mut merged = Map::new();
+            for item in all_of {
+                let item = self.resolve_ref(item, operation_id, diagnostics)?;
+                if let Some(properties) = item.get("properties").and_then(Value::as_object) {
+                    for (name, property) in properties {
+                        if let Some(existing) = merged.get(name)
+                            && existing != property
+                        {
+                            diagnostics.push(Diagnostic::warning(
+                                "OPENAPI_ALLOF_CONFLICT",
+                                format!("allOf property '{name}' conflicts in operation '{operation_id}'"),
+                                self.surface.id.clone(),
+                                Some(operation_id.to_string()),
+                            ));
+                            return None;
+                        }
+                        merged.insert(name.clone(), property.clone());
+                    }
+                }
+            }
+            IrTypeShape::Object {
+                fields: self.import_object_fields(
+                    &merged,
+                    &BTreeSet::new(),
+                    &type_id,
+                    operation_id,
+                    diagnostics,
+                ),
+            }
+        } else if let Some(values) = resolved.get("enum").and_then(Value::as_array) {
+            IrTypeShape::Enum {
+                values: values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect(),
+            }
+        } else {
+            match resolved
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("object")
+            {
+                "object" => {
+                    if let Some(properties) = resolved.get("properties").and_then(Value::as_object)
+                    {
+                        let required = required_fields(&resolved);
+                        IrTypeShape::Object {
+                            fields: self.import_object_fields(
+                                properties,
+                                &required,
+                                &type_id,
+                                operation_id,
+                                diagnostics,
+                            ),
+                        }
+                    } else if let Some(additional) = resolved.get("additionalProperties") {
+                        let value_type_ref = self
+                            .import_schema(
+                                additional,
+                                &format!("{type_id}_value"),
+                                operation_id,
+                                diagnostics,
+                            )
+                            .unwrap_or_else(|| "json".to_string());
+                        IrTypeShape::Map { value_type_ref }
+                    } else {
+                        IrTypeShape::Json
+                    }
+                }
+                "array" => {
+                    let item = resolved.get("items").unwrap_or(&Value::Null);
+                    let item_type_ref = self
+                        .import_schema(item, &format!("{type_id}_item"), operation_id, diagnostics)
+                        .unwrap_or_else(|| "json".to_string());
+                    IrTypeShape::List { item_type_ref }
+                }
+                "string" => {
+                    let scalar =
+                        if resolved.get("format").and_then(Value::as_str) == Some("date-time") {
+                            IrScalarType::Timestamp
+                        } else {
+                            IrScalarType::String
+                        };
+                    IrTypeShape::Scalar(scalar)
+                }
+                "integer" => IrTypeShape::Scalar(IrScalarType::Integer),
+                "number" => IrTypeShape::Scalar(IrScalarType::Number),
+                "boolean" => IrTypeShape::Scalar(IrScalarType::Boolean),
+                _ => IrTypeShape::Json,
+            }
+        };
+        self.types.insert(
+            type_id.clone(),
+            IrType {
+                id: type_id.clone(),
+                shape,
+                nullable,
+                description,
+            },
+        );
+        Some(type_id)
+    }
+
+    fn import_object_fields(
+        &mut self,
+        properties: &Map<String, Value>,
+        required: &BTreeSet<String>,
+        parent_id: &str,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Vec<IrField> {
+        properties
+            .iter()
+            .map(|(name, schema)| {
+                let type_ref = self
+                    .import_schema(
+                        schema,
+                        &format!("{parent_id}_{name}"),
+                        operation_id,
+                        diagnostics,
+                    )
+                    .unwrap_or_else(|| "json".to_string());
+                IrField {
+                    name: name.clone(),
+                    type_ref,
+                    required: required.contains(name),
+                    nullable: true,
+                    description: schema
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                }
+            })
+            .collect()
+    }
+
+    fn resolve_ref(
+        &self,
+        value: &Value,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<Value> {
+        let Some(reference) = value.get("$ref").and_then(Value::as_str) else {
+            return Some(value.clone());
+        };
+        if !reference.starts_with("#/") {
+            diagnostics.push(Diagnostic::warning(
+                "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
+                format!("external reference '{reference}' is unsupported"),
+                self.surface.id.clone(),
+                Some(operation_id.to_string()),
+            ));
+            return None;
+        }
+        let pointer = reference.strip_prefix('#').unwrap_or(reference);
+        match self.document.pointer(pointer) {
+            Some(target) => Some(target.clone()),
+            None => {
+                diagnostics.push(Diagnostic::warning(
+                    "OPENAPI_REF_NOT_FOUND",
+                    format!("reference '{reference}' was not found"),
+                    self.surface.id.clone(),
+                    Some(operation_id.to_string()),
+                ));
+                None
+            }
+        }
+    }
+}
+
+fn parse_http_method(method: &str) -> HttpMethod {
+    match method {
+        "get" => HttpMethod::Get,
+        "head" => HttpMethod::Head,
+        "options" => HttpMethod::Options,
+        "post" => HttpMethod::Post,
+        "put" => HttpMethod::Put,
+        "patch" => HttpMethod::Patch,
+        "delete" => HttpMethod::Delete,
+        "trace" => HttpMethod::Trace,
+        _ => HttpMethod::Get,
+    }
+}
+
+fn parse_parameter_location(location: &str) -> Option<OpenApiParameterLocation> {
+    match location {
+        "path" => Some(OpenApiParameterLocation::Path),
+        "query" => Some(OpenApiParameterLocation::Query),
+        "header" => Some(OpenApiParameterLocation::Header),
+        "cookie" => Some(OpenApiParameterLocation::Cookie),
+        _ => None,
+    }
+}
+
+fn select_json_response(responses: Option<&Map<String, Value>>) -> Option<(u16, String, &Value)> {
+    let responses = responses?;
+    let mut candidates = Vec::new();
+    for (status, response) in responses {
+        let Ok(status_code) = status.parse::<u16>() else {
+            continue;
+        };
+        if !(200..300).contains(&status_code) {
+            continue;
+        }
+        let Some(content) = response.get("content").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(json) = content.get("application/json") else {
+            continue;
+        };
+        let schema = json.get("schema").unwrap_or(&Value::Null);
+        candidates.push((status_code, "application/json".to_string(), schema));
+    }
+    candidates
+        .iter()
+        .position(|(status, _, _)| *status == 200)
+        .and_then(|index| candidates.get(index).cloned())
+        .or_else(|| candidates.into_iter().min_by_key(|(status, _, _)| *status))
+}
+
+fn classify_response_schema(
+    path: &str,
+    schema: &Value,
+) -> (OutputCardinality, Vec<String>, Value, Option<String>) {
+    if schema == &Value::Null {
+        return (OutputCardinality::None, Vec::new(), Value::Null, None);
+    }
+    if schema.get("type").and_then(Value::as_str) == Some("array") {
+        let item = schema.get("items").cloned().unwrap_or(Value::Null);
+        return (
+            OutputCardinality::List,
+            Vec::new(),
+            item.clone(),
+            item.get("$ref")
+                .and_then(Value::as_str)
+                .map(entity_name_from_ref),
+        );
+    }
+    if schema
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("object")
+        == "object"
+    {
+        if let Some(items) = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("items"))
+            && items.get("type").and_then(Value::as_str) == Some("array")
+        {
+            let item = items.get("items").cloned().unwrap_or(Value::Null);
+            return (
+                OutputCardinality::WrappedList,
+                vec!["items".to_string()],
+                item.clone(),
+                item.get("$ref")
+                    .and_then(Value::as_str)
+                    .map(entity_name_from_ref),
+            );
+        }
+        return (
+            OutputCardinality::Singleton,
+            Vec::new(),
+            schema.clone(),
+            schema
+                .get("$ref")
+                .and_then(Value::as_str)
+                .map(entity_name_from_ref)
+                .or_else(|| Some(entity_name_from_path(path))),
+        );
+    }
+    (OutputCardinality::Unknown, Vec::new(), schema.clone(), None)
+}
+
+fn required_fields(schema: &Value) -> BTreeSet<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn detect_pagination(inputs: &[IrOperationInput]) -> PaginationSpec {
+    let has_page = inputs
+        .iter()
+        .any(|input| input.location == OpenApiParameterLocation::Query && input.name == "page");
+    let has_per_page = inputs
+        .iter()
+        .any(|input| input.location == OpenApiParameterLocation::Query && input.name == "per_page");
+    if has_page && has_per_page {
+        PaginationSpec {
+            mode: PaginationMode::Page,
+            page_size: Some(PageSizeSpec {
+                default: 30,
+                max: 100,
+                query_param: Some("per_page".to_string()),
+                body_path: Vec::new(),
+            }),
+            page_param: Some("page".to_string()),
+            page_start: 1,
+            page_step: 1,
+            ..PaginationSpec::default()
+        }
+    } else {
+        PaginationSpec::default()
+    }
+}
+
+pub fn generate_projection_catalog(
+    manifest: &V4SourceManifest,
+    surfaces: &[SemanticIr],
+) -> Result<ProjectionCatalog> {
+    let mut projections = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut names = HashSet::new();
+    for ir in surfaces {
+        for operation in &ir.operations {
+            let projection = generate_projection(manifest, ir, operation, &mut diagnostics)?;
+            let mut projection = projection;
+            if !names.insert(projection.name.clone()) {
+                let suffix = stable_suffix(&format!(
+                    "{}/{}/{}",
+                    manifest.common.name, ir.surface_id, operation.id
+                ));
+                projection.name = format!("{}__{}", projection.name, suffix);
+                projection.diagnostics.push(Diagnostic {
+                    code: "PROJECTION_NAME_COLLISION_RESOLVED".to_string(),
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!("projection name collision resolved with suffix {suffix}"),
+                    surface_id: Some(ir.surface_id.clone()),
+                    operation_id: Some(operation.id.clone()),
+                    projection_name: Some(projection.name.clone()),
+                });
+            }
+            projections.push(projection);
+        }
+        diagnostics.extend(ir.diagnostics.clone());
+    }
+    Ok(ProjectionCatalog {
+        artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+        source_name: manifest.common.name.clone(),
+        source_version: manifest.common.version.clone(),
+        generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+        projections,
+        diagnostics,
+    })
+}
+
+fn generate_projection(
+    manifest: &V4SourceManifest,
+    ir: &SemanticIr,
+    operation: &IrOperation,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Projection> {
+    let is_search = is_search_operation(operation);
+    let mut visibility = ProjectionVisibility::Published;
+    let mut projection_diagnostics = operation.diagnostics.clone();
+    let rest = match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => rest,
+    };
+    if !operation.read_only
+        || rest.method != HttpMethod::Get
+        || rest.request_body.is_some()
+        || matches!(
+            operation.output.cardinality,
+            OutputCardinality::None | OutputCardinality::Unknown
+        )
+    {
+        visibility = ProjectionVisibility::Hidden;
+    }
+
+    let function_kind = if is_search {
+        Some(SourceTableFunctionKind::Search)
+    } else if operation.output.cardinality == OutputCardinality::Singleton
+        && operation.inputs.iter().any(|input| input.required)
+    {
+        Some(SourceTableFunctionKind::Table)
+    } else {
+        None
+    };
+    let kind = function_kind.map_or(ProjectionKind::Table, |function_kind| {
+        ProjectionKind::TableFunction { function_kind }
+    });
+    let sql_exposure = if matches!(kind, ProjectionKind::Table) {
+        SqlInputExposure::Filter
+    } else {
+        SqlInputExposure::FunctionArg
+    };
+    let inputs = operation
+        .inputs
+        .iter()
+        .map(|input| {
+            let exposure = match input.location {
+                OpenApiParameterLocation::Path | OpenApiParameterLocation::Query => sql_exposure,
+                OpenApiParameterLocation::Header
+                | OpenApiParameterLocation::Cookie
+                | OpenApiParameterLocation::Body => SqlInputExposure::Internal,
+            };
+            if exposure == SqlInputExposure::Internal && input.required {
+                visibility = ProjectionVisibility::Hidden;
+                projection_diagnostics.push(Diagnostic::warning(
+                    "PROJECTION_INPUT_UNSUPPORTED",
+                    format!(
+                        "required {:?} input '{}' cannot be exposed in SQL",
+                        input.location, input.name
+                    ),
+                    ir.surface_id.clone(),
+                    Some(operation.id.clone()),
+                ));
+            }
+            ProjectionInput {
+                name: normalize_identifier(&input.name, "input"),
+                sql_exposure: exposure,
+                source_location: input.location,
+                wire_name: input.name.clone(),
+                required: input.required && input.default_value.is_none(),
+                data_type: manifest_type(input.data_type),
+                default_value: input.default_value.clone(),
+                description: input.description.clone(),
+            }
+        })
+        .collect();
+    let columns = projection_columns(ir, operation);
+    let mut name = projection_name(operation, is_search);
+    if name.is_empty() {
+        name = normalize_identifier(&operation.id, "projection");
+    }
+    let projection = Projection {
+        name,
+        kind,
+        description: operation.description.clone(),
+        guide: String::new(),
+        surface_id: ir.surface_id.clone(),
+        operation_id: operation.id.clone(),
+        visibility,
+        inputs,
+        columns,
+        pagination: rest.pagination.clone(),
+        search_limits: is_search.then(|| SearchLimitsSpec {
+            default_top_k: 30,
+            max_top_k: 100,
+            max_calls_per_query: 100,
+        }),
+        detail_hints: Vec::new(),
+        diagnostics: projection_diagnostics.clone(),
+    };
+    diagnostics.extend(projection_diagnostics);
+    let _ = manifest.projection_policy.default;
+    Ok(projection)
+}
+
+fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
+    let type_by_id = ir
+        .types
+        .iter()
+        .map(|ty| (ty.id.as_str(), ty))
+        .collect::<HashMap<_, _>>();
+    let Some(row_type) = type_by_id.get(operation.output.type_ref.as_str()) else {
+        return vec![ProjectionColumn {
+            name: "value".to_string(),
+            data_type: ManifestDataType::Json,
+            source_path: Vec::new(),
+            nullable: true,
+            description: String::new(),
+        }];
+    };
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        return vec![ProjectionColumn {
+            name: "value".to_string(),
+            data_type: ManifestDataType::Json,
+            source_path: Vec::new(),
+            nullable: true,
+            description: row_type.description.clone(),
+        }];
+    };
+    let mut columns = Vec::new();
+    let mut names = HashSet::new();
+    for field in fields {
+        let mut name = normalize_identifier(&field.name, "column");
+        if !names.insert(name.clone()) {
+            let suffix = stable_suffix(&field.name);
+            name = format!("{name}__{suffix}");
+        }
+        let data_type =
+            type_by_id
+                .get(field.type_ref.as_str())
+                .map_or(ManifestDataType::Json, |ty| match &ty.shape {
+                    IrTypeShape::Scalar(scalar) => manifest_type(*scalar),
+                    IrTypeShape::Enum { .. } => ManifestDataType::Utf8,
+                    IrTypeShape::Json
+                    | IrTypeShape::Object { .. }
+                    | IrTypeShape::List { .. }
+                    | IrTypeShape::Map { .. } => ManifestDataType::Json,
+                });
+        columns.push(ProjectionColumn {
+            name,
+            data_type,
+            source_path: vec![field.name.clone()],
+            nullable: true,
+            description: field.description.clone(),
+        });
+    }
+    columns
+}
+
+fn projection_name(operation: &IrOperation, is_search: bool) -> String {
+    let entity = operation
+        .entity
+        .as_ref()
+        .map(|entity| normalize_identifier(&entity.name, "projection"))
+        .unwrap_or_else(|| normalize_identifier(&operation.id, "projection"));
+    if is_search {
+        return format!("search_{}", pluralize(&entity));
+    }
+    match operation.output.cardinality {
+        OutputCardinality::List | OutputCardinality::WrappedList => pluralize(&entity),
+        OutputCardinality::Singleton if operation.inputs.iter().any(|input| input.required) => {
+            format!("get_{}", singularize(&entity))
+        }
+        OutputCardinality::Singleton => singularize(&entity),
+        OutputCardinality::None | OutputCardinality::Unknown => {
+            normalize_identifier(&operation.id, "projection")
+        }
+    }
+}
+
+fn is_search_operation(operation: &IrOperation) -> bool {
+    let id_tokens = operation.id.split('_').collect::<Vec<_>>();
+    let path_has_search = match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => rest
+            .path_template
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|token| token.eq_ignore_ascii_case("search")),
+    };
+    path_has_search
+        || id_tokens
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("search"))
+}
+
+fn manifest_type(scalar: IrScalarType) -> ManifestDataType {
+    match scalar {
+        IrScalarType::String | IrScalarType::Id => ManifestDataType::Utf8,
+        IrScalarType::Integer => ManifestDataType::Int64,
+        IrScalarType::Number => ManifestDataType::Float64,
+        IrScalarType::Boolean => ManifestDataType::Boolean,
+        IrScalarType::Timestamp => ManifestDataType::Timestamp,
+        IrScalarType::Json => ManifestDataType::Json,
+    }
+}
+
+pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
+    projection
+        .inputs
+        .iter()
+        .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
+        .map(|input| FilterSpec {
+            name: input.name.clone(),
+            data_type: manifest_data_type_name(input.data_type).to_string(),
+            required: input.required,
+            mode: FilterMode::Equality,
+            description: input.description.clone(),
+        })
+        .collect()
+}
+
+pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec> {
+    projection
+        .inputs
+        .iter()
+        .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
+        .map(|input| TableFunctionArgSpec {
+            name: input.name.clone(),
+            required: input.required,
+            values: Vec::new(),
+            bind: FunctionArgBinding {
+                arg: input.name.clone(),
+            },
+        })
+        .collect()
+}
+
+pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
+    projection
+        .columns
+        .iter()
+        .map(|column| ColumnSpec {
+            name: column.name.clone(),
+            data_type: manifest_data_type_name(column.data_type).to_string(),
+            nullable: column.nullable,
+            r#virtual: false,
+            description: column.description.clone(),
+            expr: Some(ExprSpec::Path {
+                path: column.source_path.clone(),
+            }),
+        })
+        .collect()
+}
+
+pub fn manifest_data_type_name(data_type: ManifestDataType) -> &'static str {
+    match data_type {
+        ManifestDataType::Utf8 => "Utf8",
+        ManifestDataType::Int64 => "Int64",
+        ManifestDataType::Boolean => "Boolean",
+        ManifestDataType::Float64 => "Float64",
+        ManifestDataType::Timestamp => "Timestamp",
+        ManifestDataType::Json => "Json",
+    }
+}
+
+pub fn request_spec_for_projection(
+    projection: &Projection,
+    operation: &IrOperation,
+) -> Result<RequestSpec> {
+    let rest = match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => rest,
+    };
+    let mut path = rest.path_template.clone();
+    for input in &projection.inputs {
+        if input.source_location == OpenApiParameterLocation::Path {
+            let replacement = match input.sql_exposure {
+                SqlInputExposure::Filter => format!("{{{{filter.{}}}}}", input.name),
+                SqlInputExposure::FunctionArg => format!("{{{{arg.{}}}}}", input.name),
+                SqlInputExposure::Internal => continue,
+            };
+            path = path.replace(&format!("{{{}}}", input.wire_name), &replacement);
+        }
+    }
+    let query = projection
+        .inputs
+        .iter()
+        .filter(|input| input.source_location == OpenApiParameterLocation::Query)
+        .map(|input| crate::QueryParamSpec {
+            name: input.wire_name.clone(),
+            value: match input.sql_exposure {
+                SqlInputExposure::Filter => crate::ValueSourceSpec::Filter {
+                    key: input.name.clone(),
+                    default: input
+                        .default_value
+                        .as_ref()
+                        .map(|value| Value::String(value.clone())),
+                },
+                SqlInputExposure::FunctionArg => crate::ValueSourceSpec::Arg {
+                    key: input.name.clone(),
+                    default: input
+                        .default_value
+                        .as_ref()
+                        .map(|value| Value::String(value.clone())),
+                },
+                SqlInputExposure::Internal => {
+                    crate::ValueSourceSpec::Literal { value: Value::Null }
+                }
+            },
+        })
+        .collect();
+    Ok(RequestSpec {
+        method: crate::HttpMethod::GET,
+        path: ParsedTemplate::parse(&path)?,
+        query,
+        body: crate::BodySpec::default(),
+        headers: Vec::new(),
+    })
+}
+
+pub fn validate_materialized_source(
+    manifest: &V4SourceManifest,
+    materialized: &V4MaterializedSource,
+) -> Result<()> {
+    if materialized.fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
+        return Err(ManifestError::validation(
+            "DSL v4 materialized artifact schema version mismatch",
+        ));
+    }
+    if materialized.fingerprint.source_name != manifest.common.name
+        || materialized.fingerprint.source_version != manifest.common.version
+    {
+        return Err(ManifestError::validation(format!(
+            "DSL v4 materialized source identity mismatch for '{}'",
+            manifest.common.name
+        )));
+    }
+    if materialized.fingerprint.importer_version != OPENAPI_IMPORTER_VERSION
+        || materialized.fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
+    {
+        return Err(ManifestError::validation(
+            "DSL v4 materialized importer or generator version mismatch",
+        ));
+    }
+    for surface in &manifest.surfaces {
+        if !materialized
+            .surfaces
+            .iter()
+            .any(|materialized_surface| materialized_surface.surface_id == surface.id)
+        {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 materialized surface '{}' is missing",
+                surface.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn fallback_operation_id(method: &str, path: &str) -> String {
+    normalize_identifier(
+        &format!("{method}_{}", path.replace(['{', '}'], "")),
+        "operation",
+    )
+}
+
+pub fn normalize_identifier(value: &str, prefix: &str) -> String {
+    let mut output = String::new();
+    let mut last_underscore = false;
+    for c in value.chars() {
+        if c.is_ascii_alphanumeric() {
+            output.push(c.to_ascii_lowercase());
+            last_underscore = false;
+        } else if !last_underscore {
+            output.push('_');
+            last_underscore = true;
+        }
+    }
+    let output = output.trim_matches('_').to_string();
+    if output.is_empty() || output.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        format!("{prefix}_{output}")
+    } else {
+        output
+    }
+}
+
+fn entity_name_from_ref(reference: &str) -> String {
+    reference
+        .rsplit('/')
+        .next()
+        .map(|raw| raw.replace(" Response", ""))
+        .unwrap_or_else(|| "entity".to_string())
+}
+
+fn type_id_from_ref(reference: &str) -> String {
+    normalize_identifier(reference.rsplit('/').next().unwrap_or(reference), "type")
+}
+
+fn entity_name_from_path(path: &str) -> String {
+    path.split('/')
+        .filter(|segment| !segment.is_empty() && !segment.starts_with('{'))
+        .next_back()
+        .unwrap_or("entity")
+        .to_string()
+}
+
+fn singularize(value: &str) -> String {
+    value
+        .strip_suffix('s')
+        .map_or_else(|| value.to_string(), ToString::to_string)
+}
+
+fn pluralize(value: &str) -> String {
+    if value.ends_with('s') {
+        value.to_string()
+    } else {
+        format!("{value}s")
+    }
+}
+
+fn stable_suffix(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}").chars().take(8).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse_source_manifest_yaml;
+
+    #[test]
+    fn parses_v4_manifest_and_unions_surface_inputs() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    inputs:
+      API_BASE:
+        kind: variable
+        default: https://api.example.com
+      API_TOKEN:
+        kind: secret
+    base_url: "{{input.API_BASE}}"
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: template
+          template: Bearer {{input.API_TOKEN}}
+"#,
+        )
+        .expect("v4 manifest");
+        assert_eq!(manifest.dsl_version(), 4);
+        assert!(manifest.as_v4().is_some());
+        assert_eq!(manifest.declared_inputs().len(), 2);
+    }
+
+    #[test]
+    fn imports_and_generates_github_issue_slice() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: github
+version: 2.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    inputs:
+      GITHUB_API_BASE:
+        kind: variable
+        default: https://api.github.com
+    base_url: "{{input.GITHUB_API_BASE}}"
+"#,
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let ir = import_openapi_surface(v4, &v4.surfaces[0], github_openapi().as_bytes())
+            .expect("import");
+        let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+        let published = catalog
+            .projections
+            .iter()
+            .filter(|projection| projection.visibility == ProjectionVisibility::Published)
+            .map(|projection| projection.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(published.contains(&"issues"), "{published:?}");
+        assert!(published.contains(&"search_issues"), "{published:?}");
+        assert!(published.contains(&"get_issue"), "{published:?}");
+    }
+
+    fn github_openapi() -> &'static str {
+        r#"
+openapi: 3.0.3
+paths:
+  /repos/{owner}/{repo}/issues:
+    get:
+      operationId: issues/list-for-repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: per_page, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/issue'}
+  /search/issues:
+    get:
+      operationId: search/issues-and-pull-requests
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string}}
+        - {name: sort, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/issue'}
+  /repos/{owner}/{repo}/issues/{issue_number}:
+    get:
+      operationId: issues/get
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+        - {name: issue_number, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/issue'}
+    patch:
+      operationId: issues/update
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: {type: string}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/issue'}
+components:
+  schemas:
+    issue:
+      type: object
+      properties:
+        id: {type: integer}
+        number: {type: integer}
+        title: {type: string}
+        state: {type: string}
+        html_url: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        body: {type: string}
+        user: {type: object}
+"#
+    }
+}

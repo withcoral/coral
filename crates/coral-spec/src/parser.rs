@@ -12,6 +12,7 @@ use crate::backends::file::FileSourceManifest;
 use crate::backends::http::HttpSourceManifest;
 use crate::backends::mcp::McpSourceManifest;
 use crate::schema::validate_manifest_schema;
+use crate::v4::V4SourceManifest;
 use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
 
 /// Validated top-level source spec for one registered source.
@@ -29,6 +30,7 @@ enum ValidatedManifestKind {
     Http(Box<HttpSourceManifest>),
     File(FileSourceManifest),
     Mcp(McpSourceManifest),
+    V4(Box<V4SourceManifest>),
 }
 
 impl ValidatedSourceManifest {
@@ -43,6 +45,18 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(_) => SourceBackend::Http,
             ValidatedManifestKind::File(_) => SourceBackend::File,
             ValidatedManifestKind::Mcp(_) => SourceBackend::Mcp,
+            ValidatedManifestKind::V4(_) => SourceBackend::Http,
+        }
+    }
+
+    /// Returns the declared source-spec DSL version.
+    #[must_use]
+    pub fn dsl_version(&self) -> u32 {
+        match &self.inner {
+            ValidatedManifestKind::Http(manifest) => manifest.common.dsl_version,
+            ValidatedManifestKind::File(manifest) => manifest.common.dsl_version,
+            ValidatedManifestKind::Mcp(manifest) => manifest.common.dsl_version,
+            ValidatedManifestKind::V4(manifest) => manifest.common.dsl_version,
         }
     }
 
@@ -53,6 +67,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.name,
             ValidatedManifestKind::File(manifest) => &manifest.common.name,
             ValidatedManifestKind::Mcp(manifest) => &manifest.common.name,
+            ValidatedManifestKind::V4(manifest) => &manifest.common.name,
         }
     }
 
@@ -63,6 +78,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.version,
             ValidatedManifestKind::File(manifest) => &manifest.common.version,
             ValidatedManifestKind::Mcp(manifest) => &manifest.common.version,
+            ValidatedManifestKind::V4(manifest) => &manifest.common.version,
         }
     }
 
@@ -73,6 +89,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.description,
             ValidatedManifestKind::File(manifest) => &manifest.common.description,
             ValidatedManifestKind::Mcp(manifest) => &manifest.common.description,
+            ValidatedManifestKind::V4(manifest) => &manifest.common.description,
         }
     }
 
@@ -83,6 +100,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.common.test_queries,
             ValidatedManifestKind::File(manifest) => &manifest.common.test_queries,
             ValidatedManifestKind::Mcp(manifest) => &manifest.common.test_queries,
+            ValidatedManifestKind::V4(manifest) => &manifest.common.test_queries,
         }
     }
 
@@ -94,6 +112,12 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => manifest.required_secret_names(),
             ValidatedManifestKind::File(manifest) => manifest.required_secret_names(),
             ValidatedManifestKind::Mcp(manifest) => manifest.required_secret_names(),
+            ValidatedManifestKind::V4(manifest) => manifest
+                .declared_inputs
+                .iter()
+                .filter(|input| input.kind == crate::ManifestInputKind::Secret && input.required)
+                .map(|input| input.key.clone())
+                .collect(),
         }
     }
 
@@ -104,6 +128,12 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => manifest.declared_secret_names(),
             ValidatedManifestKind::File(manifest) => manifest.declared_secret_names(),
             ValidatedManifestKind::Mcp(manifest) => manifest.declared_secret_names(),
+            ValidatedManifestKind::V4(manifest) => manifest
+                .declared_inputs
+                .iter()
+                .filter(|input| input.kind == crate::ManifestInputKind::Secret)
+                .map(|input| input.key.clone())
+                .collect(),
         }
     }
 
@@ -114,6 +144,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => &manifest.declared_inputs,
             ValidatedManifestKind::File(manifest) => &manifest.declared_inputs,
             ValidatedManifestKind::Mcp(manifest) => &manifest.declared_inputs,
+            ValidatedManifestKind::V4(manifest) => &manifest.declared_inputs,
         }
     }
 
@@ -122,7 +153,9 @@ impl ValidatedSourceManifest {
     pub fn as_http(&self) -> Option<&HttpSourceManifest> {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => Some(manifest),
-            ValidatedManifestKind::File(_) | ValidatedManifestKind::Mcp(_) => None,
+            ValidatedManifestKind::File(_)
+            | ValidatedManifestKind::Mcp(_)
+            | ValidatedManifestKind::V4(_) => None,
         }
     }
 
@@ -131,7 +164,9 @@ impl ValidatedSourceManifest {
     pub fn as_file(&self) -> Option<&FileSourceManifest> {
         match &self.inner {
             ValidatedManifestKind::File(manifest) => Some(manifest),
-            ValidatedManifestKind::Http(_) | ValidatedManifestKind::Mcp(_) => None,
+            ValidatedManifestKind::Http(_)
+            | ValidatedManifestKind::Mcp(_)
+            | ValidatedManifestKind::V4(_) => None,
         }
     }
 
@@ -140,7 +175,20 @@ impl ValidatedSourceManifest {
     pub fn as_mcp(&self) -> Option<&McpSourceManifest> {
         match &self.inner {
             ValidatedManifestKind::Mcp(manifest) => Some(manifest),
-            ValidatedManifestKind::Http(_) | ValidatedManifestKind::File(_) => None,
+            ValidatedManifestKind::Http(_)
+            | ValidatedManifestKind::File(_)
+            | ValidatedManifestKind::V4(_) => None,
+        }
+    }
+
+    /// Returns the validated DSL v4 source spec when `dsl_version: 4`.
+    #[must_use]
+    pub fn as_v4(&self) -> Option<&V4SourceManifest> {
+        match &self.inner {
+            ValidatedManifestKind::V4(manifest) => Some(manifest),
+            ValidatedManifestKind::Http(_)
+            | ValidatedManifestKind::File(_)
+            | ValidatedManifestKind::Mcp(_) => None,
         }
     }
 }
@@ -168,6 +216,14 @@ pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> 
 /// rules.
 pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManifest> {
     validate_manifest_schema(&value)?;
+    let dsl_version = parse_dsl_version(&value)?;
+    if dsl_version == 4 {
+        return Ok(ValidatedSourceManifest {
+            inner: ValidatedManifestKind::V4(Box::new(V4SourceManifest::parse_manifest_value(
+                value,
+            )?)),
+        });
+    }
     let backend_kind = parse_source_backend(&value)?;
     match backend_kind {
         SourceBackend::Http => Ok(ValidatedSourceManifest {
@@ -182,6 +238,16 @@ pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManife
             inner: ValidatedManifestKind::Mcp(McpSourceManifest::parse_manifest_value(value)?),
         }),
     }
+}
+
+fn parse_dsl_version(value: &Value) -> Result<u32> {
+    let Some(raw) = value.get("dsl_version").and_then(Value::as_u64) else {
+        return Err(ManifestError::validation(
+            "failed to deserialize manifest: missing dsl_version",
+        ));
+    };
+    u32::try_from(raw)
+        .map_err(|_err| ManifestError::validation("manifest dsl_version exceeds supported range"))
 }
 
 fn parse_source_backend(value: &Value) -> Result<SourceBackend> {

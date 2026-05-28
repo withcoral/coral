@@ -366,7 +366,7 @@ pub(crate) fn required_secret_input_names(inputs: &[ManifestInputSpec]) -> BTree
         .collect()
 }
 
-fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
+pub(crate) fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
     let root = root
         .as_object()
         .ok_or_else(|| ManifestError::validation("manifest must be a mapping"))?;
@@ -1156,7 +1156,7 @@ fn validate_input_key(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
+pub(crate) fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
     let declared: BTreeMap<String, ManifestInputKind> = inputs
         .iter()
         .map(|input| (input.key.clone(), input.kind))
