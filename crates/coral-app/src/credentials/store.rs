@@ -126,6 +126,7 @@ trait CredentialMaterialBackend: Send + Sync {
 
 #[derive(Clone)]
 pub(crate) struct CredentialStore {
+    layout: AppStateLayout,
     preference: CredentialStoragePreference,
     file: Arc<dyn CredentialMaterialBackend>,
     keychain: Arc<dyn CredentialMaterialBackend>,
@@ -143,6 +144,7 @@ impl CredentialStore {
     ) -> Self {
         let config_namespace = CredentialConfigNamespace::from_layout(&layout);
         Self {
+            layout: layout.clone(),
             preference,
             file: Arc::new(FileCredentialBackend::new(layout)),
             keychain: Arc::new(KeychainCredentialBackend::new(config_namespace)),
@@ -156,6 +158,7 @@ impl CredentialStore {
         keychain: Arc<dyn CredentialMaterialBackend>,
     ) -> Self {
         Self {
+            layout: layout.clone(),
             preference,
             file: Arc::new(FileCredentialBackend::new(layout)),
             keychain,
@@ -211,6 +214,36 @@ impl CredentialStore {
             storage,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn update_material<F, R>(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        update: F,
+    ) -> Result<R, AppError>
+    where
+        F: FnOnce(BTreeMap<String, String>) -> Result<(BTreeMap<String, String>, R), AppError>,
+    {
+        tracing::trace!(%credential_set_id, %storage, "updating credential material");
+        let current = self.read_material(workspace_name, credential_set_id, storage)?;
+        let (next, result) = update(current)?;
+        self.replace_material(workspace_name, credential_set_id, storage, &next)?;
+        Ok(result)
+    }
+
+    pub(crate) fn credential_refresh_lock(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<FileLock, AppError> {
+        let source_name = credential_set_id.source_name()?;
+        let path = self
+            .layout
+            .credential_refresh_lock_file(workspace_name, &source_name);
+        tracing::trace!(%credential_set_id, "locking credential refresh");
+        FileLock::exclusive(&path).map_err(Into::into)
     }
 
     pub(crate) fn read_material(

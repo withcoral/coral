@@ -16,7 +16,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
-use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
+use crate::query::extensions::{
+    CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
+};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
@@ -69,7 +71,7 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
+        let runtime = self.runtime_config(workspace_name, &sources);
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -83,7 +85,7 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
+        let runtime = self.runtime_config(workspace_name, &sources);
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -102,7 +104,7 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(&sources);
+                let runtime = self.runtime_config(workspace_name, &sources);
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -125,7 +127,7 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(&sources);
+                let runtime = self.runtime_config(workspace_name, &sources);
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -147,7 +149,7 @@ impl QueryManager {
         let (query_source, version) = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(std::slice::from_ref(&query_source));
+        let runtime = self.runtime_config(workspace_name, std::slice::from_ref(&query_source));
         let report = CoralQuery::validate_source(
             &query_source,
             runtime,
@@ -232,9 +234,20 @@ impl QueryManager {
         ))
     }
 
-    fn runtime_config(&self, selected_sources: &[QuerySource]) -> QueryRuntimeConfig {
-        let extensions =
+    fn runtime_config(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+    ) -> QueryRuntimeConfig {
+        let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+        let provider_input_resolver = extensions.source_input_resolver.take();
+        extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
+            workspace_name.clone(),
+            self.config_store.clone(),
+            self.credential_manager.clone(),
+            provider_input_resolver,
+        )));
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
@@ -345,6 +358,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
         AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
@@ -404,7 +418,12 @@ fn validate_required_variables(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use coral_engine::{EngineExtensions, SourceInputResolver, SourceInputResolverError};
+    use coral_spec::parse_source_manifest_yaml;
     use tempfile::TempDir;
 
     use super::*;
@@ -443,7 +462,9 @@ mod tests {
             Vec::new(),
         );
 
-        let runtime = fixture.manager.runtime_config(&[]);
+        let runtime = fixture
+            .manager
+            .runtime_config(&WorkspaceName::default(), &[]);
 
         let config = runtime
             .context
@@ -585,6 +606,146 @@ tables:
                 .to_string()
                 .contains("configured for keychain storage"),
             "keychain-routed query failure should name the routed backend: {error}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct DelegatingInputResolver {
+        calls: Arc<AtomicUsize>,
+        observed_token: Arc<Mutex<Option<String>>>,
+    }
+
+    #[tonic::async_trait]
+    impl SourceInputResolver for DelegatingInputResolver {
+        async fn resolve_inputs(
+            &self,
+            source: &QuerySource,
+        ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.observed_token.lock().expect("observed token lock") =
+                source.secrets().get("API_TOKEN").cloned();
+            Ok(BTreeMap::from([
+                ("API_TOKEN".to_string(), "delegated-token".to_string()),
+                ("DELEGATED_ONLY".to_string(), "provider-token".to_string()),
+            ]))
+        }
+    }
+
+    struct DelegatingInputResolverProvider {
+        calls: Arc<AtomicUsize>,
+        observed_token: Arc<Mutex<Option<String>>>,
+    }
+
+    impl EngineExtensionsProvider for DelegatingInputResolverProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            EngineExtensions {
+                source_input_resolver: Some(Arc::new(DelegatingInputResolver {
+                    calls: Arc::clone(&self.calls),
+                    observed_token: Arc::clone(&self.observed_token),
+                })),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_token = Arc::new(Mutex::new(None));
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default(),
+            vec![Arc::new(DelegatingInputResolverProvider {
+                calls: Arc::clone(&calls),
+                observed_token: Arc::clone(&observed_token),
+            })],
+        );
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let workspace_name = WorkspaceName::default();
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["API_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::File),
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
+            )
+            .expect("write credential material");
+        let source_spec = parse_source_manifest_yaml(
+            r#"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://example.com
+  API_TOKEN:
+    kind: secret
+base_url: "{{input.API_BASE}}"
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("parse source manifest");
+        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
+        let runtime = fixture
+            .manager
+            .runtime_config(&workspace_name, std::slice::from_ref(&source));
+        let input_resolver = runtime
+            .extensions
+            .source_input_resolver
+            .expect("runtime installs input resolver");
+
+        let resolved_inputs = input_resolver
+            .resolve_inputs(&source)
+            .await
+            .expect("resolve source inputs");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            resolved_inputs.get("API_TOKEN").map(String::as_str),
+            Some("stored-token")
+        );
+        assert_eq!(
+            resolved_inputs.get("API_BASE").map(String::as_str),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            resolved_inputs.get("DELEGATED_ONLY").map(String::as_str),
+            Some("provider-token")
+        );
+        assert_eq!(
+            observed_token
+                .lock()
+                .expect("observed token lock")
+                .as_deref(),
+            Some("stored-token")
         );
     }
 }
