@@ -5,11 +5,11 @@
 **Tables:** 1
 **Base URL:** `{{input.BACKSTAGE_URL}}/api/catalog`
 
-Query software catalog entities, ownership metadata, lifecycle definitions, and architectural inventory information directly through Coral SQL using the Backstage Catalog API.
+Query metadata definitions, dependency ownership structures, and ecosystem blueprints indexed inside your internal developer portal using Coral SQL.
 
-This integration is intended for internal developer portal auditing workflows, allowing engineering teams to analyze ownership gaps, software lifecycle distribution, service metadata consistency, and ecosystem topology across cataloged platform assets.
+This integration serves as a global service registry auditor, allowing engineers and managers to run relational analysis over software architectures, ownership mapping gaps, or microservice lifecycle distribution metrics.
 
-Coral exposes read-only `GET` tables. Catalog mutation workflows such as location registration, ingestion triggering, or entity lifecycle modification are out of scope.
+Coral exposes read-only `GET` tables. Modifying catalog structures, registering new locations, or triggering ingestion mutations are out of scope.
 
 ---
 
@@ -44,7 +44,7 @@ coral source add --file <path-to-manifest>
 
 | Table | API Endpoint | Required Filters | Pagination |
 |---|---|---|---|
-| `entities` | `GET /entities` | — | None (maps directly from the root JSON array response) |
+| `entities` | `GET /entities` | — | None (returns direct flat JSON array with column field pushdown support) |
 
 ---
 
@@ -52,17 +52,17 @@ coral source add --file <path-to-manifest>
 
 ## backstage.entities
 
-Software ecosystem assets tracked inside the Backstage software catalog.
+Ecosystem assets tracked inside the Backstage software catalog.
 
 | Column | Type | Description |
 |---|---|---|
 | `uid` | Utf8 | Globally unique ID assigned by Backstage |
 | `name` | Utf8 | Technical name of the entity |
-| `namespace` | Utf8 | Namespace grouping the entity |
+| `namespace` | Utf8 | Isolation namespace grouping the entity (defaults to `default`) |
 | `kind` | Utf8 | High-level category of the entity (for example `Component`, `API`, or `User`) |
-| `type` | Utf8 | Sub-category type defined within the entity kind |
-| `lifecycle` | Utf8 | Operational lifecycle stage of the software |
-| `owner` | Utf8 | Declared owner reference associated with the entity |
+| `type` | Utf8 | Sub-categorization type defined within the specific entity kind |
+| `lifecycle` | Utf8 | Operational maturity phase of the software |
+| `owner` | Utf8 | Group or User entity reference declaring responsibility for the object |
 | `title` | Utf8 | Display title shown in Backstage interfaces |
 | `description` | Utf8 | Description associated with the catalog entity |
 
@@ -158,9 +158,9 @@ $ coral source test backstage
 # Limitations
 
 - Read-only retrieval scope
-- Entity registration, ingestion triggering, and lifecycle mutation workflows are unsupported
-- Targets the flat catalog entities payload directly
-- Deep relationship graph traversal fields such as `relations[]` or entity ancestry resolution are out of scope for the base schema
-- Backstage filtering uses a specialized query-string syntax (for example `?filter=kind=Component`)
-- This source currently maps the raw entities payload directly and evaluates filtering through standard Coral SQL processing
-- Large enterprise catalogs may require careful query optimization because pagination and specialized Backstage filter pushdowns are not currently implemented
+- Entity registration via locations or model lifecycle mutation paths are unsupported
+- Targets raw flat entities payloads directly
+- Complex graph resolution fields such as `relations[]` or downstream entity ancestry dependencies are out of scope for the base schema
+- Backstage uses a specialized array-based query string syntax for filtering (for example `?filter=kind=Component`)
+- This integration evaluates filtering engine-side using standard Coral SQL processing
+- To reduce network overhead across large enterprise catalogs, the driver supports field selection optimization using Backstage `?fields=` query projections where supported

@@ -1,29 +1,28 @@
-name: rancher
+name: backstage
 version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query managed Kubernetes cluster footprints and control plane details via the Rancher API.
-base_url: "{{input.RANCHER_URL}}/v3"
+  Query software catalog entities, components, and service metadata from Backstage.
+base_url: "{{input.BACKSTAGE_URL}}/api/catalog"
 
 inputs:
-  RANCHER_URL:
+  BACKSTAGE_URL:
     kind: variable
     hint: |
-      Rancher Manager FQDN/URL without trailing slash and without /v3,
-      for example `https://rancher.infra.local`.
-  RANCHER_TOKEN:
+      Backstage base URL without trailing slash and without /api/catalog,
+      for example `http://localhost:7007` or `https://backstage.infra.local`.
+  BACKSTAGE_TOKEN:
     kind: secret
     hint: |
-      Rancher API Bearer Token value from the UI (e.g., token-xxxxx:yyyyyyyyyyyyyyyy).
-      Note: Returned results are strictly scoped by this token's cluster/project roles.
+      Backstage Auth Service Bearer Token or Identity Token.
 
 auth:
   type: HeaderAuth
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{input.RANCHER_TOKEN}}
+      template: Bearer {{input.BACKSTAGE_TOKEN}}
 
 request_headers:
   - name: Accept
@@ -31,54 +30,66 @@ request_headers:
     value: application/json
 
 test_queries:
-  - SELECT id, name FROM rancher.clusters LIMIT 1
+  - SELECT name, kind FROM backstage.entities LIMIT 1
 
 tables:
-  - name: clusters
-    description: Kubernetes clusters tracked and provisioned via Rancher Manager.
+  - name: entities
+    description: Software ecosystem objects tracked inside the Backstage software catalog.
     request:
       method: GET
-      path: /clusters
+      path: /entities
       query:
-        - name: name
+        - name: fields
           from: query
-          key: name
-        - name: state
-          from: query
-          key: state
+          key: fields
     response:
       row_strategy: direct
-      rows_path: [data]
+      rows_path: []
     pagination:
       mode: none
     columns:
-      - name: id
+      - name: uid
         type: Utf8
         nullable: false
-        description: Unique cluster ID string assigned by Rancher.
-        expr: {kind: path, path: [id]}
+        description: Globally unique ID assigned by Backstage.
+        expr: {kind: path, path: [metadata, uid]}
       - name: name
         type: Utf8
         nullable: false
-        description: Human-readable cluster name.
-        expr: {kind: path, path: [name]}
-      - name: state
+        description: Technical name of the entity.
+        expr: {kind: path, path: [metadata, name]}
+      - name: namespace
         type: Utf8
         nullable: true
-        description: Runtime operational state of the cluster (e.g., active, pending).
-        expr: {kind: path, path: [state]}
-      - name: provider
+        description: Isolation namespace grouping the entity (defaults to 'default').
+        expr: {kind: path, path: [metadata, namespace]}
+      - name: kind
+        type: Utf8
+        nullable: false
+        description: High-level category of the entity (e.g., Component, API, User).
+        expr: {kind: path, path: [kind]}
+      - name: type
         type: Utf8
         nullable: true
-        description: Infrastructure provider associated with the cluster.
-        expr: {kind: path, path: [provider]}
-      - name: kubernetes_version
+        description: Sub-categorization type defined within the specific entity kind.
+        expr: {kind: path, path: [spec, type]}
+      - name: lifecycle
         type: Utf8
         nullable: true
-        description: Kubernetes version reported by the cluster.
-        expr: {kind: path, path: [version, gitVersion]}
-      - name: node_count
-        type: Int64
+        description: Operational maturity phase of the software (e.g., production).
+        expr: {kind: path, path: [spec, lifecycle]}
+      - name: owner
+        type: Utf8
         nullable: true
-        description: Number of nodes associated with the cluster.
-        expr: {kind: path, path: [nodeCount]}
+        description: Group or User entity reference declaring responsibility for the object.
+        expr: {kind: path, path: [spec, owner]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Display title shown in Backstage interfaces.
+        expr: {kind: path, path: [metadata, title]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description associated with the catalog entity.
+        expr: {kind: path, path: [metadata, description]}
