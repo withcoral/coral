@@ -1,0 +1,497 @@
+name: cockroachdb
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query CockroachDB cluster health, nodes, databases, events, and statement
+  metadata from the DB Console API.
+base_url: "{{input.COCKROACHDB_BASE_URL}}"
+
+inputs:
+  COCKROACHDB_BASE_URL:
+    kind: variable
+    default: http://localhost:8080
+    hint: CockroachDB DB Console base URL without a trailing slash.
+  COCKROACHDB_SESSION_TOKEN:
+    kind: secret
+    hint: |
+      CockroachDB Cluster API session token. Create one with
+      `cockroach auth-session login` or POST `/api/v2/login/`.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Cockroach-API-Session
+      from: template
+      template: "{{input.COCKROACHDB_SESSION_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT node_id, address FROM cockroachdb.nodes LIMIT 1
+  - SELECT * FROM cockroachdb.databases LIMIT 1
+  - SELECT * FROM cockroachdb.users LIMIT 1
+
+tables:
+  - name: health
+    description: Cluster health endpoint response.
+    filters:
+      - name: ready
+    request:
+      method: GET
+      path: /api/v2/health/
+      query:
+        - name: ready
+          from: filter
+          key: ready
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Health status.
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Health message.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw health response, if a body is returned.
+        expr: {kind: path, path: []}
+
+  - name: nodes
+    description: CockroachDB cluster nodes.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/nodes/
+    response:
+      rows_path: [nodes]
+      allow_404_empty: true
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path:
+        - next
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: node_id
+        type: Int64
+        nullable: false
+        description: Node ID.
+      - name: address
+        type: Utf8
+        nullable: true
+        description: Node address.
+      - name: sql_address
+        type: Utf8
+        nullable: true
+        description: SQL listener address.
+      - name: build_info__tag
+        type: Utf8
+        nullable: true
+        description: CockroachDB build tag.
+        expr: {kind: path, path: [build_info, tag]}
+      - name: build_info__go_version
+        type: Utf8
+        nullable: true
+        description: Go version used to build the node binary.
+        expr: {kind: path, path: [build_info, go_version]}
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Node start timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [started_at]}
+      - name: locality_json
+        type: Json
+        nullable: true
+        description: Node locality tiers.
+        expr: {kind: path, path: [locality]}
+      - name: attrs_json
+        type: Json
+        nullable: true
+        description: Node attributes.
+        expr: {kind: path, path: [attrs]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw node object.
+        expr: {kind: path, path: []}
+
+  - name: databases
+    description: Databases in the CockroachDB cluster.
+    request:
+      method: GET
+      path: /api/v2/databases/
+    response:
+      rows_path: [databases]
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: database_name
+        type: Utf8
+        nullable: true
+        description: Database name.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Database name when returned under the generic name field.
+      - name: table_count
+        type: Int64
+        nullable: true
+        description: Number of tables.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw database object.
+        expr: {kind: path, path: []}
+
+  - name: database_details
+    description: Descriptor metadata for a CockroachDB database.
+    guide: |
+      Requires `database`, for example `WHERE database = 'defaultdb'`.
+    filters:
+      - name: database
+        required: true
+    request:
+      method: GET
+      path: /api/v2/databases/{{filter.database}}/
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: database
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Database name supplied as a filter.
+        expr:
+          kind: from_filter
+          key: database
+      - name: id
+        type: Int64
+        nullable: true
+        description: Database descriptor ID.
+      - name: descriptor_id
+        type: Int64
+        nullable: true
+        description: Database descriptor ID when returned under descriptor_id.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Database name.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw database details response.
+        expr: {kind: path, path: []}
+
+  - name: database_grants
+    description: Privileges granted on a CockroachDB database.
+    guide: |
+      Requires `database`, for example `WHERE database = 'defaultdb'`.
+    filters:
+      - name: database
+        required: true
+    request:
+      method: GET
+      path: /api/v2/databases/{{filter.database}}/grants/
+    response:
+      rows_path: [grants]
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: database
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Database name supplied as a filter.
+        expr:
+          kind: from_filter
+          key: database
+      - name: grantee
+        type: Utf8
+        nullable: true
+        description: User or role receiving the privilege.
+      - name: user
+        type: Utf8
+        nullable: true
+        description: User or role receiving the privilege when returned as user.
+      - name: privileges_json
+        type: Json
+        nullable: true
+        description: Granted privileges.
+        expr: {kind: path, path: [privileges]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw grant object.
+        expr: {kind: path, path: []}
+
+  - name: database_tables
+    description: Tables in a CockroachDB database.
+    guide: |
+      Requires `database`, for example `WHERE database = 'defaultdb'`.
+    filters:
+      - name: database
+        required: true
+    request:
+      method: GET
+      path: /api/v2/databases/{{filter.database}}/tables/
+    response:
+      rows_path: [tables]
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: database
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Database name supplied as a filter.
+        expr:
+          kind: from_filter
+          key: database
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Table name.
+      - name: table_name
+        type: Utf8
+        nullable: true
+        description: Table name when returned as table_name.
+      - name: schema_name
+        type: Utf8
+        nullable: true
+        description: Table schema name.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw table object.
+        expr: {kind: path, path: []}
+
+  - name: table_details
+    description: Table schema, grants, indexes, ranges, and zone configuration metadata.
+    guide: |
+      Requires `database` and `table`, for example
+      `WHERE database = 'defaultdb' AND table = 'orders'`.
+    filters:
+      - name: database
+        required: true
+      - name: table
+        required: true
+    request:
+      method: GET
+      path: /api/v2/databases/{{filter.database}}/tables/{{filter.table}}/
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: database
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Database name supplied as a filter.
+        expr:
+          kind: from_filter
+          key: database
+      - name: table
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Table name supplied as a filter.
+        expr:
+          kind: from_filter
+          key: table
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Table name.
+      - name: schema_name
+        type: Utf8
+        nullable: true
+        description: Table schema name.
+      - name: grants_json
+        type: Json
+        nullable: true
+        description: Table grants.
+        expr: {kind: path, path: [grants]}
+      - name: indexes_json
+        type: Json
+        nullable: true
+        description: Table indexes.
+        expr: {kind: path, path: [indexes]}
+      - name: columns_json
+        type: Json
+        nullable: true
+        description: Table columns.
+        expr: {kind: path, path: [columns]}
+      - name: range_count
+        type: Int64
+        nullable: true
+        description: Number of ranges for the table.
+      - name: zone_config_json
+        type: Json
+        nullable: true
+        description: Zone configuration.
+        expr: {kind: path, path: [zone_config]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw table details response.
+        expr: {kind: path, path: []}
+
+  - name: events
+    description: Recent cluster events.
+    fetch_limit_default: 100
+    filters:
+      - name: type
+    request:
+      method: GET
+      path: /api/v2/events/
+      query:
+        - name: type
+          from: filter
+          key: type
+    response:
+      rows_path: [events]
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: Event timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [timestamp]}
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: Event type.
+      - name: target_id
+        type: Utf8
+        nullable: true
+        description: Event target ID.
+      - name: reporting_id
+        type: Utf8
+        nullable: true
+        description: Reporting node ID.
+      - name: info_json
+        type: Json
+        nullable: true
+        description: Raw event info.
+        expr: {kind: path, path: [info]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw event object.
+        expr: {kind: path, path: []}
+
+  - name: sessions
+    description: Active SQL sessions on the cluster.
+    fetch_limit_default: 100
+    filters:
+      - name: username
+    request:
+      method: GET
+      path: /api/v2/sessions/
+      query:
+        - name: username
+          from: filter
+          key: username
+    response:
+      rows_path: [sessions]
+      allow_404_empty: true
+    pagination:
+      mode: cursor_query
+      cursor_param: start
+      response_cursor_path:
+        - next
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Session ID.
+      - name: username
+        type: Utf8
+        nullable: true
+        description: SQL username.
+      - name: client_address
+        type: Utf8
+        nullable: true
+        description: Client address.
+      - name: application_name
+        type: Utf8
+        nullable: true
+        description: SQL application name.
+      - name: active_queries_json
+        type: Json
+        nullable: true
+        description: Active queries for the session.
+        expr: {kind: path, path: [active_queries]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw session object.
+        expr: {kind: path, path: []}
+
+  - name: users
+    description: SQL users in the CockroachDB cluster.
+    request:
+      method: GET
+      path: /api/v2/users/
+    response:
+      rows_path: [users]
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: username
+        type: Utf8
+        nullable: true
+        description: SQL username.
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: SQL username when returned as user_name.
+      - name: is_role
+        type: Boolean
+        nullable: true
+        description: Whether the principal is a role.
+      - name: options_json
+        type: Json
+        nullable: true
+        description: User options.
+        expr: {kind: path, path: [options]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw user object.
+        expr: {kind: path, path: []}
