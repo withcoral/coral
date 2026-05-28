@@ -1,6 +1,6 @@
 # DeFiLlama Source
 
-[DeFiLlama](https://defillama.com) is the largest TVL aggregator for DeFi protocols. This community source exposes DeFi protocol TVL, market cap, and price-change metrics as read-only SQL tables via [Coral](https://withcoral.com).
+[DeFiLlama](https://defillama.com) is the largest TVL aggregator for DeFi protocols. This community source exposes DeFi protocol TVL and price-change metrics as read-only SQL tables via [Coral](https://withcoral.com).
 
 No authentication required — the DeFiLlama API is free and keyless.
 
@@ -26,7 +26,7 @@ coral source test defillama
 
 ### `defillama.protocols`
 
-All DeFi protocols tracked by DeFiLlama with TVL, market cap, and price change metrics over 1d, 7d, and 30d windows.
+All DeFi protocols tracked by DeFiLlama with TVL and price change metrics over 1d and 7d windows.
 
 No required filters — returns all protocols in a single request.
 
@@ -39,14 +39,10 @@ No required filters — returns all protocols in a single request.
 | `tvl` | Float64 | Total value locked in USD |
 | `change_1d` | Float64 | TVL % change over 1 day |
 | `change_7d` | Float64 | TVL % change over 7 days |
-| `change_1m` | Float64 | TVL % change over 30 days |
-| `mcap` | Float64 | Circulating market cap in USD |
-| `fdv` | Float64 | Fully diluted valuation in USD |
-| `staking` | Float64 | Total staked value in USD |
 
 ### `defillama.protocol_tvl`
 
-Historical TVL for a specific protocol by slug. Returns a single row with current TVL and chain breakdown.
+Protocol metadata with chain-level TVL breakdown. Returns a single row with `currentChainTvls` and `chainTvls` JSON objects.
 
 | Filter | Type | Required | Description |
 |--------|------|----------|-------------|
@@ -55,12 +51,10 @@ Historical TVL for a specific protocol by slug. Returns a single row with curren
 | Column | Type | Description |
 |--------|------|-------------|
 | `name` | Utf8 | Protocol display name |
-| `slug` | Utf8 | Protocol slug identifier |
-| `tvl` | Float64 | Current total value locked in USD |
-| `chain_tvls` | Json | TVL breakdown by chain as a JSON object |
-| `change_1d` | Float64 | TVL % change over 1 day |
-| `change_7d` | Float64 | TVL % change over 7 days |
-| `change_1m` | Float64 | TVL % change over 30 days |
+| `category` | Utf8 | DeFi category |
+| `chains` | Json | Array of chain names the protocol operates on |
+| `currentChainTvls` | Json | Current TVL per chain (e.g. `{"Ethereum": 5000000000}`) |
+| `chainTvls` | Json | Historical TVL data per chain |
 
 ---
 
@@ -71,6 +65,7 @@ Historical TVL for a specific protocol by slug. Returns a single row with curren
 ```sql
 SELECT name, tvl, change_7d, category
 FROM defillama.protocols
+WHERE tvl IS NOT NULL
 ORDER BY tvl DESC
 LIMIT 10;
 ```
@@ -78,17 +73,17 @@ LIMIT 10;
 ### Protocols with declining TVL (risk signal)
 
 ```sql
-SELECT name, slug, tvl, change_7d, change_1m
+SELECT name, slug, tvl, change_7d
 FROM defillama.protocols
-WHERE change_7d < -10
+WHERE change_7d < -10 AND tvl IS NOT NULL
 ORDER BY change_7d ASC
 LIMIT 20;
 ```
 
-### Single protocol detail
+### Single protocol chain breakdown
 
 ```sql
-SELECT name, tvl, change_1d, change_7d, chain_tvls
+SELECT name, currentChainTvls, chainTvls
 FROM defillama.protocol_tvl
 WHERE slug = 'aave';
 ```
@@ -99,6 +94,7 @@ WHERE slug = 'aave';
 SELECT g.recipient_name, d.tvl, d.change_7d
 FROM grantees.registry g
 JOIN defillama.protocols d ON d.slug = g.project_slug
+WHERE d.tvl IS NOT NULL
 ORDER BY d.tvl DESC;
 ```
 
@@ -108,6 +104,7 @@ ORDER BY d.tvl DESC;
 
 - **No authentication required** — the DeFiLlama API is fully public.
 - **No pagination** — the `/protocols` endpoint returns all protocols in a single response (~2000+ protocols).
+- **Null TVL rows** — some protocols have null TVL. Use `WHERE tvl IS NOT NULL` in queries and examples.
 - **Rate limits** — DeFiLlama does not publish rate limits, but aggressive polling may be throttled. One request per query is typical.
 - **Data freshness** — TVL data is updated periodically (typically every few hours), not in real-time.
 
@@ -115,5 +112,5 @@ ORDER BY d.tvl DESC;
 
 ## Source
 
-- [DeFiLlama API](https://defillama.com/docs/api)
+- [DeFiLlama API docs](https://api-docs.defillama.com/llms-free.txt)
 - [DeFiLlama website](https://defillama.com)
