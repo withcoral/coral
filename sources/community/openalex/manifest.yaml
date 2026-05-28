@@ -13,8 +13,8 @@ inputs:
     kind: secret
     hint: >-
       API key for OpenAlex. Get a free key at https://openalex.org/settings/api.
-      An API key provides higher rate limits and a daily free usage allowance of
-      100,000 requests. The key is passed as the api_key query parameter.
+      The key provides a $1/day free allowance, with different effective capacities
+      for search versus list/filter calls. The key is passed as the api_key query parameter.
 base_url: https://api.openalex.org
 request_headers:
   - name: Accept
@@ -42,8 +42,8 @@ tables:
       Start with `SELECT title, publication_year, cited_by_count FROM
       openalex.works WHERE search = 'transformer' LIMIT 10`. Use `filter_value` for
       structured queries like `filter_value = 'publication_year:2024,type:article'`.
-      Combine `search` and `filter` for targeted results. The `authorships`
-      column contains the full author list as JSON. Use `sort` to order results
+      Combine `search` and `filter_value` for targeted results. The `authorships`
+      column contains the full author list as JSON. Use `sort_value` to order results
       (e.g. `cited_by_count:desc`, `publication_year:desc`).
     fetch_limit_default: 25
     filters:
