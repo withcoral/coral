@@ -3,10 +3,10 @@
 //! Sources that need interactive configuration declare their inputs under a
 //! top-level `inputs` map. Each entry fixes the input's kind (`variable` or
 //! `secret`), an optional default, and an optional hint. References elsewhere
-//! in the manifest use `{{input.KEY}}` templates or `from: input` value
-//! sources; the declared kind determines whether the value is resolved from
-//! the variable or secret store. Manifests that take no interactive inputs
-//! may omit the block entirely.
+//! in the manifest use `{{input.KEY}}` templates, `from: input`, or typed
+//! wrappers such as `from: bearer`; the declared kind determines whether the
+//! value is resolved from the variable or secret store. Manifests that take no
+//! interactive inputs may omit the block entirely.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -253,6 +253,22 @@ pub(crate) fn collect_source_inputs_value(root: &Value) -> Result<Vec<ManifestIn
     Ok(inputs)
 }
 
+pub(crate) fn declared_secret_input_names(inputs: &[ManifestInputSpec]) -> BTreeSet<String> {
+    inputs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Secret)
+        .map(|input| input.key.clone())
+        .collect()
+}
+
+pub(crate) fn required_secret_input_names(inputs: &[ManifestInputSpec]) -> BTreeSet<String> {
+    inputs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Secret && input.required)
+        .map(|input| input.key.clone())
+        .collect()
+}
+
 fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
     let root = root
         .as_object()
@@ -308,6 +324,17 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
             .get("credential")
             .map(|value| parse_credential(key, value))
             .transpose()?;
+        let required = input
+            .get("required")
+            .map(|value| {
+                value.as_bool().ok_or_else(|| {
+                    ManifestError::validation(format!(
+                        "manifest input '{key}' required must be a boolean"
+                    ))
+                })
+            })
+            .transpose()?
+            .unwrap_or(default_value.is_none());
         if kind != ManifestInputKind::Secret && credential.is_some() {
             return Err(ManifestError::validation(format!(
                 "manifest input '{key}' declares credential methods but is not a secret"
@@ -316,7 +343,7 @@ fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
         ordered.push(ManifestInputSpec {
             key: key.clone(),
             kind,
-            required: default_value.is_none(),
+            required,
             default_value: default_value.unwrap_or_default(),
             hint,
             credential,
@@ -949,24 +976,37 @@ fn validate_input_key(label: &str, value: &str) -> Result<()> {
 }
 
 fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
-    let declared: BTreeSet<String> = inputs.iter().map(|input| input.key.clone()).collect();
-    validate_value(root, true, &declared)
+    let declared: BTreeMap<String, ManifestInputKind> = inputs
+        .iter()
+        .map(|input| (input.key.clone(), input.kind))
+        .collect();
+    validate_value(root, true, &declared, false)
 }
 
-fn validate_value(value: &Value, is_root: bool, declared: &BTreeSet<String>) -> Result<()> {
+fn validate_value(
+    value: &Value,
+    is_root: bool,
+    declared: &BTreeMap<String, ManifestInputKind>,
+    in_auth: bool,
+) -> Result<()> {
     match value {
         Value::Object(map) => {
-            validate_mapping(map, declared)?;
+            validate_mapping(map, declared, in_auth)?;
             for (key, nested) in map {
                 if is_root && key == "inputs" {
                     continue;
                 }
-                validate_value(nested, false, declared)?;
+                validate_value(
+                    nested,
+                    false,
+                    declared,
+                    in_auth || (is_root && key == "auth"),
+                )?;
             }
         }
         Value::Array(items) => {
             for item in items {
-                validate_value(item, false, declared)?;
+                validate_value(item, false, declared, in_auth)?;
             }
         }
         Value::String(raw) => validate_template(raw, declared)?,
@@ -975,18 +1015,33 @@ fn validate_value(value: &Value, is_root: bool, declared: &BTreeSet<String>) -> 
     Ok(())
 }
 
-fn validate_mapping(map: &Map<String, Value>, declared: &BTreeSet<String>) -> Result<()> {
-    if map.get("from").and_then(Value::as_str) != Some("input") {
+fn validate_mapping(
+    map: &Map<String, Value>,
+    declared: &BTreeMap<String, ManifestInputKind>,
+    in_auth: bool,
+) -> Result<()> {
+    let Some(source_kind @ ("input" | "bearer")) = map.get("from").and_then(Value::as_str) else {
         return Ok(());
-    }
+    };
 
-    let key = map
-        .get("key")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ManifestError::validation("manifest 'input' value source is missing key"))?;
-    if !declared.contains(key) {
+    let key = map.get("key").and_then(Value::as_str).ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest '{source_kind}' value source is missing key"
+        ))
+    })?;
+    let Some(kind) = declared.get(key) else {
         return Err(ManifestError::validation(format!(
             "manifest input '{key}' is referenced but not declared under top-level inputs"
+        )));
+    };
+    if source_kind == "bearer" && *kind != ManifestInputKind::Secret {
+        return Err(ManifestError::validation(format!(
+            "manifest bearer value source '{key}' must reference a secret input"
+        )));
+    }
+    if source_kind == "input" && in_auth && *kind != ManifestInputKind::Secret {
+        return Err(ManifestError::validation(format!(
+            "manifest auth input value source '{key}' must reference a secret input"
         )));
     }
     if map.contains_key("default") {
@@ -997,19 +1052,18 @@ fn validate_mapping(map: &Map<String, Value>, declared: &BTreeSet<String>) -> Re
     Ok(())
 }
 
-fn validate_template(template: &str, declared: &BTreeSet<String>) -> Result<()> {
+fn validate_template(template: &str, declared: &BTreeMap<String, ManifestInputKind>) -> Result<()> {
     let template = ParsedTemplate::parse(template)?;
     for token in template.tokens() {
-        if !matches!(token.namespace(), TemplateNamespace::Input) {
-            continue;
+        for key in token.input_keys() {
+            if !declared.contains_key(key) {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{key}' is referenced but not declared under top-level inputs"
+                )));
+            }
         }
-        if !declared.contains(token.key()) {
-            return Err(ManifestError::validation(format!(
-                "manifest input '{}' is referenced but not declared under top-level inputs",
-                token.key()
-            )));
-        }
-        if token.default_value().is_some() {
+        if matches!(token.namespace(), TemplateNamespace::Input) && token.default_value().is_some()
+        {
             return Err(ManifestError::validation(format!(
                 "manifest input '{}' must declare defaults under top-level inputs",
                 token.key()
@@ -1172,6 +1226,21 @@ tables: []
         );
         assert_eq!(credential.methods[0].label.as_deref(), Some("Paste token"));
         assert!(credential.methods[0].oauth.is_none());
+    }
+
+    #[test]
+    fn parses_optional_secret_input() {
+        let inputs = collect(&manifest_with_input(
+            r"
+  API_TOKEN:
+    kind: secret
+    required: false
+",
+        ))
+        .expect("inputs");
+        assert_eq!(inputs[0].key, "API_TOKEN");
+        assert_eq!(inputs[0].kind, ManifestInputKind::Secret);
+        assert!(!inputs[0].required);
     }
 
     #[test]
@@ -1679,6 +1748,168 @@ tables: []
                 .to_string()
                 .contains("referenced but not declared under top-level inputs")
         );
+    }
+
+    #[test]
+    fn one_of_value_source_input_references_resolve_against_declarations() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_KEY:
+    kind: secret
+    required: false
+  OAUTH_TOKEN:
+    kind: secret
+    required: false
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: API_KEY
+        - from: bearer
+          key: OAUTH_TOKEN
+tables: []
+";
+        let inputs = collect(manifest).expect("inputs");
+        assert_eq!(inputs.len(), 2);
+    }
+
+    #[test]
+    fn one_of_value_source_undeclared_input_references_are_rejected() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_KEY:
+    kind: secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: API_KEY
+        - from: bearer
+          key: OAUTH_TOKEN
+tables: []
+";
+        let error = collect(manifest).expect_err("undeclared input");
+        assert!(
+            error
+                .to_string()
+                .contains("referenced but not declared under top-level inputs")
+        );
+    }
+
+    #[test]
+    fn from_bearer_value_source_resolves_against_declarations() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  OAUTH_TOKEN:
+    kind: secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: OAUTH_TOKEN
+tables: []
+";
+        let inputs = collect(manifest).expect("bearer key should resolve as an input key");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].key, "OAUTH_TOKEN");
+    }
+
+    #[test]
+    fn from_bearer_value_source_requires_secret_input() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  HEADER_VALUE:
+    kind: variable
+    default: not-secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: HEADER_VALUE
+tables: []
+";
+        let error = collect(manifest).expect_err("bearer key must point at a secret input");
+        let message = error.to_string();
+        assert!(
+            message.contains("bearer value source 'HEADER_VALUE' must reference a secret input"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn auth_input_value_source_requires_secret_input() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  HEADER_VALUE:
+    kind: variable
+    default: not-secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: HEADER_VALUE
+tables: []
+";
+        let error = collect(manifest).expect_err("auth input key must point at a secret input");
+        let message = error.to_string();
+        assert!(
+            message
+                .contains("auth input value source 'HEADER_VALUE' must reference a secret input"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn non_auth_input_value_source_allows_variable_input() {
+        let manifest = r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_VERSION:
+    kind: variable
+    default: 2026-01-01
+request_headers:
+  - name: API-Version
+    from: input
+    key: API_VERSION
+tables: []
+";
+        let inputs = collect(manifest).expect("non-auth request header can use variable inputs");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].key, "API_VERSION");
     }
 
     #[test]

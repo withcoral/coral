@@ -188,8 +188,8 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.API_TOKEN}}
+      from: bearer
+      key: API_TOKEN
 tables:
   - name: messages
     description: Messages from the API
@@ -251,8 +251,23 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.DEMO_API_TOKEN}}
+      from: bearer
+      key: DEMO_API_TOKEN
+```
+
+When an API supports either a complete pasted API-key header or an OAuth access
+token, declare both credential inputs as optional secrets, then use
+`from: one_of` and put the pasted header first, followed by a `from: bearer`
+fallback for the raw OAuth token.
+
+```yaml
+inputs:
+  DEMO_API_KEY:
+    kind: secret
+    required: false
+  DEMO_OAUTH_ACCESS_TOKEN:
+    kind: secret
+    required: false
 ```
 
 ### OAuth client and redirect options

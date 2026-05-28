@@ -145,6 +145,11 @@ Run the guided source setup flow.
 coral onboard
 ```
 
+When a secret input declares credential methods, onboarding asks which method
+to use before consuming a matching environment variable. Choosing a
+`source_config` method still uses the normal environment-variable or prompt
+path.
+
 ## `coral features`
 
 Coral ships with experimental runtime features that can be enabled on demand.
