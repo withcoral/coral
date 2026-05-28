@@ -34,8 +34,8 @@ Official docs:
 | --- | --- |
 | `workos.organizations` | WorkOS organizations. |
 | `workos.users` | User Management users. Supports `organization_id` and `email`. |
-| `workos.organization_memberships_by_organization` | User-to-organization memberships. Requires `organization_id`. |
-| `workos.organization_memberships_by_user` | User-to-organization memberships. Requires `user_id`. |
+| `workos.organization_memberships_by_organization` | User-to-organization memberships. Requires `organization_id`; supports `statuses`. |
+| `workos.organization_memberships_by_user` | User-to-organization memberships. Requires `user_id`; supports `statuses`. |
 | `workos.directories` | Directory Sync directories. |
 | `workos.events` | WorkOS environment events. Supports organization, event, time range, and order filters. |
 
@@ -68,6 +68,16 @@ WHERE organization_id = 'org_...'
 LIMIT 25;
 ```
 
+Review pending or inactive memberships:
+
+```sql
+SELECT id, user_id, organization_id, status, role_slug
+FROM workos.organization_memberships_by_organization
+WHERE organization_id = 'org_...'
+  AND statuses = 'pending,inactive'
+LIMIT 25;
+```
+
 Review memberships for one user:
 
 ```sql
@@ -93,6 +103,9 @@ LIMIT 25;
 - WorkOS requires `organization_id` or `user_id` for membership queries, so the
   source exposes separate membership tables with required scope filters instead
   of an unscoped membership table.
+- WorkOS membership lists return active memberships by default. Use the
+  `statuses` filter, such as `pending,inactive`, when auditing invitations or
+  inactive memberships.
 - The source is read-only and does not create, update, or delete WorkOS
   resources.
 - Event `data` and `context` are JSON metadata columns; avoid selecting them in

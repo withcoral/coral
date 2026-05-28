@@ -173,10 +173,13 @@ tables:
     description: WorkOS User Management organization memberships scoped by organization.
     guide: |
       Requires `organization_id` from `workos.organizations`. Use this table
-      to inspect all user memberships for one organization.
+      to inspect all user memberships for one organization. WorkOS returns
+      active memberships by default; pass `statuses` to include states such as
+      pending or inactive.
     filters:
       - name: organization_id
         required: true
+      - name: statuses
     fetch_limit_default: 100
     request:
       method: GET
@@ -185,6 +188,9 @@ tables:
         - name: organization_id
           from: filter
           key: organization_id
+        - name: statuses
+          from: filter
+          key: statuses
     response:
       rows_path: [data]
       row_strategy: direct
@@ -239,10 +245,12 @@ tables:
     description: WorkOS User Management organization memberships scoped by user.
     guide: |
       Requires `user_id` from `workos.users`. Use this table to inspect all
-      organization memberships for one user.
+      organization memberships for one user. WorkOS returns active memberships
+      by default; pass `statuses` to include states such as pending or inactive.
     filters:
       - name: user_id
         required: true
+      - name: statuses
     fetch_limit_default: 100
     request:
       method: GET
@@ -251,6 +259,9 @@ tables:
         - name: user_id
           from: filter
           key: user_id
+        - name: statuses
+          from: filter
+          key: statuses
     response:
       rows_path: [data]
       row_strategy: direct
