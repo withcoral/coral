@@ -238,18 +238,11 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
-        let validation_storage = self.source_validation_storage(
+        let stored_material = self.source_stored_material_for_validation(
             workspace_name,
             &candidate,
             &command.bindings,
             &BTreeSet::new(),
-        )?;
-        let stored_material = self.source_material_for_validation(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            &BTreeSet::new(),
-            validation_storage,
         )?;
         let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
         let credential_storage = self.source_persist_storage(
@@ -283,18 +276,11 @@ impl SourceManager {
             .iter()
             .map(|credential| credential.input_key.clone())
             .collect::<BTreeSet<_>>();
-        let validation_storage = self.source_validation_storage(
+        let stored_material = self.source_stored_material_for_validation(
             workspace_name,
             &candidate,
             &command.bindings,
             &oauth_input_keys,
-        )?;
-        let stored_material = self.source_material_for_validation(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            &oauth_input_keys,
-            validation_storage,
         )?;
         let has_stored_material = !stored_material.is_empty();
         let bindings = self
@@ -332,18 +318,11 @@ impl SourceManager {
         let mut candidate =
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        let validation_storage = self.source_validation_storage(
+        let stored_material = self.source_stored_material_for_validation(
             workspace_name,
             &candidate,
             &command.bindings,
             &BTreeSet::new(),
-        )?;
-        let stored_material = self.source_material_for_validation(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            &BTreeSet::new(),
-            validation_storage,
         )?;
         let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
         let credential_storage = self.source_persist_storage(
@@ -378,18 +357,11 @@ impl SourceManager {
             .iter()
             .map(|credential| credential.input_key.clone())
             .collect::<BTreeSet<_>>();
-        let validation_storage = self.source_validation_storage(
+        let stored_material = self.source_stored_material_for_validation(
             workspace_name,
             &candidate,
             &command.bindings,
             &oauth_input_keys,
-        )?;
-        let stored_material = self.source_material_for_validation(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            &oauth_input_keys,
-            validation_storage,
         )?;
         let has_stored_material = !stored_material.is_empty();
         let bindings = self
@@ -635,52 +607,39 @@ impl SourceManager {
         }
     }
 
-    fn source_material_for_validation(
+    fn source_stored_material_for_validation(
         &self,
         workspace_name: &WorkspaceName,
         candidate: &CandidateSource,
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
-        credential_storage: Option<CredentialStorageKind>,
     ) -> Result<BTreeMap<String, String>, AppError> {
         if !source_needs_stored_material_for_validation(candidate, bindings, filled_secret_keys)? {
             return Ok(BTreeMap::new());
         }
 
-        match credential_storage {
-            Some(credential_storage) => {
-                self.read_source_material(workspace_name, &candidate.name, credential_storage)
-            }
-            None => Ok(BTreeMap::new()),
-        }
-    }
-
-    fn source_validation_storage(
-        &self,
-        workspace_name: &WorkspaceName,
-        candidate: &CandidateSource,
-        bindings: &SourceBindings,
-        filled_secret_keys: &BTreeSet<String>,
-    ) -> Result<Option<CredentialStorageKind>, AppError> {
-        if !source_needs_stored_material_for_validation(candidate, bindings, filled_secret_keys)? {
-            return Ok(None);
-        }
-
-        match self
+        let credential_storage = match self
             .config_store
             .get_source(workspace_name, &candidate.name)
         {
-            Ok(source) => Ok(source.credential_storage_for_material()),
+            Ok(source) => source.credential_storage_for_material(),
             Err(AppError::SourceNotFound(_))
                 if self
                     .layout
                     .secret_file(workspace_name, &candidate.name)
                     .exists() =>
             {
-                Ok(Some(CredentialStorageKind::File))
+                Some(CredentialStorageKind::File)
             }
-            Err(AppError::SourceNotFound(_)) => Ok(None),
-            Err(error) => Err(error),
+            Err(AppError::SourceNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+
+        match credential_storage {
+            Some(credential_storage) => {
+                self.read_source_material(workspace_name, &candidate.name, credential_storage)
+            }
+            None => Ok(BTreeMap::new()),
         }
     }
 
