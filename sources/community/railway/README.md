@@ -52,7 +52,7 @@ Lists services defined within your projects.
 | `updated_at` | `Timestamp` | `true` | Timestamp when the service was last updated. |
 
 * **Filters:**
-  * `project_id` (`Utf8`, optional): Restrict results to a single project.
+  * `project_id` (`Utf8`, required): Restrict results to a single project.
 
 ### `railway.deployments`
 Lists the history of deployments across your services.
@@ -84,13 +84,13 @@ Lists environments (e.g., `production`, `staging`, PR previews) configured insid
 | `is_ephemeral` | `Boolean` | `true` | Whether this is a temporary/ephemeral preview environment. |
 
 * **Filters:**
-  * `project_id` (`Utf8`, optional): Restrict results to a single project.
+  * `project_id` (`Utf8`, required): Restrict results to a single project.
 
 ---
 
 ## Example SQL Queries
 
-### 1. Count projects and services per workspace
+### 1. Count projects per workspace
 ```sql
 SELECT team_id, COUNT(DISTINCT id) as projects_count
 FROM railway.projects
@@ -133,5 +133,5 @@ LIMIT 10;
 
 ## Limitations
 
-* **Filtering Requirements:** The Railway GraphQL API resolves child resources (like environments and services) nested within projects. While `project_id` is an optional filter in SQL, queries executed without it will fall back to querying the first project in your project list. Using explicit `project_id` equality filters is highly recommended to guarantee correct scoping.
+* **Filtering Requirements:** The Railway GraphQL API resolves child resources (like environments and services) nested within projects. Because of this API structure, `project_id` is a **required filter** in SQL for both the `railway.services` and `railway.environments` tables. Queries against these tables must include a `WHERE project_id = '...'` filter.
 * **Pagination:** The source uses a direct non-paginated fetch. If you have an exceptionally large deployment history or project list, some results beyond default page limits may be truncated.
