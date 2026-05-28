@@ -3,6 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use coral_spec::v4::SurfaceDescriptor;
+use serde_yaml::Value as YamlValue;
+
 use crate::bootstrap::AppError;
 use crate::credentials::oauth::{
     OAuthCredentialMaterial, OAuthCredentialService, StartOAuthCredentialRequest,
@@ -20,8 +23,9 @@ use crate::sources::catalog::{
 };
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationDescriptorSource, SourceMaterializationSummary,
-    build_v4_materialization_tmp, cleanup_materialization_backup, cleanup_materialization_tmp,
-    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
+    build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
+    cleanup_materialization_tmp, new_materialization_suffix, replace_v4_materialization,
+    restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -317,15 +321,15 @@ impl SourceManager {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         ensure_manifest_allowed(&manifest, &self.features)?;
-        let mut candidate =
-            describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
+        let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
+        let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_validated_source(
             workspace_name,
             &candidate,
             &command.bindings,
-            Some(&command.manifest_yaml),
-            &command.manifest_yaml,
+            Some(&manifest_yaml),
+            &manifest_yaml,
             SourceOrigin::Imported,
             &[],
         )
@@ -340,8 +344,8 @@ impl SourceManager {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         ensure_manifest_allowed(&manifest, &self.features)?;
-        let mut candidate =
-            describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
+        let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
+        let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_source_with_oauth(
             workspace_name,
@@ -349,8 +353,8 @@ impl SourceManager {
             &command.bindings,
             command.oauth_credential_retrievals,
             events,
-            Some(&command.manifest_yaml),
-            &command.manifest_yaml,
+            Some(&manifest_yaml),
+            &manifest_yaml,
             SourceOrigin::Imported,
             &[],
         )
@@ -549,7 +553,13 @@ impl SourceManager {
             .config_store
             .upsert_source(workspace_name, source.clone())
         {
-            restore_materialization_backup(&self.layout, workspace_name, source_name, backup);
+            if let Err(restore_error) =
+                restore_materialization_backup(&self.layout, workspace_name, source_name, backup)
+            {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to persist refreshed source '{source_name}': {error}; failed to restore previous DSL v4 materialization: {restore_error}"
+                )));
+            }
             return Err(error);
         }
         cleanup_materialization_backup(backup);
@@ -813,7 +823,7 @@ impl SourceManager {
             .config_store
             .upsert_source(workspace_name, stored.clone())
         {
-            restore_materialization_backup(
+            let restore_result = restore_materialization_backup(
                 &self.layout,
                 workspace_name,
                 &source_name,
@@ -826,6 +836,11 @@ impl SourceManager {
                 credential_storage,
                 &credential_guard,
             );
+            if let Err(restore_error) = restore_result {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to persist source '{source_name}': {error}; failed to restore previous DSL v4 materialization: {restore_error}"
+                )));
+            }
             return Err(error);
         }
         cleanup_materialization_backup(materialization_backup);
@@ -1466,6 +1481,54 @@ fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
+fn durable_import_manifest_yaml(
+    manifest_yaml: &str,
+    manifest: &ValidatedSourceManifest,
+) -> Result<String, AppError> {
+    let Some(v4) = manifest.as_v4() else {
+        return Ok(manifest_yaml.to_string());
+    };
+    let mut replacement_files = BTreeMap::new();
+    for surface in &v4.surfaces {
+        let SurfaceDescriptor::File { file, .. } = &surface.descriptor else {
+            continue;
+        };
+        let canonical = canonicalize_file_descriptor(file)?;
+        if canonical != *file {
+            replacement_files.insert(surface.id.as_str(), canonical);
+        }
+    }
+    if replacement_files.is_empty() {
+        return Ok(manifest_yaml.to_string());
+    }
+
+    let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
+    let surfaces_key = YamlValue::String("surfaces".to_string());
+    let id_key = YamlValue::String("id".to_string());
+    let file_key = YamlValue::String("file".to_string());
+    let surfaces = value
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(&surfaces_key))
+        .and_then(YamlValue::as_sequence_mut)
+        .ok_or_else(|| AppError::InvalidInput("DSL v4 manifest is missing surfaces".to_string()))?;
+    for surface in surfaces {
+        let Some(mapping) = surface.as_mapping_mut() else {
+            continue;
+        };
+        let Some(surface_id) = mapping.get(&id_key).and_then(YamlValue::as_str) else {
+            continue;
+        };
+        let Some(file) = replacement_files.get(surface_id) else {
+            continue;
+        };
+        mapping.insert(
+            file_key.clone(),
+            YamlValue::String(file.display().to_string()),
+        );
+    }
+    serde_yaml::to_string(&value).map_err(AppError::from)
+}
+
 fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) {
     let Some(mut current) = path.map(std::path::Path::to_path_buf) else {
         return;
@@ -1894,6 +1957,58 @@ tables:
                 .to_string()
                 .contains("requires experimental feature 'dsl_v4'"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn import_v4_source_persists_relative_descriptor_as_absolute_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let cwd = std::env::current_dir().expect("cwd");
+        let descriptor_root = cwd.join("target").join("v4-test-fixtures");
+        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
+        let descriptor_temp = tempfile::Builder::new()
+            .prefix("github-v4-relative-")
+            .tempdir_in(descriptor_root)
+            .expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+        let relative_openapi_file = openapi_file
+            .strip_prefix(&cwd)
+            .expect("fixture under cwd")
+            .to_path_buf();
+        let manager = SourceManager::new_with_features(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout.clone(),
+            enable_dsl_v4(),
+        );
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_file_descriptor(&relative_openapi_file),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import v4 source");
+
+        let source_name = SourceName::parse("github_v4_test").expect("source");
+        let stored_manifest =
+            std::fs::read_to_string(layout.manifest_file(&default_workspace(), &source_name))
+                .expect("stored manifest");
+        assert!(
+            stored_manifest.contains(
+                openapi_file
+                    .canonicalize()
+                    .expect("canonical openapi")
+                    .to_string_lossy()
+                    .as_ref()
+            ),
+            "expected stored manifest to contain canonical descriptor path: {stored_manifest}"
         );
     }
 

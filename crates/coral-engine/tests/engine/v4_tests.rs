@@ -46,6 +46,11 @@ surfaces:
         kind: variable
         default: {}
     base_url: "{{{{input.API_BASE}}}}"
+  - id: hidden_only
+    type: openapi
+    file: /tmp/hidden-openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://hidden.example.com
 "#,
         server.uri()
     ))

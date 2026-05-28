@@ -96,7 +96,7 @@ pub(crate) fn compile_query_source(
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     if let Some(v4_manifest) = source.source_spec().as_v4() {
         let materialization = source.v4_materialization().ok_or_else(|| {
-            CoreError::internal(format!(
+            CoreError::FailedPrecondition(format!(
                 "DSL v4 source '{}' was compiled without materialized artifacts",
                 source.source_name()
             ))

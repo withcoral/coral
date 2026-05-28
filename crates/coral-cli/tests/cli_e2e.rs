@@ -17,8 +17,9 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceCredentialStorage,
-    SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, RefreshSourceResponse,
+    Source, SourceCredentialStorage, SourceInfo, SourceMaterializationDiagnostic,
+    SourceMaterializationSummary, SourceOrigin,
 };
 use tonic::Code;
 
@@ -397,6 +398,85 @@ async fn source_refresh_renders_materialization_summary() {
     assert_eq!(requests.len(), 1, "expected one refresh_source call");
     assert_eq!(requests[0].name, "github");
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_refresh_reports_missing_source() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_refresh_source_not_found("default:missing"),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "refresh", "missing"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("source 'missing' was not found"),
+        "expected source-not-found stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("coral source list"),
+        "expected source-not-found hint: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_refresh_renders_projection_diagnostics() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_refresh_source_response(RefreshSourceResponse {
+            source: Some(Source {
+                workspace: None,
+                name: "github".to_string(),
+                version: "1.0.0".to_string(),
+                secrets: Vec::new(),
+                variables: Vec::new(),
+                origin: SourceOrigin::Bundled as i32,
+                credential_storage: SourceCredentialStorage::File as i32,
+            }),
+            materialization: Some(SourceMaterializationSummary {
+                source_name: "github".to_string(),
+                source_version: "1.0.0".to_string(),
+                manifest_sha256: "00".to_string(),
+                importer_version: "openapi-v2".to_string(),
+                projection_generator_version: "derive-read-v1".to_string(),
+                surface_count: 1,
+                projection_count: 1,
+                published_projection_count: 0,
+                hidden_projection_count: 1,
+            }),
+            diagnostics: vec![SourceMaterializationDiagnostic {
+                code: "projection_hidden".to_string(),
+                severity: "warning".to_string(),
+                message: "projection was hidden".to_string(),
+                surface_id: "rest".to_string(),
+                operation_id: "listIssues".to_string(),
+                projection_name: "issues".to_string(),
+            }],
+        }),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "refresh", "github"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains(
+            "warning projection_hidden rest listIssues projection issues: projection was hidden"
+        ),
+        "expected projection diagnostic: {stdout}"
+    );
 
     server.shutdown().await;
 }
