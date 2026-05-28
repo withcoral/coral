@@ -1,0 +1,169 @@
+name: opensearch
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query OpenSearch cluster topology, index storage states, and snapshot metadata via the REST API.
+base_url: "{{input.OPENSEARCH_URL}}"
+
+inputs:
+  OPENSEARCH_URL:
+    kind: variable
+    hint: |
+      OpenSearch base cluster URL with port and without trailing slash,
+      for example `https://localhost:9200` or `https://opensearch.infra.local`.
+  OPENSEARCH_USERNAME:
+    kind: variable
+    hint: Basic authentication username for cluster connection.
+  OPENSEARCH_PASSWORD:
+    kind: secret
+    hint: Basic authentication password for cluster connection.
+
+auth:
+  type: BasicAuth
+  username: "{{input.OPENSEARCH_USERNAME}}"
+  password: "{{input.OPENSEARCH_PASSWORD}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT node_name, role FROM opensearch.nodes LIMIT 1
+
+tables:
+  - name: nodes
+    description: Operational runtime state, roles, and load indicators for active cluster nodes.
+    request:
+      method: GET
+      path: /_cat/nodes
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: h
+          from: literal
+          value: "name,ip,node.role,cluster_manager,heap.percent,ram.percent,cpu"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: node_name
+        type: Utf8
+        nullable: false
+        description: Unique human-readable name assigned to the cluster node.
+        expr: {kind: path, path: [name]}
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: Bound IP address of the node interface.
+        expr: {kind: path, path: [ip]}
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Explicit node roles allocated within the cluster topology.
+        expr: {kind: path, path: ["node.role"]}
+      - name: cluster_manager_status
+        type: Utf8
+        nullable: true
+        description: Indicates if the node is currently elected as the active cluster coordinator (*, -, or m).
+        expr: {kind: path, path: [cluster_manager]}
+      - name: heap_percent
+        type: Int64
+        nullable: true
+        description: JVM heap utilization percentage.
+        expr: {kind: path, path: ["heap.percent"]}
+      - name: ram_percent
+        type: Int64
+        nullable: true
+        description: System-level physical RAM utilization percentage.
+        expr: {kind: path, path: ["ram.percent"]}
+      - name: cpu_percent
+        type: Int64
+        nullable: true
+        description: Machine CPU utilization percentage.
+        expr: {kind: path, path: [cpu]}
+
+  - name: indices
+    description: Catalog of indices managed inside the storage layer containing sizing and health telemetry.
+    request:
+      method: GET
+      path: /_cat/indices
+      query:
+        - name: format
+          from: literal
+          value: json
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: index_name
+        type: Utf8
+        nullable: false
+        description: Target key namespace identifying the index structure.
+        expr: {kind: path, path: [index]}
+      - name: health
+        type: Utf8
+        nullable: true
+        description: Health cluster status state of shard allocations (green, yellow, red).
+        expr: {kind: path, path: [health]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Operational opening lifecycle phase of the index data stream (open or closed).
+        expr: {kind: path, path: [status]}
+      - name: doc_count
+        type: Int64
+        nullable: true
+        description: Cumulative integer count of valid searchable records indexed.
+        expr: {kind: path, path: ["docs.count"]}
+      - name: store_size
+        type: Utf8
+        nullable: true
+        description: Comprehensive physical storage footprint consumption for primary and replica spaces.
+        expr: {kind: path, path: ["store.size"]}
+
+  - name: snapshots
+    description: Administrative registry tracking the lifecycle states of cold data cluster backups.
+    request:
+      method: GET
+      path: "/_snapshot/{{filter.repository}}/_all"
+    response:
+      row_strategy: direct
+      rows_path: [snapshots]
+    pagination:
+      mode: none
+    filters:
+      - name: repository
+        type: Utf8
+        required: true
+        description: Target backup repository namespace identifier.
+    columns:
+      - name: repository
+        type: Utf8
+        nullable: false
+        description: Destination backup repository registration namespace matching request scope.
+        expr: {kind: filter, name: repository}
+      - name: snapshot_name
+        type: Utf8
+        nullable: false
+        description: Unique user-defined backup verification identifier.
+        expr: {kind: path, path: [snapshot]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Final snapshot execution state (e.g., SUCCESS, FAILED).
+        expr: {kind: path, path: [state]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: OpenSearch instance core version engine marking backup execution compatibility.
+        expr: {kind: path, path: [version]}
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: Absolute date timestamp denoting when the cluster pipeline task launched.
+        expr: {kind: path, path: [start_time]}
