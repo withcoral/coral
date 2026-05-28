@@ -101,7 +101,7 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
+        let runtime = self.runtime_config(workspace_name, &sources);
         CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
             .await
             .map_err(QueryManagerError::Core)
