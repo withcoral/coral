@@ -445,6 +445,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
+                feature_overrides: feature_overrides.clone(),
             })
             .await
             .map_err(anyhow::Error::from)?;
@@ -919,6 +920,14 @@ mod tests {
     }
 
     #[test]
+    fn dsl_v4_feature_override_parse_before_subcommand() {
+        let cli = Cli::try_parse_from(["coral", "--enable-dsl-v4", "source", "discover"])
+            .expect("global dsl v4 feature override should parse before subcommand");
+
+        assert!(matches!(cli.command, super::Command::Source(_)));
+    }
+
+    #[test]
     fn global_feature_overrides_are_hidden_from_help() {
         let mut help = Vec::new();
         Cli::command()
@@ -932,6 +941,14 @@ mod tests {
         );
         assert!(
             !help.contains("--disable-feedback"),
+            "feature override flags should not be visible in help: {help}"
+        );
+        assert!(
+            !help.contains("--enable-dsl-v4"),
+            "feature override flags should not be visible in help: {help}"
+        );
+        assert!(
+            !help.contains("--disable-dsl-v4"),
             "feature override flags should not be visible in help: {help}"
         );
     }

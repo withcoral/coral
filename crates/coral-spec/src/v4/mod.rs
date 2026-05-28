@@ -291,12 +291,6 @@ fn parse_descriptor(source_name: &str, surface: &RawV4Surface) -> Result<Surface
             })
         }
         (None, Some(file)) => {
-            if !file.is_absolute() {
-                return Err(ManifestError::validation(format!(
-                    "source '{source_name}' surface '{}' file descriptor must be absolute",
-                    surface.id
-                )));
-            }
             validate_sha256(source_name, &surface.id, &surface.sha256)?;
             Ok(SurfaceDescriptor::File {
                 file: file.clone(),
