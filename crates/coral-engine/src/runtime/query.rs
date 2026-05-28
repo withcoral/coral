@@ -37,7 +37,10 @@ pub(crate) async fn build_runtime(
     sources: &[QuerySource],
     runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
-    let session_config = SessionConfig::new().with_information_schema(true);
+    let session_config = SessionConfig::new().with_information_schema(true).set_bool(
+        "datafusion.execution.listing_table_ignore_subdirectory",
+        false,
+    );
     let runtime_env = Arc::new(
         RuntimeEnvBuilder::new()
             .with_object_list_cache_limit(0)
