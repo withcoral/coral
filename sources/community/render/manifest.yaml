@@ -23,7 +23,7 @@ inputs:
 test_queries:
   - SELECT id, name FROM render.projects LIMIT 5
   - SELECT id, name FROM render.services LIMIT 5
-  - SELECT id, name, project_id FROM render.environments WHERE project_id = 'proj-dummy' LIMIT 5
+  - SELECT id, name FROM render.environments WHERE id = 'env-dummy' LIMIT 5
   - SELECT id, status, service_id FROM render.deploys WHERE service_id = 'srv-dummy' LIMIT 5
   - SELECT id, status, service_id FROM render.jobs WHERE service_id = 'srv-dummy' LIMIT 5
 
@@ -36,15 +36,21 @@ tables:
     request:
       method: GET
       path: /projects
-      query:
-        - name: limit
-          from: literal
-          value: 100
     response:
       rows_path: []
       row_strategy: direct
       error_path:
         - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Utf8
@@ -53,6 +59,7 @@ tables:
         expr:
           kind: path
           path:
+            - project
             - id
       - name: name
         type: Utf8
@@ -61,6 +68,7 @@ tables:
         expr:
           kind: path
           path:
+            - project
             - name
       - name: created_at
         type: Timestamp
@@ -72,6 +80,7 @@ tables:
           expr:
             kind: path
             path:
+              - project
               - createdAt
       - name: updated_at
         type: Timestamp
@@ -83,6 +92,7 @@ tables:
           expr:
             kind: path
             path:
+              - project
               - updatedAt
       - name: owner_id
         type: Utf8
@@ -91,6 +101,7 @@ tables:
         expr:
           kind: path
           path:
+            - project
             - owner
             - id
       - name: owner_name
@@ -100,6 +111,7 @@ tables:
         expr:
           kind: path
           path:
+            - project
             - owner
             - name
       - name: owner_email
@@ -109,6 +121,7 @@ tables:
         expr:
           kind: path
           path:
+            - project
             - owner
             - email
       - name: owner_type
@@ -118,6 +131,7 @@ tables:
         expr:
           kind: path
           path:
+            - project
             - owner
             - type
       - name: environment_ids
@@ -127,31 +141,45 @@ tables:
         expr:
           kind: path
           path:
+            - project
             - environmentIds
 
   # ──────────────────────────────────────────────────────────────────────
   # render.environments — list environments per project
   # ──────────────────────────────────────────────────────────────────────
   - name: environments
-    description: List environments within a specific project.
+    description: List environments or retrieve a single environment.
     filters:
       - name: project_id
-        required: true
+      - name: id
     request:
       method: GET
       path: /environments
       query:
-        - name: limit
-          from: literal
-          value: 100
         - name: projectId
           from: filter
           key: project_id
+    requests:
+      - when_filters:
+          - id
+        method: GET
+        path: /environments/{{filter.id}}
     response:
       rows_path: []
       row_strategy: direct
+      allow_404_empty: true
       error_path:
         - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Utf8
@@ -243,15 +271,21 @@ tables:
     request:
       method: GET
       path: /services
-      query:
-        - name: limit
-          from: literal
-          value: 100
     response:
       rows_path: []
       row_strategy: direct
       error_path:
         - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Utf8
@@ -388,16 +422,22 @@ tables:
     request:
       method: GET
       path: /services/{{filter.service_id}}/deploys
-      query:
-        - name: limit
-          from: literal
-          value: 100
     response:
       rows_path: []
       row_strategy: direct
       allow_404_empty: true
       error_path:
         - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Utf8
@@ -556,16 +596,22 @@ tables:
     request:
       method: GET
       path: /services/{{filter.service_id}}/jobs
-      query:
-        - name: limit
-          from: literal
-          value: 100
     response:
       rows_path: []
       row_strategy: direct
       allow_404_empty: true
       error_path:
         - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
     columns:
       - name: id
         type: Utf8

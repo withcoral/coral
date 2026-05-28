@@ -60,7 +60,8 @@ Lists environments (e.g., `production`, `staging`) configured inside projects.
 | `env_group_ids` | `Json` | `true` | List of environment group IDs in the environment. |
 
 * **Filters:**
-  * `project_id` (`Utf8`, required): Restrict results to a single project.
+  * `project_id` (`Utf8`, optional): Restrict results to a single project.
+  * `id` (`Utf8`, optional): Retrieve a single environment by ID.
 
 ### `render.services`
 Lists Web Services, Static Sites, Private Services, Background Workers, and Cron Jobs.
@@ -170,7 +171,7 @@ LIMIT 10;
 
 ## Limitations
 
-* **Filtering Requirements:** Due to the nesting of resources in the Render REST API:
-  * `project_id` is a **required filter** in SQL for the `render.environments` table.
+* **Filtering Requirements & Recommendations:** Due to the nesting of resources in the Render REST API:
+  * To list environments, `project_id` must be provided (or query by environment `id`).
   * `service_id` is a **required filter** in SQL for both the `render.deploys` and `render.jobs` tables.
-* **Pagination:** The source fetches up to 100 entries per request. Extremely large histories of jobs or deploys might be truncated to the first page limit.
+* **Pagination:** The source automatically handles cursor-based pagination in pages of 20.
