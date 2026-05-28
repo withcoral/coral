@@ -192,11 +192,7 @@ impl QueryRuntimeAdapter {
         let missing_context_tables = self
             .tables
             .iter()
-            .cloned()
-            .map(|mut table| {
-                table.columns.clear();
-                table
-            })
+            .map(table_metadata_without_columns)
             .collect();
         DescribeTableInfo {
             table: None,
@@ -279,6 +275,17 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_statements(false)
 }
 
+fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
+    TableInfo {
+        schema_name: table.schema_name.clone(),
+        table_name: table.table_name.clone(),
+        description: table.description.clone(),
+        guide: table.guide.clone(),
+        columns: Vec::new(),
+        required_filters: table.required_filters.clone(),
+    }
+}
+
 fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> CoreError {
     let core = query_result_observer_error_to_core(error);
     match core {
@@ -289,5 +296,59 @@ fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> 
             CoreError::FailedPrecondition(format!("query result observer '{name}': {detail}"))
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ColumnInfo;
+
+    fn adapter_with_table() -> QueryRuntimeAdapter {
+        QueryRuntimeAdapter {
+            ctx: Arc::new(SessionContext::new()),
+            tables: vec![TableInfo {
+                schema_name: "demo".to_string(),
+                table_name: "events".to_string(),
+                description: "Event rows".to_string(),
+                guide: "Query event rows.".to_string(),
+                columns: vec![ColumnInfo {
+                    name: "event_id".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    is_virtual: false,
+                    is_required_filter: false,
+                    description: "Event ID".to_string(),
+                    ordinal_position: 0,
+                }],
+                required_filters: vec!["owner".to_string()],
+            }],
+            table_functions: Vec::new(),
+            failures: Vec::new(),
+            query_result_observers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn describe_table_hit_returns_full_table_without_missing_context() {
+        let result = adapter_with_table().describe_table("demo", "events");
+
+        let table = result.table.expect("exact table");
+        assert_eq!(table.columns.len(), 1);
+        assert!(result.missing_context_tables.is_empty());
+    }
+
+    #[test]
+    fn describe_table_miss_returns_columnless_context_tables() {
+        let result = adapter_with_table().describe_table("demo", "missing");
+
+        assert!(result.table.is_none());
+        assert_eq!(result.missing_context_tables.len(), 1);
+        let context_table = result
+            .missing_context_tables
+            .first()
+            .expect("missing context table");
+        assert!(context_table.columns.is_empty());
+        assert_eq!(context_table.required_filters, ["owner".to_string()]);
     }
 }
