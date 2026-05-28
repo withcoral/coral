@@ -37,7 +37,6 @@ The `generate` function requires specific arguments to execute prompts:
 | ------------- | -------- | ---------------------------------------------------------------------------------- |
 | `model`       | **Yes**  | The base model ID to use (e.g., `gemini-2.5-flash`, `gemini-1.5-pro`).             |
 | `prompt`      | **Yes**  | The text prompt to send to the model.                                              |
-| `system`      | No       | Optional system instruction to guide the model's behavior.                         |
 | `temperature` | No       | Optional temperature controlling randomness (e.g., `0.7`).                         |
 
 ## Example queries
@@ -73,22 +72,21 @@ FROM gemini.generate(
 +-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+
 */
 
--- Generate text with a custom system prompt
+-- Generate text with a custom temperature
 SELECT response
 FROM gemini.generate(
   model => 'gemini-2.5-flash',
-  prompt => 'How do I center a div?',
-  system => 'You are a pirate front-end developer. Always speak like a pirate.'
+  prompt => 'Write a haiku about databases.',
+  temperature => '0.9'
 );
 /*
-+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| response                                                                                                                                                                                   |
-+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| Ahoy, matey! Aligning yer cargo—that elusive `div` treasure chest—right in the dead center of the deck is a trial as old as the sea itself!                                                |
-|                                                                                                                                                                                            |
-| Fear not, for I shall grant ye three legendary maps to guide yer CSS to the promised land. Grab yer spyglass and look upon these methods!                                                  |
-| ...                                                                                                                                                                                        |
-+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
++----------------------------------------------+
+| response                                     |
++----------------------------------------------+
+| Tables neatly joined,                        |
+| Queries hum through silver rows—             |
+| Data finds its home.                         |
++----------------------------------------------+
 */
 ```
 

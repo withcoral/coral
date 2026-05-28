@@ -114,18 +114,19 @@ functions:
   - name: generate
     description: >
       Run prompt inference against a specific Gemini model (e.g. gemini-flash-latest).
-    guide: >
-      Execute LLM prompts against Gemini models. Example: `SELECT response FROM
-      gemini.generate(model => 'gemini-flash-latest', prompt => 'Explain SQL joins.')`.
     args:
       - name: model
         required: true
+        bind:
+          arg: model
       - name: prompt
         required: true
-      - name: system
-        required: false
+        bind:
+          arg: prompt
       - name: temperature
         required: false
+        bind:
+          arg: temperature
     request:
       method: POST
       path: /models/{{arg.model}}:generateContent
@@ -143,12 +144,6 @@ functions:
         - path: [contents, "0", parts, "0", text]
           from: arg
           key: prompt
-        - path: [systemInstruction, role]
-          from: literal
-          value: system
-        - path: [systemInstruction, parts, "0", text]
-          from: arg
-          key: system
         - path: [generationConfig, temperature]
           from: arg
           key: temperature
@@ -157,24 +152,6 @@ functions:
     pagination:
       mode: none
     columns:
-      - name: model
-        type: Utf8
-        nullable: false
-        virtual: true
-        description: The model used for generation.
-        expr: {kind: from_arg, key: model}
-      - name: prompt
-        type: Utf8
-        nullable: false
-        virtual: true
-        description: The input prompt provided in the SQL argument.
-        expr: {kind: from_arg, key: prompt}
-      - name: system
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: The system instruction provided in the SQL argument.
-        expr: {kind: from_arg, key: system}
       - name: response
         type: Utf8
         nullable: true
