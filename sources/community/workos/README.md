@@ -12,14 +12,20 @@ Create a WorkOS secret API key in the WorkOS dashboard and provide:
 | --- | --- |
 | `WORKOS_API_KEY` | WorkOS secret API key sent as a bearer token. |
 
-The key is modeled as a secret. Use the narrowest dashboard role and
-environment access that can read the metadata Coral agents need.
+The key is modeled as a secret. WorkOS secret keys are environment-scoped
+credentials that can perform API requests for that environment; this source is
+read-only, but the key itself is not inherently read-only. Use a non-production
+or least-privileged environment key whenever possible, rotate it if exposed, and
+only share it with Coral agents that need identity and audit metadata access.
 
 Official docs:
 
 - <https://workos.com/docs/reference>
+- <https://workos.com/docs/reference/api-authentication>
 - <https://workos.com/docs/reference/organization/list>
 - <https://workos.com/docs/reference/user-management/user/list>
+- <https://workos.com/docs/reference/authkit/organization-membership>
+- <https://workos.com/docs/reference/directory-sync/directory>
 - <https://workos.com/docs/reference/events/list-events>
 
 ## Tables
@@ -28,7 +34,7 @@ Official docs:
 | --- | --- |
 | `workos.organizations` | WorkOS organizations. |
 | `workos.users` | User Management users. Supports `organization_id` and `email`. |
-| `workos.organization_memberships` | User-to-organization memberships. Supports `organization_id` and `user_id`. |
+| `workos.organization_memberships` | User-to-organization memberships. Requires `organization_id`; optionally supports `user_id`. |
 | `workos.directories` | Directory Sync directories. |
 | `workos.events` | WorkOS environment events. Supports organization, event, time range, and order filters. |
 
@@ -48,6 +54,15 @@ Find users in one organization:
 ```sql
 SELECT id, email, first_name, last_name, email_verified
 FROM workos.users
+WHERE organization_id = 'org_...'
+LIMIT 25;
+```
+
+Review memberships for one organization:
+
+```sql
+SELECT id, user_id, organization_id, status, role_slug
+FROM workos.organization_memberships
 WHERE organization_id = 'org_...'
 LIMIT 25;
 ```
@@ -91,11 +106,14 @@ workos (5 tables)
 ├─ organizations
 └─ users
 Query tests
-2 declared · 2 passed · 0 failed
+3 declared · 3 passed · 0 failed
 
 ✓ SELECT id, name FROM workos.organizations LIMIT 1
   1 row
 
 ✓ SELECT id, email FROM workos.users LIMIT 1
+  0 rows
+
+✓ SELECT id, name FROM workos.directories LIMIT 1
   0 rows
 ```

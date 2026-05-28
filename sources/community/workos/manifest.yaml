@@ -11,8 +11,9 @@ inputs:
   WORKOS_API_KEY:
     kind: secret
     hint: |
-      WorkOS secret API key. Create it in the WorkOS dashboard and grant only
-      the read access needed for the tables you want Coral agents to inspect.
+      WorkOS secret API key. Create it in the WorkOS dashboard for the intended
+      environment and treat it as privileged because WorkOS secret keys are not
+      inherently read-only.
 
 auth:
   type: HeaderAuth
@@ -29,6 +30,7 @@ request_headers:
 test_queries:
   - SELECT id, name FROM workos.organizations LIMIT 1
   - SELECT id, email FROM workos.users LIMIT 1
+  - SELECT id, name FROM workos.directories LIMIT 1
 
 tables:
   - name: organizations
@@ -170,10 +172,11 @@ tables:
   - name: organization_memberships
     description: WorkOS User Management organization memberships.
     guide: |
-      Use `organization_id` or `user_id` to scope membership inventory and
-      avoid scanning every membership in large environments.
+      Requires `organization_id` from `workos.organizations`. Add `user_id`
+      when you want to narrow membership inventory to one user.
     filters:
       - name: organization_id
+        required: true
       - name: user_id
     fetch_limit_default: 100
     request:
@@ -217,7 +220,8 @@ tables:
       - name: role_slug
         type: Utf8
         nullable: true
-        description: Role slug when returned by WorkOS.
+        description: Role slug from the nested membership role object.
+        expr: {kind: path, path: [role, slug]}
       - name: created_at
         type: Timestamp
         nullable: true
@@ -244,7 +248,7 @@ tables:
     fetch_limit_default: 100
     request:
       method: GET
-      path: /directory_sync/directories
+      path: /directories
     response:
       rows_path: [data]
       row_strategy: direct
