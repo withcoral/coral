@@ -47,7 +47,7 @@ https://docs.google.com/forms/d/{form_id}/edit
 | Table | Description | Required filters | Optional filters |
 |---|---|---|---|
 | `form` | Form title, description, and metadata | `form_id` | — |
-| `questions` | Question items in the form | `form_id` | — |
+| `questions` | All form items including questions | `form_id` | — |
 | `responses` | Submitted responses | `form_id` | `after_timestamp` |
 
 ## Quick Start
@@ -58,15 +58,17 @@ SELECT form_id, title, description
 FROM google_forms.form
 WHERE form_id = 'your-form-id';
 
--- List all questions
+-- List only question items (filter out page breaks, images, etc.)
 SELECT item_id, question_id, title, required
 FROM google_forms.questions
-WHERE form_id = 'your-form-id';
+WHERE form_id = 'your-form-id'
+  AND question_id IS NOT NULL;
 
 -- List required questions only
 SELECT item_id, question_id, title
 FROM google_forms.questions
 WHERE form_id = 'your-form-id'
+  AND question_id IS NOT NULL
   AND required = true;
 
 -- Get all responses
@@ -91,10 +93,11 @@ WHERE form_id = 'your-form-id'
 The `answers` column in `responses` is a JSON object keyed by `question_id` from the `questions` table:
 
 ```sql
--- Get questions to find question_id values
+-- Get question IDs and titles
 SELECT question_id, title
 FROM google_forms.questions
-WHERE form_id = 'your-form-id';
+WHERE form_id = 'your-form-id'
+  AND question_id IS NOT NULL;
 
 -- Then fetch responses and match answers by question_id
 SELECT response_id, create_time, answers
@@ -107,7 +110,7 @@ WHERE form_id = 'your-form-id';
 ```text
 form
   → form_id
-    → questions (WHERE form_id = '...')
+    → questions (WHERE form_id = '...' AND question_id IS NOT NULL)
     → responses (WHERE form_id = '...')
 questions
   → question_id → matches keys in responses.answers
@@ -119,13 +122,14 @@ questions
 - **Access token expiry**: OAuth 2.0 access tokens expire after 1 hour.
 - **Answers as JSON**: The `answers` column is a raw JSON object. Join `question_id` from the `questions` table to resolve question titles.
 - **after_timestamp filter**: The Google Forms API expects the filter value using comparison operators. Use `timestamp >= <ISO8601>` or `timestamp > <ISO8601>` (e.g. `timestamp >= 2024-01-01T00:00:00Z`).
-- **Question types**: The `questions` table only returns actual question items (CHECKBOX, RADIO, SHORT_ANSWER, PARAGRAPH, DROPDOWN, SCALE, DATE, TIME). Page breaks, images, section headers, and videos are excluded.
+- **Non-question items**: The `questions` table returns all form items including page breaks, images, section headers, and videos. These rows have a null `question_id`. Always filter with `WHERE question_id IS NOT NULL` to return only actual question rows.
+- **Grid questions**: Sub-items of grid questions live under `questionGroupItem.questions[]` and are not returned by this source.
 
 ## Notes
 
 - The `form_id` is stable and does not change when the form is renamed.
-- Use `question_id` (not `item_id`) to match answers keys in the responses table.
-- Grid question sub-items live under `questionGroupItem.questions[]` and are not returned by this source.
+- Use `question_id` (not `item_id`) to match answer keys in the responses table.
+- Always add `AND question_id IS NOT NULL` when querying the `questions` table to exclude non-question items.
 
 ## Live Test Output
 
@@ -136,6 +140,6 @@ coral source add --file sources/community/google_forms/manifest.yaml
 coral source test google_forms
 
 coral query "SELECT form_id, title, description FROM google_forms.form WHERE form_id = 'your-real-form-id'"
-coral query "SELECT item_id, question_id, title, required FROM google_forms.questions WHERE form_id = 'your-real-form-id' LIMIT 5"
+coral query "SELECT item_id, question_id, title, required FROM google_forms.questions WHERE form_id = 'your-real-form-id' AND question_id IS NOT NULL LIMIT 5"
 coral query "SELECT response_id, create_time FROM google_forms.responses WHERE form_id = 'your-real-form-id' LIMIT 3"
 ```

@@ -24,7 +24,8 @@ auth:
       template: Bearer {{input.GOOGLE_FORMS_ACCESS_TOKEN}}
 test_queries:
   - SELECT * FROM google_forms.form WHERE form_id = 'your-form-id' LIMIT 1
-  - SELECT * FROM google_forms.questions WHERE form_id = 'your-form-id' LIMIT 5
+  - SELECT * FROM google_forms.questions WHERE form_id = 'your-form-id' AND question_id IS NOT NULL LIMIT 5
+  - SELECT * FROM google_forms.responses WHERE form_id = 'your-form-id' LIMIT 5
 tables:
   - name: form
     description: Metadata for a Google Forms form.
@@ -87,17 +88,21 @@ tables:
             - info
             - description
   - name: questions
-    description: Questions (items) in a Google Forms form.
+    description: Questions and other items in a Google Forms form.
     guide: |
-      Each row is one question item in the form. Requires form_id filter.
-      Only items of type CHECKBOX, RADIO, SHORT_ANSWER, PARAGRAPH, DROPDOWN,
-      SCALE, DATE, and TIME are returned. Page breaks, images, section headers,
-      and videos are excluded. Grid question sub-items live under
-      questionGroupItem.questions[] and are not included.
+      Each row is one item in the form. Requires form_id filter.
+      Items include questions and non-question content such as page breaks,
+      images, section headers, and videos. Only actual question items have
+      a non-null question_id — always use WHERE question_id IS NOT NULL
+      to return only question rows and exclude non-question items.
       question_id is the stable identifier used as keys in responses.answers —
-      use it to join with the responses table. title is the question text shown
-      to respondents. required indicates whether the question must be answered
-      before the form can be submitted.
+      use it to join answers to question titles.
+      title is the question text shown to respondents.
+      required indicates whether the question must be answered before submission.
+      Supported question types: CHECKBOX, RADIO, SHORT_ANSWER, PARAGRAPH,
+      DROPDOWN, SCALE, DATE, TIME.
+      Grid question sub-items live under questionGroupItem.questions[] and
+      are not returned by this source.
     filters:
       - name: form_id
         required: true
@@ -111,9 +116,6 @@ tables:
     response:
       rows_path:
         - items
-      row_filter:
-        field: questionItem
-        operator: exists
       allow_404_empty: false
       row_strategy: direct
     pagination:
@@ -122,7 +124,7 @@ tables:
       - name: item_id
         type: Utf8
         nullable: false
-        description: Unique item ID for this question item.
+        description: Unique item ID for this form item.
         expr:
           kind: path
           path:
@@ -131,9 +133,12 @@ tables:
         type: Utf8
         nullable: true
         description: >-
-          Question ID from the Google Forms API. This is the key used in
-          responses.answers — join this to responses.answers keys to resolve
-          question titles and submitted values.
+          Question ID from the Google Forms API. Non-null only for actual
+          question items — null for page breaks, images, section headers,
+          and videos. This is the key used in responses.answers.
+          Filter with WHERE question_id IS NOT NULL to return only questions.
+          Join this to responses.answers keys to resolve question titles
+          and submitted values.
         expr:
           kind: path
           path:
@@ -143,7 +148,7 @@ tables:
       - name: title
         type: Utf8
         nullable: true
-        description: Question text shown to respondents.
+        description: Item title or question text shown to respondents.
         expr:
           kind: path
           path:
@@ -159,7 +164,9 @@ tables:
       - name: required
         type: Boolean
         nullable: true
-        description: Whether this question requires a response before submission.
+        description: >-
+          Whether this question requires a response before submission.
+          Null for non-question items such as page breaks and images.
         expr:
           kind: path
           path:
@@ -181,8 +188,8 @@ tables:
       response_id is the stable identifier for each response.
       create_time and last_submitted_time are ISO 8601 timestamps.
       respondent_email is populated only if the form collects email addresses.
-      answers is a JSON object mapping question_id keys (from the questions table)
-      to answer objects containing the submitted values.
+      answers is a JSON object mapping question_id keys (from the questions
+      table) to answer objects containing the submitted values.
       Use after_timestamp to fetch responses submitted after a given time.
       The filter value must use the format: timestamp >= <ISO8601>
       or timestamp > <ISO8601> (e.g. timestamp >= 2024-01-01T00:00:00Z).
