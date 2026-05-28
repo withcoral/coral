@@ -1,0 +1,160 @@
+name: immich
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query photo/video server asset metrics, user directories, and album structures from Immich.
+base_url: "{{input.IMMICH_URL}}/api"
+
+inputs:
+  IMMICH_URL:
+    kind: variable
+    hint: |
+      Immich instance base URL with port and without trailing slash,
+      for example `http://localhost:2283` or `https://immich.infra.local`.
+  IMMICH_API_KEY:
+    kind: secret
+    hint: API Key generated from user account settings under the Immich web UI.
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+  - name: x-api-key
+    from: template
+    template: "{{input.IMMICH_API_KEY}}"
+
+test_queries:
+  - SELECT email FROM immich.users LIMIT 1
+
+tables:
+  - name: users
+    description: List of registered user accounts, storage quotas, and configuration parameters.
+    request:
+      method: GET
+      path: /users
+    response:
+      row_strategy: direct
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique programmatic identifier for the user profile.
+        expr: {kind: path, path: [id]}
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Primary email address associated with the account.
+        expr: {kind: path, path: [email]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the user.
+        expr: {kind: path, path: [name]}
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Administrative access level tier (e.g., admin, user).
+        expr: {kind: path, path: [role]}
+      - name: quota_bytes
+        type: Int64
+        nullable: true
+        description: Storage space allocation limit footprint in bytes.
+        expr: {kind: path, path: [quotaSizeInBytes]}
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO timestamp showing when the account profile was initialized.
+        expr: {kind: path, path: [createdAt]}
+
+  - name: albums
+    description: Shared or personal asset collection folders grouped by user profiles.
+    request:
+      method: GET
+      path: /albums
+    response:
+      row_strategy: direct
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Globally unique tracking token identifying the album container.
+        expr: {kind: path, path: [id]}
+      - name: album_name
+        type: Utf8
+        nullable: false
+        description: Display title assigned to the collection.
+        expr: {kind: path, path: [albumName]}
+      - name: owner_id
+        type: Utf8
+        nullable: false
+        description: User profile identifier of the album creator.
+        expr: {kind: path, path: [ownerId]}
+      - name: asset_count
+        type: Int64
+        nullable: true
+        description: Total quantity of photos and videos indexed inside the album folder.
+        expr: {kind: path, path: [assetCount]}
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp metadata for the catalog entry.
+        expr: {kind: path, path: [createdAt]}
+
+  - name: assets
+    description: Comprehensive overview of media files uploaded to the server library.
+    request:
+      method: POST
+      path: /search
+      body:
+        from: literal
+        value: "{}"
+    response:
+      row_strategy: direct
+      rows_path: [items]
+    pagination:
+      mode: offset
+      limit: 100
+      request:
+        limit_key: size
+        offset_key: page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: System identity token of the physical asset tracking instance.
+        expr: {kind: path, path: [id]}
+      - name: owner_id
+        type: Utf8
+        nullable: false
+        description: Internal account tracking reference token matching the uploader profile.
+        expr: {kind: path, path: [ownerId]}
+      - name: file_name
+        type: Utf8
+        nullable: false
+        description: Original structural file identity name string on disk.
+        expr: {kind: path, path: [originalFileName]}
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Media stream classification categorization layer (IMAGE or VIDEO).
+        expr: {kind: path, path: [type]}
+      - name: file_size_bytes
+        type: Int64
+        nullable: true
+        description: File size in bytes.
+        expr: {kind: path, path: [exifInfo, fileSizeInBytes]}
+      - name: file_created_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the asset was created.
+        expr: {kind: path, path: [fileCreatedAt]}
