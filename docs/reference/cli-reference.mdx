@@ -78,6 +78,8 @@ coral source info datadog --verbose
 Add a bundled source or update its credentials.
 
 By default, Coral reads each declared input from an environment variable of the same name. If a required input is missing, the command exits with an error listing the missing keys.
+For auth alternatives declared with `from: one_of`, at least one referenced
+secret must be supplied or already stored.
 
 ```shellscript
 GITHUB_TOKEN=ghp_... coral source add github

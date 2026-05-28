@@ -871,7 +871,7 @@ async fn get_source_info_returns_available_bundled_metadata() {
         panic!("linear oauth token should be a secret input");
     };
     let credential = linear_oauth_token.credential.as_ref().expect("credential");
-    assert_eq!(credential.methods.len(), 1);
+    assert_eq!(credential.methods.len(), 2);
     let ProtoCredentialMethod::Oauth(oauth) =
         credential.methods[0].method.as_ref().expect("method")
     else {
@@ -903,6 +903,10 @@ async fn get_source_info_returns_available_bundled_metadata() {
             .delimiter(),
         coral_api::v1::OauthCredentialScopeDelimiter::Comma
     );
+    assert!(matches!(
+        credential.methods[1].method,
+        Some(ProtoCredentialMethod::SourceConfig(_))
+    ));
 }
 
 #[tokio::test]

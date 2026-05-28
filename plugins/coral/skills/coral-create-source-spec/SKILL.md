@@ -244,7 +244,7 @@ auth:
       key: FOOBAR_API_TOKEN
 ```
 
-When a provider accepts either a full pasted API-key header or an OAuth access token, declare both credential inputs as optional secrets, then use `from: one_of` and put the complete header value first, followed by a `from: bearer` OAuth fallback:
+When a provider accepts either a full pasted API-key header or an OAuth access token, declare both credential inputs as optional secrets, then use `from: one_of`. Coral tries the values in order and uses the first configured one, so put the credential users should prefer first:
 
 ```yaml
 inputs:
@@ -260,10 +260,10 @@ auth:
     - name: Authorization
       from: one_of
       values:
-        - from: input
-          key: FOOBAR_API_KEY
         - from: bearer
           key: FOOBAR_OAUTH_ACCESS_TOKEN
+        - from: input
+          key: FOOBAR_API_KEY
 ```
 
 ## Local Data Sources

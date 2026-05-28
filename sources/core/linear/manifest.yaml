@@ -20,7 +20,7 @@ inputs:
     kind: secret
     required: false
     hint: |
-      You can connect with Linear OAuth, or provide a raw OAuth access token.
+      Connect with Linear OAuth, or paste a raw OAuth access token.
       Linear OAuth application needs the `read` scope and the
       redirect callback URL `http://127.0.0.1:53682/oauth/callback`.
       See [Linear OAuth docs](https://linear.app/developers/oauth-2-0-authentication).
@@ -47,6 +47,9 @@ inputs:
                 delimiter: comma
                 values:
                   - read
+        - type: source_config
+          label: Paste Linear OAuth access token
+          description: Paste a raw Linear OAuth access token.
 base_url: https://api.linear.app
 auth:
   type: HeaderAuth
@@ -54,10 +57,10 @@ auth:
     - name: Authorization
       from: one_of
       values:
-        - from: input
-          key: LINEAR_API_KEY
         - from: bearer
           key: LINEAR_OAUTH_ACCESS_TOKEN
+        - from: input
+          key: LINEAR_API_KEY
 test_queries:
   - SELECT * FROM linear.users LIMIT 1
 functions:

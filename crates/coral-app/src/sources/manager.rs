@@ -251,7 +251,12 @@ impl SourceManager {
             &BTreeSet::new(),
             validation_storage,
         )?;
-        let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
+        let bindings = validate_bindings(
+            &candidate,
+            &command.bindings,
+            &stored_material,
+            &BTreeSet::new(),
+        )?;
         let credential_storage = self.source_persist_storage(
             workspace_name,
             &candidate.name,
@@ -345,7 +350,12 @@ impl SourceManager {
             &BTreeSet::new(),
             validation_storage,
         )?;
-        let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
+        let bindings = validate_bindings(
+            &candidate,
+            &command.bindings,
+            &stored_material,
+            &BTreeSet::new(),
+        )?;
         let credential_storage = self.source_persist_storage(
             workspace_name,
             &candidate.name,
@@ -714,7 +724,6 @@ impl SourceManager {
         oauth_credential_retrievals: &[SourceOAuthCredentialRetrieval],
     ) -> Result<(), AppError> {
         let mut seen = BTreeSet::new();
-        let mut validation_material = stored_material.clone();
         for retrieval in oauth_credential_retrievals {
             if !seen.insert(retrieval.input_key.clone()) {
                 return Err(AppError::InvalidInput(format!(
@@ -730,12 +739,11 @@ impl SourceManager {
                 .map(|input| (input.key.clone(), input.value.clone()))
                 .collect();
             OAuthCredentialService::validate_credential_inputs(config.oauth, credential_inputs)?;
-            validation_material.insert(config.input_key.to_string(), String::new());
         }
 
-        let bindings = validate_bindings(candidate, bindings, &validation_material)?;
-        for input_key in seen {
-            if bindings.secrets.contains_key(&input_key) {
+        let bindings = validate_bindings(candidate, bindings, stored_material, &seen)?;
+        for input_key in &seen {
+            if bindings.secrets.contains_key(input_key) {
                 return Err(AppError::InvalidInput(format!(
                     "source secret '{input_key}' was provided by both source config and OAuth"
                 )));
@@ -831,7 +839,8 @@ impl SourceManager {
         for material in &oauth_material {
             validation_material.insert(material.input_key.clone(), material.access_token.clone());
         }
-        let mut bindings = validate_bindings(candidate, bindings, &validation_material)?;
+        let mut bindings =
+            validate_bindings(candidate, bindings, &validation_material, &BTreeSet::new())?;
         merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
         Ok(bindings)
     }
@@ -976,6 +985,7 @@ fn validate_bindings(
     candidate: &CandidateSource,
     bindings: &SourceBindings,
     stored_material: &BTreeMap<String, String>,
+    filled_secret_keys: &BTreeSet<String>,
 ) -> Result<ValidatedBindings, AppError> {
     let mut variable_values = collect_unique_variables(&bindings.variables)?;
     let secret_values = collect_unique_secrets(&bindings.secrets)?;
@@ -1029,7 +1039,8 @@ fn validate_bindings(
             ManifestInputKind::Secret
                 if input.required
                     && !secret_values.contains_key(&input.key)
-                    && !stored_material.contains_key(&input.key) =>
+                    && !stored_material.contains_key(&input.key)
+                    && !filled_secret_keys.contains(&input.key) =>
             {
                 return Err(AppError::InvalidInput(format!(
                     "missing required source secret '{}'",
@@ -1038,6 +1049,20 @@ fn validate_bindings(
             }
             _ => {}
         }
+    }
+    for requirement in &candidate.auth_one_of_secret_requirements {
+        if requirement.keys.iter().any(|key| {
+            secret_value_present(&secret_values, key)
+                || secret_value_present(stored_material, key)
+                || filled_secret_keys.contains(key)
+        }) {
+            continue;
+        }
+        return Err(AppError::InvalidInput(format!(
+            "missing source credential for {}: provide one of {}",
+            requirement.context,
+            requirement.keys.join(", ")
+        )));
     }
 
     Ok(ValidatedBindings {
@@ -1058,7 +1083,18 @@ fn source_needs_stored_material_for_validation(
             && input.required
             && !supplied_secrets.contains_key(&input.key)
             && !filled_secret_keys.contains(&input.key)
-    }))
+    }) || candidate
+        .auth_one_of_secret_requirements
+        .iter()
+        .any(|requirement| {
+            !requirement.keys.iter().any(|key| {
+                secret_value_present(&supplied_secrets, key) || filled_secret_keys.contains(key)
+            })
+        }))
+}
+
+fn secret_value_present(values: &BTreeMap<String, String>, key: &str) -> bool {
+    values.get(key).is_some_and(|value| !value.is_empty())
 }
 
 fn material_key_belongs_to_source_secret(
@@ -1367,6 +1403,44 @@ tables:
         )
     }
 
+    fn manifest_with_alternative_auth_secrets() -> String {
+        r#"
+name: secured_messages
+version: 0.3.0
+dsl_version: 3
+backend: http
+inputs:
+  API_KEY:
+    kind: secret
+    required: false
+  OAUTH_TOKEN:
+    kind: secret
+    required: false
+base_url: "https://example.com"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: bearer
+          key: OAUTH_TOKEN
+        - from: input
+          key: API_KEY
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#
+        .to_string()
+    }
+
     #[test]
     fn import_restores_prior_state_when_secret_persistence_fails() {
         let temp = TempDir::new().expect("temp dir");
@@ -1467,6 +1541,75 @@ tables:
                 .to_string()
                 .contains("must not start with reserved prefix '__coral'")
         );
+    }
+
+    #[test]
+    fn import_rejects_auth_one_of_without_any_secret() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout);
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_alternative_auth_secrets(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("missing credential should fail");
+
+        assert!(
+            error.to_string().contains(
+                "missing source credential for auth header 'Authorization': provide one of OAUTH_TOKEN, API_KEY"
+            ),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn import_reuses_stored_auth_one_of_secret_when_reimporting() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout);
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_alternative_auth_secrets(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_KEY".to_string(),
+                            value: "api-key".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("first import");
+
+        let updated = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_alternative_auth_secrets(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("reimport should use stored credential");
+
+        assert_eq!(updated.secrets, vec!["API_KEY".to_string()]);
     }
 
     #[test]

@@ -6,7 +6,9 @@ use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::model::{
+    AuthOneOfSecretRequirement, CandidateSource, InstalledSource, SourceOrigin,
+};
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
@@ -107,6 +109,7 @@ fn candidate_from_manifest(
         description: manifest.description().to_string(),
         version: manifest.source_version().to_string(),
         inputs: manifest.declared_inputs().to_vec(),
+        auth_one_of_secret_requirements: AuthOneOfSecretRequirement::from_manifest(manifest),
         installed,
         origin,
         credential_storage: None,

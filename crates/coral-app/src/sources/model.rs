@@ -1,8 +1,8 @@
 //! Installed-source domain model for the application management plane.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use coral_spec::ManifestInputSpec;
+use coral_spec::{AuthSpec, ManifestInputSpec, ValidatedSourceManifest, ValueSourceSpec};
 use serde::{Deserialize, Serialize};
 
 use crate::credentials::CredentialStorageKind;
@@ -15,9 +15,76 @@ pub(crate) struct CandidateSource {
     pub(crate) description: String,
     pub(crate) version: String,
     pub(crate) inputs: Vec<ManifestInputSpec>,
+    pub(crate) auth_one_of_secret_requirements: Vec<AuthOneOfSecretRequirement>,
     pub(crate) installed: bool,
     pub(crate) origin: SourceOrigin,
     pub(crate) credential_storage: Option<CredentialStorageKind>,
+}
+
+/// Install-time invariant for an auth `from: one_of` whose branches are source
+/// secrets. At least one key must be supplied or already stored for auth to be
+/// usable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthOneOfSecretRequirement {
+    /// Human-readable auth location for error messages.
+    pub(crate) context: String,
+    /// Secret input keys that can satisfy the auth choice, in runtime order.
+    pub(crate) keys: Vec<String>,
+}
+
+impl AuthOneOfSecretRequirement {
+    pub(crate) fn from_manifest(manifest: &ValidatedSourceManifest) -> Vec<Self> {
+        let declared_secret_names = manifest.declared_secret_names();
+        let Some(http) = manifest.as_http() else {
+            return Vec::new();
+        };
+        let AuthSpec::HeaderAuth(auth) = &http.auth else {
+            return Vec::new();
+        };
+
+        auth.headers
+            .iter()
+            .filter_map(|header| {
+                Self::from_value_source(
+                    format!("auth header '{}'", header.name),
+                    &header.value,
+                    &declared_secret_names,
+                )
+            })
+            .collect()
+    }
+
+    fn from_value_source(
+        context: String,
+        value: &ValueSourceSpec,
+        declared_secret_names: &BTreeSet<String>,
+    ) -> Option<Self> {
+        let ValueSourceSpec::OneOf { values } = value else {
+            return None;
+        };
+        if values.is_empty() {
+            return None;
+        }
+
+        let mut keys = Vec::new();
+        for value in values {
+            let key = match value {
+                ValueSourceSpec::Input { key } | ValueSourceSpec::Bearer { key }
+                    if declared_secret_names.contains(key) =>
+                {
+                    key
+                }
+                _ => return None,
+            };
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+        if keys.is_empty() {
+            return None;
+        }
+        Some(Self { context, keys })
+    }
 }
 
 /// App-owned model for one source installed in a workspace.

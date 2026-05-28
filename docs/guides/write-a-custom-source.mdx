@@ -257,8 +257,10 @@ auth:
 
 When an API supports either a complete pasted API-key header or an OAuth access
 token, declare both credential inputs as optional secrets, then use
-`from: one_of` and put the pasted header first, followed by a `from: bearer`
-fallback for the raw OAuth token.
+`from: one_of` to choose between them. Coral tries the values in order and uses
+the first one that has been configured. Put the credential you want Coral to use
+when both are present first. If all choices are secret inputs, users must
+provide at least one of those secrets before the source can be added.
 
 ```yaml
 inputs:
