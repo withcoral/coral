@@ -38,10 +38,7 @@ export function grpcWebResponse<Desc extends DescMessage>(
   init?: HttpResponseInit,
 ) {
   const data = toBinary(schema, message)
-  const body = concat([
-    frame(DATA_FRAME, data),
-    frame(TRAILER_FRAME, trailers(0)),
-  ])
+  const body = concat([frame(DATA_FRAME, data), frame(TRAILER_FRAME, trailers(0))])
 
   return HttpResponse.arrayBuffer(body, {
     status: 200,

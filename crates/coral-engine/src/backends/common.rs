@@ -4,9 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::sync::Arc;
 
-use crate::{QueryRuntimeContext, RequestAuthenticator};
+use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
 use async_trait::async_trait;
-use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
     SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
@@ -128,10 +127,12 @@ fn hex_encode(value: &str) -> String {
 }
 
 pub(crate) struct BackendCompileRequest<'a> {
+    pub(crate) source: &'a QuerySource,
     pub(crate) runtime_context: &'a QueryRuntimeContext,
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
 #[async_trait]
@@ -358,25 +359,4 @@ pub(crate) fn schema_from_columns(
         ));
     }
     Ok(Arc::new(Schema::new(fields)))
-}
-
-pub(crate) fn partition_columns_to_arrow(
-    partitions: &[PartitionColumnSpec],
-) -> datafusion::error::Result<Vec<(String, DataType)>> {
-    partitions
-        .iter()
-        .map(|partition: &PartitionColumnSpec| {
-            partition
-                .manifest_data_type()
-                .map(|data_type| {
-                    (
-                        partition.name.clone(),
-                        manifest_data_type_to_arrow(data_type),
-                    )
-                })
-                .map_err(|error: coral_spec::ManifestError| {
-                    DataFusionError::Execution(error.to_string())
-                })
-        })
-        .collect()
 }

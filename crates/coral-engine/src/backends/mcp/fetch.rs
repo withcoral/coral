@@ -1,15 +1,21 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use coral_spec::ResponseSpec;
+use coral_spec::ValueSourceSpec;
 use coral_spec::backends::mcp::McpPaginationSpec;
 use datafusion::error::{DataFusionError, Result};
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
+use super::McpSourceInputs;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use crate::backends::shared::json_exec::RowFetcher;
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
+use crate::backends::shared::template::{RenderContext, resolve_value_source};
 
 const DEFAULT_MCP_MAX_PAGES: usize = 100;
 
@@ -20,6 +26,8 @@ pub(super) struct McpFetchPlan {
     pub(super) relation: String,
     pub(super) tool_name: String,
     pub(super) arguments: JsonObject,
+    pub(super) source_inputs: Option<Arc<McpSourceInputs>>,
+    pub(super) source_tool_args: Arc<BTreeMap<String, ValueSourceSpec>>,
     pub(super) response: ResponseSpec,
     pub(super) pagination: Option<McpPaginationSpec>,
     pub(super) limit: Option<usize>,
@@ -50,7 +58,7 @@ impl RowFetcher for McpFetchPlan {
                 )));
             }
 
-            let arguments = self.arguments_for_cursor(next_cursor.as_ref());
+            let arguments = self.arguments_for_cursor(next_cursor.as_ref()).await?;
             let payload = self
                 .backend
                 .call_tool(&self.relation, &self.tool_name, arguments)
@@ -87,13 +95,28 @@ impl RowFetcher for McpFetchPlan {
 }
 
 impl McpFetchPlan {
-    fn arguments_for_cursor(&self, cursor: Option<&Value>) -> JsonObject {
-        let Some((pagination, cursor)) = self.pagination.as_ref().zip(cursor) else {
-            return self.arguments.clone();
-        };
-        let mut arguments = self.arguments.clone();
-        arguments.insert(pagination.cursor_arg.clone(), cursor.clone());
-        arguments
+    async fn arguments_for_cursor(&self, cursor: Option<&Value>) -> Result<JsonObject> {
+        let mut arguments = JsonObject::new();
+        if !self.source_tool_args.is_empty() {
+            let source_inputs = self.source_inputs.as_ref().ok_or_else(|| {
+                DataFusionError::Internal(format!(
+                    "{}.{} has MCP tool args but no source input resolver state",
+                    self.source_schema, self.relation
+                ))
+            })?;
+            let resolved_inputs = source_inputs.resolve_for_request().await?;
+            let render_context = RenderContext::source_scoped(&resolved_inputs);
+            for (name, source) in self.source_tool_args.iter() {
+                if let Some(value) = resolve_value_source(source, &render_context)? {
+                    arguments.insert(name.clone(), value);
+                }
+            }
+        }
+        arguments.extend(self.arguments.clone());
+        if let Some((pagination, cursor)) = self.pagination.as_ref().zip(cursor) {
+            arguments.insert(pagination.cursor_arg.clone(), cursor.clone());
+        }
+        Ok(arguments)
     }
 }
 

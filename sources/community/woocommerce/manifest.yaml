@@ -1,0 +1,1279 @@
+name: woocommerce
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query WooCommerce store status, products, orders, and customers from a
+  self-hosted WordPress + WooCommerce store through the WooCommerce v3
+  REST API.
+base_url: "{{input.WOOCOMMERCE_URL}}"
+inputs:
+  WOOCOMMERCE_URL:
+    kind: variable
+    default: https://example.com
+    hint: |
+      Base URL of the WooCommerce store, including scheme and host. Use
+      `https://` for production stores — WooCommerce's REST API only
+      enables Basic auth over HTTPS. Coral appends `/wp-json/wc/v3/...`
+      to this base. Do not include a trailing slash.
+  WOOCOMMERCE_CONSUMER_KEY:
+    kind: secret
+    hint: |
+      WooCommerce REST API consumer key (starts with `ck_`). Create one
+      in WooCommerce admin under Settings > Advanced > REST API.
+      `Read` is the right key permission level for this source, but the
+      key also inherits the capabilities of the WordPress user it is
+      created for — generate it against an Administrator or Shop Manager
+      account so it can read orders and customers as well as the catalog.
+  WOOCOMMERCE_CONSUMER_SECRET:
+    kind: secret
+    hint: |
+      WooCommerce REST API consumer secret (starts with `cs_`), paired
+      with the consumer key. Both are shown together when the key is
+      created in the WooCommerce admin.
+auth:
+  type: BasicAuth
+  username: "{{input.WOOCOMMERCE_CONSUMER_KEY}}"
+  password: "{{input.WOOCOMMERCE_CONSUMER_SECRET}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM woocommerce.system_status LIMIT 1
+  - SELECT * FROM woocommerce.products LIMIT 1
+tables:
+  - name: system_status
+    description: Store status summary from /wp-json/wc/v3/system_status
+    guide: |
+      Returns a single row summarising the store: WooCommerce / WordPress /
+      PHP / MySQL versions, currency, environment, and a few key feature
+      flags (`force_ssl`, `hpos_enabled`). Use this table to confirm
+      connectivity and report the running stack.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /wp-json/wc/v3/system_status
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: wc_version
+        type: Utf8
+        nullable: true
+        description: WooCommerce plugin version
+        expr:
+          kind: path
+          path:
+            - environment
+            - version
+      - name: wp_version
+        type: Utf8
+        nullable: true
+        description: WordPress core version
+        expr:
+          kind: path
+          path:
+            - environment
+            - wp_version
+      - name: php_version
+        type: Utf8
+        nullable: true
+        description: PHP runtime version
+        expr:
+          kind: path
+          path:
+            - environment
+            - php_version
+      - name: mysql_version
+        type: Utf8
+        nullable: true
+        description: MySQL / MariaDB server version
+        expr:
+          kind: path
+          path:
+            - environment
+            - mysql_version
+      - name: site_url
+        type: Utf8
+        nullable: true
+        description: Configured site URL
+        expr:
+          kind: path
+          path:
+            - environment
+            - site_url
+      - name: home_url
+        type: Utf8
+        nullable: true
+        description: Configured home URL
+        expr:
+          kind: path
+          path:
+            - environment
+            - home_url
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Site language code
+        expr:
+          kind: path
+          path:
+            - environment
+            - language
+      - name: wp_environment_type
+        type: Utf8
+        nullable: true
+        description: "WordPress environment type (e.g. production, staging, development)"
+        expr:
+          kind: path
+          path:
+            - environment
+            - wp_environment_type
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Configured store currency code
+        expr:
+          kind: path
+          path:
+            - settings
+            - currency
+      - name: currency_position
+        type: Utf8
+        nullable: true
+        description: Currency symbol position
+        expr:
+          kind: path
+          path:
+            - settings
+            - currency_position
+      - name: force_ssl
+        type: Boolean
+        nullable: true
+        description: Whether checkout pages force SSL
+        expr:
+          kind: path
+          path:
+            - settings
+            - force_ssl
+      - name: hpos_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the High-Performance Order Storage data store is enabled
+        expr:
+          kind: path
+          path:
+            - settings
+            - HPOS_enabled
+      - name: wc_database_version
+        type: Utf8
+        nullable: true
+        description: Installed WooCommerce database schema version
+        expr:
+          kind: path
+          path:
+            - database
+            - wc_database_version
+      - name: theme_name
+        type: Utf8
+        nullable: true
+        description: Active theme name
+        expr:
+          kind: path
+          path:
+            - theme
+            - name
+      - name: theme_version
+        type: Utf8
+        nullable: true
+        description: Active theme version
+        expr:
+          kind: path
+          path:
+            - theme
+            - version
+
+  - name: products
+    description: Store catalog from /wp-json/wc/v3/products
+    guide: |
+      Returns one row per product. Price fields (`price`, `regular_price`,
+      `sale_price`) are returned by WooCommerce as decimal strings and are
+      typed as `Utf8`; `CAST` in SQL when you need arithmetic. `stock_quantity`
+      is null when `manage_stock` is false. `categories` and `tags` are JSON
+      arrays of `{id, name, slug}` objects.
+
+      The following predicates are pushed down to the API so only matching
+      rows are fetched (everything else filters locally after the fetch):
+
+      - `WHERE type = '...'`                → `?type=` (simple, variable, …)
+      - `WHERE status = '...'`              → `?status=`
+      - `WHERE sku = '...'`                 → `?sku=`
+      - `WHERE stock_status = '...'`        → `?stock_status=`
+      - `WHERE search = '...'`              → `?search=` (full-text)
+      - `WHERE after = '<ISO 8601>'`        → `?after=`
+      - `WHERE before = '<ISO 8601>'`       → `?before=`
+      - `WHERE modified_after = '<ISO 8601>'`  → `?modified_after=`
+      - `WHERE modified_before = '<ISO 8601>'` → `?modified_before=`
+
+      Variable products only return the parent here. For variation-level
+      SKU/price/stock, query `product_variations` with `WHERE product_id = <id>`.
+
+      **Default cap: 500 rows.** To prevent unbounded scans against
+      production stores, Coral stops paging at 500 rows by default.
+      `SELECT *` (or accidental aggregates) against a large catalog will
+      see the first 500 matching rows, not silently the entire table.
+      Override deliberately:
+
+      - **Narrow** with a pushdown filter (`type`, `status`,
+        `stock_status`, `after`, `modified_after`, etc.) — fast,
+        server-side.
+      - **Or** add an explicit `LIMIT N` greater than 500 — Coral pages
+        up to `N`.
+
+      Date filters (`after`, `before`, `modified_after`, `modified_before`)
+      are sent with `dates_are_gmt=true`, so the values you compare against
+      `date_created` / `date_modified` (which are UTC `_gmt` columns) are
+      interpreted as UTC server-side too — no store-timezone skew.
+    fetch_limit_default: 500
+    filters:
+      - name: type
+      - name: status
+      - name: sku
+      - name: stock_status
+      - name: search
+      - name: after
+      - name: before
+      - name: modified_after
+      - name: modified_before
+    request:
+      method: GET
+      path: /wp-json/wc/v3/products
+      query:
+        - name: dates_are_gmt
+          from: literal
+          value: "true"
+        - name: type
+          from: filter
+          key: type
+        - name: status
+          from: filter
+          key: status
+        - name: sku
+          from: filter
+          key: sku
+        - name: stock_status
+          from: filter
+          key: stock_status
+        - name: search
+          from: filter
+          key: search
+        - name: after
+          from: filter
+          key: after
+        - name: before
+          from: filter
+          key: before
+        - name: modified_after
+          from: filter
+          key: modified_after
+        - name: modified_before
+          from: filter
+          key: modified_before
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Product ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Product name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL slug
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Stock-keeping unit
+        expr:
+          kind: path
+          path:
+            - sku
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Product type: simple, variable, grouped, external"
+        expr:
+          kind: path
+          path:
+            - type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Publish status: publish, draft, pending, private"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: featured
+        type: Boolean
+        nullable: true
+        description: Whether the product is featured
+        expr:
+          kind: path
+          path:
+            - featured
+      - name: catalog_visibility
+        type: Utf8
+        nullable: true
+        description: "Catalog visibility: visible, catalog, search, hidden"
+        expr:
+          kind: path
+          path:
+            - catalog_visibility
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Current price as a decimal string
+        expr:
+          kind: path
+          path:
+            - price
+      - name: regular_price
+        type: Utf8
+        nullable: true
+        description: Regular price as a decimal string
+        expr:
+          kind: path
+          path:
+            - regular_price
+      - name: sale_price
+        type: Utf8
+        nullable: true
+        description: Sale price as a decimal string; empty when not on sale
+        expr:
+          kind: path
+          path:
+            - sale_price
+      - name: on_sale
+        type: Boolean
+        nullable: true
+        description: Whether the product is currently on sale
+        expr:
+          kind: path
+          path:
+            - on_sale
+      - name: purchasable
+        type: Boolean
+        nullable: true
+        description: Whether the product can currently be purchased
+        expr:
+          kind: path
+          path:
+            - purchasable
+      - name: total_sales
+        type: Int64
+        nullable: true
+        description: Lifetime number of units sold
+        expr:
+          kind: path
+          path:
+            - total_sales
+      - name: manage_stock
+        type: Boolean
+        nullable: true
+        description: Whether stock is tracked for this product
+        expr:
+          kind: path
+          path:
+            - manage_stock
+      - name: stock_status
+        type: Utf8
+        nullable: true
+        description: "Stock status: instock, outofstock, onbackorder"
+        expr:
+          kind: path
+          path:
+            - stock_status
+      - name: stock_quantity
+        type: Int64
+        nullable: true
+        description: Available stock quantity; null when manage_stock is false
+        expr:
+          kind: path
+          path:
+            - stock_quantity
+      - name: backorders
+        type: Utf8
+        nullable: true
+        description: "Backorder policy: no, notify, yes"
+        expr:
+          kind: path
+          path:
+            - backorders
+      - name: average_rating
+        type: Utf8
+        nullable: true
+        description: Average rating as a decimal string
+        expr:
+          kind: path
+          path:
+            - average_rating
+      - name: rating_count
+        type: Int64
+        nullable: true
+        description: Number of customer ratings
+        expr:
+          kind: path
+          path:
+            - rating_count
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Parent product ID for variations; 0 otherwise
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: Public URL of the product
+        expr:
+          kind: path
+          path:
+            - permalink
+      - name: date_created
+        type: Timestamp
+        nullable: true
+        description: Product creation time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_created_gmt
+      - name: date_modified
+        type: Timestamp
+        nullable: true
+        description: Product last-modified time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_modified_gmt
+      - name: categories
+        type: Json
+        nullable: true
+        description: Categories as a JSON array of {id, name, slug}
+        expr:
+          kind: path
+          path:
+            - categories
+      - name: tags
+        type: Json
+        nullable: true
+        description: Tags as a JSON array of {id, name, slug}
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Filter only; echoes the WHERE search='...' value pushed to ?search=
+        expr:
+          kind: from_filter
+          key: search
+      - name: after
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE after='...' pushed to ?after=
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE before='...' pushed to ?before=
+        expr:
+          kind: from_filter
+          key: before
+      - name: modified_after
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE modified_after='...' pushed to ?modified_after=
+        expr:
+          kind: from_filter
+          key: modified_after
+      - name: modified_before
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE modified_before='...' pushed to ?modified_before=
+        expr:
+          kind: from_filter
+          key: modified_before
+
+  - name: orders
+    description: Orders from /wp-json/wc/v3/orders
+    guide: |
+      Returns one row per order. Amount fields (`total`, `total_tax`,
+      `discount_total`, `shipping_total`) are decimal strings — `CAST` for
+      arithmetic. Timestamps reflect UTC values from the `*_gmt` fields.
+      `date_paid` and `date_completed` are null until the order reaches
+      those states. `billing__email` flattens the billing email; the full
+      `line_items` array is exposed as JSON.
+
+      The following predicates are pushed down to the API:
+
+      - `WHERE status = '...'`              → `?status=`
+      - `WHERE customer_id = <id>`          → `?customer=`
+      - `WHERE product = <product_id>`      → `?product=` (orders containing product)
+      - `WHERE search = '...'`              → `?search=`
+      - `WHERE after = '<ISO 8601>'`        → `?after=`
+      - `WHERE before = '<ISO 8601>'`       → `?before=`
+      - `WHERE modified_after = '<ISO 8601>'`  → `?modified_after=`
+      - `WHERE modified_before = '<ISO 8601>'` → `?modified_before=`
+
+      **Default cap: 500 rows.** Order histories on production stores
+      can run into the hundreds of thousands; Coral stops paging at 500
+      rows by default so `SELECT *` or accidental aggregates don't walk
+      the whole history. Override deliberately:
+
+      - **Narrow** with a pushdown filter (`status`, `customer_id`,
+        `after`, `modified_after`, etc.) — fast, server-side.
+      - **Or** add an explicit `LIMIT N` greater than 500.
+
+      Date filters (`after`, `before`, `modified_after`, `modified_before`)
+      are sent with `dates_are_gmt=true`, so the values you compare
+      against `date_created` / `date_modified` (UTC `_gmt` columns) are
+      interpreted as UTC server-side too — no store-timezone skew.
+    fetch_limit_default: 500
+    filters:
+      - name: status
+      - name: customer_id
+      - name: product
+      - name: search
+      - name: after
+      - name: before
+      - name: modified_after
+      - name: modified_before
+    request:
+      method: GET
+      path: /wp-json/wc/v3/orders
+      query:
+        - name: dates_are_gmt
+          from: literal
+          value: "true"
+        - name: status
+          from: filter
+          key: status
+        - name: customer
+          from: filter
+          key: customer_id
+        - name: product
+          from: filter
+          key: product
+        - name: search
+          from: filter
+          key: search
+        - name: after
+          from: filter
+          key: after
+        - name: before
+          from: filter
+          key: before
+        - name: modified_after
+          from: filter
+          key: modified_after
+        - name: modified_before
+          from: filter
+          key: modified_before
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Order ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: number
+        type: Utf8
+        nullable: true
+        description: Human-readable order number
+        expr:
+          kind: path
+          path:
+            - number
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Parent order ID for refund orders; 0 otherwise
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Order status: pending, processing, on-hold, completed, cancelled, refunded, failed"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Order currency code
+        expr:
+          kind: path
+          path:
+            - currency
+      - name: customer_id
+        type: Int64
+        nullable: true
+        description: Customer ID; 0 for guest checkouts
+        expr:
+          kind: path
+          path:
+            - customer_id
+      - name: billing__email
+        type: Utf8
+        nullable: true
+        description: Email on the billing address
+        expr:
+          kind: path
+          path:
+            - billing
+            - email
+      - name: total
+        type: Utf8
+        nullable: true
+        description: Order total as a decimal string
+        expr:
+          kind: path
+          path:
+            - total
+      - name: total_tax
+        type: Utf8
+        nullable: true
+        description: Total tax as a decimal string
+        expr:
+          kind: path
+          path:
+            - total_tax
+      - name: discount_total
+        type: Utf8
+        nullable: true
+        description: Total discount applied as a decimal string
+        expr:
+          kind: path
+          path:
+            - discount_total
+      - name: shipping_total
+        type: Utf8
+        nullable: true
+        description: Shipping total as a decimal string
+        expr:
+          kind: path
+          path:
+            - shipping_total
+      - name: prices_include_tax
+        type: Boolean
+        nullable: true
+        description: Whether the prices include tax
+        expr:
+          kind: path
+          path:
+            - prices_include_tax
+      - name: payment_method
+        type: Utf8
+        nullable: true
+        description: Payment method identifier (gateway slug)
+        expr:
+          kind: path
+          path:
+            - payment_method
+      - name: payment_method_title
+        type: Utf8
+        nullable: true
+        description: Human-readable payment method
+        expr:
+          kind: path
+          path:
+            - payment_method_title
+      - name: transaction_id
+        type: Utf8
+        nullable: true
+        description: Gateway transaction ID, when present
+        expr:
+          kind: path
+          path:
+            - transaction_id
+      - name: created_via
+        type: Utf8
+        nullable: true
+        description: "Channel that created the order (e.g. checkout, rest-api, admin)"
+        expr:
+          kind: path
+          path:
+            - created_via
+      - name: customer_note
+        type: Utf8
+        nullable: true
+        description: Customer-provided order note
+        expr:
+          kind: path
+          path:
+            - customer_note
+      - name: customer_ip_address
+        type: Utf8
+        nullable: true
+        description: IP address recorded at checkout
+        expr:
+          kind: path
+          path:
+            - customer_ip_address
+      - name: date_created
+        type: Timestamp
+        nullable: true
+        description: Order creation time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_created_gmt
+      - name: date_modified
+        type: Timestamp
+        nullable: true
+        description: Order last-modified time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_modified_gmt
+      - name: date_paid
+        type: Timestamp
+        nullable: true
+        description: Time the order was paid (UTC); null until paid
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_paid_gmt
+      - name: date_completed
+        type: Timestamp
+        nullable: true
+        description: Time the order was completed (UTC); null until completed
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_completed_gmt
+      - name: line_items
+        type: Json
+        nullable: true
+        description: Line items as a JSON array
+        expr:
+          kind: path
+          path:
+            - line_items
+      - name: refunds
+        type: Json
+        nullable: true
+        description: Refund references as a JSON array
+        expr:
+          kind: path
+          path:
+            - refunds
+      - name: product
+        type: Int64
+        nullable: true
+        description: Filter only; WHERE product=<id> pushed to ?product= (orders containing product)
+        expr:
+          kind: from_filter
+          key: product
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Filter only; WHERE search='...' pushed to ?search=
+        expr:
+          kind: from_filter
+          key: search
+      - name: after
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE after='...' pushed to ?after=
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE before='...' pushed to ?before=
+        expr:
+          kind: from_filter
+          key: before
+      - name: modified_after
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE modified_after='...' pushed to ?modified_after=
+        expr:
+          kind: from_filter
+          key: modified_after
+      - name: modified_before
+        type: Utf8
+        nullable: true
+        description: Filter only (ISO 8601); WHERE modified_before='...' pushed to ?modified_before=
+        expr:
+          kind: from_filter
+          key: modified_before
+
+  - name: customers
+    description: Customers from /wp-json/wc/v3/customers
+    guide: |
+      Returns one row per registered customer. Guest checkouts do not
+      create rows here; for guest orders see `orders.customer_id = 0` and
+      `orders.billing__email`. `is_paying_customer` flips to true once the
+      customer completes at least one paying order.
+
+      `orders_count` and `total_spent` are intentionally not exposed:
+      WooCommerce 10 removed them from the default response, and they
+      change per request shape. Use `orders` aggregated by `customer_id`
+      to derive those figures reliably.
+
+      The following predicates are pushed down to the API:
+
+      - `WHERE email = '...'`   → `?email=`
+      - `WHERE role = '...'`    → `?role=`
+      - `WHERE search = '...'`  → `?search=`
+
+      **Default cap: 500 rows.** Customer tables on production stores
+      can be very large; Coral stops paging at 500 rows by default so
+      `SELECT *` does not walk the whole table. Override deliberately:
+
+      - **Narrow** with a pushdown filter (`email`, `role`, `search`).
+      - **Or** add an explicit `LIMIT N` greater than 500.
+    fetch_limit_default: 500
+    filters:
+      - name: email
+      - name: role
+      - name: search
+    request:
+      method: GET
+      path: /wp-json/wc/v3/customers
+      query:
+        - name: email
+          from: filter
+          key: email
+        - name: role
+          from: filter
+          key: role
+        - name: search
+          from: filter
+          key: search
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Customer ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Customer email address
+        expr:
+          kind: path
+          path:
+            - email
+      - name: username
+        type: Utf8
+        nullable: true
+        description: WordPress username
+        expr:
+          kind: path
+          path:
+            - username
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: First name
+        expr:
+          kind: path
+          path:
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Last name
+        expr:
+          kind: path
+          path:
+            - last_name
+      - name: role
+        type: Utf8
+        nullable: true
+        description: "WordPress role (typically `customer`)"
+        expr:
+          kind: path
+          path:
+            - role
+      - name: is_paying_customer
+        type: Boolean
+        nullable: true
+        description: True once the customer has completed at least one paying order
+        expr:
+          kind: path
+          path:
+            - is_paying_customer
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar URL (Gravatar by default)
+        expr:
+          kind: path
+          path:
+            - avatar_url
+      - name: billing__email
+        type: Utf8
+        nullable: true
+        description: Email on the billing address, when set
+        expr:
+          kind: path
+          path:
+            - billing
+            - email
+      - name: billing__country
+        type: Utf8
+        nullable: true
+        description: Country code on the billing address, when set
+        expr:
+          kind: path
+          path:
+            - billing
+            - country
+      - name: shipping__country
+        type: Utf8
+        nullable: true
+        description: Country code on the shipping address, when set
+        expr:
+          kind: path
+          path:
+            - shipping
+            - country
+      - name: date_created
+        type: Timestamp
+        nullable: true
+        description: Customer creation time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_created_gmt
+      - name: date_modified
+        type: Timestamp
+        nullable: true
+        description: Customer last-modified time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_modified_gmt
+      - name: search
+        type: Utf8
+        nullable: true
+        description: Filter only; WHERE search='...' pushed to ?search=
+        expr:
+          kind: from_filter
+          key: search
+
+  - name: product_variations
+    description: Variations of a variable product from /wp-json/wc/v3/products/{product_id}/variations
+    guide: |
+      Returns one row per variation of a variable product. For variable
+      products WooCommerce keeps variation-level SKU, price, stock state,
+      and attributes on these child rows — `products.sku` and
+      `products.stock_quantity` for a variable parent are empty by design.
+
+      Requires `WHERE product_id = <id>` (the parent product ID). Get
+      candidates with `SELECT id FROM woocommerce.products WHERE type = 'variable'`.
+
+      `attributes` is the JSON array of `{id, name, slug, option}` chosen
+      for that variation. `manage_stock` is a string with three possible
+      values per the v3 API: `true`, `false`, or `parent` (inherit from
+      the parent product); `stock_quantity` is null when stock is not
+      tracked for the variation.
+    filters:
+      - name: product_id
+        required: true
+    request:
+      method: GET
+      path: /wp-json/wc/v3/products/{{filter.product_id}}/variations
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Variation ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: product_id
+        type: Int64
+        nullable: false
+        description: Parent product ID; echoes the required WHERE product_id filter
+        expr:
+          kind: from_filter
+          key: product_id
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Variation-level SKU
+        expr:
+          kind: path
+          path:
+            - sku
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Publish status: publish, private"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Current price as a decimal string
+        expr:
+          kind: path
+          path:
+            - price
+      - name: regular_price
+        type: Utf8
+        nullable: true
+        description: Regular price as a decimal string
+        expr:
+          kind: path
+          path:
+            - regular_price
+      - name: sale_price
+        type: Utf8
+        nullable: true
+        description: Sale price as a decimal string; empty when not on sale
+        expr:
+          kind: path
+          path:
+            - sale_price
+      - name: on_sale
+        type: Boolean
+        nullable: true
+        description: Whether the variation is currently on sale
+        expr:
+          kind: path
+          path:
+            - on_sale
+      - name: purchasable
+        type: Boolean
+        nullable: true
+        description: Whether the variation can currently be purchased
+        expr:
+          kind: path
+          path:
+            - purchasable
+      - name: manage_stock
+        type: Utf8
+        nullable: true
+        description: "Stock-tracking mode: `true`, `false`, or `parent` (inherit from parent product)"
+        expr:
+          kind: path
+          path:
+            - manage_stock
+      - name: stock_status
+        type: Utf8
+        nullable: true
+        description: "Stock status: instock, outofstock, onbackorder"
+        expr:
+          kind: path
+          path:
+            - stock_status
+      - name: stock_quantity
+        type: Int64
+        nullable: true
+        description: Variation stock quantity; null when manage_stock is false
+        expr:
+          kind: path
+          path:
+            - stock_quantity
+      - name: virtual
+        type: Boolean
+        nullable: true
+        description: Whether the variation is a virtual product
+        expr:
+          kind: path
+          path:
+            - virtual
+      - name: downloadable
+        type: Boolean
+        nullable: true
+        description: Whether the variation is downloadable
+        expr:
+          kind: path
+          path:
+            - downloadable
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: Public URL of the variation
+        expr:
+          kind: path
+          path:
+            - permalink
+      - name: attributes
+        type: Json
+        nullable: true
+        description: Chosen attribute options for the variation as a JSON array
+        expr:
+          kind: path
+          path:
+            - attributes
+      - name: date_created
+        type: Timestamp
+        nullable: true
+        description: Variation creation time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_created_gmt
+      - name: date_modified
+        type: Timestamp
+        nullable: true
+        description: Variation last-modified time (UTC)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: template
+            template: "{{expr.value}}Z"
+            values:
+              value:
+                kind: path
+                path:
+                  - date_modified_gmt
