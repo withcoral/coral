@@ -941,7 +941,7 @@ mod tests {
         assert_eq!(span_attr_bool(parent, "error"), Some(true));
         assert_eq!(
             span_attr_string(parent, "error.type").as_deref(),
-            Some("AUTH_REQUIRED")
+            Some("MCP_AUTH_REQUIRED")
         );
         assert!(
             matches!(parent.status, Status::Error { .. }),
@@ -986,7 +986,7 @@ mod tests {
         let parent = find_call_span(&spans, "remote_mcp").expect("parent span");
         assert_eq!(
             span_attr_string(parent, "error.type").as_deref(),
-            Some("HTTP_STATUS_FAILED")
+            Some("MCP_HTTP_STATUS_FAILED")
         );
         capture.provider.shutdown().expect("shutdown");
     }
@@ -1023,7 +1023,7 @@ mod tests {
         let parent = find_call_span(&spans, "remote_mcp").expect("parent span");
         assert_eq!(
             span_attr_string(parent, "error.type").as_deref(),
-            Some("HTTP_SSE_DECODE_FAILED")
+            Some("MCP_HTTP_SSE_DECODE_FAILED")
         );
         capture.provider.shutdown().expect("shutdown");
     }

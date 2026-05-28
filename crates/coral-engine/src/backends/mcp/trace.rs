@@ -146,25 +146,25 @@ fn trace_body_content(body: &str, max_bytes: usize) -> TraceBodyContent {
 }
 
 /// Stable span `error.type` label for an [`McpProviderQueryError`].
-/// Kept in sync with the structured error reason codes emitted by
-/// `McpProviderQueryError::to_structured` so a span's `error.type` and
-/// the surfaced query error stay aligned.
+/// Returns the same canonical reason string that
+/// `McpProviderQueryError::to_structured` emits, so a span's `error.type`
+/// matches the query error reason that ends up on the root invocation span.
 pub(super) fn mcp_error_type(error: &McpProviderQueryError) -> &'static str {
     match error {
         McpProviderQueryError::MissingRequiredFilter { .. } => "MISSING_REQUIRED_FILTER",
         McpProviderQueryError::MissingRequiredFunctionArg { .. } => "MISSING_REQUIRED_FUNCTION_ARG",
-        McpProviderQueryError::ServerStart { .. } => "SERVER_START",
-        McpProviderQueryError::Initialize { .. } => "INITIALIZE",
-        McpProviderQueryError::AuthRequired { .. } => "AUTH_REQUIRED",
-        McpProviderQueryError::AuthFailed { .. } => "AUTH_FAILED",
-        McpProviderQueryError::ToolCall { .. } => "TOOL_CALL",
-        McpProviderQueryError::ToolReturnedError { .. } => "TOOL_RETURNED_ERROR",
-        McpProviderQueryError::ResultDecode { .. } => "RESULT_DECODE",
-        McpProviderQueryError::Pagination { .. } => "PAGINATION",
-        McpProviderQueryError::HttpRequestFailed { .. } => "HTTP_REQUEST_FAILED",
-        McpProviderQueryError::HttpStatusFailed { .. } => "HTTP_STATUS_FAILED",
-        McpProviderQueryError::HttpSseDecodeFailed { .. } => "HTTP_SSE_DECODE_FAILED",
-        McpProviderQueryError::SessionExpired { .. } => "SESSION_EXPIRED",
+        McpProviderQueryError::ServerStart { .. } => "MCP_SERVER_START_FAILED",
+        McpProviderQueryError::Initialize { .. } => "MCP_INITIALIZE_FAILED",
+        McpProviderQueryError::AuthRequired { .. } => "MCP_AUTH_REQUIRED",
+        McpProviderQueryError::AuthFailed { .. } => "MCP_AUTH_FAILED",
+        McpProviderQueryError::ToolCall { .. } => "MCP_TOOL_CALL_FAILED",
+        McpProviderQueryError::ToolReturnedError { .. } => "MCP_TOOL_RETURNED_ERROR",
+        McpProviderQueryError::ResultDecode { .. } => "MCP_RESULT_DECODE_FAILED",
+        McpProviderQueryError::Pagination { .. } => "MCP_PAGINATION_FAILED",
+        McpProviderQueryError::HttpRequestFailed { .. } => "MCP_HTTP_REQUEST_FAILED",
+        McpProviderQueryError::HttpStatusFailed { .. } => "MCP_HTTP_STATUS_FAILED",
+        McpProviderQueryError::HttpSseDecodeFailed { .. } => "MCP_HTTP_SSE_DECODE_FAILED",
+        McpProviderQueryError::SessionExpired { .. } => "MCP_SESSION_EXPIRED",
     }
 }
 
