@@ -1,0 +1,366 @@
+name: fivetran
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Fivetran account metadata for groups, destinations, connections, users,
+  and transformation projects.
+base_url: https://api.fivetran.com/v1
+
+inputs:
+  FIVETRAN_API_KEY:
+    kind: secret
+    hint: |
+      Fivetran REST API key. Use a scoped key with read-only access where
+      possible.
+  FIVETRAN_API_SECRET:
+    kind: secret
+    hint: |
+      Fivetran REST API secret paired with the API key.
+
+auth:
+  type: BasicAuth
+  username: "{{input.FIVETRAN_API_KEY}}"
+  password: "{{input.FIVETRAN_API_SECRET}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json;version=2
+
+test_queries:
+  - SELECT id, name FROM fivetran.groups LIMIT 1
+  - SELECT id, service, group_id FROM fivetran.connections LIMIT 1
+  - SELECT id, group_id, service FROM fivetran.destinations LIMIT 1
+  - SELECT id, type, group_id FROM fivetran.transformation_projects LIMIT 1
+
+tables:
+  - name: groups
+    description: Fivetran groups accessible to the configured API key.
+    guide: |
+      Groups are top-level containers that map users and connections to
+      destinations. This table uses Fivetran cursor pagination with `cursor`
+      and `limit`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /groups
+    response:
+      rows_path: [data, items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [data, next_cursor]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Fivetran group ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Group name.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Group creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+
+  - name: destinations
+    description: Destination metadata for Fivetran groups.
+    guide: |
+      Returns destination inventory without exposing the destination `config`
+      object because destination configuration can contain connection details.
+      Filter `group_id` locally in SQL to inspect one group; Fivetran's list
+      destinations endpoint documents cursor pagination parameters, not a
+      remote `group_id` query filter.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /destinations
+    response:
+      rows_path: [data, items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [data, next_cursor]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Fivetran destination ID.
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: Group associated with this destination.
+      - name: service
+        type: Utf8
+        nullable: true
+        description: Destination service type, such as snowflake or bigquery.
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Destination region when returned by Fivetran.
+      - name: networking_method
+        type: Utf8
+        nullable: true
+        description: Destination networking method when returned by Fivetran.
+        expr: {kind: path, path: [networking_method]}
+      - name: daylight_saving_time_enabled
+        type: Boolean
+        nullable: true
+        description: Whether daylight saving time adjustment is enabled.
+        expr: {kind: path, path: [daylight_saving_time_enabled]}
+      - name: time_zone_offset
+        type: Utf8
+        nullable: true
+        description: Destination time zone offset when returned by Fivetran.
+        expr: {kind: path, path: [time_zone_offset]}
+      - name: setup_status
+        type: Utf8
+        nullable: true
+        description: Destination setup status when returned by Fivetran.
+        expr: {kind: path, path: [setup_status]}
+      - name: private_link_id
+        type: Utf8
+        nullable: true
+        description: Private Link ID associated with the destination, when present.
+        expr: {kind: path, path: [private_link_id]}
+      - name: proxy_agent_id
+        type: Utf8
+        nullable: true
+        description: Proxy agent ID associated with the destination, when present.
+        expr: {kind: path, path: [proxy_agent_id]}
+      - name: hybrid_deployment_agent_id
+        type: Utf8
+        nullable: true
+        description: Hybrid deployment agent ID associated with the destination, when present.
+        expr: {kind: path, path: [hybrid_deployment_agent_id]}
+  - name: connections
+    description: Fivetran connections accessible to the configured API key.
+    guide: |
+      Use `group_id` or `schema` filters to scope large accounts. This table
+      intentionally exposes status metadata but not connector `config`, which
+      may contain source-specific connection details.
+    filters:
+      - name: group_id
+      - name: schema
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /connections
+      query:
+        - name: group_id
+          from: filter
+          key: group_id
+        - name: schema
+          from: filter
+          key: schema
+    response:
+      rows_path: [data, items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [data, next_cursor]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Fivetran connection ID.
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: Destination group ID for the connection.
+      - name: service
+        type: Utf8
+        nullable: true
+        description: Connector service type.
+      - name: schema
+        type: Utf8
+        nullable: true
+        description: Destination schema name.
+      - name: paused
+        type: Boolean
+        nullable: true
+        description: Whether the connection is paused.
+      - name: setup_state
+        type: Utf8
+        nullable: true
+        description: Connector setup state.
+        expr: {kind: path, path: [status, setup_state]}
+      - name: sync_state
+        type: Utf8
+        nullable: true
+        description: Current sync state.
+        expr: {kind: path, path: [status, sync_state]}
+      - name: update_state
+        type: Utf8
+        nullable: true
+        description: Connector update state.
+        expr: {kind: path, path: [status, update_state]}
+      - name: is_historical_sync
+        type: Boolean
+        nullable: true
+        description: Whether historical sync is in progress.
+        expr: {kind: path, path: [status, is_historical_sync]}
+      - name: succeeded_at
+        type: Timestamp
+        nullable: true
+        description: Last successful sync time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [succeeded_at]}
+      - name: failed_at
+        type: Timestamp
+        nullable: true
+        description: Last failed sync time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [failed_at]}
+      - name: sync_frequency
+        type: Int64
+        nullable: true
+        description: Sync frequency in minutes.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Connection creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: group_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional group filter.
+        expr: {kind: from_filter, key: group_id}
+      - name: schema_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional schema filter.
+        expr: {kind: from_filter, key: schema}
+
+  - name: users
+    description: Fivetran users visible to the configured API key.
+    guide: |
+      Lists account users with documented cursor pagination. Returned rows
+      depend on the API key owner's RBAC permissions and require Fivetran
+      `USER:READ` permission.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /users
+    response:
+      rows_path: [data, items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [data, next_cursor]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Fivetran user ID.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: User given name.
+      - name: family_name
+        type: Utf8
+        nullable: true
+        description: User family name.
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the user is verified.
+      - name: role
+        type: Utf8
+        nullable: true
+        description: User role when returned by Fivetran.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+
+  - name: transformation_projects
+    description: Fivetran dbt Core transformation projects.
+    guide: |
+      Returns documented transformation project metadata only. Filter
+      `group_id` locally in SQL; Fivetran's list transformation projects
+      endpoint documents cursor pagination parameters, not a remote `group_id`
+      query filter.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /transformation-projects
+    response:
+      rows_path: [data, items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [data, next_cursor]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Transformation project ID.
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: Fivetran group ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Transformation project type.
+      - name: created_by_id
+        type: Utf8
+        nullable: true
+        description: Actor ID that created the transformation project.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Project creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
