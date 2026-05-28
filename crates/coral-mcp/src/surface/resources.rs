@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::values::queryable_table_summary_values;
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Use `list_catalog` and `search_catalog` as catalog helpers, use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. For clear-intent tasks where the user names or implies a source, start with targeted discovery: use `search_catalog` with `schema` when possible, or `list_catalog` with `schema` or `kind`. Avoid unfiltered catalog listing unless the source is unclear or the user asks for inventory. Use `describe_table` and `list_columns` only for the specific table you plan to query. Query with `sql` as soon as you have the table or function reference, required filters or arguments, and needed columns. Prefer one set-based SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
 pub(crate) fn initial_instructions() -> &'static str {
@@ -159,7 +159,8 @@ mod tests {
     fn initial_instructions_frame_coral_as_sql_database() {
         let instructions = initial_instructions();
         assert!(instructions.contains("read-only SQL database"));
-        assert!(instructions.contains("catalog helpers"));
+        assert!(instructions.contains("targeted discovery"));
+        assert!(instructions.contains("Avoid unfiltered catalog listing"));
         assert!(instructions.contains("CROSS JOIN"));
         assert!(instructions.contains("row-by-row tool calls"));
     }
@@ -186,7 +187,7 @@ mod tests {
         assert!(content.contains("- slack"));
         assert!(
             content.contains(
-                "Use each table's `sql_reference` from `list_catalog` or `coral://tables`"
+                "For clear-intent tasks where the user names or strongly implies a source"
             )
         );
     }

@@ -4,24 +4,40 @@
 
 ## Discovery Workflow
 
-Treat Coral like a read-only SQL database. The MCP discovery tools are catalog helpers, not replacement APIs. Inspect tables, parameterized table functions, and columns first, then answer with set-based SQL.
+Treat Coral like a read-only SQL database. The MCP discovery tools are catalog helpers, not replacement APIs. Discover only enough metadata to write the next useful SQL query.
+
+For clear-intent tasks where the user names or strongly implies a source, do not scan the whole catalog first.
+
+1. Pick the schema from the request, for example `slack`, `linear`, `github`, or `datadog`.
+2. Use `search_catalog` with that schema, or `list_catalog` with that schema when you need a source-local inventory.
+3. Inspect columns only for the table you plan to query.
+4. Run SQL once the table or function reference, required filters or arguments, and useful columns are clear.
+
+Use broad catalog scans only when the source is unclear or the user asks for inventory.
 
 Prefer one SQL statement with `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over fetching rows and combining them in the agent. Use `CROSS JOIN` explicitly when the query needs every combination of rows from two relations. Call table functions from `FROM` with named arguments, for example `github.search_issues(q => 'repo:withcoral/coral deploy failure')`.
 
 ```sql
--- List visible tables, descriptions, and required filters
-SELECT schema_name, table_name, description, required_filters FROM coral.tables ORDER BY schema_name, table_name;
+-- List visible tables, descriptions, and required filters for one source
+SELECT table_name, description, required_filters
+FROM coral.tables
+WHERE schema_name = '<schema>'
+ORDER BY table_name;
 
--- List parameterized table functions
-SELECT schema_name, function_name, description, arguments_json, result_columns_json FROM coral.table_functions ORDER BY schema_name, function_name;
+-- List parameterized table functions for one source
+SELECT function_name, description, arguments_json, result_columns_json
+FROM coral.table_functions
+WHERE schema_name = '<schema>'
+ORDER BY function_name;
 
 -- Inspect columns for one visible table, including nullability and filter-only virtual columns
 {{COLUMNS_EXAMPLE}}
 
 -- Discover provider-native table functions, including search/retrieval surfaces
-SELECT schema_name, function_name, kind, arguments_json, result_columns_json, search_limits_json
+SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json
 FROM coral.table_functions
-ORDER BY schema_name, function_name;
+WHERE schema_name = '<schema>'
+ORDER BY function_name;
 ```
 
 ## Catalog Metadata
@@ -72,8 +88,8 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Joins across schemas work with standard SQL after table scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
-- `list_catalog` shows queryable tables and parameterized table functions in pages; pass `schema`, `kind`, `limit`, and `offset` to narrow large catalogs. Omit `kind` or pass `null` to list all item kinds.
-- `search_catalog` searches table and table-function names, descriptions, arguments, result columns, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the catalog item you need.
+- `list_catalog` shows queryable tables and parameterized table functions in pages; pass `schema`, `kind`, `limit`, and `offset` to narrow large catalogs. For clear source intent, pass `schema` instead of starting with an unfiltered catalog page.
+- `search_catalog` searches table and table-function names, descriptions, arguments, result columns, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the catalog item you need. Pass `schema` when the source is known.
 - `describe_table` returns one compact table detail with guide text, required filters, and column count; use `coral.columns` when you need full column details.
-- `list_columns` lists columns for one table; pass `pattern`, `required_only`, `limit`, and `offset` to inspect large schemas progressively. Existing tables return paginated `columns` plus `total`, `has_more`, and optional `next_offset`; regex matches add `matched_fields` per column. Missing tables return `found: false` with suggested recovery calls instead of an empty page.
+- `list_columns` lists columns for one table; use it only for the table you plan to query. Pass `pattern`, `required_only`, `limit`, and `offset` to inspect large schemas progressively. Existing tables return paginated `columns` plus `total`, `has_more`, and optional `next_offset`; regex matches add `matched_fields` per column. Missing tables return `found: false` with suggested recovery calls instead of an empty page.
 - `coral://tables` shows table summaries for all installed sources; `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` provide richer SQL metadata.
