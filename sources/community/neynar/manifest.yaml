@@ -1,0 +1,85 @@
+name: neynar
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Neynar Farcaster API for searching casts, getting user profiles,
+  and accessing Farcaster social data. Uses API key authentication.
+inputs:
+  NEYNAR_API_KEY:
+    kind: secret
+    hint: Neynar API key from neynar.com
+base_url: https://api.neynar.com/v2/farcaster
+auth:
+  type: HeaderAuth
+  headers:
+    - name: x-api-key
+      from: input
+      key: NEYNAR_API_KEY
+test_queries:
+  - SELECT hash, text, author__username FROM neynar.search_casts(q => 'optimism') LIMIT 1
+functions:
+  - name: search_casts
+    kind: search
+    description: >-
+      Search Farcaster casts by keyword. Returns provider-ranked results
+      with cast content, author info, and engagement metrics.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /cast/search
+      query:
+        - name: q
+          from: arg
+          key: q
+    response:
+      rows_path:
+        - result
+        - casts
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - result
+        - next
+        - cursor
+    columns:
+      - name: hash
+        type: Utf8
+        description: Cast hash identifier.
+      - name: text
+        type: Utf8
+        description: Cast text content.
+      - name: author__username
+        type: Utf8
+        description: Author's Farcaster username.
+      - name: author__fid
+        type: Int64
+        description: Author's Farcaster ID.
+      - name: author__display_name
+        type: Utf8
+        description: Author's display name.
+      - name: reactions__likes_count
+        type: Int64
+        description: Number of likes.
+      - name: reactions__recasts_count
+        type: Int64
+        description: Number of recasts.
+      - name: replies__count
+        type: Int64
+        description: Number of replies.
+      - name: timestamp
+        type: Utf8
+        description: Cast timestamp.
+      - name: embeds
+        type: Json
+        description: Embedded content (URLs, casts, etc.).
