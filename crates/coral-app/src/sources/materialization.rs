@@ -164,18 +164,19 @@ pub(crate) fn restore_materialization_backup(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     backup: Option<PathBuf>,
-) {
+) -> Result<(), AppError> {
     let target = layout.v4_materialized_dir(workspace_name, source_name);
     if let Some(backup) = backup {
         if target.exists() {
-            drop(std::fs::remove_dir_all(&target));
+            std::fs::remove_dir_all(&target)?;
         }
         if backup.exists() {
-            drop(std::fs::rename(backup, target));
+            std::fs::rename(backup, target)?;
         }
     } else if target.exists() {
-        drop(std::fs::remove_dir_all(target));
+        std::fs::remove_dir_all(target)?;
     }
+    Ok(())
 }
 
 pub(crate) fn load_v4_materialization(
@@ -404,6 +405,19 @@ fn bundled_descriptor<'a>(
 }
 
 fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
+    let canonical = canonicalize_file_descriptor(file)?;
+    let metadata = std::fs::metadata(&canonical)?;
+    if metadata.len() > MAX_DESCRIPTOR_BYTES {
+        return Err(AppError::FailedPrecondition(format!(
+            "OpenAPI descriptor '{}' is too large: {} bytes exceeds {MAX_DESCRIPTOR_BYTES}",
+            file.display(),
+            metadata.len()
+        )));
+    }
+    std::fs::read(canonical).map_err(AppError::from)
+}
+
+pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppError> {
     if std::fs::symlink_metadata(file)?.file_type().is_symlink() {
         return Err(AppError::FailedPrecondition(format!(
             "OpenAPI descriptor '{}' must not be a symlink",
@@ -419,15 +433,7 @@ fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
             current_dir.display()
         )));
     }
-    let metadata = std::fs::metadata(&canonical)?;
-    if metadata.len() > MAX_DESCRIPTOR_BYTES {
-        return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor '{}' is too large: {} bytes exceeds {MAX_DESCRIPTOR_BYTES}",
-            file.display(),
-            metadata.len()
-        )));
-    }
-    std::fs::read(canonical).map_err(AppError::from)
+    Ok(canonical)
 }
 
 fn read_url_descriptor(url: &str) -> Result<Vec<u8>, AppError> {

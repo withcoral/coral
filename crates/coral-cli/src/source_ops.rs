@@ -484,6 +484,32 @@ pub(crate) async fn refresh_source(
         .into_inner())
 }
 
+pub(crate) async fn refresh_and_print(
+    app: &AppClient,
+    source_name: &str,
+    json: bool,
+) -> Result<(), crate::CliError> {
+    let normalized = source_name_arg(Some(source_name))?;
+    match refresh_source(app, &normalized).await {
+        Ok(response) => {
+            print_refresh_response(&response, json)?;
+            Ok(())
+        }
+        Err(err) => {
+            if err
+                .downcast_ref::<tonic::Status>()
+                .is_some_and(is_source_missing_status)
+            {
+                Err(crate::CliError::SourceNotFound {
+                    source_name: normalized,
+                })
+            } else {
+                Err(err.into())
+            }
+        }
+    }
+}
+
 pub(crate) fn print_refresh_response(
     response: &RefreshSourceResponse,
     json: bool,
@@ -512,22 +538,34 @@ pub(crate) fn print_refresh_response(
     );
     for diagnostic in &response.diagnostics {
         if diagnostic.severity == "warning" || diagnostic.severity == "error" {
-            let operation = if diagnostic.operation_id.is_empty() {
-                String::new()
-            } else {
-                format!(" {}", diagnostic.operation_id)
-            };
+            let context = refresh_diagnostic_context(diagnostic);
             println!(
-                "{} {} {}{}: {}",
-                diagnostic.severity,
-                diagnostic.code,
-                diagnostic.surface_id,
-                operation,
-                diagnostic.message
+                "{} {}{}: {}",
+                diagnostic.severity, diagnostic.code, context, diagnostic.message
             );
         }
     }
     Ok(())
+}
+
+fn refresh_diagnostic_context(
+    diagnostic: &coral_api::v1::SourceMaterializationDiagnostic,
+) -> String {
+    let mut parts = Vec::new();
+    if !diagnostic.surface_id.is_empty() {
+        parts.push(diagnostic.surface_id.clone());
+    }
+    if !diagnostic.operation_id.is_empty() {
+        parts.push(diagnostic.operation_id.clone());
+    }
+    if !diagnostic.projection_name.is_empty() {
+        parts.push(format!("projection {}", diagnostic.projection_name));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" "))
+    }
 }
 
 fn plural_suffix(count: u32) -> &'static str {

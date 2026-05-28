@@ -524,11 +524,23 @@ impl MockServerConfig {
         self
     }
 
+    pub(crate) fn with_refresh_source_response(mut self, response: RefreshSourceResponse) -> Self {
+        self.refresh_source = MockResult::ok(response);
+        self
+    }
+
     /// Mirrors what the real server emits for `AppError::SourceNotFound`
     /// from `validate_source` (a `Code::NotFound` Status carrying an
     /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
     pub(crate) fn with_validate_source_not_found(mut self, qualified: impl Into<String>) -> Self {
         self.validate_source = MockResult::source_not_found(qualified);
+        self
+    }
+
+    /// Mirrors what the real server emits for `AppError::SourceNotFound`
+    /// from `refresh_source`.
+    pub(crate) fn with_refresh_source_not_found(mut self, qualified: impl Into<String>) -> Self {
+        self.refresh_source = MockResult::source_not_found(qualified);
         self
     }
 
