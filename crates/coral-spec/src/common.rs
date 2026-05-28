@@ -62,8 +62,7 @@ pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) 
 #[serde(rename_all = "snake_case")]
 pub enum SourceBackend {
     Http,
-    Parquet,
-    Jsonl,
+    File,
     Mcp,
 }
 
@@ -427,6 +426,9 @@ pub enum ValueSourceSpec {
     Template {
         template: ParsedTemplate,
     },
+    OneOf {
+        values: Vec<ValueSourceSpec>,
+    },
     Literal {
         value: Value,
     },
@@ -481,6 +483,9 @@ pub enum ValueSourceSpec {
         part: usize,
     },
     Input {
+        key: String,
+    },
+    Bearer {
         key: String,
     },
     State {

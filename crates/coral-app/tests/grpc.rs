@@ -9,6 +9,8 @@
 mod catalog_discovery_tests;
 #[path = "grpc/harness.rs"]
 mod harness;
+#[path = "grpc/oauth_refresh_tests.rs"]
+mod oauth_refresh_tests;
 #[path = "grpc/resilience_tests.rs"]
 mod resilience_tests;
 #[path = "grpc/server_lifecycle_tests.rs"]

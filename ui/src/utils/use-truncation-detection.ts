@@ -8,7 +8,10 @@ import { useEffect, useState } from 'react'
  * @param enabled - Whether to enable truncation detection (default: true)
  * @returns true if the element's content is truncated, false otherwise
  */
-export function useTruncationDetection(elementRef: React.RefObject<HTMLElement | null>, enabled = true): boolean {
+export function useTruncationDetection(
+  elementRef: React.RefObject<HTMLElement | null>,
+  enabled = true,
+): boolean {
   const [isTruncated, setIsTruncated] = useState(false)
 
   useEffect(() => {
