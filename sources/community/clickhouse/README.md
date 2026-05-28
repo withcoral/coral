@@ -1,125 +1,212 @@
-# ClickHouse source
+# ClickHouse (Community)
 
-Query ClickHouse databases, tables, columns, query history, running processes,
-server metrics, storage parts, and replication health via the ClickHouse HTTP
-interface (port 8123).
+**Version:** 0.1.0
+**Backend:** HTTP (ClickHouse System Tables Interface API)
+**Tables:** 4
+**Base URL:** `{{input.CLICKHOUSE_URL}}`
 
-## Setup
+Query ClickHouse database inventory, storage telemetry, merge activity, and replication health directly through Coral SQL using the ClickHouse HTTP interface.
 
-### 1. Prerequisites
+This integration is intended for infrastructure observability and operational auditing workflows across ClickHouse deployments.
 
-- ClickHouse instance accessible over HTTP or HTTPS
-- A ClickHouse user with `SELECT` access to the `system` database
+Coral exposes read-only `GET` tables. Data mutations, cluster configuration changes, and analytical query execution against arbitrary business datasets are out of scope.
 
-### 2. Create a dedicated user (recommended)
+---
 
-```sql
-CREATE USER coral_reader IDENTIFIED BY 'your_password';
-GRANT SELECT ON system.* TO coral_reader;
-```
+# Install
 
-### 3. Password requirement
+Community sources are not bundled with the Coral binary.
 
-Coral requires a non-empty password for secret inputs. If your default user
-has no password, set one first:
-
-```sql
-ALTER USER default IDENTIFIED BY 'your_password';
-```
-
-### 4. Install the source
+From the Coral repository root:
 
 ```bash
-CLICKHOUSE_HOST=http://localhost:8123 \
-CLICKHOUSE_USER=coral_reader \
-CLICKHOUSE_PASSWORD=your_password \
-coral source add --file manifest.yaml
+coral source add --file sources/community/clickhouse/manifest.yaml
 ```
 
-For ClickHouse Cloud, use `https://<host>.clickhouse.cloud:8443` as the host.
-Do not include a trailing slash.
+Or copy `manifest.yaml` into your workspace and pass that path to:
 
-## Tables
+```bash
+coral source add --file <path-to-manifest>
+```
 
-| Table | Description |
-|---|---|
-| `databases` | All databases visible to the configured user |
-| `tables` | Tables across all databases with engine, row count, size, and key expressions |
-| `columns` | Column names, types, key membership, and compression stats |
-| `query_log` | Last 1000 query log entries across all event types including failures |
-| `processes` | Live snapshot of currently executing queries |
-| `metrics` | Instantaneous server counters (connections, merges, memory) |
-| `parts` | Active MergeTree data parts with partition and storage statistics |
-| `replicas` | Replication queue depth and health (returns 0 rows on standalone instances) |
+---
 
-## Example queries
+# Inputs
+
+| Input | Kind | Required | Description |
+|---|---|---|---|
+| `CLICKHOUSE_URL` | variable | yes | ClickHouse HTTP interface URL with port, for example `http://localhost:8123` |
+| `CLICKHOUSE_USER` | variable | yes | Database user with access to system tables |
+| `CLICKHOUSE_PASSWORD` | secret | yes | Password for the specified ClickHouse user |
+
+---
+
+# Tables Overview
+
+| Table | API Endpoint | Required Filters | Pagination |
+|---|---|---|---|
+| `databases` | `GET /?query=...` | — | None (maps from JSON `data` array) |
+| `tables` | `GET /?query=...` | — | None (maps from JSON `data` array) |
+| `merges` | `GET /?query=...` | — | None (maps from JSON `data` array) |
+| `replicas` | `GET /?query=...` | — | None (maps from JSON `data` array) |
+
+---
+
+# Table Reference
+
+## clickhouse.databases
+
+Metadata inventory of configured ClickHouse databases.
+
+| Column | Type | Description |
+|---|---|---|
+| `name` | Utf8 | Logical database name |
+| `engine` | Utf8 | Database engine type |
+| `data_path` | Utf8 | Disk path containing database data |
+| `metadata_path` | Utf8 | File system path containing metadata definitions |
+
+---
+
+## clickhouse.tables
+
+Storage sizing and telemetry metrics for database tables.
+
+| Column | Type | Description |
+|---|---|---|
+| `database` | Utf8 | Parent database namespace |
+| `table_name` | Utf8 | Table identifier |
+| `engine` | Utf8 | Storage engine type |
+| `total_rows` | Int64 | Total number of rows stored in the table |
+| `total_bytes` | Int64 | Total storage size consumed by the table |
+
+---
+
+## clickhouse.merges
+
+Real-time diagnostics for active background merges and mutations.
+
+| Column | Type | Description |
+|---|---|---|
+| `database` | Utf8 | Database containing the active merge |
+| `table_name` | Utf8 | Table currently undergoing a merge operation |
+| `elapsed` | Float64 | Merge execution time in seconds |
+| `progress` | Float64 | Merge completion percentage |
+| `num_parts` | Int64 | Number of source parts participating in the merge |
+| `result_part_name` | Utf8 | Name of the resulting merged part |
+
+---
+
+## clickhouse.replicas
+
+Replication lag and synchronization health telemetry.
+
+| Column | Type | Description |
+|---|---|---|
+| `database` | Utf8 | Database containing the replica |
+| `table_name` | Utf8 | Replicated table name |
+| `is_leader` | Int64 | Indicates whether the replica is the current leader |
+| `can_become_leader` | Int64 | Indicates whether the replica can become leader |
+| `absolute_delay` | Int64 | Replication lag in seconds |
+| `queue_size` | Int64 | Number of queued replication operations |
+
+---
+
+# Example Queries
+
+## Top 5 Tables by Storage Footprint
 
 ```sql
--- Find the largest tables by size
-SELECT database, name, engine, total_rows, total_bytes
-FROM clickhouse.tables
-WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
-ORDER BY total_bytes DESC
-LIMIT 20;
-
--- Slowest recent queries
-SELECT query, user, query_duration_ms, read_rows, memory_usage
-FROM clickhouse.query_log
-WHERE type = 'QueryFinish'
-ORDER BY query_duration_ms DESC
-LIMIT 10;
-
--- Failed queries with errors
-SELECT event_time, user, query, exception
-FROM clickhouse.query_log
-WHERE type = 'ExceptionWhileProcessing'
-ORDER BY event_time DESC
-LIMIT 20;
-
--- Correlate query start and finish rows
 SELECT
-  s.query_id,
-  s.query,
-  s.event_time AS started_at,
-  f.event_time AS finished_at,
-  f.query_duration_ms
-FROM clickhouse.query_log s
-JOIN clickhouse.query_log f ON s.query_id = f.query_id
-WHERE s.type = 'QueryStart'
-  AND f.type = 'QueryFinish'
-LIMIT 10;
-
--- Tables with the most parts (merge pressure indicator)
-SELECT database, table, COUNT(*) AS part_count, SUM(rows) AS total_rows
-FROM clickhouse.parts
-WHERE database NOT IN ('system')
-GROUP BY database, table
-ORDER BY part_count DESC
-LIMIT 20;
-
--- Check replication lag
-SELECT database, table, absolute_delay, queue_size, active_replicas, total_replicas
-FROM clickhouse.replicas
-WHERE absolute_delay > 0
-ORDER BY absolute_delay DESC;
-
--- Live running queries
-SELECT query_id, user, elapsed, read_rows, memory_usage, query
-FROM clickhouse.processes
-ORDER BY elapsed DESC;
+  database,
+  table_name,
+  engine,
+  total_bytes
+FROM clickhouse.tables
+ORDER BY total_bytes DESC
+LIMIT 5;
 ```
 
-## Notes
+---
 
-- **`query_log`** is only populated when `log_queries = 1` is set in the
-  ClickHouse server configuration. An empty result may mean logging is disabled.
-- **`parts`** can return very large result sets on busy production clusters.
-  Always filter by `database` or `table` in WHERE clauses for specific lookups,
-  and use LIMIT for exploratory queries.
-- **`replicas`** returns 0 rows on standalone (non-replicated) instances —
-  this is expected, not an error.
-- **`processes`** includes the Coral query fetching the table as one of the
-  returned rows.
-- Statistics columns (`viewCount`, `total_rows`, `total_bytes`) are typed
-  `Int64` — very large tables (petabyte scale) could theoretically overflow,
-  but this is not a practical concern for most deployments.
+## Monitor High Replication Delay
+
+```sql
+SELECT
+  database,
+  table_name,
+  absolute_delay,
+  queue_size
+FROM clickhouse.replicas
+WHERE absolute_delay > 60
+   OR queue_size > 10
+ORDER BY absolute_delay DESC;
+```
+
+---
+
+# Validation
+
+Run formatting and schema validation locally before opening a pull request.
+
+## Lint Sources
+
+```bash
+make lint-sources
+```
+
+## Validate Coral Source Schema
+
+```bash
+coral source lint sources/community/clickhouse/manifest.yaml
+```
+
+## Execute Live Connection Test
+
+```bash
+export CLICKHOUSE_URL=http://localhost:8123
+export CLICKHOUSE_USER=default
+export CLICKHOUSE_PASSWORD=your_secure_password
+
+coral source add --file sources/community/clickhouse/manifest.yaml
+coral source test clickhouse
+```
+
+---
+
+# Representative Live Output
+
+```text
+$ coral source test clickhouse
+
+✓ clickhouse connected successfully
+
+  clickhouse (4 tables)
+  ├─ databases
+  ├─ tables
+  ├─ merges
+  └─ replicas
+
+  Query tests
+  1 declared · 1 passed · 0 failed
+
+✓ SELECT name FROM clickhouse.databases LIMIT 1
+
++---------+
+| name    |
++---------+
+| default |
++---------+
+
+1 row
+```
+
+---
+
+# Limitations
+
+- Read-only retrieval scope
+- Does not execute analytical queries against arbitrary business datasets
+- Focuses exclusively on ClickHouse system tables and operational telemetry
+- Does not expose query logs, distributed query traces, or custom monitoring extensions
+- Uses ClickHouse `FORMAT JSON` responses and extracts rows from the JSON `data` array
+- Large deployments with extensive table inventories may require targeted SQL filtering for optimal performance
