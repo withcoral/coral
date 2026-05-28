@@ -8,6 +8,7 @@ use datafusion::error::{DataFusionError, Result};
 use serde_json::Value;
 
 use crate::backends::BackendRegistrationContext;
+use crate::backends::http::cache::HttpResponseCache;
 use crate::backends::http::fetch::fetch_rows;
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
@@ -27,6 +28,7 @@ pub(crate) struct HttpSourceClient {
     pub(super) http: reqwest::Client,
     pub(super) request_timeout: Duration,
     pub(super) source_schema: String,
+    pub(super) source_version: String,
     pub(super) base_url: ParsedTemplate,
     pub(super) auth: AuthSpec,
     pub(super) request_headers: Vec<HeaderSpec>,
@@ -36,6 +38,7 @@ pub(crate) struct HttpSourceClient {
     pub(super) rate_limit: RateLimitSpec,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
     pub(super) body_capture: HttpBodyCapture,
+    pub(super) cache: HttpResponseCache,
 }
 
 pub(crate) struct HttpSourceClientRuntime {
@@ -43,6 +46,7 @@ pub(crate) struct HttpSourceClientRuntime {
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     body_capture_max_bytes: Option<usize>,
     http: reqwest::Client,
+    cache: Option<HttpResponseCache>,
 }
 
 impl HttpSourceClientRuntime {
@@ -51,12 +55,14 @@ impl HttpSourceClientRuntime {
         source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
         body_capture_max_bytes: Option<usize>,
         http: reqwest::Client,
+        cache: Option<HttpResponseCache>,
     ) -> Self {
         Self {
             source_input_resolution_context: Some(source_input_resolution_context),
             source_input_resolver,
             body_capture_max_bytes,
             http,
+            cache,
         }
     }
 
@@ -67,6 +73,7 @@ impl HttpSourceClientRuntime {
             source_input_resolver: None,
             body_capture_max_bytes,
             http,
+            cache: None,
         }
     }
 }
@@ -161,6 +168,7 @@ impl HttpSourceClient {
             http: runtime.http,
             request_timeout,
             source_schema: manifest.common.name.clone(),
+            source_version: manifest.common.version.clone(),
             base_url: manifest.base_url.clone(),
             auth: manifest.auth.clone(),
             request_headers: manifest.request_headers.clone(),
@@ -170,6 +178,7 @@ impl HttpSourceClient {
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
             body_capture: HttpBodyCapture::new(runtime.body_capture_max_bytes),
+            cache: runtime.cache.unwrap_or_else(HttpResponseCache::new),
         })
     }
 

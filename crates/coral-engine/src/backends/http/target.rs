@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use coral_spec::backends::http::HttpTableSpec;
+use coral_spec::backends::http::{HttpCachePolicySpec, HttpTableSpec};
 use coral_spec::{
     ColumnSpec, PaginationSpec, RequestSpec, ResponseSpec, SearchLimitsSpec,
     SourceTableFunctionSpec,
@@ -21,6 +21,7 @@ pub(crate) struct HttpFetchTarget {
     resolved_request: RequestSpec,
     response: Arc<ResponseSpec>,
     pagination: Arc<PaginationSpec>,
+    cache: Option<Arc<HttpCachePolicySpec>>,
 }
 
 impl std::fmt::Debug for HttpFetchTarget {
@@ -47,6 +48,7 @@ impl HttpFetchTarget {
             resolved_request,
             response: Arc::new(table.response.clone()),
             pagination: Arc::new(table.pagination.clone()),
+            cache: table.cache.clone().map(Arc::new),
         }
     }
 
@@ -59,6 +61,7 @@ impl HttpFetchTarget {
             resolved_request,
             response: Arc::clone(&self.response),
             pagination: Arc::clone(&self.pagination),
+            cache: self.cache.clone(),
         }
     }
 
@@ -71,6 +74,7 @@ impl HttpFetchTarget {
             resolved_request: function.request.clone(),
             response: Arc::new(function.response.clone()),
             pagination: Arc::new(function.pagination.clone()),
+            cache: None,
         }
     }
 
@@ -104,5 +108,9 @@ impl HttpFetchTarget {
 
     pub(crate) fn pagination(&self) -> &PaginationSpec {
         &self.pagination
+    }
+
+    pub(crate) fn cache(&self) -> Option<&HttpCachePolicySpec> {
+        self.cache.as_deref()
     }
 }

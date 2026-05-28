@@ -10,6 +10,7 @@ use datafusion::datasource::TableProvider;
 use reqwest::header::{HeaderName, HeaderValue};
 
 use crate::CoreError;
+use crate::backends::http::cache::HttpCacheRegistry;
 use crate::contracts::QuerySource;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
@@ -27,6 +28,8 @@ pub struct EngineExtensions {
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
     pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    /// Caller-owned HTTP cache registry; `None` means per-runtime caches.
+    pub http_cache_registry: Option<Arc<HttpCacheRegistry>>,
 }
 
 /// Neutral policy decision for one source registration failure.

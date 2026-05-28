@@ -22,6 +22,7 @@ datafusion-functions-json.workspace = true
 datafusion-tracing.workspace = true
 futures.workspace = true
 httpdate.workspace = true
+moka.workspace = true
 object_store.workspace = true
 opentelemetry.workspace = true
 parquet.workspace = true
@@ -47,6 +48,6 @@ opentelemetry_sdk = { workspace = true, features = ["testing"] }
 parquet.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
 wiremock.workspace = true

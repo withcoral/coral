@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
+    HttpCacheRegistry, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
     SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -48,6 +48,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    http_cache_registry: Arc<HttpCacheRegistry>,
 }
 
 impl QueryManager {
@@ -64,6 +65,7 @@ impl QueryManager {
             runtime_context,
             layout,
             engine_extensions_providers,
+            http_cache_registry: Arc::new(HttpCacheRegistry::new()),
         }
     }
 
@@ -308,6 +310,7 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
+        extensions.http_cache_registry = Some(Arc::clone(&self.http_cache_registry));
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }

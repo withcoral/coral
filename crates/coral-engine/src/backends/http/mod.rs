@@ -18,6 +18,7 @@ use crate::backends::{
 use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
+pub(crate) mod cache;
 pub(crate) mod client;
 pub(crate) mod error;
 mod fetch;
@@ -46,6 +47,7 @@ struct HttpCompiledSource {
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    http_cache_registry: Option<Arc<cache::HttpCacheRegistry>>,
 }
 
 pub(crate) fn compile_source(
@@ -54,6 +56,7 @@ pub(crate) fn compile_source(
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    http_cache_registry: Option<Arc<cache::HttpCacheRegistry>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
@@ -61,6 +64,7 @@ pub(crate) fn compile_source(
         request_authenticators,
         body_capture_max_bytes,
         source_input_resolver,
+        http_cache_registry,
     })
 }
 
@@ -74,6 +78,7 @@ pub(crate) fn compile_manifest(
         request.request_authenticators.clone(),
         request.runtime_context.body_capture_max_bytes,
         request.source_input_resolver.clone(),
+        request.http_cache_registry.clone(),
     )
 }
 
@@ -93,11 +98,15 @@ impl CompiledBackendSource for HttpCompiledSource {
         registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
         let http = client::default_http_client(registration, &self.manifest.common.name)?;
+        let cache = self.http_cache_registry.as_ref().map(|registry| {
+            registry.get_or_create(&self.manifest.common.name, &self.manifest.common.version)
+        });
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
             self.body_capture_max_bytes,
             http,
+            cache,
         );
         let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
             &self.manifest,

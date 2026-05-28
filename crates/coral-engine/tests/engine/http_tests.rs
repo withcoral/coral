@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
-    RequestAuthenticator, RequestAuthenticatorError, StatusCode,
+    CoralQuery, CoreError, EngineExtensions, HttpCacheRegistry, QueryRuntimeConfig,
+    QueryRuntimeContext, RequestAuthenticator, RequestAuthenticatorError, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -2159,4 +2159,139 @@ async fn legacy_json_body_array_form_still_works() {
     );
 
     assert_eq!(rows, users_rows());
+}
+
+fn runtime_with_cache_registry(registry: Arc<HttpCacheRegistry>) -> QueryRuntimeConfig {
+    let extensions = EngineExtensions {
+        http_cache_registry: Some(registry),
+        ..EngineExtensions::default()
+    };
+    QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
+}
+
+fn cached_http_manifest(name: &str, base_url: &str) -> Value {
+    json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users with TTL cache",
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "response": { "rows_path": ["data"] },
+            "cache": { "mode": "ttl", "ttl": "1h" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "email", "type": "Utf8" }
+            ]
+        }]
+    })
+}
+
+#[tokio::test]
+async fn cache_persists_across_execute_sql_calls() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(cached_http_manifest("http_cache_persist", &server.uri()));
+    let registry = Arc::new(HttpCacheRegistry::new());
+
+    let rows1 = execution_to_rows(
+        &CoralQuery::execute_sql(
+            std::slice::from_ref(&source),
+            runtime_with_cache_registry(registry.clone()),
+            "SELECT id, name, email FROM http_cache_persist.users ORDER BY id",
+        )
+        .await
+        .expect("first query should succeed"),
+    );
+
+    let rows2 = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            runtime_with_cache_registry(registry),
+            "SELECT id, name, email FROM http_cache_persist.users ORDER BY id",
+        )
+        .await
+        .expect("second query should succeed (served from cache)"),
+    );
+
+    assert_eq!(rows1, users_rows());
+    assert_eq!(rows2, users_rows());
+}
+
+#[tokio::test]
+async fn cache_coalesces_concurrent_scans_in_same_query() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(cached_http_manifest("http_cache_coalesce", &server.uri()));
+
+    let _ = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id FROM http_cache_coalesce.users \
+             UNION ALL \
+             SELECT id FROM http_cache_coalesce.users",
+        )
+        .await
+        .expect("union all query should succeed"),
+    );
+}
+
+#[tokio::test]
+async fn cache_registry_isolates_different_source_versions() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let mut manifest_v1 = cached_http_manifest("http_registry_versioned", &server.uri());
+    manifest_v1
+        .as_object_mut()
+        .expect("manifest is an object")
+        .insert("version".to_string(), json!("0.1.0"));
+    let mut manifest_v2 = manifest_v1.clone();
+    manifest_v2
+        .as_object_mut()
+        .expect("manifest is an object")
+        .insert("version".to_string(), json!("0.2.0"));
+
+    let registry = Arc::new(HttpCacheRegistry::new());
+
+    let _ = CoralQuery::execute_sql(
+        &[build_source(manifest_v1)],
+        runtime_with_cache_registry(registry.clone()),
+        "SELECT id FROM http_registry_versioned.users",
+    )
+    .await
+    .expect("v1 query should succeed");
+
+    let _ = CoralQuery::execute_sql(
+        &[build_source(manifest_v2)],
+        runtime_with_cache_registry(registry),
+        "SELECT id FROM http_registry_versioned.users",
+    )
+    .await
+    .expect("v2 query should succeed");
 }

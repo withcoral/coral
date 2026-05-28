@@ -17,7 +17,7 @@ const NOT_FOUND: u16 = HttpStatus::NOT_FOUND.as_u16();
 const TOO_MANY_REQUESTS: u16 = HttpStatus::TOO_MANY_REQUESTS.as_u16();
 
 /// Structured query-time failures for HTTP-backed tables.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub(crate) enum ProviderQueryError {
     #[error(
         "{schema}.{table} table requires a constant equality filter: WHERE {column} = <constant>"
