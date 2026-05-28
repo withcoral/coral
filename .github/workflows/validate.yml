@@ -33,6 +33,7 @@ jobs:
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
       license-check: ${{ steps.filter.outputs.license-check }}
+      performance-regression: ${{ steps.filter.outputs.performance-regression }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -96,6 +97,16 @@ jobs:
               - 'Cargo.lock'
               - 'crates/**/Cargo.toml'
               - 'deny.toml'
+            performance-regression:
+              - '.github/workflows/validate.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Makefile'
+              - 'rust-toolchain.toml'
+              - 'rust-toolchain'
+              - 'crates/**'
+              - 'xtask/**'
+              - 'sources/core/github/**'
 
   rust-checks:
     name: Rust checks
@@ -439,6 +450,41 @@ jobs:
       - name: Run make license-check
         run: make license-check
 
+  performance-regression:
+    name: Performance regression
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.performance-regression == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-performance-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install hyperfine
+        uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: hyperfine@1.20.0
+          fallback: cargo-install
+
+      - name: Build CLI
+        run: cargo build --locked -p coral-cli --release
+
+      - name: Benchmark coral.tables query
+        run: |
+          cargo run --locked -p xtask -- perf-check \
+            --coral-bin target/release/coral \
+            --max-mean-seconds 0.75
+
   validate:
     runs-on: ubuntu-latest
     needs:
@@ -455,6 +501,7 @@ jobs:
         source-lint,
         docs-freshness,
         license-check,
+        performance-regression,
       ]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
@@ -474,6 +521,7 @@ jobs:
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
           DOCS_FRESHNESS_RESULT: ${{ needs.docs-freshness.result }}
           LICENSE_CHECK_RESULT: ${{ needs.license-check.result }}
+          PERFORMANCE_REGRESSION_RESULT: ${{ needs.performance-regression.result }}
         run: |
           jobs=(
             "changes:$CHANGES_RESULT"
@@ -488,6 +536,7 @@ jobs:
             "source-lint:$SOURCE_LINT_RESULT"
             "docs-freshness:$DOCS_FRESHNESS_RESULT"
             "license-check:$LICENSE_CHECK_RESULT"
+            "performance-regression:$PERFORMANCE_REGRESSION_RESULT"
           )
 
           failed=0
