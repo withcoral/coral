@@ -169,15 +169,14 @@ tables:
         description: Optional organization filter.
         expr: {kind: from_filter, key: organization_id}
 
-  - name: organization_memberships
-    description: WorkOS User Management organization memberships.
+  - name: organization_memberships_by_organization
+    description: WorkOS User Management organization memberships scoped by organization.
     guide: |
-      WorkOS requires at least one scoping filter: `organization_id` from
-      `workos.organizations` or `user_id` from `workos.users`. Unscoped
-      membership queries are rejected by the provider.
+      Requires `organization_id` from `workos.organizations`. Use this table
+      to inspect all user memberships for one organization.
     filters:
       - name: organization_id
-      - name: user_id
+        required: true
     fetch_limit_default: 100
     request:
       method: GET
@@ -186,6 +185,69 @@ tables:
         - name: organization_id
           from: filter
           key: organization_id
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [list_metadata, after]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization membership ID.
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: WorkOS user ID.
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: WorkOS organization ID.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Membership status.
+      - name: role_slug
+        type: Utf8
+        nullable: true
+        description: Role slug from the nested membership role object.
+        expr: {kind: path, path: [role, slug]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Membership creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Membership update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: organization_memberships_by_user
+    description: WorkOS User Management organization memberships scoped by user.
+    guide: |
+      Requires `user_id` from `workos.users`. Use this table to inspect all
+      organization memberships for one user.
+    filters:
+      - name: user_id
+        required: true
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /user_management/organization_memberships
+      query:
         - name: user_id
           from: filter
           key: user_id
