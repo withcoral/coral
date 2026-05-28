@@ -51,6 +51,16 @@ tables:
         nullable: false
         description: The model name (e.g., models/gemini-flash-latest).
         expr: {kind: path, path: [name]}
+      - name: base_model_id
+        type: Utf8
+        nullable: true
+        description: Base model ID to be passed to generateContent.
+        expr: {kind: path, path: [baseModelId]}
+      - name: supported_generation_methods
+        type: Json
+        nullable: true
+        description: Methods supported by the model (e.g., generateContent).
+        expr: {kind: path, path: [supportedGenerationMethods]}
       - name: version
         type: Utf8
         nullable: true
@@ -97,6 +107,7 @@ tables:
         description: Full raw model object.
         expr: {kind: current_row}
 
+functions:
   # ──────────────────────────────────────────────────────────────────────
   # generate — run Gemini LLM inference
   # ──────────────────────────────────────────────────────────────────────
@@ -104,9 +115,8 @@ tables:
     description: >
       Run prompt inference against a specific Gemini model (e.g. gemini-flash-latest).
     guide: >
-      Use this table to execute LLM prompts. `SELECT response FROM gemini.generate
-      WHERE model = 'gemini-flash-latest' AND prompt = 'Explain SQL joins.'`.
-    filters:
+      Use this function to execute LLM prompts. `SELECT response FROM gemini.generate(model => 'gemini-flash-latest', prompt => 'Explain SQL joins.')`.
+    args:
       - name: model
         required: true
       - name: prompt
@@ -117,7 +127,7 @@ tables:
         required: false
     request:
       method: POST
-      path: /models/{{filter.model}}:generateContent
+      path: /models/{{arg.model}}:generateContent
       headers:
         - name: Content-Type
           from: literal
@@ -130,16 +140,16 @@ tables:
           from: literal
           value: user
         - path: [contents, "0", parts, "0", text]
-          from: filter
+          from: arg
           key: prompt
         - path: [systemInstruction, role]
           from: literal
           value: system
         - path: [systemInstruction, parts, "0", text]
-          from: filter
+          from: arg
           key: system
         - path: [generationConfig, temperature]
-          from: filter
+          from: arg
           key: temperature
     response:
       row_strategy: direct
@@ -151,19 +161,19 @@ tables:
         nullable: false
         virtual: true
         description: The model used for generation.
-        expr: {kind: from_filter, key: model}
+        expr: {kind: from_arg, key: model}
       - name: prompt
         type: Utf8
         nullable: false
         virtual: true
-        description: The input prompt provided in the SQL filter.
-        expr: {kind: from_filter, key: prompt}
+        description: The input prompt provided in the SQL argument.
+        expr: {kind: from_arg, key: prompt}
       - name: system
         type: Utf8
         nullable: true
         virtual: true
-        description: The system instruction provided in the SQL filter.
-        expr: {kind: from_filter, key: system}
+        description: The system instruction provided in the SQL argument.
+        expr: {kind: from_arg, key: system}
       - name: response
         type: Utf8
         nullable: true

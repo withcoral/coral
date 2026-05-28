@@ -22,44 +22,49 @@ coral source add --file sources/community/gemini/manifest.yaml --interactive
 | Table          | Description                                           |
 | -------------- | ----------------------------------------------------- |
 | `models`       | List all available Gemini models and their capabilities. |
+
+## Functions
+
+| Function       | Description                                           |
+| -------------- | ----------------------------------------------------- |
 | `generate`     | Run prompt inference against a specific Gemini model. |
 
-## Filters
+## Arguments
 
-The `generate` table requires specific filters to execute prompts:
+The `generate` function requires specific arguments to execute prompts:
 
-| Filter        | Required | Description                                                                        |
+| Argument      | Required | Description                                                                        |
 | ------------- | -------- | ---------------------------------------------------------------------------------- |
-| `model`       | **Yes**  | The Gemini model ID to use (e.g., `gemini-flash-latest`, `gemini-1.5-pro`).           |
+| `model`       | **Yes**  | The base model ID to use (e.g., `gemini-2.5-flash`, `gemini-1.5-pro`).             |
 | `prompt`      | **Yes**  | The text prompt to send to the model.                                              |
 | `system`      | No       | Optional system instruction to guide the model's behavior.                         |
+| `temperature` | No       | Optional temperature controlling randomness (e.g., `0.7`).                         |
 
 ## Example queries
 
 ```sql
 -- List available models
-SELECT name, version, display_name, input_token_limit, output_token_limit
+SELECT name, base_model_id, display_name, supported_generation_methods
 FROM gemini.models
 LIMIT 5;
 /*
-+----------------------------------+---------+---------------------------+-------------------+--------------------+
-| name                             | version | display_name              | input_token_limit | output_token_limit |
-+----------------------------------+---------+---------------------------+-------------------+--------------------+
-| models/gemini-2.5-flash                 | 001     | Gemini 2.5 Flash          | 1048576           | 65536              |
-| models/gemini-2.5-pro                   | 2.5     | Gemini 2.5 Pro            | 1048576           | 65536              |
-| models/gemini-2.0-flash                 | 2.0     | Gemini 2.0 Flash          | 1048576           | 8192               |
-| models/gemini-2.0-flash-001             | 2.0     | Gemini 2.0 Flash 001      | 1048576           | 8192               |
-| models/gemini-2.0-flash-lite-001        | 2.0     | Gemini 2.0 Flash-Lite 001 | 1048576           | 8192               |
-+----------------------------------+---------+---------------------------+-------------------+--------------------+
++----------------------------------+---------------------------+---------------------------+------------------------------------+
+| name                             | base_model_id             | display_name              | supported_generation_methods       |
++----------------------------------+---------------------------+---------------------------+------------------------------------+
+| models/gemini-2.5-flash          | gemini-2.5-flash          | Gemini 2.5 Flash          | ["generateContent", "countTokens"] |
+| models/gemini-2.5-pro            | gemini-2.5-pro            | Gemini 2.5 Pro            | ["generateContent", "countTokens"] |
+| models/gemini-2.0-flash          | gemini-2.0-flash          | Gemini 2.0 Flash          | ["generateContent", "countTokens"] |
+| models/gemini-2.0-flash-001      | gemini-2.0-flash-001      | Gemini 2.0 Flash 001      | ["generateContent", "countTokens"] |
+| models/gemini-2.0-flash-lite-001 | gemini-2.0-flash-lite-001 | Gemini 2.0 Flash-Lite 001 | ["generateContent", "countTokens"] |
++----------------------------------+---------------------------+---------------------------+------------------------------------+
 */
 
--- Generate text using gemini-flash-latest
--- Note: When reusing a model name discovered from the `models` table,
--- you must strip the `models/` prefix before passing it to `model`.
+-- Generate text using gemini-2.5-flash
 SELECT response, prompt_token_count, candidates_token_count
-FROM gemini.generate
-WHERE model = 'gemini-flash-latest'
-  AND prompt = 'Explain how a SQL JOIN works in one short paragraph.';
+FROM gemini.generate(
+  model => 'gemini-2.5-flash',
+  prompt => 'Explain how a SQL JOIN works in one short paragraph.'
+);
 /*
 +-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------+------------------------+
 | response                                                                                                                                                                                                                                                                                                                                                                | prompt_token_count | candidates_token_count |
@@ -70,10 +75,11 @@ WHERE model = 'gemini-flash-latest'
 
 -- Generate text with a custom system prompt
 SELECT response
-FROM gemini.generate
-WHERE model = 'gemini-flash-latest'
-  AND prompt = 'How do I center a div?'
-  AND system = 'You are a pirate front-end developer. Always speak like a pirate.';
+FROM gemini.generate(
+  model => 'gemini-2.5-flash',
+  prompt => 'How do I center a div?',
+  system => 'You are a pirate front-end developer. Always speak like a pirate.'
+);
 /*
 +--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | response                                                                                                                                                                                   |
@@ -100,9 +106,9 @@ GEMINI_API_KEY=<key> coral source add --file sources/community/gemini/manifest.y
 #
 #   ✓ gemini connected successfully
 #
-#     gemini (2 tables)
-#     ├─ generate
-#     └─ models
+#     gemini (1 table, 1 function)
+#     ├─ models
+#     └─ generate()
 #     Query tests
 #     1 declared · 1 passed · 0 failed
 #
@@ -112,16 +118,16 @@ GEMINI_API_KEY=<key> coral source add --file sources/community/gemini/manifest.y
 coral source test gemini
 #   ✓ gemini connected successfully
 #
-#     gemini (2 tables)
-#     ├─ generate
-#     └─ models
+#     gemini (1 table, 1 function)
+#     ├─ models
+#     └─ generate()
 #     Query tests
 #     1 declared · 1 passed · 0 failed
 #
 #     ✓ SELECT name, version FROM gemini.models LIMIT 5
 #       5 rows
 
-coral sql "SELECT response FROM gemini.generate(model => 'gemini-flash-latest', prompt => 'What is SQL?') LIMIT 1"
+coral sql "SELECT response FROM gemini.generate(model => 'gemini-2.5-flash', prompt => 'What is SQL?') LIMIT 1"
 # +-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 # | response                                                                                                                                                                                                                                |
 # +-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
