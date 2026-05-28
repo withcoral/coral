@@ -183,6 +183,15 @@ coral sql "SELECT schema_name, function_name FROM coral.table_functions ORDER BY
 
 Assuming you've connected GitHub, try listing open issues for a repo:
 
+## Engineering Intelligence Example
+
+Example Coral SQL query for GitHub users:
+
+```sql
+SELECT login, type
+FROM github.users
+LIMIT 5;
+
 ```bash
 coral sql "
   SELECT number, title, state, created_at
