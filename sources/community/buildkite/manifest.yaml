@@ -1,0 +1,605 @@
+name: buildkite
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Buildkite organizations, pipelines, builds, agents, job annotations,
+  and pipeline schedules for CI/CD operations.
+base_url: https://api.buildkite.com
+
+inputs:
+  BUILDKITE_API_TOKEN:
+    kind: secret
+    hint: >-
+      Buildkite API access token with read scopes for the resources you want
+      to query. Common scopes include read_organizations, read_pipelines,
+      read_builds, read_agents, and read_teams.
+  BUILDKITE_ORG:
+    kind: variable
+    hint: >-
+      Buildkite organization slug to query. Example: my-great-org.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.BUILDKITE_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+rate_limit:
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+
+test_queries:
+  - SELECT id, slug, name FROM buildkite.organizations LIMIT 1
+  - SELECT id, slug, name FROM buildkite.pipelines LIMIT 1
+  - SELECT id, number, state FROM buildkite.builds LIMIT 1
+
+tables:
+  - name: organizations
+    description: Organizations visible to the authenticated Buildkite token.
+    guide: |
+      Start here to verify token access:
+      `SELECT id, slug, name, web_url FROM buildkite.organizations LIMIT 20`.
+      Use an organization slug as the BUILDKITE_ORG input for org-scoped tables.
+    request:
+      method: GET
+      path: /v2/organizations
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization UUID.
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL ID for the organization.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Canonical API URL for the organization.
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Web URL for the organization.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization display name.
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Organization slug.
+      - name: pipelines_url
+        type: Utf8
+        nullable: true
+        description: API URL for organization pipelines.
+      - name: agents_url
+        type: Utf8
+        nullable: true
+        description: API URL for organization agents.
+
+  - name: pipelines
+    description: >-
+      Pipelines in the configured organization, including repository,
+      provider details, and current build/job counters.
+    guide: |
+      Inventory CI/CD pipelines:
+      `SELECT slug, name, repository, running_builds_count, waiting_jobs_count
+       FROM buildkite.pipelines ORDER BY name LIMIT 50`.
+    request:
+      method: GET
+      path: /v2/organizations/{{input.BUILDKITE_ORG}}/pipelines
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Pipeline UUID.
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL ID for the pipeline.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Canonical API URL for the pipeline.
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Web URL for the pipeline.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Pipeline display name.
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Pipeline slug.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Pipeline description.
+      - name: repository
+        type: Utf8
+        nullable: true
+        description: Git repository URL connected to the pipeline.
+      - name: default_branch
+        type: Utf8
+        nullable: true
+        description: Default branch configured for builds.
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Pipeline visibility.
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the pipeline is archived.
+      - name: provider
+        type: Json
+        nullable: true
+        description: Provider configuration object.
+      - name: env
+        type: Json
+        nullable: true
+        description: Pipeline environment values visible through the API.
+      - name: scheduled_builds_count
+        type: Int64
+        nullable: true
+        description: Number of scheduled builds in the pipeline.
+      - name: running_builds_count
+        type: Int64
+        nullable: true
+        description: Number of running builds in the pipeline.
+      - name: scheduled_jobs_count
+        type: Int64
+        nullable: true
+        description: Number of scheduled jobs in the pipeline.
+      - name: running_jobs_count
+        type: Int64
+        nullable: true
+        description: Number of running jobs in the pipeline.
+      - name: waiting_jobs_count
+        type: Int64
+        nullable: true
+        description: Number of waiting jobs in the pipeline.
+      - name: builds_url
+        type: Utf8
+        nullable: true
+        description: API URL for pipeline builds.
+      - name: badge_url
+        type: Utf8
+        nullable: true
+        description: Pipeline badge URL.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Pipeline creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+
+  - name: builds
+    description: >-
+      Organization-wide Buildkite builds across all pipelines, with filters
+      for branch, commit, creator, state, and time windows.
+    guide: |
+      Find recent failed work:
+      `SELECT pipeline__slug, number, state, branch, message, web_url
+       FROM buildkite.builds WHERE state = 'failed' LIMIT 25`.
+    filters:
+      - name: branch
+      - name: commit
+      - name: creator
+      - name: created_from
+      - name: created_to
+      - name: finished_from
+      - name: state
+      - name: include_retried_jobs
+    request:
+      method: GET
+      path: /v2/organizations/{{input.BUILDKITE_ORG}}/builds
+      query:
+        - name: branch
+          from: filter
+          key: branch
+        - name: commit
+          from: filter
+          key: commit
+        - name: creator
+          from: filter
+          key: creator
+        - name: created_from
+          from: filter
+          key: created_from
+        - name: created_to
+          from: filter
+          key: created_to
+        - name: finished_from
+          from: filter
+          key: finished_from
+        - name: state
+          from: filter
+          key: state
+        - name: include_retried_jobs
+          from: filter_bool
+          key: include_retried_jobs
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Build UUID.
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL ID for the build.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Canonical API URL for the build.
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Web URL for the build.
+      - name: number
+        type: Int64
+        nullable: true
+        description: Build number within the pipeline.
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Current build state.
+      - name: blocked
+        type: Boolean
+        nullable: true
+        description: Whether the build is blocked waiting on a block step.
+      - name: cancel_reason
+        type: Utf8
+        nullable: true
+        description: Reason provided when the build was canceled.
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Commit message or custom build message.
+      - name: commit
+        type: Utf8
+        nullable: true
+        description: Git commit SHA being built.
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Git branch being built.
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Build trigger source.
+      - name: creator__id
+        type: Utf8
+        nullable: true
+        description: UUID of the user who created the build.
+        expr: {kind: path, path: [creator, id]}
+      - name: creator__name
+        type: Utf8
+        nullable: true
+        description: Name of the user who created the build.
+        expr: {kind: path, path: [creator, name]}
+      - name: creator__email
+        type: Utf8
+        nullable: true
+        description: Email of the user who created the build, if visible.
+        expr: {kind: path, path: [creator, email]}
+      - name: pipeline__id
+        type: Utf8
+        nullable: true
+        description: Pipeline UUID.
+        expr: {kind: path, path: [pipeline, id]}
+      - name: pipeline__name
+        type: Utf8
+        nullable: true
+        description: Pipeline display name.
+        expr: {kind: path, path: [pipeline, name]}
+      - name: pipeline__slug
+        type: Utf8
+        nullable: true
+        description: Pipeline slug.
+        expr: {kind: path, path: [pipeline, slug]}
+      - name: jobs
+        type: Json
+        nullable: true
+        description: Jobs included with the build response.
+      - name: env
+        type: Json
+        nullable: true
+        description: Environment values included with the build response.
+      - name: meta_data
+        type: Json
+        nullable: true
+        description: Build metadata key-value object.
+      - name: pull_request
+        type: Json
+        nullable: true
+        description: Pull request metadata for pull request builds.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Build creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: scheduled_at
+        type: Timestamp
+        nullable: true
+        description: Build scheduled time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [scheduled_at]}
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Build start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [started_at]}
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Build finish time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [finished_at]}
+
+  - name: agents
+    description: >-
+      Connected Buildkite agents in the configured organization, including
+      host, version, metadata, and current job information.
+    guide: |
+      Inspect connected agent capacity:
+      `SELECT id, name, connection_state, hostname, version, meta_data
+       FROM buildkite.agents LIMIT 50`.
+    request:
+      method: GET
+      path: /v2/organizations/{{input.BUILDKITE_ORG}}/agents
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Agent UUID.
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL ID for the agent.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Canonical API URL for the agent.
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Web URL for the agent.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Agent name.
+      - name: connection_state
+        type: Utf8
+        nullable: true
+        description: Agent connection state.
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Host name of the machine running the agent.
+      - name: ip_address
+        type: Utf8
+        nullable: true
+        description: Agent IP address.
+      - name: user_agent
+        type: Utf8
+        nullable: true
+        description: Agent user agent string.
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Buildkite agent version.
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Agent priority.
+      - name: meta_data
+        type: Json
+        nullable: true
+        description: Agent metadata tags.
+      - name: job
+        type: Json
+        nullable: true
+        description: Current job assigned to the agent, if any.
+      - name: creator__id
+        type: Utf8
+        nullable: true
+        description: UUID of the user or token that registered the agent.
+        expr: {kind: path, path: [creator, id]}
+      - name: creator__name
+        type: Utf8
+        nullable: true
+        description: Name of the user or token that registered the agent.
+        expr: {kind: path, path: [creator, name]}
+      - name: last_job_finished_at
+        type: Timestamp
+        nullable: true
+        description: Time when the agent last finished a job.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_job_finished_at]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Agent creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+
+  - name: job_annotations
+    description: Annotations attached to one Buildkite job.
+    guide: |
+      Requires job_id:
+      `SELECT context, style, body_html
+       FROM buildkite.job_annotations
+       WHERE job_id = 'job-uuid'`.
+    filters:
+      - name: job_id
+        required: true
+    request:
+      method: GET
+      path: /v2/organizations/{{input.BUILDKITE_ORG}}/jobs/{{filter.job_id}}/annotations
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: job_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Job UUID filter value.
+        expr: {kind: from_filter, key: job_id}
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Annotation UUID.
+      - name: context
+        type: Utf8
+        nullable: true
+        description: Annotation context.
+      - name: style
+        type: Utf8
+        nullable: true
+        description: Annotation style.
+      - name: body_html
+        type: Utf8
+        nullable: true
+        description: Annotation body rendered as HTML.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Annotation creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Annotation update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: schedules
+    description: Pipeline schedules for one Buildkite pipeline.
+    guide: |
+      Requires pipeline_slug:
+      `SELECT id, label, branch, cronline, enabled
+       FROM buildkite.schedules WHERE pipeline_slug = 'deploy-production'`.
+    filters:
+      - name: pipeline_slug
+        required: true
+    request:
+      method: GET
+      path: /v2/organizations/{{input.BUILDKITE_ORG}}/pipelines/{{filter.pipeline_slug}}/schedules
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: link_header
+    columns:
+      - name: pipeline_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Pipeline slug filter value.
+        expr: {kind: from_filter, key: pipeline_slug}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Schedule UUID.
+      - name: graphql_id
+        type: Utf8
+        nullable: true
+        description: GraphQL ID for the schedule.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Canonical API URL for the schedule.
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Web URL for the schedule.
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Schedule label.
+      - name: cronline
+        type: Utf8
+        nullable: true
+        description: Cron expression for the schedule.
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Build message used by the schedule.
+      - name: commit
+        type: Utf8
+        nullable: true
+        description: Commit expression used by the schedule.
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Branch the schedule builds.
+      - name: env
+        type: Json
+        nullable: true
+        description: Environment values attached to scheduled builds.
+      - name: enabled
+        type: Boolean
+        nullable: true
+        description: Whether the schedule is enabled.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Schedule creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
