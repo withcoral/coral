@@ -144,6 +144,23 @@ impl CollectedSourceInputs {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialPromptMode {
+    EnvFirst,
+    CredentialMethodFirst,
+}
+
+impl CredentialPromptMode {
+    fn reads_env_before_prompt(self, input: &ManifestInputSpec) -> bool {
+        match self {
+            Self::EnvFirst => true,
+            Self::CredentialMethodFirst => {
+                input.kind == ManifestInputKind::Variable || input.credential.is_none()
+            }
+        }
+    }
+}
+
 pub(crate) async fn add_bundled_source_with_credentials(
     app: &AppClient,
     name: &str,
@@ -440,22 +457,22 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
 pub(crate) fn prompt_for_inputs_with_credential_methods(
     inputs: &[ManifestInputSpec],
 ) -> Result<CollectedSourceInputs, anyhow::Error> {
+    prompt_for_inputs_with_credential_methods_in_mode(inputs, CredentialPromptMode::EnvFirst)
+}
+
+pub(crate) fn prompt_for_inputs_with_credential_methods_in_mode(
+    inputs: &[ManifestInputSpec],
+    mode: CredentialPromptMode,
+) -> Result<CollectedSourceInputs, anyhow::Error> {
     let mut collected = CollectedSourceInputs::new();
 
     for input in inputs {
-        let env_value = read_source_input_env(&input.key).unwrap_or_default();
-        if !env_value.is_empty() {
-            match input.kind {
-                ManifestInputKind::Variable => collected.variables.push(SourceVariable {
-                    key: input.key.clone(),
-                    value: env_value,
-                }),
-                ManifestInputKind::Secret => collected.secrets.push(SourceSecret {
-                    key: input.key.clone(),
-                    value: env_value,
-                }),
+        if mode.reads_env_before_prompt(input) {
+            let env_value = read_source_input_env(&input.key).unwrap_or_default();
+            if !env_value.is_empty() {
+                push_collected_input(&mut collected, input, env_value);
+                continue;
             }
-            continue;
         }
 
         match input.kind {
@@ -482,6 +499,23 @@ pub(crate) fn prompt_for_inputs_with_credential_methods(
     }
 
     Ok(collected)
+}
+
+fn push_collected_input(
+    collected: &mut CollectedSourceInputs,
+    input: &ManifestInputSpec,
+    value: String,
+) {
+    match input.kind {
+        ManifestInputKind::Variable => collected.variables.push(SourceVariable {
+            key: input.key.clone(),
+            value,
+        }),
+        ManifestInputKind::Secret => collected.secrets.push(SourceSecret {
+            key: input.key.clone(),
+            value,
+        }),
+    }
 }
 
 pub(crate) fn collect_inputs_from_env(
@@ -890,6 +924,19 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
     }))
 }
 
+fn prompt_source_config_secret(
+    input: &ManifestInputSpec,
+) -> Result<Option<SourceSecret>, anyhow::Error> {
+    let env_value = read_source_input_env(&input.key).unwrap_or_default();
+    if !env_value.is_empty() {
+        return Ok(Some(SourceSecret {
+            key: input.key.clone(),
+            value: env_value,
+        }));
+    }
+    prompt_secret(input)
+}
+
 enum SecretInputOutcome {
     SourceConfig(Option<SourceSecret>),
     OAuth {
@@ -903,7 +950,9 @@ fn prompt_secret_with_methods(
     prefer_skip: bool,
 ) -> Result<SecretInputOutcome, anyhow::Error> {
     let Some(credential) = input.credential.as_ref() else {
-        return Ok(SecretInputOutcome::SourceConfig(prompt_secret(input)?));
+        return Ok(SecretInputOutcome::SourceConfig(
+            prompt_source_config_secret(input)?,
+        ));
     };
     let Some(selected) = select_credential_method(input, credential, prefer_skip)? else {
         return Ok(SecretInputOutcome::SourceConfig(None));
@@ -913,9 +962,9 @@ fn prompt_secret_with_methods(
         .get(selected)
         .ok_or_else(|| anyhow::anyhow!("credential method index {selected} is out of range"))?;
     match method.kind {
-        ManifestCredentialMethodKind::SourceConfig => {
-            Ok(SecretInputOutcome::SourceConfig(prompt_secret(input)?))
-        }
+        ManifestCredentialMethodKind::SourceConfig => Ok(SecretInputOutcome::SourceConfig(
+            prompt_source_config_secret(input)?,
+        )),
         ManifestCredentialMethodKind::OAuth => Ok(SecretInputOutcome::OAuth {
             credential: collect_oauth_credential_method(input, selected, method)?,
             label: credential_method_label(method),
@@ -1079,13 +1128,16 @@ mod tests {
     )]
 
     use coral_api::v1::ValidateSourceResponse;
-    use coral_spec::{ManifestInputKind, ManifestInputSpec};
+    use coral_spec::{
+        ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
+        ManifestInputKind, ManifestInputSpec,
+    };
 
     use std::collections::HashMap;
 
     use super::{
-        ValidationFollowUp, ValidationSeverityMode, collect_inputs_with_hint, finalize_input_value,
-        shell_quote_arg, source_name_arg, validation_follow_up,
+        CredentialPromptMode, ValidationFollowUp, ValidationSeverityMode, collect_inputs_with_hint,
+        finalize_input_value, shell_quote_arg, source_name_arg, validation_follow_up,
     };
 
     #[test]
@@ -1121,6 +1173,51 @@ mod tests {
         assert_eq!(secrets.len(), 1);
         assert_eq!(secrets[0].key, "LINEAR_API_KEY");
         assert_eq!(secrets[0].value, "lin_token");
+    }
+
+    #[test]
+    fn credential_method_first_defers_env_for_secrets_with_credential_methods() {
+        let input = ManifestInputSpec {
+            key: "LINEAR_OAUTH_ACCESS_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: false,
+            default_value: String::new(),
+            hint: None,
+            credential: Some(ManifestCredentialSpec {
+                methods: vec![ManifestCredentialMethod {
+                    kind: ManifestCredentialMethodKind::SourceConfig,
+                    label: Some("Paste token".to_string()),
+                    description: None,
+                    oauth: None,
+                }],
+            }),
+        };
+
+        assert!(CredentialPromptMode::EnvFirst.reads_env_before_prompt(&input));
+        assert!(!CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&input));
+    }
+
+    #[test]
+    fn credential_method_first_keeps_env_for_plain_inputs() {
+        let variable = ManifestInputSpec {
+            key: "LINEAR_API_BASE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: false,
+            default_value: String::new(),
+            hint: None,
+            credential: None,
+        };
+        let plain_secret = ManifestInputSpec {
+            key: "LINEAR_API_KEY".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: false,
+            default_value: String::new(),
+            hint: None,
+            credential: None,
+        };
+
+        assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&variable));
+        assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&plain_secret));
     }
 
     #[test]
