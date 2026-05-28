@@ -398,16 +398,12 @@ impl coral_app::RunErrorTelemetry for CliError {
     }
 }
 
-/// Returns whether this CLI invocation should render telemetry logs to stderr.
-///
-/// `MCP` stdio reserves stdout for protocol messages, so stderr is the only
-/// local diagnostics stream that can be safely exposed while the server is
-/// running.
-#[must_use]
-pub fn enables_stderr_logs() -> bool {
-    command_enables_stderr_logs(std::env::args_os())
-}
-
+/// Classifies whether a parsed CLI invocation should render telemetry logs to
+/// stderr. `MCP` stdio reserves stdout for protocol messages, so stderr is the
+/// only local diagnostics stream that can be safely exposed while the server is
+/// running. Exercised only in tests; the live decision uses
+/// `command.enables_stderr_logs()` directly in `run_from_env`.
+#[cfg(test)]
 fn command_enables_stderr_logs<I, T>(args: I) -> bool
 where
     I: IntoIterator<Item = T>,
