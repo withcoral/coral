@@ -75,7 +75,7 @@ pub(crate) fn build_v4_materialization_tmp(
         }),
         Err(error) => {
             if temp_dir.exists() {
-                let _ = std::fs::remove_dir_all(&temp_dir);
+                drop(std::fs::remove_dir_all(&temp_dir));
             }
             Err(error)
         }
@@ -106,7 +106,7 @@ pub(crate) fn replace_v4_materialization(
     }
     if let Err(error) = std::fs::rename(temp_dir, &target) {
         if had_existing && backup.exists() {
-            let _ = std::fs::rename(&backup, &target);
+            drop(std::fs::rename(&backup, &target));
         }
         return Err(error.into());
     }
@@ -117,7 +117,7 @@ pub(crate) fn cleanup_materialization_backup(backup: Option<PathBuf>) {
     if let Some(backup) = backup
         && backup.exists()
     {
-        let _ = std::fs::remove_dir_all(backup);
+        drop(std::fs::remove_dir_all(backup));
     }
 }
 
@@ -130,13 +130,13 @@ pub(crate) fn restore_materialization_backup(
     let target = layout.v4_materialized_dir(workspace_name, source_name);
     if let Some(backup) = backup {
         if target.exists() {
-            let _ = std::fs::remove_dir_all(&target);
+            drop(std::fs::remove_dir_all(&target));
         }
         if backup.exists() {
-            let _ = std::fs::rename(backup, target);
+            drop(std::fs::rename(backup, target));
         }
     } else if target.exists() {
-        let _ = std::fs::remove_dir_all(target);
+        drop(std::fs::remove_dir_all(target));
     }
 }
 
@@ -205,6 +205,10 @@ pub(crate) fn stale_materialization_error(
     ))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Materialization writes one transaction-shaped artifact set; splitting would obscure ordering."
+)]
 fn write_materialization(
     temp_dir: &Path,
     manifest_yaml: &str,

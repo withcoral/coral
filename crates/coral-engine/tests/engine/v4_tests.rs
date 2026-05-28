@@ -51,8 +51,8 @@ surfaces:
     ))
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let semantic_ir =
-        import_openapi_surface(v4, &v4.surfaces[0], github_openapi().as_bytes()).expect("ir");
+    let surface = v4.surfaces.first().expect("one surface");
+    let semantic_ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("ir");
     let projections =
         generate_projection_catalog(v4, std::slice::from_ref(&semantic_ir)).expect("projections");
     let materialized = V4MaterializedSource {
@@ -103,7 +103,7 @@ surfaces:
 }
 
 fn github_openapi() -> &'static str {
-    r#"
+    r"
 openapi: 3.0.3
 paths:
   /repos/{owner}/{repo}/issues:
@@ -130,5 +130,5 @@ components:
         title: {type: string}
         state: {type: string}
         html_url: {type: string}
-"#
+"
 }

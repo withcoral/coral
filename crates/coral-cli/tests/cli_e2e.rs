@@ -376,6 +376,32 @@ async fn source_test_renders_validation_summary() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn source_refresh_renders_materialization_summary() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "refresh", "github"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains(
+            "Refreshed source github: 1 surface, 3 published projections, 0 hidden projections"
+        ),
+        "expected refresh summary: {stdout}"
+    );
+
+    let requests = server.refresh_source_requests();
+    assert_eq!(requests.len(), 1, "expected one refresh_source call");
+    assert_eq!(requests[0].name, "github");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_remove_reports_removed_source() {
     let server = MockServer::start().await;
 

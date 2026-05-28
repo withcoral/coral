@@ -177,7 +177,7 @@ impl V4SourceManifest {
             )));
         }
         validate_test_queries(&name, &test_queries)?;
-        let policy = parse_projection_policy(&name, projection_policy)?;
+        let policy = parse_projection_policy(&name, &projection_policy)?;
         let common = SourceManifestCommon::new(
             dsl_version,
             name.clone(),
@@ -248,7 +248,7 @@ impl V4SourceManifest {
 
 fn parse_projection_policy(
     source_name: &str,
-    raw: RawProjectionPolicy,
+    raw: &RawProjectionPolicy,
 ) -> Result<ProjectionPolicy> {
     match raw.default.as_deref().unwrap_or("derive_read_operations") {
         "derive_read_operations" => Ok(ProjectionPolicy::default()),
@@ -753,14 +753,16 @@ impl<'a> OpenApiImporter<'a> {
         let operation_id = op_obj
             .get("operationId")
             .and_then(Value::as_str)
-            .map(|raw| normalize_identifier(raw, "operation"))
-            .unwrap_or_else(|| fallback_operation_id(method_name, path));
+            .map_or_else(
+                || fallback_operation_id(method_name, path),
+                |raw| normalize_identifier(raw, "operation"),
+            );
         let method = parse_http_method(method_name);
         let mut diagnostics = Vec::new();
         let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity) =
-            self.import_response(path, op_obj, &operation_id, &mut diagnostics)?;
+            self.import_response(path, op_obj, &operation_id, &mut diagnostics);
         let pagination = detect_pagination(&parameters);
         let rest_parameters = parameters
             .iter()
@@ -826,9 +828,8 @@ impl<'a> OpenApiImporter<'a> {
                     .flatten(),
             )
         {
-            let resolved = match self.resolve_ref(parameter, operation_id, diagnostics) {
-                Some(value) => value,
-                None => continue,
+            let Some(resolved) = self.resolve_ref(parameter, operation_id, diagnostics) else {
+                continue;
             };
             let Some(parameter_obj) = resolved.as_object() else {
                 continue;
@@ -964,16 +965,16 @@ impl<'a> OpenApiImporter<'a> {
         operation: &Map<String, Value>,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> Result<(
+    ) -> (
         IrOperationOutput,
         RestResponseAttachment,
         Option<IrEntityCandidate>,
-    )> {
+    ) {
         let Some((status_code, media_type, schema)) =
             select_json_response(operation.get("responses").and_then(Value::as_object))
         else {
             let response = ResponseSpec::default();
-            return Ok((
+            return (
                 IrOperationOutput {
                     cardinality: OutputCardinality::None,
                     type_ref: "none".to_string(),
@@ -985,7 +986,7 @@ impl<'a> OpenApiImporter<'a> {
                     response,
                 },
                 None,
-            ));
+            );
         };
 
         let resolved = self
@@ -1012,7 +1013,7 @@ impl<'a> OpenApiImporter<'a> {
                 type_ref: type_ref.clone(),
                 identity_fields: vec!["id".to_string()],
             });
-        Ok((
+        (
             IrOperationOutput {
                 cardinality,
                 type_ref,
@@ -1024,9 +1025,13 @@ impl<'a> OpenApiImporter<'a> {
                 response,
             },
             entity,
-        ))
+        )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "OpenAPI schema import is deliberately kept in one local recursive routine for the first v4 slice."
+    )]
     fn import_schema(
         &mut self,
         schema: &Value,
@@ -1035,11 +1040,10 @@ impl<'a> OpenApiImporter<'a> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<String> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
-        let type_id = schema
-            .get("$ref")
-            .and_then(Value::as_str)
-            .map(type_id_from_ref)
-            .unwrap_or_else(|| normalize_identifier(suggested_id, "type"));
+        let type_id = schema.get("$ref").and_then(Value::as_str).map_or_else(
+            || normalize_identifier(suggested_id, "type"),
+            type_id_from_ref,
+        );
         if self.types.contains_key(&type_id) {
             return Some(type_id);
         }
@@ -1210,17 +1214,16 @@ impl<'a> OpenApiImporter<'a> {
             return None;
         }
         let pointer = reference.strip_prefix('#').unwrap_or(reference);
-        match self.document.pointer(pointer) {
-            Some(target) => Some(target.clone()),
-            None => {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_REF_NOT_FOUND",
-                    format!("reference '{reference}' was not found"),
-                    self.surface.id.clone(),
-                    Some(operation_id.to_string()),
-                ));
-                None
-            }
+        if let Some(target) = self.document.pointer(pointer) {
+            Some(target.clone())
+        } else {
+            diagnostics.push(Diagnostic::warning(
+                "OPENAPI_REF_NOT_FOUND",
+                format!("reference '{reference}' was not found"),
+                self.surface.id.clone(),
+                Some(operation_id.to_string()),
+            ));
+            None
         }
     }
 }
@@ -1235,7 +1238,7 @@ fn parse_http_method(method: &str) -> HttpMethod {
         "patch" => HttpMethod::Patch,
         "delete" => HttpMethod::Delete,
         "trace" => HttpMethod::Trace,
-        _ => HttpMethod::Get,
+        other => unreachable!("unsupported method passed to OpenAPI importer: {other}"),
     }
 }
 
@@ -1375,7 +1378,7 @@ pub fn generate_projection_catalog(
     let mut names = HashSet::new();
     for ir in surfaces {
         for operation in &ir.operations {
-            let projection = generate_projection(manifest, ir, operation, &mut diagnostics)?;
+            let projection = generate_projection(manifest, ir, operation, &mut diagnostics);
             let mut projection = projection;
             if !names.insert(projection.name.clone()) {
                 let suffix = stable_suffix(&format!(
@@ -1411,13 +1414,11 @@ fn generate_projection(
     ir: &SemanticIr,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Result<Projection> {
+) -> Projection {
     let is_search = is_search_operation(operation);
     let mut visibility = ProjectionVisibility::Published;
     let mut projection_diagnostics = operation.diagnostics.clone();
-    let rest = match &operation.execution {
-        IrExecutionAttachment::Rest(rest) => rest,
-    };
+    let IrExecutionAttachment::Rest(rest) = &operation.execution;
     if !operation.read_only
         || rest.method != HttpMethod::Get
         || rest.request_body.is_some()
@@ -1496,7 +1497,7 @@ fn generate_projection(
         inputs,
         columns,
         pagination: rest.pagination.clone(),
-        search_limits: is_search.then(|| SearchLimitsSpec {
+        search_limits: is_search.then_some(SearchLimitsSpec {
             default_top_k: 30,
             max_top_k: 100,
             max_calls_per_query: 100,
@@ -1506,7 +1507,7 @@ fn generate_projection(
     };
     diagnostics.extend(projection_diagnostics);
     let _ = manifest.projection_policy.default;
-    Ok(projection)
+    projection
 }
 
 fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
@@ -1564,11 +1565,10 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
 }
 
 fn projection_name(operation: &IrOperation, is_search: bool) -> String {
-    let entity = operation
-        .entity
-        .as_ref()
-        .map(|entity| normalize_identifier(&entity.name, "projection"))
-        .unwrap_or_else(|| normalize_identifier(&operation.id, "projection"));
+    let entity = operation.entity.as_ref().map_or_else(
+        || normalize_identifier(&operation.id, "projection"),
+        |entity| normalize_identifier(&entity.name, "projection"),
+    );
     if is_search {
         return format!("search_{}", pluralize(&entity));
     }
@@ -1694,9 +1694,7 @@ pub fn request_spec_for_projection(
     projection: &Projection,
     operation: &IrOperation,
 ) -> Result<RequestSpec> {
-    let rest = match &operation.execution {
-        IrExecutionAttachment::Rest(rest) => rest,
-    };
+    let IrExecutionAttachment::Rest(rest) = &operation.execution;
     let mut path = rest.path_template.clone();
     for input in &projection.inputs {
         if input.source_location == OpenApiParameterLocation::Path {
@@ -1814,8 +1812,7 @@ fn entity_name_from_ref(reference: &str) -> String {
     reference
         .rsplit('/')
         .next()
-        .map(|raw| raw.replace(" Response", ""))
-        .unwrap_or_else(|| "entity".to_string())
+        .map_or_else(|| "entity".to_string(), |raw| raw.replace(" Response", ""))
 }
 
 fn type_id_from_ref(reference: &str) -> String {
@@ -1824,8 +1821,7 @@ fn type_id_from_ref(reference: &str) -> String {
 
 fn entity_name_from_path(path: &str) -> String {
     path.split('/')
-        .filter(|segment| !segment.is_empty() && !segment.starts_with('{'))
-        .next_back()
+        .rfind(|segment| !segment.is_empty() && !segment.starts_with('{'))
         .unwrap_or("entity")
         .to_string()
 }
@@ -1845,10 +1841,10 @@ fn pluralize(value: &str) -> String {
 }
 
 fn stable_suffix(value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in value.as_bytes() {
         hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     format!("{hash:016x}").chars().take(8).collect()
 }
@@ -1912,8 +1908,8 @@ surfaces:
         )
         .expect("manifest");
         let v4 = manifest.as_v4().expect("v4");
-        let ir = import_openapi_surface(v4, &v4.surfaces[0], github_openapi().as_bytes())
-            .expect("import");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
         let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
         let published = catalog
             .projections
@@ -1927,7 +1923,7 @@ surfaces:
     }
 
     fn github_openapi() -> &'static str {
-        r#"
+        r"
 openapi: 3.0.3
 paths:
   /repos/{owner}/{repo}/issues:
@@ -2002,6 +1998,6 @@ components:
         updated_at: {type: string, format: date-time}
         body: {type: string}
         user: {type: object}
-"#
+"
     }
 }
