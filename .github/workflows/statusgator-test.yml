@@ -1,0 +1,39 @@
+name: StatusGator source test
+
+on:
+  pull_request:
+    paths:
+      - 'sources/core/statusgator/**'
+      - '.github/workflows/statusgator-test.yml'
+
+jobs:
+  test-statusgator:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          . "$HOME/.cargo/env"
+          rustup toolchain install 1.95.0
+          rustup override set 1.95.0
+      - name: Run coral source add & test
+        env:
+          STATUSGATOR_API_TOKEN: ${{ secrets.STATUSGATOR_API_TOKEN }}
+        run: |
+          . "$HOME/.cargo/env"
+          # Add the bundled source (idempotent)
+          cargo run -q -p coral-cli -- source add statusgator --file sources/core/statusgator/manifest.yaml || true
+          # Test connectivity and save logs
+          cargo run -q -p coral-cli -- source test statusgator | tee statusgator-test.txt || true
+          # Run a representative query (board_id must be supplied via secret or replaced in a follow-up run)
+          cargo run -q -p coral-cli -- sql "SELECT id, display_name, filtered_status FROM statusgator.monitors WHERE board_id='<REDACTED_BOARD_ID>' LIMIT 5" | tee statusgator-query.txt || true
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: statusgator-logs
+          path: |
+            statusgator-test.txt
+            statusgator-query.txt
