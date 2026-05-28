@@ -40,7 +40,7 @@ export type ToastVariant = 'error' | 'neutral' | 'success' | 'warning'
  * @param options - Toast configuration options
  * @param options.title - Main message to display (required)
  * @param options.description - Optional secondary message
- * @param options.durationMs - Auto-close duration in milliseconds (default: 5000)
+ * @param options.durationMs - Auto-close duration in milliseconds (default: 4000)
  * @param options.onDismiss - Callback when toast is dismissed
  * @param options.progress - Optional progress value between 0 and 1 to show progress bar
  * @returns ToastResult with dismiss() method and toast id
