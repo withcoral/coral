@@ -26,7 +26,7 @@ request_headers:
   - name: X-ClickHouse-User
     from: template
     template: "{{input.CLICKHOUSE_USER}}"
-  - name: X-ClickHouse-Password
+  - name: X-ClickHouse-Key
     from: template
     template: "{{input.CLICKHOUSE_PASSWORD}}"
 
