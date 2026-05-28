@@ -180,6 +180,8 @@ For HTTP-backed sources:
 - define `backend: http`
 - define `base_url`
 - define auth headers or other runtime auth fields
+- for `BasicAuth`, use an empty `password` only when the provider explicitly
+  expects a blank Basic Auth password, such as API-key-as-username auth
 - define `credential.methods` on secret inputs when setup should offer OAuth or another retrieval choice
 - define request path, query, and body only where needed
 - define source-scoped table functions for provider-native operations that require invocation arguments

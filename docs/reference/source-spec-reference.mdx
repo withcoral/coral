@@ -604,6 +604,8 @@ auth:
 ```
 
 `username` and `password` are templates; `{{input.KEY}}` tokens are honored. Coral encodes them as `Authorization: Basic base64(user:pass)`.
+Use an empty string for `password` when an API expects the Basic Auth username
+followed by a blank password, such as `api_key:`.
 
 #### `CustomAuth`
 

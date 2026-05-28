@@ -98,6 +98,31 @@ tables:
     }
 
     #[test]
+    fn validate_manifest_schema_accepts_empty_basic_auth_password() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+auth:
+  type: BasicAuth
+  username: '{{input.API_KEY}}'
+  password: ''
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("empty BasicAuth password should pass schema validation");
+    }
+
+    #[test]
     fn validate_manifest_schema_accepts_legacy_search_filter_mode() {
         let manifest = manifest_json(
             r"
