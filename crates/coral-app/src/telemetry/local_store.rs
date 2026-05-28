@@ -1,7 +1,7 @@
 //! JSONL-backed span export for local trace capture.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -17,6 +17,8 @@ use opentelemetry_sdk::trace::{SpanData, SpanExporter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 use tokio::task;
+
+use crate::storage::fs as storage_fs;
 
 const JSONL_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const JSONL_MAX_FILE_ROWS: usize = 50_000;
@@ -164,14 +166,16 @@ impl RollingJsonlWriter {
         })
     }
 
-    fn write_records(&mut self, records: &[TraceSpanRecord]) -> Result<(), LocalTraceStoreError> {
+    fn write_records<T: Serialize>(&mut self, records: &[T]) -> Result<(), LocalTraceStoreError> {
         if records.is_empty() {
             return Ok(());
         }
 
-        fs::create_dir_all(&self.dir).map_err(|source| LocalTraceStoreError::CreateDir {
-            path: self.dir.clone(),
-            source,
+        storage_fs::ensure_private_dir(&self.dir).map_err(|source| {
+            LocalTraceStoreError::CreateDir {
+                path: self.dir.clone(),
+                source,
+            }
         })?;
 
         let now = SystemTime::now();
@@ -241,14 +245,12 @@ impl RollingJsonlWriter {
     ) -> Result<&mut OpenJsonlFile, LocalTraceStoreError> {
         if self.current.is_none() {
             let path = self.next_file_path(now);
-            let file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map_err(|source| LocalTraceStoreError::CreateFile {
+            let file = storage_fs::create_new_file_private(&path).map_err(|source| {
+                LocalTraceStoreError::CreateFile {
                     path: path.clone(),
                     source,
-                })?;
+                }
+            })?;
             self.current = Some(OpenJsonlFile {
                 path,
                 created_at: now,
@@ -267,7 +269,7 @@ impl RollingJsonlWriter {
         let unix_nanos = unix_nanos(now);
         self.dir.join(format!(
             "spans-{unix_nanos:020}-{}-{sequence:016}.jsonl",
-            process::id()
+            process::id(),
         ))
     }
 
@@ -636,17 +638,26 @@ impl TraceStore {
                 source,
             })?;
             let path = entry.path();
-            if path
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|extension| extension == "jsonl")
-            {
+            if span_jsonl_file(&path) {
                 files.push(path);
             }
         }
         files.sort();
         Ok(files)
     }
+}
+
+fn span_jsonl_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension == "jsonl")
+        && path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|name| {
+                name.strip_prefix("spans")
+                    .is_some_and(|suffix| suffix.starts_with('-'))
+            })
 }
 
 impl TracePrimaryCandidate {
@@ -1366,10 +1377,34 @@ mod tests {
 
         assert_eq!(span.name, "coral.query");
         assert!(span.attributes_json.contains(r#""test.attribute":"value""#));
+        assert!(!span.attributes_json.contains("coral.http.request.body"));
         assert!(
             span.resource_json
                 .contains(r#""service.name":"coral-test""#)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rolling_writer_creates_private_dir_and_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755))
+            .expect("make trace dir permissive");
+        let mut writer =
+            RollingJsonlWriter::new(dir.clone(), TRACE_RETENTION).expect("jsonl writer");
+
+        writer
+            .write_records(&[trace_record("trace-1", "span-1")])
+            .expect("write record");
+
+        let file_path = writer.current.as_ref().expect("open file").path.clone();
+        let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&file_path), 0o600);
     }
 
     #[test]
@@ -1450,7 +1485,16 @@ mod tests {
             "events_json".to_string(),
             json!({ "large_detail_payload": ["ignored by list"] }),
         );
-        fs::write(dir.join("spans.jsonl"), format!("{value}\n")).expect("write trace record");
+        fs::write(
+            dir.join(timestamped_jsonl_path(SystemTime::now())),
+            format!("{value}\n"),
+        )
+        .expect("write trace record");
+        fs::write(
+            dir.join("http-bodies-00000000000000000001-test-0000000000000000.jsonl"),
+            "{}\n",
+        )
+        .expect("write body record");
 
         let summaries = TraceStore::new(dir)
             .list_traces_sync(10, 0)
@@ -1470,7 +1514,11 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
-        fs::write(dir.join("spans.jsonl"), "{\"trace_id\":").expect("write partial jsonl");
+        fs::write(
+            dir.join(timestamped_jsonl_path(SystemTime::now())),
+            "{\"trace_id\":",
+        )
+        .expect("write partial jsonl");
 
         let store = TraceStore::new(dir);
 
