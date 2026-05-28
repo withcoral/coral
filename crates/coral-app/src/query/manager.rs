@@ -221,14 +221,10 @@ impl QueryManager {
                 source.name
             )));
         }
-        for secret_name in source_spec.required_secret_names() {
-            let value = stored_secrets.get(&secret_name).cloned().ok_or_else(|| {
-                AppError::FailedPrecondition(format!(
-                    "source '{}' is missing secret '{secret_name}'",
-                    source.name
-                ))
-            })?;
-            resolved_secrets.insert(secret_name, value);
+        for secret_name in source_spec.declared_secret_names() {
+            if let Some(value) = stored_secrets.get(&secret_name) {
+                resolved_secrets.insert(secret_name, value.clone());
+            }
         }
         Ok((
             QuerySource::new(source_spec, source.variables.clone(), resolved_secrets),
@@ -454,6 +450,89 @@ mod tests {
             .http_body_capture_max_bytes
             .expect("body capture config");
         assert_eq!(config, 42);
+    }
+
+    #[test]
+    fn load_query_source_passes_present_optional_secrets_to_runtime() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("optional_auth").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: optional_auth
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.com
+inputs:
+  API_KEY:
+    kind: secret
+    required: false
+  OAUTH_TOKEN:
+    kind: secret
+    required: false
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: API_KEY
+        - from: bearer
+          key: OAUTH_TOKEN
+tables:
+  - name: items
+    description: Items
+    request:
+      path: /items
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("write manifest");
+        let source = InstalledSource {
+            name: source_name.clone(),
+            version: Some("0.1.0".to_string()),
+            variables: BTreeMap::new(),
+            secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::File),
+            origin: SourceOrigin::Imported,
+        };
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace_name, source.clone())
+            .expect("persist source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())]),
+            )
+            .expect("persist secret material");
+
+        let (query_source, _) = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect("optional secret should load when present");
+
+        assert_eq!(
+            query_source.secrets(),
+            &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())])
+        );
     }
 
     #[test]

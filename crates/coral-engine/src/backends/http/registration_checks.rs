@@ -106,7 +106,7 @@ fn table_request_route_label(table_name: &str, route: &RequestRouteSpec) -> Stri
     }
 }
 
-/// Auth is source-scoped: all template dependencies must resolve from inputs
+/// Auth is source-scoped: all value-source input dependencies must resolve
 /// before any request is issued.
 fn check_auth_inputs(
     manifest: &HttpSourceManifest,
