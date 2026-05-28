@@ -28,11 +28,11 @@ use crate::{
     surface::{
         CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
         describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, internal_status, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        initial_instructions, list_catalog_arguments, list_catalog_tool, list_catalog_value,
+        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
+        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -552,8 +552,7 @@ impl ServerHandler for CoralMcpServer {
                         .await
                         .map_err(|status| status_to_error_data(&status))?;
                     let text = tables_resource_content(&tables)
-                        .map_err(|error| internal_status(&error))
-                        .map_err(|status| status_to_error_data(&status))?;
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
                     Ok(ReadResourceResult::new(vec![
                         ResourceContents::text(text, request.uri)
                             .with_mime_type("application/json"),
