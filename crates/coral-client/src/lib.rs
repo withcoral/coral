@@ -135,7 +135,8 @@ pub fn format_batches_table(batches: &[RecordBatch]) -> Result<String, QueryResu
 ///
 /// # Errors
 ///
-/// Returns [`QueryResultError`] if the batches cannot be encoded as JSON.
+/// Returns [`QueryResultError`] if Arrow's JSON writer rejects a column type
+/// in the batch (e.g. an unsupported `Union` or extension type).
 pub fn format_batches_json(batches: &[RecordBatch]) -> Result<String, QueryResultError> {
     let mut bytes = Vec::new();
     {
@@ -154,7 +155,8 @@ pub fn format_batches_json(batches: &[RecordBatch]) -> Result<String, QueryResul
 ///
 /// # Errors
 ///
-/// Returns [`QueryResultError`] if the batches cannot be encoded as JSON rows.
+/// Returns [`QueryResultError`] if Arrow's JSON writer rejects a column type
+/// in the batch (e.g. an unsupported `Union` or extension type).
 pub fn batches_to_json_rows(batches: &[RecordBatch]) -> Result<Vec<Value>, QueryResultError> {
     let json = format_batches_json(batches)?;
     serde_json::from_str(&json).map_err(Into::into)
@@ -167,7 +169,8 @@ pub fn batches_to_json_rows(batches: &[RecordBatch]) -> Result<Vec<Value>, Query
 ///
 /// # Errors
 ///
-/// Returns [`QueryResultError`] if the batches cannot be encoded as JSON rows.
+/// Returns [`QueryResultError`] if Arrow's JSON writer rejects a column type
+/// in the batch (e.g. an unsupported `Union` or extension type).
 pub fn batches_to_json_rows_int64_safe(
     batches: &[RecordBatch],
 ) -> Result<Vec<Value>, QueryResultError> {
