@@ -124,7 +124,7 @@ fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::{Source, TableSummary, Workspace};
+    use coral_api::v1::{Source, SourceCredentialStorage, TableSummary, Workspace};
 
     use super::{guide_resource_content, initial_instructions};
     use crate::surface::values::format_schema_table_equivalent;
@@ -139,6 +139,7 @@ mod tests {
             secrets: Vec::new(),
             variables: Vec::new(),
             origin: 0,
+            credential_storage: SourceCredentialStorage::Unspecified as i32,
         }
     }
 

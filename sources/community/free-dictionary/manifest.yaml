@@ -1,0 +1,41 @@
+name: free_dictionary
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch word definitions, phonetics, and meanings from the Free Dictionary API.
+base_url: https://api.dictionaryapi.dev/api/v2
+test_queries:
+  - SELECT * FROM free_dictionary.entries WHERE word = 'hello' LIMIT 1
+tables:
+  - name: entries
+    description: Fetch dictionary entries for a specific English word.
+    filters:
+      - name: word
+        required: true
+    request:
+      method: GET
+      path: /entries/en/{{filter.word}}
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: word
+        type: Utf8
+        expr: {kind: path, path: [word]}
+      - name: query_word
+        type: Utf8
+        expr: {kind: from_filter, key: word}
+      - name: phonetics
+        type: Json
+        expr: {kind: path, path: [phonetics]}
+      - name: meanings
+        type: Json
+        expr: {kind: path, path: [meanings]}
+      - name: license
+        type: Json
+        expr: {kind: path, path: [license]}
+      - name: source_urls
+        type: Json
+        expr: {kind: path, path: [sourceUrls]}

@@ -31,6 +31,9 @@ pub enum AppError {
     /// `config.toml` decoding failed.
     #[error(transparent)]
     TomlDecode(#[from] toml::de::Error),
+    /// `config.toml` parsing failed while preserving raw TOML structure.
+    #[error(transparent)]
+    TomlEditDecode(#[from] toml_edit::TomlError),
     /// `config.toml` encoding failed.
     #[error(transparent)]
     TomlEncode(#[from] toml::ser::Error),
@@ -179,11 +182,14 @@ fn app_code(error: &AppError) -> Code {
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingConfigDir
-        | AppError::Credentials(CredentialsError::Parse(_)) => Code::FailedPrecondition,
+        | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
+            Code::FailedPrecondition
+        }
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Io(_)
         | AppError::Yaml(_)
         | AppError::TomlDecode(_)
+        | AppError::TomlEditDecode(_)
         | AppError::TomlEncode(_)
         | AppError::Json(_)
         | AppError::Transport(_)

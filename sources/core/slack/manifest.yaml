@@ -7,17 +7,54 @@ description: >-
 inputs:
   SLACK_TOKEN:
     kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Slack
+          description: Authorize Slack with OAuth and store a user token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://localhost:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://slack.com/oauth/v2_user/authorize
+              token_url: https://slack.com/api/oauth.v2.user.access
+            client:
+              id:
+                input: SLACK_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: comma
+                values:
+                  - channels:read
+                  - groups:read
+                  - channels:history
+                  - groups:history
+                  - users:read
+                  - users:read.email
+        - type: source_config
+          label: Paste Slack OAuth Token
+          description: Paste an existing Slack OAuth token with the required scopes.
     hint: |
       Slack doesn't provide a general-purpose API for reading messages.
-      Instead, you need a Slack app with a Bot User OAuth Token.
+      Instead, you need a Slack app with an OAuth token.
 
       If you already have a Slack app with the required scopes, you can
-      find your Bot User OAuth Token on its OAuth & Permissions page. The
+      find your OAuth token on its OAuth & Permissions page. The
       required scopes are: channels:read, channels:history, groups:read,
       groups:history, users:read, users:read.email.
 
-      If you don't have a Slack app, you can
-      [create one with the required scopes pre-filled](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D).
+      If you don't have a Slack app, create one with the required
+      scopes pre-filled:
+
+      - [User token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback%22%5D%2C%22scopes%22%3A%7B%22user%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Aread%22%2C%22channels%3Aread%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%2C%22pkce_enabled%22%3Atrue%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D)
+        — works with the "Connect with Slack" OAuth flow. Reads the
+        channels the authorizing user belongs to.
+      - [Bot token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D)
+        — install it, then paste the bot token. Reads the channels the
+        bot has been added to.
 
       For more details, see the [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
 base_url: https://slack.com

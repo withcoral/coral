@@ -20,7 +20,7 @@ use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
 use crate::backends::http::trace::{
-    inject_trace_context, record_http_processing_error, record_http_status_error,
+    HttpBodyCapture, inject_trace_context, record_http_processing_error, record_http_status_error,
     record_trace_http_endpoint, request_body_size, sanitize_trace_url, trace_http_endpoint,
     trace_reqwest_error, trace_reqwest_error_type,
 };
@@ -44,6 +44,7 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) response_format: ResponseBodyFormat,
     pub(super) source_schema: &'a str,
     pub(super) rate_limit: &'a RateLimitSpec,
+    pub(super) body_capture: HttpBodyCapture,
     pub(super) render_context: RenderContext<'a>,
     pub(super) allow_404_empty: bool,
     pub(super) link_header_require_results: bool,
@@ -77,6 +78,7 @@ pub(super) async fn execute_request(
         response_format,
         source_schema,
         rate_limit,
+        body_capture,
         render_context,
         allow_404_empty,
         link_header_require_results,
@@ -178,6 +180,7 @@ pub(super) async fn execute_request(
             None => {}
         }
 
+        body_capture.record_request(&request_span, request_id, body);
         let built = match resolve_auth_headers(
             auth,
             request,
@@ -223,12 +226,18 @@ pub(super) async fn execute_request(
                 RateLimitDecision::Continue => {}
                 RateLimitDecision::Retry(wait) => {
                     record_http_status_error(&request_span, status, "rate limited; retrying");
+                    body_capture
+                        .record_unconsumed_response(&request_span, request_id, response)
+                        .await;
                     throttle_retries += 1;
                     break 'response ResponseOutcome::Retry(wait);
                 }
                 RateLimitDecision::Fail(error) => {
                     let error_message = error.to_string();
                     record_http_status_error(&request_span, status, error_message.as_str());
+                    body_capture
+                        .record_unconsumed_response(&request_span, request_id, response)
+                        .await;
                     break 'response ResponseOutcome::Done(Err(DataFusionError::External(
                         Box::new(ProviderQueryError::RateLimited {
                             source_schema: source_schema.to_string(),
@@ -243,11 +252,17 @@ pub(super) async fn execute_request(
 
             if status.is_server_error() && server_error_retries < 2 {
                 record_http_status_error(&request_span, status, "server error; retrying");
+                body_capture
+                    .record_unconsumed_response(&request_span, request_id, response)
+                    .await;
                 server_error_retries += 1;
                 break 'response ResponseOutcome::Retry(Duration::from_secs(2));
             }
 
             if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
+                body_capture
+                    .record_unconsumed_response(&request_span, request_id, response)
+                    .await;
                 break 'response ResponseOutcome::Done(Ok(None));
             }
 
@@ -263,6 +278,7 @@ pub(super) async fn execute_request(
                     response_error_summary(status, &body),
                 );
                 request_span.record("http.response.body.size", body.len());
+                body_capture.record_response(&request_span, request_id, &body);
                 break 'response ResponseOutcome::Done(Err(DataFusionError::External(Box::new(
                     ProviderQueryError::ApiRequest {
                         source_schema: source_schema.to_string(),
@@ -301,7 +317,9 @@ pub(super) async fn execute_request(
                     table_name,
                     method_label,
                     logged_url: &logged_url,
+                    body_capture: &body_capture,
                     response_span: &request_span,
+                    request_id,
                 },
             )
             .instrument(request_span.clone())
@@ -403,6 +421,7 @@ mod tests {
 
     use super::{OutgoingHttpRequest as TestOutgoingHttpRequest, execute_request};
     use crate::backends::http::ProviderQueryError;
+    use crate::backends::http::trace::HttpBodyCapture;
     use crate::backends::shared::template::RenderContext;
     use coral_spec::backends::http::RateLimitSpec;
     use coral_spec::{AuthSpec, HttpMethod, ResponseBodyFormat};
@@ -454,6 +473,7 @@ mod tests {
                 response_format: ResponseBodyFormat::default(),
                 source_schema: "demo",
                 rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
                 render_context,
                 allow_404_empty: false,
                 link_header_require_results: false,
