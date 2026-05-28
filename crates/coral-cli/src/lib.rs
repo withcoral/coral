@@ -28,8 +28,9 @@ use coral_api::v1::ExecuteSqlRequest;
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
-    AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table, manifest_input_from_proto,
+    AppClient, decode_execute_sql_response, default_workspace, format_batches_csv,
+    format_batches_json, format_batches_markdown, format_batches_ndjson, format_batches_table,
+    manifest_input_from_proto,
 };
 use dialoguer::console::measure_text_width;
 use tonic::Request;
@@ -175,8 +176,16 @@ enum SourceCommand {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum OutputFormat {
+    /// ASCII art table for terminals
     Table,
+    /// Single JSON array of row objects
     Json,
+    /// Newline-delimited JSON, one object per row
+    Ndjson,
+    /// RFC 4180 CSV with header row
+    Csv,
+    /// GitHub-flavored markdown table
+    Markdown,
 }
 
 /// Typed CLI error whose stderr rendering and exit code are owned by the binary.
@@ -538,8 +547,16 @@ fn print_batches(
     let output = match format {
         OutputFormat::Table => format_batches_table(batches)?,
         OutputFormat::Json => format_batches_json(batches)?,
+        OutputFormat::Ndjson => format_batches_ndjson(batches)?,
+        OutputFormat::Csv => format_batches_csv(batches)?,
+        OutputFormat::Markdown => format_batches_markdown(batches)?,
     };
-    println!("{output}");
+    // ndjson and csv already terminate every line with `\n`; printing with
+    // `print!` keeps that behaviour intact instead of appending a blank line.
+    match format {
+        OutputFormat::Ndjson | OutputFormat::Csv | OutputFormat::Markdown => print!("{output}"),
+        OutputFormat::Table | OutputFormat::Json => println!("{output}"),
+    }
     Ok(())
 }
 
@@ -742,5 +759,33 @@ mod tests {
     #[test]
     fn non_mcp_invocation_disables_stderr_logs() {
         assert!(!command_enables_stderr_logs(["coral", "sql", "SELECT 1"]));
+    }
+
+    #[test]
+    fn sql_command_accepts_all_output_formats() {
+        for format in ["table", "json", "ndjson", "csv", "markdown"] {
+            let parsed = Cli::try_parse_from(["coral", "sql", "--format", format, "SELECT 1"])
+                .unwrap_or_else(|err| panic!("--format {format} should parse: {err}"));
+            let super::Command::Sql(args) = parsed.command else {
+                panic!("expected sql command");
+            };
+            // Re-render through value_enum to ensure the variant is recognised.
+            assert_eq!(
+                clap::ValueEnum::to_possible_value(&args.format)
+                    .expect("possible value")
+                    .get_name(),
+                format,
+            );
+        }
+    }
+
+    #[test]
+    fn sql_command_rejects_unknown_output_format() {
+        let error = Cli::try_parse_from(["coral", "sql", "--format", "yaml", "SELECT 1"])
+            .expect_err("yaml is not a supported format");
+        assert!(
+            error.to_string().contains("invalid value"),
+            "unexpected parse error: {error}"
+        );
     }
 }

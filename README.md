@@ -195,6 +195,24 @@ coral sql "
 
 ![coral sql query demo](./docs/images/sql-query-readme.gif)
 
+#### Output formats
+
+`coral sql` renders results as a terminal-friendly table by default. Pass
+`--format` to switch to a machine- or paste-friendly representation:
+
+| Format     | Use it for                                                       |
+| ---------- | ---------------------------------------------------------------- |
+| `table`    | the default — ASCII table for human reading                      |
+| `json`     | a single JSON array of row objects                               |
+| `ndjson`   | newline-delimited JSON — pipe to `jq -c`, streaming agents       |
+| `csv`      | RFC 4180 CSV with header — spreadsheets, `csvkit`, `xsv`, `awk`  |
+| `markdown` | GitHub-flavored markdown table — paste into PR comments and docs |
+
+```bash
+coral sql "SELECT name, status FROM coral.sources" --format markdown
+coral sql "SELECT * FROM linear.issues WHERE state = 'open'" --format csv > open.csv
+```
+
 ### Next steps
 
 - **[Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp)** — expose Coral to Claude Code, Cursor, or VS Code over MCP so your agent can query sources directly
