@@ -1,0 +1,161 @@
+name: netdata
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query real-time infrastructure agent topology, active threshold alarms, and system metrics metadata from Netdata.
+base_url: "{{input.NETDATA_URL}}/api/v1"
+
+inputs:
+  NETDATA_URL:
+    kind: variable
+    hint: |
+      Netdata agent base URL with port and without trailing slash,
+      for example `http://localhost:19999` or `https://netdata.infra.local`.
+  NETDATA_TOKEN:
+    kind: secret
+    nullable: true
+    hint: |
+      Optional Netdata Cloud API token or bearer token if the agent endpoint
+      is locked behind an authentication proxy.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.NETDATA_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT os_name, kernel_version FROM netdata.nodes LIMIT 1
+
+tables:
+  - name: nodes
+    description: Runtime parameters, operating system footprints, and hardware specs of the target agent host.
+    request:
+      method: GET
+      path: /info
+    response:
+      row_strategy: direct
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: version
+        type: Utf8
+        nullable: false
+        description: Core engine release version string of the running Netdata agent.
+        expr: {kind: path, path: [version]}
+      - name: os_name
+        type: Utf8
+        nullable: true
+        description: Operating system distribution identity reported by the host (e.g., ubuntu, debian).
+        expr: {kind: path, path: [os_name]}
+      - name: os_version
+        type: Utf8
+        nullable: true
+        description: OS distribution version release string.
+        expr: {kind: path, path: [os_version]}
+      - name: kernel_version
+        type: Utf8
+        nullable: true
+        description: Absolute tracking version identifier of the running operating system kernel.
+        expr: {kind: path, path: [kernel_version]}
+      - name: cpu_cores
+        type: Int64
+        nullable: true
+        description: Total physical and logical processing cores allocated to the machine footprint.
+        expr: {kind: path, path: [monitored_cpus]}
+
+  - name: alarms
+    description: Inventory of active and configured system health threshold triggers and warning states.
+    request:
+      method: GET
+      path: /alarms
+      query:
+        - name: all
+          from: literal
+          value: "true"
+    response:
+      row_strategy: dict_entries
+      rows_path: [alarms]
+    pagination:
+      mode: none
+    columns:
+      - name: alarm_id
+        type: Utf8
+        nullable: false
+        description: The key identity token of the alarm entry.
+        expr: {kind: dict_key}
+      - name: alarm_name
+        type: Utf8
+        nullable: false
+        description: Technical name identifying the system health alert rule.
+        expr: {kind: path, path: [value, name]}
+      - name: chart
+        type: Utf8
+        nullable: false
+        description: Parent telemetry data collection chart the threshold rule targets.
+        expr: {kind: path, path: [value, chart]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current evaluation state phase of the threshold trigger (e.g., WARNING, CRITICAL).
+        expr: {kind: path, path: [value, status]}
+      - name: value
+        type: Float64
+        nullable: true
+        description: Most recent calculation score registered by the metric collector pipeline.
+        expr: {kind: path, path: [value, value]}
+      - name: family
+        type: Utf8
+        nullable: true
+        description: Subsystem group classification mapping (e.g., cpu, disk, network).
+        expr: {kind: path, path: [value, family]}
+      - name: recipient
+        type: Utf8
+        nullable: true
+        description: Outbound communication target role handling routing notifications.
+        expr: {kind: path, path: [value, recipient]}
+
+  - name: metrics_metadata
+    description: Discovery matrix cataloging all distinct operational metric charts recorded by the engine.
+    request:
+      method: GET
+      path: /charts
+    response:
+      row_strategy: dict_entries
+      rows_path: [charts]
+    pagination:
+      mode: none
+    columns:
+      - name: chart_id
+        type: Utf8
+        nullable: false
+        description: Globally unique programmatic indexing lookup ID of the target chart stream.
+        expr: {kind: dict_key}
+      - name: chart_name
+        type: Utf8
+        nullable: false
+        description: Human-readable charting tracking name assigned within the visual monitoring dashboard.
+        expr: {kind: path, path: [value, name]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Descriptive summary label title explaining the specific chart data focus.
+        expr: {kind: path, path: [value, title]}
+      - name: unit
+        type: Utf8
+        nullable: true
+        description: Metric dimension measurement units utilized by the dataset (e.g., percentage, MiB/s).
+        expr: {kind: path, path: [value, units]}
+      - name: chart_type
+        type: Utf8
+        nullable: true
+        description: Internal architectural component plotting strategy template (e.g., line, area).
+        expr: {kind: path, path: [value, chart_type]}
