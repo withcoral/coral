@@ -247,16 +247,11 @@ tables:
         nullable: true
         description: Cron expression for cron-scheduled connections.
         expr: {kind: path, path: [schedule, cronExpression]}
-      - name: schedule_basic_time_unit
+      - name: schedule_basic_timing
         type: Utf8
         nullable: true
-        description: Time unit for basic scheduled connections.
-        expr: {kind: path, path: [schedule, basicSchedule, timeUnit]}
-      - name: schedule_basic_units
-        type: Int64
-        nullable: true
-        description: Number of units for basic scheduled connections.
-        expr: {kind: path, path: [schedule, basicSchedule, units]}
+        description: Basic schedule timing value when returned by Airbyte.
+        expr: {kind: path, path: [schedule, basicTiming]}
       - name: namespace_definition
         type: Utf8
         nullable: true
