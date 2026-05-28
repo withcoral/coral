@@ -48,6 +48,11 @@
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled
   sources under `sources/core/**`, `docs/docs.json`, and the changelog.
+- The live docs site deploys from the long-lived `docs` branch, not `main`, so
+  the published catalog matches the latest released binary. `main` still owns
+  docs freshness, but merging to `main` no longer publishes the site by itself:
+  the release workflow advances `docs` after release artifacts are published.
+  See `docs/AGENTS.md` for the full publishing model.
 - Keep checked-in generated files marked in `.gitattributes` with
   `linguist-generated` so GitHub collapses them by default in PR diffs.
 - Source inputs that carry credentials must be `kind: secret`, never

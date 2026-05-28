@@ -884,12 +884,12 @@ Supported credential method types:
 - `source_config`: read the secret from an environment variable by default, or
   from an interactive prompt when `coral source add --interactive` is used. When
   `credential` is omitted, Coral uses this behavior.
-- `oauth`: run an OAuth authorization-code flow with a loopback callback URI and
-  store the returned access token in the same source secret.
+- `oauth`: run an OAuth device-code or authorization-code flow and store the
+  returned access token in the same source secret.
 
 Use `type: oauth` when the provider should issue the source secret through a
-browser-based OAuth setup instead of asking the user to paste a token. If you
-want to support both flows, list the OAuth method first and add a
+device-code or browser-based OAuth setup instead of asking the user to paste a
+token. If you want to support both flows, list the OAuth method first and add a
 `source_config` fallback for users who already have a token.
 
 ```yaml
@@ -903,16 +903,12 @@ inputs:
           description: Use OAuth instead of pasting a token.
           oauth:
             flow:
-              type: authorization_code
-              pkce: required
-            redirect_uri: http://127.0.0.1:53682/oauth/callback
-            redirect_uri_port_mode: fixed
+              type: device_code
             endpoints:
-              authorization_url: https://github.com/login/oauth/authorize
+              device_authorization_url: https://github.com/login/device/code
               token_url: https://github.com/login/oauth/access_token
             client:
               id:
-                default: coral-owned-client-id
                 input: GITHUB_OAUTH_CLIENT_ID
             scopes:
               scope:
@@ -926,14 +922,23 @@ inputs:
 
 ### OAuth flow and client settings
 
-OAuth methods require `flow.type: authorization_code` and an explicit `pkce` of
-`required` or `disabled`. Public clients can declare `client.id.default`,
-`client.id.input`, or both; an interactive `input` value overrides `default`.
-OAuth methods whose token endpoint requires client-secret authentication must
-prompt for both OAuth client values: set `client.id.input`,
-`client.secret.input`, and a `client.secret.transport` of `basic_auth` or
-`request_body`. Client secrets are sent only to the token endpoint and are never
-included in the authorization URL.
+OAuth supports device-code flow and authorization-code flow.
+
+For device-code flow, declare `flow.type: device_code`,
+`endpoints.device_authorization_url`, `endpoints.token_url`, and a public
+client ID through `client.id.default`, `client.id.input`, or both. Device-code
+OAuth uses a public client ID only: `client.secret` must not be declared, and no
+callback URL, loopback listener, client secret, or PKCE setting is required.
+
+For authorization-code flow, declare `flow.type: authorization_code`, an
+explicit `pkce` of `required` or `disabled`, `redirect_uri`,
+`endpoints.authorization_url`, and `endpoints.token_url`. Public clients can
+declare `client.id.default`, `client.id.input`, or both; an interactive `input`
+value overrides `default`. Authorization-code OAuth methods whose token
+endpoint requires client-secret authentication must prompt for both OAuth
+client values: set `client.id.input`, `client.secret.input`, and a
+`client.secret.transport` of `basic_auth` or `request_body`. Client secrets are
+sent only to the token endpoint and are never included in the authorization URL.
 
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
 `scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral may store
@@ -942,7 +947,7 @@ token refresh is not implemented yet.
 
 ### OAuth redirect URIs
 
-OAuth currently supports loopback HTTP callback URIs:
+Authorization-code flow currently supports loopback HTTP callback URIs:
 `http://127.0.0.1[:<port>]/<path>` or `http://localhost[:<port>]/<path>`.
 
 `redirect_uri_port_mode` controls how Coral binds the loopback port. When this
@@ -955,9 +960,9 @@ defaults to `fixed`.
   omit the port or use port `0`; Coral sends the effective URI with the assigned
   port in both the authorization request and the token exchange.
 
-When users provide their own OAuth client ID, they must configure the matching
-loopback redirect behavior in the OAuth app. For OAuth methods, Coral starts
-the loopback flow and returns the provider authorization URL. After the
+When users provide their own authorization-code OAuth client ID, they must
+configure the matching loopback redirect behavior in the OAuth app. Coral
+starts the loopback flow and returns the provider authorization URL. After the
 callback, Coral exchanges the code, stores the access token as the source
 secret, and stores any refresh token as internal credential metadata.
 

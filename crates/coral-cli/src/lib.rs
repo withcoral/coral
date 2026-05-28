@@ -22,7 +22,10 @@ use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
 
-use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{
+    Arg, ArgAction, ArgGroup, ArgMatches, Args, CommandFactory, Error as ClapError, FromArgMatches,
+    Parser, Subcommand, ValueEnum,
+};
 use clap_complete::{Shell, generate};
 use coral_api::v1::ExecuteSqlRequest;
 #[cfg(feature = "embedded-ui")]
@@ -50,6 +53,8 @@ const DEFAULT_SERVER_PORT: u16 = 1457;
 )]
 /// A local-first SQL interface for APIs, files, and other data sources.
 struct Cli {
+    #[command(flatten)]
+    feature_overrides: FeatureOverrideArgs,
     #[command(subcommand)]
     command: Command,
 }
@@ -64,6 +69,8 @@ enum Command {
     Onboard,
     /// Start the MCP server over stdio
     McpStdio(McpStdioArgs),
+    /// Inspect and manage experimental runtime features
+    Features(FeaturesArgs),
     #[cfg(feature = "embedded-ui")]
     /// Start the local gRPC-Web server with the embedded Coral UI
     Ui(UiArgs),
@@ -107,12 +114,123 @@ struct SqlArgs {
     sql: String,
 }
 
+#[derive(Debug, Default)]
+struct FeatureOverrideArgs {
+    overrides: coral_app::features::FeatureOverrides,
+}
+
+impl FeatureOverrideArgs {
+    fn into_overrides(self) -> coral_app::features::FeatureOverrides {
+        self.overrides
+    }
+}
+
+impl FromArgMatches for FeatureOverrideArgs {
+    fn from_arg_matches(matches: &ArgMatches) -> Result<Self, ClapError> {
+        let mut matches = matches.clone();
+        Self::from_arg_matches_mut(&mut matches)
+    }
+
+    fn from_arg_matches_mut(matches: &mut ArgMatches) -> Result<Self, ClapError> {
+        let mut overrides = coral_app::features::FeatureOverrides::default();
+        apply_feature_override_matches(matches, &mut overrides);
+        Ok(Self { overrides })
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> Result<(), ClapError> {
+        let mut matches = matches.clone();
+        self.update_from_arg_matches_mut(&mut matches)
+    }
+
+    fn update_from_arg_matches_mut(&mut self, matches: &mut ArgMatches) -> Result<(), ClapError> {
+        apply_feature_override_matches(matches, &mut self.overrides);
+        Ok(())
+    }
+}
+
+impl Args for FeatureOverrideArgs {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        add_feature_override_args(cmd)
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        add_feature_override_args(cmd)
+    }
+}
+
+fn apply_feature_override_matches(
+    matches: &ArgMatches,
+    overrides: &mut coral_app::features::FeatureOverrides,
+) {
+    for feature in coral_app::features::Feature::all() {
+        if matches.get_flag(feature.enable_flag()) {
+            overrides.set(feature, true);
+        }
+        if matches.get_flag(feature.disable_flag()) {
+            overrides.set(feature, false);
+        }
+    }
+}
+
+fn add_feature_override_args(mut cmd: clap::Command) -> clap::Command {
+    for feature in coral_app::features::Feature::all() {
+        let key = feature.key();
+        cmd = cmd
+            .arg(
+                Arg::new(feature.enable_flag())
+                    .long(feature.enable_flag())
+                    .help(format!(
+                        "Enable experimental `{key}` feature for this process"
+                    ))
+                    .action(ArgAction::SetTrue)
+                    .global(true)
+                    .hide(true),
+            )
+            .arg(
+                Arg::new(feature.disable_flag())
+                    .long(feature.disable_flag())
+                    .help(format!(
+                        "Disable experimental `{key}` feature for this process"
+                    ))
+                    .action(ArgAction::SetTrue)
+                    .global(true)
+                    .hide(true),
+            )
+            .group(
+                ArgGroup::new(feature.key())
+                    .arg(feature.enable_flag())
+                    .arg(feature.disable_flag())
+                    .multiple(false),
+            );
+    }
+    cmd
+}
+
 #[derive(Debug, Args)]
 /// Start the MCP server over stdio
-struct McpStdioArgs {
-    /// Expose the feedback submission tool.
-    #[arg(long)]
-    enable_feedback: bool,
+struct McpStdioArgs {}
+
+#[derive(Debug, Args)]
+/// Inspect and manage experimental runtime features
+struct FeaturesArgs {
+    #[command(subcommand)]
+    command: FeaturesCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum FeaturesCommand {
+    /// List experimental runtime features and their current status
+    List,
+    /// Enable an experimental runtime feature
+    Enable {
+        /// Feature key to enable
+        feature: String,
+    },
+    /// Disable an experimental runtime feature
+    Disable {
+        /// Feature key to disable
+        feature: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -243,7 +361,7 @@ impl Command {
             Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
                 RequiredRuntime::AppClient
             }
-            Command::Completion(_) => RequiredRuntime::None,
+            Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
         }
@@ -309,7 +427,11 @@ where
 /// Returns an error if runtime startup, command execution, or output
 /// formatting fails.
 pub async fn run_from_env() -> Result<(), CliError> {
-    let Cli { command } = Cli::parse();
+    let Cli {
+        feature_overrides,
+        command,
+    } = Cli::parse();
+    let feature_overrides = feature_overrides.into_overrides();
     let ctx = coral_app::RunContext {
         trace_parent: env::trace_parent(),
     };
@@ -324,16 +446,23 @@ pub async fn run_from_env() -> Result<(), CliError> {
             .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
             let result = if is_mcp_stdio {
-                run_app_command(app, command, Some(&ctx)).await
+                run_app_command(app, command, Some(&ctx), &feature_overrides).await
             } else {
-                coral_app::run_with_context(&ctx, Box::pin(run_app_command(app, command, None)))
-                    .await
+                coral_app::run_with_context(
+                    &ctx,
+                    Box::pin(run_app_command(app, command, None, &feature_overrides)),
+                )
+                .await
             };
             bootstrap.shutdown().await;
             result
         }
         RequiredRuntime::None => {
-            coral_app::run_with_context(&ctx, Box::pin(run_no_runtime_command(command))).await
+            coral_app::run_with_context(
+                &ctx,
+                Box::pin(run_no_runtime_command(command, &feature_overrides)),
+            )
+            .await
         }
     }
 }
@@ -388,23 +517,38 @@ async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
 /// Returns an error if argument parsing, command execution, or output
 /// formatting fails.
 pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), CliError> {
-    let Cli { command } = Cli::parse();
+    let Cli {
+        feature_overrides,
+        command,
+    } = Cli::parse();
+    let feature_overrides = feature_overrides.into_overrides();
     let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
 
     match command.required_runtime() {
         RequiredRuntime::AppClient if is_mcp_stdio => {
-            run_app_command(app, command, Some(&ctx)).await
+            run_app_command(app, command, Some(&ctx), &feature_overrides).await
         }
         RequiredRuntime::AppClient => {
-            coral_app::run_with_context(&ctx, Box::pin(run_app_command(app, command, None))).await
+            coral_app::run_with_context(
+                &ctx,
+                Box::pin(run_app_command(app, command, None, &feature_overrides)),
+            )
+            .await
         }
         RequiredRuntime::None => {
-            coral_app::run_with_context(&ctx, Box::pin(run_no_runtime_command(command))).await
+            coral_app::run_with_context(
+                &ctx,
+                Box::pin(run_no_runtime_command(command, &feature_overrides)),
+            )
+            .await
         }
     }
 }
 
-async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
+async fn run_no_runtime_command(
+    command: Command,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), CliError> {
     match command {
         Command::Completion(args) => {
             let mut cmd = Cli::command();
@@ -412,6 +556,7 @@ async fn run_no_runtime_command(command: Command) -> Result<(), CliError> {
             generate(args.shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
+        Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
         Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
@@ -424,6 +569,7 @@ async fn run_app_command(
     app: AppClient,
     command: Command,
     ctx: Option<&coral_app::RunContext>,
+    feature_overrides: &coral_app::features::FeatureOverrides,
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
@@ -451,11 +597,14 @@ async fn run_app_command(
         Command::Onboard => {
             onboard::run(&app).await?;
         }
-        Command::McpStdio(args) => {
+        Command::McpStdio(_) => {
+            let features = coral_app::features::FeatureStore::discover(None)
+                .and_then(|store| store.load_with_overrides(feature_overrides))
+                .map_err(anyhow::Error::from)?;
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
-                    feedback_enabled: args.enable_feedback,
+                    feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                 },
             ))
@@ -465,12 +614,47 @@ async fn run_app_command(
         Command::Completion(_) => {
             unreachable!("no-runtime commands are routed without an app client")
         }
+        Command::Features(_) => {
+            unreachable!("no-runtime commands are routed without an app client")
+        }
         #[cfg(feature = "embedded-ui")]
         Command::Ui(_) => {
             unreachable!("no-runtime commands are routed without an app client")
         }
     }
 
+    Ok(())
+}
+
+fn run_features(
+    args: FeaturesArgs,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    let store = coral_app::features::FeatureStore::discover(None)?;
+    match args.command {
+        FeaturesCommand::List => {
+            let rows = store
+                .statuses_with_overrides(feature_overrides)?
+                .into_iter()
+                .map(|status| {
+                    [
+                        status.key.to_string(),
+                        status.configured.as_str().to_string(),
+                        status.enabled.to_string(),
+                        status.description.to_string(),
+                    ]
+                });
+            print_text_table(["Feature", "Configured", "Enabled", "Description"], rows);
+        }
+        FeaturesCommand::Enable { feature } => {
+            store.enable(&feature)?;
+            println!("Enabled feature `{feature}` in config.toml.");
+        }
+        FeaturesCommand::Disable { feature } => {
+            store.disable(&feature)?;
+            println!("Disabled feature `{feature}` in config.toml.");
+        }
+    }
     Ok(())
 }
 
@@ -687,7 +871,7 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::{Cli, RequiredRuntime, command_enables_stderr_logs};
 
@@ -725,6 +909,14 @@ mod tests {
     }
 
     #[test]
+    fn features_command_requires_no_runtime() {
+        let cli =
+            Cli::try_parse_from(["coral", "features", "list"]).expect("features args should parse");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
+    }
+
+    #[test]
     fn regular_commands_use_normal_app_bootstrap() {
         let cli = Cli::try_parse_from(["coral", "source", "list"]).expect("source list parses");
 
@@ -743,6 +935,45 @@ mod tests {
             "mcp-stdio",
             "--enable-feedback"
         ]));
+    }
+
+    #[test]
+    fn global_feature_overrides_parse_before_subcommand() {
+        let cli = Cli::try_parse_from(["coral", "--enable-feedback", "mcp-stdio"])
+            .expect("global feature override should parse before subcommand");
+
+        assert!(matches!(cli.command, super::Command::McpStdio(_)));
+    }
+
+    #[test]
+    fn global_feature_overrides_are_hidden_from_help() {
+        let mut help = Vec::new();
+        Cli::command()
+            .write_long_help(&mut help)
+            .expect("help should render");
+        let help = String::from_utf8(help).expect("help should be utf8");
+
+        assert!(
+            !help.contains("--enable-feedback"),
+            "feature override flags should not be visible in help: {help}"
+        );
+        assert!(
+            !help.contains("--disable-feedback"),
+            "feature override flags should not be visible in help: {help}"
+        );
+    }
+
+    #[test]
+    fn conflicting_global_feature_overrides_are_rejected() {
+        let error = Cli::try_parse_from([
+            "coral",
+            "--enable-feedback",
+            "--disable-feedback",
+            "mcp-stdio",
+        ])
+        .expect_err("conflicting feature overrides should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

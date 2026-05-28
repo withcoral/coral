@@ -351,7 +351,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
-        AppError::TomlDecode(_) => "TOML_DECODE",
+        AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
         AppError::TomlEncode(_) => "TOML_ENCODE",
         AppError::Json(_) => "JSON",
         AppError::Transport(_) => "TRANSPORT",
