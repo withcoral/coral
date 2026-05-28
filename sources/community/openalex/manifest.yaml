@@ -28,7 +28,7 @@ test_queries:
 
 tables:
   # ---------------------------------------------------------------------------
-  # works â€“ scholarly works (articles, preprints, books, etc.)
+  # works - scholarly works (articles, preprints, books, etc.)
   # ---------------------------------------------------------------------------
   - name: works
     description: >
@@ -327,7 +327,7 @@ tables:
           key: sort_value
 
   # ---------------------------------------------------------------------------
-  # authors â€“ researchers and their profiles
+  # authors - researchers and their profiles
   # ---------------------------------------------------------------------------
   - name: authors
     description: >
@@ -497,7 +497,7 @@ tables:
           key: search
 
   # ---------------------------------------------------------------------------
-  # sources â€“ journals, repositories, conferences
+  # sources - journals, repositories, conferences
   # ---------------------------------------------------------------------------
   - name: sources
     description: >
@@ -693,7 +693,7 @@ tables:
           key: search
 
   # ---------------------------------------------------------------------------
-  # institutions â€“ universities, companies, research orgs
+  # institutions - universities, companies, research orgs
   # ---------------------------------------------------------------------------
   - name: institutions
     description: >
@@ -895,7 +895,7 @@ tables:
           key: search
 
   # ---------------------------------------------------------------------------
-  # topics â€“ research topics and their taxonomy
+  # topics - research topics and their taxonomy
   # ---------------------------------------------------------------------------
   - name: topics
     description: >
@@ -1341,7 +1341,7 @@ functions:
             - created_date
 
   # ---------------------------------------------------------------------------
-  # authors â€“ researchers and their profiles
+  # authors - researchers and their profiles
   # ---------------------------------------------------------------------------
   - name: search_authors
     description: >-
@@ -1486,7 +1486,7 @@ functions:
             - created_date
 
   # ---------------------------------------------------------------------------
-  # sources â€“ journals, repositories, conferences
+  # sources - journals, repositories, conferences
   # ---------------------------------------------------------------------------
   - name: search_sources
     description: >-
@@ -1660,7 +1660,7 @@ functions:
             - updated_date
 
   # ---------------------------------------------------------------------------
-  # institutions â€“ universities, companies, research orgs
+  # institutions - universities, companies, research orgs
   # ---------------------------------------------------------------------------
   - name: search_institutions
     description: >-
@@ -1840,7 +1840,7 @@ functions:
             - updated_date
 
   # ---------------------------------------------------------------------------
-  # topics â€“ research topics and their taxonomy
+  # topics - research topics and their taxonomy
   # ---------------------------------------------------------------------------
   - name: search_topics
     description: >-
