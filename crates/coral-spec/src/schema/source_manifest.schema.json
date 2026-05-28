@@ -746,24 +746,12 @@
     "mcp_bearer_auth": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "from"],
+      "required": ["type", "from", "key"],
       "properties": {
         "type": { "const": "bearer" },
-        "from": { "type": "string" },
-        "template": { "type": "string" },
-        "value": {},
-        "key": { "type": "string", "minLength": 1 },
-        "keys": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "default": {},
-        "seconds": { "type": "integer" },
-        "separator": { "type": "string", "minLength": 1 },
-        "part": { "type": "integer", "minimum": 0 }
-      },
-      "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
+        "from": { "const": "input" },
+        "key": { "type": "string", "minLength": 1 }
+      }
     },
     "mcp_env": {
       "type": "object",
