@@ -155,6 +155,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -166,6 +167,7 @@ impl SourceServiceApi for SourceService {
             let installed = sources
                 .create_bundled_source(&workspace_name, &command)
                 .map_err(app_status)?;
+            queries.invalidate_catalog_cache();
             Ok(Response::new(CreateBundledSourceResponse {
                 source: Some(installed_source_to_proto(&workspace_name, installed)),
             }))
@@ -179,6 +181,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let queries = self.queries.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -196,14 +199,16 @@ impl SourceServiceApi for SourceService {
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
-                        sources
+                        let installed = sources
                             .create_bundled_source_with_oauth(
                                 &workspace_name,
                                 command,
                                 event_sender,
                             )
                             .await
-                            .map_err(app_status)
+                            .map_err(app_status)?;
+                        queries.invalidate_catalog_cache();
+                        Ok(installed)
                     })
                 });
             Ok(Response::new(Box::pin(stream.map(|response| {
@@ -220,6 +225,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Self::ImportSourceStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let queries = self.queries.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -232,6 +238,7 @@ impl SourceServiceApi for SourceService {
                 let installed = sources
                     .import_source(&workspace_name, &command)
                     .map_err(app_status)?;
+                queries.invalidate_catalog_cache();
                 let response = ImportSourceResponse {
                     event: Some(import_source_response::Event::Source(
                         installed_source_to_proto(&response_workspace_name, installed),
@@ -254,10 +261,12 @@ impl SourceServiceApi for SourceService {
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
-                        sources
+                        let installed = sources
                             .import_source_with_credentials(&workspace_name, command, event_sender)
                             .await
-                            .map_err(app_status)
+                            .map_err(app_status)?;
+                        queries.invalidate_catalog_cache();
+                        Ok(installed)
                     })
                 });
             Ok(Response::new(stream))
@@ -271,6 +280,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<DeleteSourceResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let queries = self.queries.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -278,6 +288,7 @@ impl SourceServiceApi for SourceService {
             sources
                 .delete_source(&workspace_name, &source_name)
                 .map_err(app_status)?;
+            queries.invalidate_catalog_cache();
             Ok(Response::new(DeleteSourceResponse {}))
         })
         .await

@@ -153,6 +153,65 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
 }
 
 #[tokio::test]
+async fn list_catalog_reflects_imported_source_updates_after_cached_read() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let initial = harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "local_messages".to_string(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("initial list catalog")
+        .into_inner();
+    assert_eq!(
+        initial.pagination.expect("initial pagination").total_count,
+        3
+    );
+
+    harness
+        .import_source(
+            fixture_manifest_with_required_filter_yaml()
+                .replace("name: filtered_messages", "name: local_messages"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let updated = harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: "local_messages".to_string(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("updated list catalog")
+        .into_inner();
+    assert_eq!(
+        updated.pagination.expect("updated pagination").total_count,
+        1
+    );
+}
+
+#[tokio::test]
 async fn list_columns_filters_required_columns_and_patterns() {
     let harness = GrpcHarness::new().await;
     harness

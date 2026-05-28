@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
@@ -19,7 +21,7 @@ use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::model::InstalledSource;
+use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
@@ -34,6 +36,29 @@ pub(crate) struct ValidatedSource {
     pub(crate) report: SourceValidationReport,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct CatalogCacheKey {
+    sources: Vec<CatalogSourceCacheKey>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct CatalogSourceCacheKey {
+    name: String,
+    version: Option<String>,
+    variables: BTreeMap<String, String>,
+    secrets: Vec<String>,
+    origin: SourceOrigin,
+    manifest_file_len: Option<u64>,
+    manifest_modified: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedCatalog {
+    workspace_name: WorkspaceName,
+    key: CatalogCacheKey,
+    catalog: CatalogInfo,
+}
+
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
@@ -41,6 +66,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    catalog_cache: Arc<Mutex<Option<CachedCatalog>>>,
 }
 
 impl QueryManager {
@@ -57,7 +83,12 @@ impl QueryManager {
             runtime_context,
             layout,
             engine_extensions_providers,
+            catalog_cache: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn invalidate_catalog_cache(&self) {
+        *self.catalog_cache.lock().expect("catalog cache poisoned") = None;
     }
 
     pub(crate) async fn list_tables(
@@ -66,13 +97,13 @@ impl QueryManager {
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace_name)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
-        CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
-            .await
-            .map_err(QueryManagerError::Core)
+        let catalog = self.catalog_info(workspace_name).await?;
+        Ok(catalog
+            .tables
+            .into_iter()
+            .filter(|table| schema_filter.is_none_or(|schema| table.schema_name == schema))
+            .filter(|table| table_filter.is_none_or(|name| table.table_name == name))
+            .collect())
     }
 
     pub(crate) async fn list_catalog(
@@ -80,13 +111,79 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
+        let catalog = self.catalog_info(workspace_name).await?;
+        Ok(filter_catalog(catalog, schema_filter))
+    }
+
+    async fn catalog_info(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<CatalogInfo, QueryManagerError> {
         let sources = self
-            .load_query_sources(workspace_name)
+            .workspace_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
-        CoralQuery::list_catalog(&sources, runtime, schema_filter)
+        let key = self.catalog_cache_key(workspace_name, &sources);
+        if let Some(cached) = self
+            .catalog_cache
+            .lock()
+            .expect("catalog cache poisoned")
+            .as_ref()
+            && cached.workspace_name == *workspace_name
+            && cached.key == key
+        {
+            return Ok(cached.catalog.clone());
+        }
+
+        let query_sources = self.load_query_sources_from_sources(workspace_name, &sources);
+        let runtime = self.runtime_config(&query_sources);
+        let catalog = CoralQuery::list_catalog(&query_sources, runtime, None)
             .await
-            .map_err(QueryManagerError::Core)
+            .map_err(QueryManagerError::Core)?;
+        *self.catalog_cache.lock().expect("catalog cache poisoned") = Some(CachedCatalog {
+            workspace_name: workspace_name.clone(),
+            key,
+            catalog: catalog.clone(),
+        });
+        Ok(catalog)
+    }
+
+    fn workspace_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        let catalog = self.config_store.load_catalog()?;
+        Ok(catalog.workspace_sources(workspace_name))
+    }
+
+    fn catalog_cache_key(
+        &self,
+        workspace_name: &WorkspaceName,
+        sources: &[InstalledSource],
+    ) -> CatalogCacheKey {
+        CatalogCacheKey {
+            sources: sources
+                .iter()
+                .map(|source| {
+                    let manifest_metadata = match source.origin {
+                        SourceOrigin::Bundled => None,
+                        SourceOrigin::Imported => std::fs::metadata(
+                            self.layout.manifest_file(workspace_name, &source.name),
+                        )
+                        .ok(),
+                    };
+                    CatalogSourceCacheKey {
+                        name: source.name.to_string(),
+                        version: source.version.clone(),
+                        variables: source.variables.clone(),
+                        secrets: source.secrets.clone(),
+                        origin: source.origin,
+                        manifest_file_len: manifest_metadata.as_ref().map(std::fs::Metadata::len),
+                        manifest_modified: manifest_metadata
+                            .and_then(|metadata| metadata.modified().ok()),
+                    }
+                })
+                .collect(),
+        }
     }
 
     pub(crate) async fn execute_sql(
@@ -165,10 +262,18 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<QuerySource>, AppError> {
-        let catalog = self.config_store.load_catalog()?;
+        let sources = self.workspace_sources(workspace_name)?;
+        Ok(self.load_query_sources_from_sources(workspace_name, &sources))
+    }
+
+    fn load_query_sources_from_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+        sources: &[InstalledSource],
+    ) -> Vec<QuerySource> {
         let mut query_sources = Vec::new();
-        for source in catalog.workspace_sources(workspace_name) {
-            match self.load_query_source(workspace_name, &source) {
+        for source in sources {
+            match self.load_query_source(workspace_name, source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(error) => {
                     tracing::warn!(
@@ -179,7 +284,7 @@ impl QueryManager {
                 }
             }
         }
-        Ok(query_sources)
+        query_sources
     }
 
     fn load_query_source(
@@ -232,6 +337,18 @@ impl QueryManager {
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources),
         )
     }
+}
+
+fn filter_catalog(mut catalog: CatalogInfo, schema_filter: Option<&str>) -> CatalogInfo {
+    if let Some(schema_name) = schema_filter {
+        catalog
+            .tables
+            .retain(|table| table.schema_name == schema_name);
+        catalog
+            .table_functions
+            .retain(|function| function.schema_name == schema_name);
+    }
+    catalog
 }
 
 #[derive(Clone, Copy)]
