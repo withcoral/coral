@@ -1,0 +1,528 @@
+name: railway
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query projects, services, deployments, and environments from the Railway
+  infrastructure deployment platform.
+base_url: https://backboard.railway.app/graphql/v2
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.RAILWAY_API_TOKEN}}
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+inputs:
+  RAILWAY_API_TOKEN:
+    kind: secret
+    hint: "API token from railway.app → Account Settings → Tokens → New Token"
+
+test_queries:
+  - SELECT id, name, created_at FROM railway.projects LIMIT 5
+  - SELECT id, name, project_id FROM railway.services LIMIT 5
+  - SELECT id, status, created_at FROM railway.deployments LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # railway.projects — list all projects
+  # ──────────────────────────────────────────────────────────────────────
+  - name: projects
+    description: List all projects in the Railway account.
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query GetProjects {
+              projects {
+                edges {
+                  node {
+                    id
+                    name
+                    description
+                    createdAt
+                    updatedAt
+                    isPublic
+                    teamId
+                  }
+                }
+              }
+            }
+    response:
+      rows_path:
+        - data
+        - projects
+        - edges
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the project.
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the project.
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the project.
+        expr:
+          kind: path
+          path:
+            - node
+            - description
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the project was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - node
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the project was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - node
+              - updatedAt
+      - name: is_public
+        type: Boolean
+        nullable: true
+        description: Whether the project is public.
+        expr:
+          kind: path
+          path:
+            - node
+            - isPublic
+      - name: team_id
+        type: Utf8
+        nullable: true
+        description: Team or workspace ID the project belongs to.
+        expr:
+          kind: path
+          path:
+            - node
+            - teamId
+
+  # ──────────────────────────────────────────────────────────────────────
+  # railway.services — list services within projects
+  # ──────────────────────────────────────────────────────────────────────
+  - name: services
+    description: List services within projects.
+    filters:
+      - name: project_id
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query GetServicesDefault {
+              projects {
+                edges {
+                  node {
+                    id
+                    services {
+                      edges {
+                        node {
+                          id
+                          name
+                          createdAt
+                          updatedAt
+                          projectId
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+    requests:
+      - when_filters:
+          - project_id
+        method: POST
+        path: /
+        body:
+          - path:
+              - query
+            from: literal
+            value: |
+              query GetProjectServices($projectId: String!) {
+                project(id: $projectId) {
+                  services {
+                    edges {
+                      node {
+                        id
+                        name
+                        createdAt
+                        updatedAt
+                        projectId
+                      }
+                    }
+                  }
+                }
+              }
+          - path:
+              - variables
+              - projectId
+            from: filter
+            key: project_id
+    response:
+      rows_path:
+        - data
+        - projects
+        - edges
+        - "0"
+        - node
+        - services
+        - edges
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the service.
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the service.
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: ID of the project the service belongs to.
+        expr:
+          kind: path
+          path:
+            - node
+            - projectId
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the service was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - node
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the service was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - node
+              - updatedAt
+
+  # ──────────────────────────────────────────────────────────────────────
+  # railway.deployments — list deployment history
+  # ──────────────────────────────────────────────────────────────────────
+  - name: deployments
+    description: List deployment history for services.
+    filters:
+      - name: project_id
+      - name: service_id
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query GetDeployments($input: DeploymentListInput!) {
+              deployments(input: $input) {
+                edges {
+                  node {
+                    id
+                    status
+                    createdAt
+                    updatedAt
+                    url
+                    environmentId
+                    serviceId
+                    creator {
+                      id
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - input
+          from: literal
+          value: {}
+        - path:
+            - variables
+            - input
+            - projectId
+          from: filter
+          key: project_id
+        - path:
+            - variables
+            - input
+            - serviceId
+          from: filter
+          key: service_id
+    response:
+      rows_path:
+        - data
+        - deployments
+        - edges
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the deployment.
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Status of the deployment (e.g. SUCCESS, FAILED).
+        expr:
+          kind: path
+          path:
+            - node
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the deployment was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - node
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the deployment was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - node
+              - updatedAt
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Deployment live URL.
+        expr:
+          kind: path
+          path:
+            - node
+            - url
+      - name: environment_id
+        type: Utf8
+        nullable: true
+        description: ID of the environment deployed to.
+        expr:
+          kind: path
+          path:
+            - node
+            - environmentId
+      - name: service_id
+        type: Utf8
+        nullable: true
+        description: ID of the service deployed.
+        expr:
+          kind: path
+          path:
+            - node
+            - serviceId
+      - name: creator_id
+        type: Utf8
+        nullable: true
+        description: ID of the user who triggered the deployment.
+        expr:
+          kind: path
+          path:
+            - node
+            - creator
+            - id
+
+  # ──────────────────────────────────────────────────────────────────────
+  # railway.environments — list environments per project
+  # ──────────────────────────────────────────────────────────────────────
+  - name: environments
+    description: List environments per project.
+    filters:
+      - name: project_id
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query GetEnvironmentsDefault {
+              projects {
+                edges {
+                  node {
+                    id
+                    environments {
+                      edges {
+                        node {
+                          id
+                          name
+                          createdAt
+                          isEphemeral
+                          projectId
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+    requests:
+      - when_filters:
+          - project_id
+        method: POST
+        path: /
+        body:
+          - path:
+              - query
+            from: literal
+            value: |
+              query GetProjectEnvironments($projectId: String!) {
+                project(id: $projectId) {
+                  environments {
+                    edges {
+                      node {
+                        id
+                        name
+                        createdAt
+                        isEphemeral
+                        projectId
+                      }
+                    }
+                  }
+                }
+              }
+          - path:
+              - variables
+              - projectId
+            from: filter
+            key: project_id
+    response:
+      rows_path:
+        - data
+        - projects
+        - edges
+        - "0"
+        - node
+        - environments
+        - edges
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the environment.
+        expr:
+          kind: path
+          path:
+            - node
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the environment (e.g. production, staging).
+        expr:
+          kind: path
+          path:
+            - node
+            - name
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: ID of the project the environment belongs to.
+        expr:
+          kind: path
+          path:
+            - node
+            - projectId
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the environment was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - node
+              - createdAt
+      - name: is_ephemeral
+        type: Boolean
+        nullable: true
+        description: Whether the environment is ephemeral (e.g. PR review environment).
+        expr:
+          kind: path
+          path:
+            - node
+            - isEphemeral
