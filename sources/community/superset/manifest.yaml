@@ -1,0 +1,574 @@
+name: superset
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Apache Superset dashboards, charts, datasets, databases, saved queries,
+  and users for BI governance.
+base_url: "{{input.SUPERSET_BASE_URL}}"
+
+inputs:
+  SUPERSET_BASE_URL:
+    kind: variable
+    default: http://localhost:8088
+    hint: Superset base URL without a trailing slash.
+  SUPERSET_ACCESS_TOKEN:
+    kind: secret
+    hint: Superset bearer access token.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.SUPERSET_ACCESS_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, dashboard_title FROM superset.dashboards LIMIT 1
+  - SELECT id, slice_name FROM superset.charts LIMIT 1
+  - SELECT id, database_name FROM superset.databases LIMIT 1
+
+tables:
+  - name: dashboards
+    description: Superset dashboards.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v1/dashboard/
+    response:
+      rows_path: [result]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Dashboard ID.
+      - name: dashboard_title
+        type: Utf8
+        nullable: true
+        description: Dashboard title.
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Dashboard slug.
+      - name: published
+        type: Boolean
+        nullable: true
+        description: Whether the dashboard is published.
+      - name: changed_on
+        type: Timestamp
+        nullable: true
+        description: Last changed timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [changed_on]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Dashboard URL.
+      - name: owners_json
+        type: Json
+        nullable: true
+        description: Dashboard owners.
+        expr: {kind: path, path: [owners]}
+      - name: roles_json
+        type: Json
+        nullable: true
+        description: Dashboard roles.
+        expr: {kind: path, path: [roles]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw dashboard object.
+        expr: {kind: path, path: []}
+
+  - name: charts
+    description: Superset charts.
+    request:
+      method: GET
+      path: /api/v1/chart/
+    response:
+      rows_path: [result]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Chart ID.
+      - name: slice_name
+        type: Utf8
+        nullable: true
+        description: Chart name.
+      - name: viz_type
+        type: Utf8
+        nullable: true
+        description: Visualization type.
+      - name: datasource_name
+        type: Utf8
+        nullable: true
+        description: Datasource name.
+      - name: changed_on
+        type: Timestamp
+        nullable: true
+        description: Last changed timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [changed_on]}
+      - name: datasource_id
+        type: Int64
+        nullable: true
+        description: Datasource ID.
+      - name: datasource_type
+        type: Utf8
+        nullable: true
+        description: Datasource type.
+      - name: owners_json
+        type: Json
+        nullable: true
+        description: Chart owners.
+        expr: {kind: path, path: [owners]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw chart object.
+        expr: {kind: path, path: []}
+
+  - name: datasets
+    description: Superset datasets.
+    request:
+      method: GET
+      path: /api/v1/dataset/
+    response:
+      rows_path: [result]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Dataset ID.
+      - name: table_name
+        type: Utf8
+        nullable: true
+        description: Table name.
+      - name: database__database_name
+        type: Utf8
+        nullable: true
+        description: Database name.
+        expr: {kind: path, path: [database, database_name]}
+      - name: schema
+        type: Utf8
+        nullable: true
+        description: Dataset schema.
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Dataset kind.
+      - name: changed_on
+        type: Timestamp
+        nullable: true
+        description: Last changed timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [changed_on]}
+      - name: owners_json
+        type: Json
+        nullable: true
+        description: Dataset owners.
+        expr: {kind: path, path: [owners]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw dataset object.
+        expr: {kind: path, path: []}
+
+  - name: databases
+    description: Superset database connections.
+    request:
+      method: GET
+      path: /api/v1/database/
+    response:
+      rows_path: [result]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Database ID.
+      - name: database_name
+        type: Utf8
+        nullable: true
+        description: Database name.
+      - name: sqlalchemy_uri
+        type: Utf8
+        nullable: true
+        description: SQLAlchemy URI, if returned by the API.
+      - name: backend
+        type: Utf8
+        nullable: true
+        description: Database backend.
+      - name: allow_run_async
+        type: Boolean
+        nullable: true
+        description: Whether async queries are enabled.
+      - name: allow_dml
+        type: Boolean
+        nullable: true
+        description: Whether DML is allowed.
+      - name: changed_on
+        type: Timestamp
+        nullable: true
+        description: Last changed timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [changed_on]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw database object.
+        expr: {kind: path, path: []}
+
+  - name: saved_queries
+    description: Superset SQL Lab saved queries.
+    request:
+      method: GET
+      path: /api/v1/saved_query/
+    response:
+      rows_path: [result]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Saved query ID.
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Saved query label.
+      - name: sql
+        type: Utf8
+        nullable: true
+        description: SQL text.
+      - name: schema
+        type: Utf8
+        nullable: true
+        description: Database schema.
+      - name: database__database_name
+        type: Utf8
+        nullable: true
+        description: Database name.
+        expr: {kind: path, path: [database, database_name]}
+      - name: changed_on
+        type: Timestamp
+        nullable: true
+        description: Last changed timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [changed_on]}
+      - name: created_by_json
+        type: Json
+        nullable: true
+        description: Creator metadata.
+        expr: {kind: path, path: [created_by]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw saved query object.
+        expr: {kind: path, path: []}
+
+  - name: queries
+    description: Superset SQL Lab query history.
+    request:
+      method: GET
+      path: /api/v1/query/
+    response:
+      rows_path: [result]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Query row ID.
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: SQL Lab client ID.
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Database display name.
+      - name: schema
+        type: Utf8
+        nullable: true
+        description: Query schema.
+      - name: sql
+        type: Utf8
+        nullable: true
+        description: SQL text.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Query status.
+      - name: user
+        type: Utf8
+        nullable: true
+        description: Query user.
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Query start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [start_time]}
+      - name: end_time
+        type: Timestamp
+        nullable: true
+        description: Query end time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [end_time]}
+      - name: rows
+        type: Int64
+        nullable: true
+        description: Rows returned.
+      - name: error_message
+        type: Utf8
+        nullable: true
+        description: Error message.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw query object.
+        expr: {kind: path, path: []}
+
+  - name: users
+    description: Superset security users.
+    request:
+      method: GET
+      path: /api/v1/security/users/
+    response:
+      rows_path: [result]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: User ID.
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username.
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: First name.
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Last name.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address.
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the user is active.
+      - name: roles_json
+        type: Json
+        nullable: true
+        description: Assigned roles.
+        expr: {kind: path, path: [roles]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw user object.
+        expr: {kind: path, path: []}
+
+  - name: roles
+    description: Superset security roles.
+    request:
+      method: GET
+      path: /api/v1/security/roles/
+    response:
+      rows_path: [result]
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Role ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Role name.
+      - name: permissions_json
+        type: Json
+        nullable: true
+        description: Role permissions.
+        expr: {kind: path, path: [permissions]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw role object.
+        expr: {kind: path, path: []}
+
+  - name: dashboard_charts
+    description: Charts attached to a dashboard.
+    guide: |
+      Requires `dashboard_id_or_slug`, for example
+      `WHERE dashboard_id_or_slug = '12'`.
+    filters:
+      - name: dashboard_id_or_slug
+        required: true
+    request:
+      method: GET
+      path: /api/v1/dashboard/{{filter.dashboard_id_or_slug}}/charts
+    response:
+      rows_path: [result]
+    pagination:
+      mode: none
+    columns:
+      - name: dashboard_id_or_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Dashboard ID or slug supplied as a filter.
+        expr:
+          kind: from_filter
+          key: dashboard_id_or_slug
+      - name: id
+        type: Int64
+        nullable: false
+        description: Chart ID.
+      - name: slice_name
+        type: Utf8
+        nullable: true
+        description: Chart name.
+      - name: viz_type
+        type: Utf8
+        nullable: true
+        description: Visualization type.
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw dashboard chart object.
+        expr: {kind: path, path: []}
+
+  - name: dashboard_datasets
+    description: Datasets attached to a dashboard.
+    guide: |
+      Requires `dashboard_id_or_slug`, for example
+      `WHERE dashboard_id_or_slug = '12'`.
+    filters:
+      - name: dashboard_id_or_slug
+        required: true
+    request:
+      method: GET
+      path: /api/v1/dashboard/{{filter.dashboard_id_or_slug}}/datasets
+    response:
+      rows_path: [result]
+    pagination:
+      mode: none
+    columns:
+      - name: dashboard_id_or_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Dashboard ID or slug supplied as a filter.
+        expr:
+          kind: from_filter
+          key: dashboard_id_or_slug
+      - name: id
+        type: Int64
+        nullable: false
+        description: Dataset ID.
+      - name: table_name
+        type: Utf8
+        nullable: true
+        description: Dataset table name.
+      - name: database__database_name
+        type: Utf8
+        nullable: true
+        description: Database name.
+        expr: {kind: path, path: [database, database_name]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw dashboard dataset object.
+        expr: {kind: path, path: []}
