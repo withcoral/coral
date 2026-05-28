@@ -1,0 +1,3961 @@
+openapi: 3.0.1
+info:
+  title: StatusGator API
+  version: v3
+  description: >
+    # StatusGator API V3
+
+
+    ## Introduction
+
+
+    The StatusGator REST API V3 allows programatic access to your
+
+    StatusGator dashboard and monitors. You can use the API to retrieve
+
+    your entire dashboard, manage monitors, and access service
+
+    information.
+
+
+    ## Authentication
+
+
+    All API requests require authentication using a Bearer token. Include
+
+    your API token in the Authorization header:
+
+
+    ```
+
+    Authorization: Bearer YOUR_API_TOKEN
+
+    ```
+
+
+    Do not forget to add the "Bearer " prefix before your token in the
+
+    header value.
+
+
+    ## Token Generation
+
+
+    You can generate API tokens from your StatusGator dashboard by clicking
+
+    on the API menu on the left sidebar. This option is available only
+
+    to organization admins.
+
+
+    ## Token Permissions
+
+
+    API tokens can be created with one of two permission levels:
+
+
+    - **Full access** — Can perform all API operations (GET, POST, PATCH,
+    DELETE)
+
+    - **Read-only** — Limited to GET requests only. Any write operation (POST,
+    PATCH, DELETE) will return a `403 Forbidden` response.
+
+
+    ## Help and Support
+
+
+    If you need help or have more questions, visit the
+
+    [StatusGator Documentation](https://statusgator.com/docs).
+paths:
+  /boards/{board_id}/history:
+    get:
+      summary: Get board history
+      tags:
+        - Boards
+      description: Returns a list of historical events affecting monitors on a board
+        over a date range.
+      operationId: getBoardHistory
+      parameters:
+        - name: board_id
+          in: path
+          description: Board public ID
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          description: Start date (inclusive) in YYYY-MM-DD. Defaults to 30 days ago if
+            not provided.
+          required: false
+          example: 2025-09-01
+          schema:
+            type: string
+        - name: end_date
+          in: query
+          description: End date (exclusive) in YYYY-MM-DD. Defaults to tomorrow (includes
+            all of today) if not provided.
+          required: false
+          example: 2025-10-01
+          schema:
+            type: string
+        - name: monitor_id
+          in: query
+          description: Optional filter to a specific monitor ID
+          required: false
+          example: A6das1igzR
+          schema:
+            type: string
+      responses:
+        "200":
+          description: defaults to last 30 days when dates not provided
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BoardRow"
+        "401":
+          description: unauthorized
+        "404":
+          description: board not found
+        "422":
+          description: invalid date format
+  /boards:
+    get:
+      summary: List boards
+      tags:
+        - Boards
+      description: >-
+        Retrieve all boards belonging to your organization. Boards
+                are like projects that display the status of selected services you depend
+                on. Each board allows you to organize and monitor specific groups of
+                services relevant to your operations. Results are paginated for efficient
+                data retrieval.
+      operationId: listBoards
+      parameters:
+        - name: page
+          in: query
+          description: "Page number for pagination (default: 1)"
+          required: false
+          example: 1
+          schema:
+            type: integer
+        - name: per_page
+          in: query
+          description: "Number of items per page (default: 25, max: 100)"
+          required: false
+          example: 25
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: boards found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Board"
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_pages:
+                        type: integer
+                      total_count:
+                        type: integer
+                      next_page:
+                        type: integer
+                        nullable: true
+                      prev_page:
+                        type: integer
+                        nullable: true
+        "401":
+          description: unauthorized
+  /boards/{id}:
+    get:
+      summary: Get board details
+      tags:
+        - Boards
+      description: Get details for a specific board
+      operationId: getBoard
+      parameters:
+        - name: id
+          in: path
+          description: Board public ID
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+      responses:
+        "200":
+          description: board found
+          content:
+            application/json:
+              schema:
+                type: object
+                additional_properties: true
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/Board"
+        "401":
+          description: unauthorized
+        "404":
+          description: board not found
+  /services/{service_id}/components:
+    get:
+      summary: List service components
+      tags:
+        - Services
+      description: Retrieve all active components for a specific service. Components
+        represent individual parts or subsystems of a service that are monitored
+        separately (like API, Dashboard, Database, etc.).
+      operationId: listServiceComponents
+      parameters:
+        - name: service_id
+          in: path
+          description: Public ID of the service
+          required: true
+          example: k2x9m7nPqR
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: "Page number for pagination (default: 1)"
+          required: false
+          example: 1
+          schema:
+            type: integer
+        - name: per_page
+          in: query
+          description: "Number of items per page (default: 25, max: 100)"
+          required: false
+          example: 25
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: components with pagination
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Component"
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_pages:
+                        type: integer
+                      total_count:
+                        type: integer
+                      next_page:
+                        type: integer
+                        nullable: true
+                      prev_page:
+                        type: integer
+                        nullable: true
+        "401":
+          description: unauthorized
+        "404":
+          description: service not found
+  /boards/{board_id}/custom_monitors:
+    post:
+      summary: Create custom monitor
+      tags:
+        - Custom Monitors
+      description: >-
+        Create a new custom monitor for the specified board. Custom monitors
+                allow you to add manually managed services to your status page. You can update
+                their status manually as needed.
+      operationId: createCustomMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+      responses:
+        "201":
+          description: custom monitor created with monitor group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/CustomMonitor"
+        "401":
+          description: unauthorized
+        "422":
+          description: validation errors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Display name for the monitor
+                  example: My Custom Service
+                description:
+                  type: string
+                  description: Description for the monitor
+                  example: Internal service we manually update
+                monitor_group_id:
+                  type: string
+                  description: ID of the monitor group to assign this monitor to
+                  example: x5y2m8nQrS
+                  nullable: true
+              required:
+                - name
+  /boards/{board_id}/custom_monitors/{id}:
+    patch:
+      summary: Update custom monitor
+      tags:
+        - Custom Monitors
+      description: Update an existing custom monitor
+      operationId: updateCustomMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the custom monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: custom monitor removed from group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/CustomMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: custom monitor not found
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Display name for the monitor
+                  example: Updated Custom Service
+                description:
+                  type: string
+                  description: Description for the monitor
+                  example: Updated description
+                monitor_group_id:
+                  type: string
+                  description: ID of the monitor group to assign this monitor to (set to null to
+                    remove from group)
+                  example: x5y2m8nQrS
+                  nullable: true
+    delete:
+      summary: Delete custom monitor
+      tags:
+        - Custom Monitors
+      description: Delete a custom monitor from the board.
+      operationId: deleteCustomMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the custom monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: custom monitor deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        "401":
+          description: unauthorized
+        "404":
+          description: custom monitor not found
+  /boards/{board_id}/incidents/{incident_id}/incident_updates:
+    post:
+      summary: Create an incident update
+      tags:
+        - Incident Updates
+      description: Create a new update for an existing incident. This allows you to
+        provide status updates as you work to resolve the incident.
+      operationId: createIncidentUpdate
+      parameters:
+        - name: board_id
+          in: path
+          description: Board public ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+        - name: incident_id
+          in: path
+          required: true
+          description: The public id of the incident to update
+          example: abc123def
+          schema:
+            type: string
+      responses:
+        "201":
+          description: incident update resolved sets status to up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/IncidentUpdate"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: incident not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "422":
+          description: invalid monitor status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                details:
+                  type: string
+                  description: Details of the incident update
+                  example: We have identified the root cause and are working on a fix.
+                phase:
+                  type: string
+                  description: The current phase of the incident. For maintenance, use
+                    "in_progress", "verifying", or "completed".
+                  example: investigating
+                  enum:
+                    - investigating
+                    - identified
+                    - monitoring
+                    - resolved
+                    - in_progress
+                    - verifying
+                    - completed
+                severity:
+                  type: string
+                  description: Severity level of the incident update
+                  example: major
+                  enum:
+                    - minor
+                    - major
+                    - maintenance
+                posted_at:
+                  type: string
+                  description: The time when the update was posted in ISO 8601 format
+                  example: 2023-10-01T12:30:00Z
+                notify_subscribers:
+                  type: boolean
+                  description: Whether to notify subscribers about this update
+                  example: true
+                monitors:
+                  type: array
+                  description: Array of monitor objects with id and status
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        description: Subscription public ID
+                      status:
+                        type: string
+                        enum:
+                          - up
+                          - down
+                          - warn
+                          - maintenance
+                        description: Status to set for this monitor
+                    required:
+                      - id
+                      - status
+                  example:
+                    - id: sadfkfefw
+                      status: down
+                    - id: dfeweqes
+                      status: warn
+              required:
+                - phase
+                - severity
+  /boards/{board_id}/incidents:
+    get:
+      summary: List incidents for a board
+      tags:
+        - Incidents
+      description: Get all incidents for a specific board
+      operationId: listIncidents
+      parameters:
+        - name: board_id
+          in: path
+          description: Board public ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: "Page number for pagination (default: 1)"
+          required: false
+          example: 1
+          schema:
+            type: integer
+        - name: per_page
+          in: query
+          description: "Number of items per page (default: 25, max: 100)"
+          required: false
+          example: 25
+          schema:
+            type: integer
+        - name: phase
+          in: query
+          description: "Filter by phase (comma-separated). Valid: investigating,
+            identified, monitoring, resolved, in_progress, verifying, completed,
+            scheduled"
+          required: false
+          schema:
+            type: string
+        - name: severity
+          in: query
+          description: "Filter by severity (comma-separated). Valid: major, minor,
+            maintenance"
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: incidents with pagination
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Incident"
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_pages:
+                        type: integer
+                      total_count:
+                        type: integer
+                      next_page:
+                        type: integer
+                        nullable: true
+                      prev_page:
+                        type: integer
+                        nullable: true
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: board not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+    post:
+      summary: Create an incident
+      tags:
+        - Incidents
+      description: "
+
+        \        Create a new incident or maintenance window to inform your
+
+        \        users about service disruptions. For operational incidents
+
+        \        use started_at and ended_at. For future maintenance use
+
+        \        will_start_at and will_end_at.
+
+        \      "
+      operationId: createIncident
+      parameters:
+        - name: board_id
+          in: path
+          description: Board public ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+      responses:
+        "201":
+          description: future maintenance created with will_start_at and will_end_at
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/Incident"
+        "422":
+          description: invalid monitor status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                incident:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: A short, descriptive name for the incident
+                      example: Database outage
+                    details:
+                      type: string
+                      description: Detailed information about the incident
+                      example: We are currently experiencing a database outage affecting all services.
+                        Our team is actively working to resolve the issue. We
+                        will provide updates as soon as possible.
+                    started_at:
+                      type: string
+                      description: The start time of the incident in ISO 8601 format
+                      example: 2023-10-01T12:00:00Z
+                    ended_at:
+                      type: string
+                      description: The end time of the incident in ISO 8601 format
+                      example: 2023-10-01T14:00:00Z
+                    will_start_at:
+                      type: string
+                      description: The scheduled start time for future maintenance in ISO 8601 format
+                      example: 2023-10-05T01:00:00Z
+                    will_end_at:
+                      type: string
+                      description: The scheduled end time for future maintenance in ISO 8601 format
+                      example: 2023-10-05T03:00:00Z
+                    phase:
+                      type: string
+                      description: The current phase of the incident. For operational incidents use
+                        "investigating", "identified", "monitoring", or
+                        "resolved". For maintenance use "in_progress",
+                        "verifying", or "completed". For future scheduled
+                        maintenance use "scheduled".
+                      example: investigating
+                      enum:
+                        - investigating
+                        - identified
+                        - monitoring
+                        - resolved
+                        - in_progress
+                        - verifying
+                        - completed
+                        - scheduled
+                    severity:
+                      type: string
+                      description: The severity level of the incident
+                      example: major
+                      enum:
+                        - minor
+                        - major
+                        - maintenance
+                    notify_subscribers:
+                      type: boolean
+                      description: Whether to notify subscribers about the incident
+                      example: true
+                    monitors:
+                      type: array
+                      description: Array of monitor objects with id and status
+                      items:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            description: Subscription public ID
+                          status:
+                            type: string
+                            enum:
+                              - up
+                              - down
+                              - warn
+                              - maintenance
+                            description: Status to set for this monitor
+                        required:
+                          - id
+                          - status
+                      example:
+                        - id: sadfkfefw
+                          status: down
+                        - id: dfeweqes
+                          status: down
+                  required:
+                    - name
+                    - phase
+                    - severity
+              required:
+                - incident
+  /boards/{board_id}/monitors/{monitor_id}/components:
+    get:
+      summary: List monitor components
+      tags:
+        - Boards
+      description: >
+        Retrieve active components for a specific monitor with status
+        information.
+
+
+        **Behavior:**
+
+        - **StatusPageService monitors with no component filters:** Returns all
+        components from the service (monitoring all components)
+
+        - **StatusPageService monitors with component filters:** Returns only
+        the filtered/subscribed components
+
+        - **Non-StatusPageService monitors (WebsiteMonitor, PingMonitor,
+        etc.):** Returns empty array
+
+
+        Components include current status.
+      operationId: listMonitorComponents
+      parameters:
+        - name: board_id
+          in: path
+          description: Public ID of the board
+          required: true
+          example: k2x9m7nPqR
+          schema:
+            type: string
+        - name: monitor_id
+          in: path
+          description: Public ID of the monitor
+          required: true
+          example: k2x9m7nPqR
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: "Page number for pagination (default: 1)"
+          required: false
+          example: 1
+          schema:
+            type: integer
+        - name: per_page
+          in: query
+          description: "Number of items per page (default: 25, max: 100)"
+          required: false
+          example: 25
+          schema:
+            type: integer
+        - name: status
+          in: query
+          description: 'Filter components by status. Use "affected" to get all non-up
+            components, or specify status values (comma-separated for multiple:
+            "down,warn")'
+          required: false
+          example: affected
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitor components found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MonitorComponent"
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_pages:
+                        type: integer
+                      total_count:
+                        type: integer
+                      next_page:
+                        type: integer
+                        nullable: true
+                      prev_page:
+                        type: integer
+                        nullable: true
+        "400":
+          description: invalid status value
+        "401":
+          description: unauthorized
+        "404":
+          description: monitor not found
+  /boards/{board_id}/monitor_groups:
+    get:
+      summary: List monitor groups for a board
+      tags:
+        - Monitor Groups
+      description: Get all monitor groups for a board. Monitor groups allow you to
+        organize monitors into logical categories for better organization and
+        display on status pages.
+      operationId: listMonitorGroups
+      parameters:
+        - name: board_id
+          in: path
+          description: Board ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: "Page number for pagination (default: 1)"
+          required: false
+          example: 1
+          schema:
+            type: integer
+        - name: per_page
+          in: query
+          description: "Number of items per page (default: 25, max: 100)"
+          required: false
+          example: 25
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: monitor groups found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MonitorGroup"
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_pages:
+                        type: integer
+                      total_count:
+                        type: integer
+                      next_page:
+                        type: integer
+                        nullable: true
+                      prev_page:
+                        type: integer
+                        nullable: true
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: board not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+    post:
+      summary: Create a monitor group
+      tags:
+        - Monitor Groups
+      description: Create a new monitor group for organizing monitors on a board.
+      operationId: createMonitorGroup
+      parameters:
+        - name: board_id
+          in: path
+          description: Board ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+      responses:
+        "201":
+          description: monitor group created without position
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/MonitorGroup"
+        "400":
+          description: missing required parameter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: board not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                monitor_group:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: Name of the monitor group
+                      example: Production Services
+                    position:
+                      type: integer
+                      description: Display position of the group (lower numbers appear first)
+                      example: 1
+                  required:
+                    - name
+              required:
+                - monitor_group
+  /boards/{board_id}/monitor_groups/{id}:
+    get:
+      summary: Get a monitor group
+      tags:
+        - Monitor Groups
+      description: Get details for a specific monitor group.
+      operationId: getMonitorGroup
+      parameters:
+        - name: board_id
+          in: path
+          description: Board ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Monitor group ID
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitor group found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/MonitorGroup"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: monitor group not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+    patch:
+      summary: Update a monitor group
+      tags:
+        - Monitor Groups
+      description: Update an existing monitor group.
+      operationId: updateMonitorGroup
+      parameters:
+        - name: board_id
+          in: path
+          description: Board ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Monitor group ID
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitor group updated with partial params
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/MonitorGroup"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: monitor group not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                monitor_group:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: Name of the monitor group
+                      example: Production Services
+                    position:
+                      type: integer
+                      description: Display position of the group (lower numbers appear first)
+                      example: 1
+              required:
+                - monitor_group
+    delete:
+      summary: Delete a monitor group
+      tags:
+        - Monitor Groups
+      description: Delete a monitor group. Any monitors assigned to this group will
+        become ungrouped.
+      operationId: deleteMonitorGroup
+      parameters:
+        - name: board_id
+          in: path
+          description: Board ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Monitor group ID
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitor group deleted and monitors ungrouped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: monitor group not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+  /monitoring_regions:
+    get:
+      summary: List monitoring regions
+      tags:
+        - Monitoring Regions
+      description: >-
+        Retrieve all available monitoring regions that StatusGator
+              uses to check website or ping monitors. Monitoring regions are geographic
+              locations with fixed IP addresses from which StatusGator monitors your
+              services. Use this API to retrieve the IP addresses, allowing you to
+              whitelist them in your firewall.
+      operationId: listMonitoringRegions
+      responses:
+        "200":
+          description: monitoring regions found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MonitoringRegion"
+        "401":
+          description: unauthorized
+  /boards/{board_id}/monitors:
+    get:
+      summary: Get board monitors
+      tags:
+        - Boards
+      description: Get all monitors for a specific board
+      operationId: getBoardMonitors
+      parameters:
+        - name: board_id
+          in: path
+          description: Board public ID
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: 'Filter monitors by status. Use "affected" to get all non-up
+            monitors, or specify status values (comma-separated for multiple:
+            "down,warn")'
+          required: false
+          example: affected
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitors with group information
+          content:
+            application/json:
+              schema:
+                type: object
+                additional_properties: true
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Monitor"
+        "400":
+          description: invalid status value
+        "401":
+          description: unauthorized
+        "404":
+          description: board not found
+  /boards/{board_id}/outage_reports:
+    post:
+      summary: Create an outage report
+      tags:
+        - Outage Reports
+      description: Submit an outage report for a monitor on your board.
+      operationId: createOutageReport
+      parameters:
+        - name: board_id
+          in: path
+          description: Board public ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+      responses:
+        "201":
+          description: triggers side effects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/OutageReport"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "403":
+          description: read-only token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: missing monitor_id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "422":
+          description: comment too long
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                outage_report:
+                  type: object
+                  properties:
+                    monitor_id:
+                      type: string
+                      description: Public ID of the monitor to report an outage for
+                      example: abc123def
+                    comment:
+                      type: string
+                      description: Description of the outage (max 300 characters)
+                      example: API returning 500s
+                    email:
+                      type: string
+                      description: Email address of the reporter
+                      example: reporter@example.com
+                    component_ids:
+                      type: array
+                      items:
+                        type: string
+                      description: Public IDs of affected components
+                      example:
+                        - comp1
+                        - comp2
+                  required:
+                    - monitor_id
+              required:
+                - outage_report
+  /boards/{board_id}/ping_monitors:
+    post:
+      summary: Create ping monitor
+      tags:
+        - Ping Monitors
+      description: >-
+        Create a new ping monitor for the specified board. Ping monitors
+                allow you to monitor the uptime and connectivity of hosts by sending ICMP ping
+                requests. You can configure various monitoring options including check intervals,
+                timeout settings, and notification preferences.
+      operationId: createPingMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+      responses:
+        "201":
+          description: ping monitor created with monitor group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/PingMonitor"
+        "401":
+          description: unauthorized
+        "403":
+          description: monitor limit reached
+        "422":
+          description: validation errors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Display name for the monitor
+                  example: My Ping Monitor
+                url:
+                  type: string
+                  description: Hostname or IP address to monitor
+                  example: example.com
+                description:
+                  type: string
+                  description: Optional description for the monitor
+                  example: Production server monitoring
+                check_interval:
+                  type: integer
+                  description: Check interval in minutes (1-5)
+                  example: 5
+                  enum:
+                    - 1
+                    - 2
+                    - 3
+                    - 4
+                    - 5
+                check_regions:
+                  type: array
+                  items:
+                    type: string
+                  description: Monitoring regions
+                  example:
+                    - us-east
+                    - us-west
+                alert_any_location:
+                  type: boolean
+                  description: Alert if any location down vs all locations down
+                  example: false
+                timeout:
+                  type: integer
+                  description: Request timeout in seconds
+                  example: 30
+                  enum:
+                    - 5
+                    - 15
+                    - 30
+                    - 60
+                retry_count:
+                  type: integer
+                  description: Number of retries before alerting
+                  example: 0
+                  enum:
+                    - 0
+                    - 1
+                    - 2
+                    - 3
+                monitor_group_id:
+                  type: string
+                  description: ID of the monitor group to assign this monitor to
+                  example: x5y2m8nQrS
+                  nullable: true
+              required:
+                - name
+                - url
+  /boards/{board_id}/ping_monitors/{id}:
+    patch:
+      summary: Update ping monitor
+      tags:
+        - Ping Monitors
+      description: >-
+        Update an existing ping monitor. You can modify any of the
+                monitoring configuration options including check intervals, timeout settings,
+                and notification preferences.
+      operationId: updatePingMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the ping monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: remove monitor from group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/PingMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: ping monitor not found
+        "422":
+          description: validation errors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Display name for the monitor (cannot be empty if provided)
+                  example: Updated Ping Monitor
+                  minLength: 1
+                url:
+                  type: string
+                  description: Hostname or IP address to monitor (cannot be empty if provided)
+                  example: updated-example.com
+                  minLength: 1
+                description:
+                  type: string
+                  description: Optional description for the monitor
+                  example: Updated production server monitoring
+                check_interval:
+                  type: integer
+                  description: Check interval in minutes (1-5)
+                  example: 3
+                  enum:
+                    - 1
+                    - 2
+                    - 3
+                    - 4
+                    - 5
+                check_regions:
+                  type: array
+                  items:
+                    type: string
+                  description: Monitoring regions
+                  example:
+                    - us-east
+                    - eu-west
+                alert_any_location:
+                  type: boolean
+                  description: Alert if any location down vs all locations down
+                  example: true
+                timeout:
+                  type: integer
+                  description: Request timeout in seconds
+                  example: 60
+                  enum:
+                    - 5
+                    - 15
+                    - 30
+                    - 60
+                retry_count:
+                  type: integer
+                  description: Number of retries before alerting
+                  example: 2
+                  enum:
+                    - 0
+                    - 1
+                    - 2
+                    - 3
+                monitor_group_id:
+                  type: string
+                  description: ID of the monitor group to assign this monitor to (set to null to
+                    remove from group)
+                  example: x5y2m8nQrS
+                  nullable: true
+    delete:
+      summary: Delete ping monitor
+      tags:
+        - Ping Monitors
+      description: Delete a ping monitor from the board.
+      operationId: deletePingMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the ping monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ping monitor deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        "401":
+          description: unauthorized
+        "404":
+          description: monitor not found
+  /boards/{board_id}/ping_monitors/{id}/pause:
+    post:
+      summary: Pause ping monitor
+      tags:
+        - Ping Monitors
+      description: Pause an active ping monitor. When paused, the monitor will not be
+        checked.
+      operationId: pausePingMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the ping monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitor paused successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/PingMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: monitor not found
+  /boards/{board_id}/ping_monitors/{id}/unpause:
+    post:
+      summary: Unpause ping monitor
+      tags:
+        - Ping Monitors
+      description: Resume a paused ping monitor. The monitor will begin checking again.
+      operationId: unpausePingMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the ping monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitor unpaused successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/PingMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: monitor not found
+  /ping:
+    get:
+      summary: Ping endpoint
+      tags:
+        - Ping
+      description: Simple authentication check endpoint. Returns a success message if
+        the user is properly authenticated.
+      operationId: ping
+      responses:
+        "200":
+          description: ping successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/PingResponse"
+        "401":
+          description: unauthorized
+  /boards/{board_id}/service_monitors:
+    post:
+      summary: Create service monitor
+      tags:
+        - Service Monitors
+      description: >-
+        Create a new service monitor for the specified board. Service monitors
+                allow you to subscribe to status page services and track their status on your board.
+      operationId: createServiceMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+      responses:
+        "201":
+          description: service monitor created with custom name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/ServiceMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: missing service_id parameter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                service_id:
+                  type: string
+                  description: Public ID of the status page service to monitor
+                  example: abc123xyz
+                name:
+                  type: string
+                  description: Optional custom name for the monitor
+                  example: GitHub Status
+                description:
+                  type: string
+                  description: Optional description for the monitor
+                  example: Monitor GitHub status page
+                monitor_group_id:
+                  type: string
+                  description: ID of the monitor group to assign this monitor to
+                  example: x5y2m8nQrS
+                  nullable: true
+              required:
+                - service_id
+  /boards/{board_id}/service_monitors/{id}:
+    patch:
+      summary: Update service monitor
+      tags:
+        - Service Monitors
+      description: Update a service monitor. You can update the name, description, and
+        monitor group assignment.
+      operationId: updateServiceMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the service monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: service monitor removed from group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/ServiceMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: service monitor not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Custom name for the monitor
+                  example: GitHub Status
+                description:
+                  type: string
+                  description: Description for the monitor
+                  example: Updated description
+                monitor_group_id:
+                  type: string
+                  description: ID of the monitor group to assign this monitor to (set to null to
+                    remove from group)
+                  example: x5y2m8nQrS
+                  nullable: true
+    delete:
+      summary: Delete service monitor
+      tags:
+        - Service Monitors
+      description: Delete a service monitor from the board.
+      operationId: deleteServiceMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the service monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: service monitor deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        "401":
+          description: unauthorized
+        "404":
+          description: service monitor not found
+  /services:
+    get:
+      summary: List services
+      tags:
+        - Services
+      description: >-
+        Access to this API endpoint is restricted to customers with
+              Firehose. integration access. Retrieve all available services that
+              StatusGator monitors. Services represent external platforms and tools
+              (like GitHub, AWS, Slack, etc.) that StatusGator tracks for status
+              updates. StatusGator checks these services every 5 minutes and provides
+              real-time status information.
+      operationId: listServices
+      parameters:
+        - name: page
+          in: query
+          description: "Page number for pagination (default: 1)"
+          required: false
+          example: 1
+          schema:
+            type: integer
+        - name: per_page
+          in: query
+          description: "Number of items per page (default: 25, max: 100)"
+          required: false
+          example: 25
+          schema:
+            type: integer
+        - name: created_after
+          in: query
+          format: date-time
+          description: Filter services created after this timestamp (ISO 8601 format)
+          required: false
+          example: 2025-09-01T00:00:00Z
+          schema:
+            type: string
+      responses:
+        "200":
+          description: services filtered by created_after
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Service"
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_pages:
+                        type: integer
+                      total_count:
+                        type: integer
+                      next_page:
+                        type: integer
+                        nullable: true
+                      prev_page:
+                        type: integer
+                        nullable: true
+        "400":
+          description: bad request - invalid created_after format
+        "401":
+          description: unauthorized
+        "403":
+          description: forbidden - no Firehose access
+  /services/search:
+    get:
+      summary: Search services
+      tags:
+        - Services
+      description: |-
+        Search for services by text query. Returns the 25 best matching results.
+              If no query is provided, returns the first 25 services found.
+      operationId: searchServices
+      parameters:
+        - name: q
+          in: query
+          description: Search query string (max 500 characters)
+          required: false
+          example: github
+          schema:
+            type: string
+      responses:
+        "200":
+          description: search without query returns default results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Service"
+        "401":
+          description: unauthorized
+  /boards/{board_id}/status_page_subscribers:
+    get:
+      summary: List status page subscribers for a board
+      tags:
+        - Status Page Subscribers
+      description: Get all confirmed email subscribers for a board's status page
+      operationId: listStatusPageSubscribers
+      parameters:
+        - name: board_id
+          in: path
+          description: Board ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: "Page number for pagination (default: 1)"
+          required: false
+          example: 1
+          schema:
+            type: integer
+        - name: per_page
+          in: query
+          description: "Number of items per page (default: 25, max: 100)"
+          required: false
+          example: 25
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: subscribers found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StatusPageSubscriber"
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_pages:
+                        type: integer
+                      total_count:
+                        type: integer
+                      next_page:
+                        type: integer
+                        nullable: true
+                      prev_page:
+                        type: integer
+                        nullable: true
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: status page not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+    post:
+      summary: Create a status page subscriber
+      tags:
+        - Status Page Subscribers
+      description: Add a new subscriber to the board's status page. Optionally specify
+        monitor IDs to subscribe to specific monitors, or leave empty to
+        subscribe to all monitors. By default, a confirmation email will be sent
+        unless skip_confirmation is true.
+      operationId: createStatusPageSubscriber
+      parameters:
+        - name: board_id
+          in: path
+          description: Board ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+      responses:
+        "200":
+          description: subscriber already exists
+        "201":
+          description: subscriber created with specific monitors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/StatusPageSubscriber"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: status page not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "422":
+          description: invalid email
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subscriber:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+                      description: Email address of the subscriber
+                      example: user@example.com
+                    skip_confirmation:
+                      type: boolean
+                      description: Skip email confirmation and immediately confirm the subscription
+                      example: false
+                    monitor_ids:
+                      type: array
+                      description: Array of monitor IDs to subscribe to. Leave empty or omit to
+                        subscribe to all monitors.
+                      items:
+                        type: string
+                      example:
+                        - m2z5x3nOJa
+                        - k9p8q7rStU
+                  required:
+                    - email
+              required:
+                - subscriber
+    delete:
+      summary: Remove a status page subscriber
+      tags:
+        - Status Page Subscribers
+      description: Remove a subscriber from the board's status page by providing
+        either id or email in the request body
+      operationId: deleteStatusPageSubscriber
+      parameters:
+        - name: board_id
+          in: path
+          description: Board ID
+          required: true
+          example: lh16iGAYKI
+          schema:
+            type: string
+      responses:
+        "200":
+          description: subscriber deleted by email case insensitive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          description: subscriber not found by email
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "422":
+          description: missing id or email parameter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Subscriber ID (provide either id or email, not both)
+                  example: m2z5x3nOJa
+                email:
+                  type: string
+                  description: Subscriber email address (case insensitive, provide either id or
+                    email, not both)
+                  example: user@example.com
+  /users:
+    get:
+      summary: List users
+      tags:
+        - Users
+      description: >-
+        Retrieve all users belonging to your organization. Users are
+              members of your organization who can access StatusGator dashboards,
+              configure monitoring settings, and receive notifications. Users can have
+              either the role of org_admin or editor.
+      operationId: listUsers
+      responses:
+        "200":
+          description: users found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/User"
+        "401":
+          description: unauthorized
+  /boards/{board_id}/website_monitors:
+    post:
+      summary: Create website monitor
+      tags:
+        - Website Monitors
+      description: >-
+        Create a new website monitor for the specified board. Website monitors
+                allow you to monitor the uptime and performance of websites and APIs. You can
+                configure various monitoring options including check intervals, content monitoring,
+                HTTP methods, and notification preferences.
+      operationId: createWebsiteMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+      responses:
+        "201":
+          description: website monitor created with monitor group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/WebsiteMonitor"
+        "401":
+          description: unauthorized
+        "403":
+          description: monitor limit reached
+        "422":
+          description: validation errors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Display name for the monitor
+                  example: My Website Monitor
+                url:
+                  type: string
+                  description: Website URL to monitor
+                  example: https://example.com
+                description:
+                  type: string
+                  description: Optional description for the monitor
+                  example: Production API monitoring
+                check_interval:
+                  type: integer
+                  description: Check interval in minutes (1-5)
+                  example: 5
+                  enum:
+                    - 1
+                    - 2
+                    - 3
+                    - 4
+                    - 5
+                check_content:
+                  type: boolean
+                  description: Monitor content vs uptime
+                  example: false
+                content:
+                  type: string
+                  description: Text content to search for (required if check_content=true)
+                  example: "API Status: OK"
+                alert_content_found:
+                  type: boolean
+                  description: Alert if content found vs not found
+                  example: false
+                check_regions:
+                  type: array
+                  items:
+                    type: string
+                  description: Monitoring regions
+                  example:
+                    - us-east
+                    - us-west
+                alert_any_location:
+                  type: boolean
+                  description: Alert if any location down vs all locations down
+                  example: false
+                http_method:
+                  type: string
+                  description: HTTP method to use
+                  example: GET
+                  enum:
+                    - GET
+                    - POST
+                    - PUT
+                    - PATCH
+                    - DELETE
+                response_codes:
+                  type: string
+                  description: Expected HTTP response code
+                  example: "200"
+                follow_redirects:
+                  type: boolean
+                  description: Follow HTTP redirects
+                  example: true
+                timeout:
+                  type: integer
+                  description: Request timeout in seconds
+                  example: 30
+                  enum:
+                    - 5
+                    - 15
+                    - 30
+                    - 60
+                retry_count:
+                  type: integer
+                  description: Number of retries before alerting
+                  example: 0
+                  enum:
+                    - 0
+                    - 1
+                    - 2
+                    - 3
+                request_body:
+                  type: string
+                  description: Request body for POST/PUT requests
+                  example: '{"test": true}'
+                request_headers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key:
+                        type: string
+                        example: Authorization
+                      value:
+                        type: string
+                        example: Bearer token
+                  description: HTTP headers to include with requests
+                http_auth_username:
+                  type: string
+                  description: Basic authentication username
+                  example: username
+                http_auth_password:
+                  type: string
+                  description: Basic authentication password
+                  example: password
+                monitor_group_id:
+                  type: string
+                  description: ID of the monitor group to assign this monitor to
+                  example: x5y2m8nQrS
+                  nullable: true
+              required:
+                - name
+                - url
+  /boards/{board_id}/website_monitors/{id}:
+    patch:
+      summary: Update website monitor
+      tags:
+        - Website Monitors
+      description: >-
+        Update an existing website monitor. You can modify any of the
+                monitoring configuration options including check intervals, content monitoring,
+                HTTP methods, and notification preferences.
+      operationId: updateWebsiteMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the website monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: update with monitor group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/WebsiteMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: website monitor not found
+        "422":
+          description: validation errors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Display name for the monitor (cannot be empty if provided)
+                  example: Updated Website Monitor
+                  minLength: 1
+                url:
+                  type: string
+                  description: Website URL to monitor (cannot be empty if provided)
+                  example: https://updated-example.com
+                  minLength: 1
+                description:
+                  type: string
+                  description: Optional description for the monitor
+                  example: Updated production API monitoring
+                check_interval:
+                  type: integer
+                  description: Check interval in minutes (1-5)
+                  example: 3
+                  enum:
+                    - 1
+                    - 2
+                    - 3
+                    - 4
+                    - 5
+                check_content:
+                  type: boolean
+                  description: Monitor content vs uptime
+                  example: true
+                content:
+                  type: string
+                  description: Text content to search for
+                  example: Service Healthy
+                alert_content_found:
+                  type: boolean
+                  description: Alert if content found vs not found
+                  example: true
+                check_regions:
+                  type: array
+                  items:
+                    type: string
+                  description: Monitoring regions
+                  example:
+                    - us-east
+                    - eu-west
+                alert_any_location:
+                  type: boolean
+                  description: Alert if any location down vs all locations down
+                  example: true
+                http_method:
+                  type: string
+                  description: HTTP method to use
+                  example: POST
+                  enum:
+                    - GET
+                    - POST
+                    - PUT
+                    - PATCH
+                    - DELETE
+                response_codes:
+                  type: string
+                  description: Expected HTTP response code
+                  example: "201"
+                follow_redirects:
+                  type: boolean
+                  description: Follow HTTP redirects
+                  example: false
+                timeout:
+                  type: integer
+                  description: Request timeout in seconds
+                  example: 60
+                  enum:
+                    - 5
+                    - 15
+                    - 30
+                    - 60
+                retry_count:
+                  type: integer
+                  description: Number of retries before alerting
+                  example: 2
+                  enum:
+                    - 0
+                    - 1
+                    - 2
+                    - 3
+                request_body:
+                  type: string
+                  description: Request body for POST/PUT requests
+                  example: '{"updated": true}'
+                request_headers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key:
+                        type: string
+                        example: X-API-Key
+                      value:
+                        type: string
+                        example: secret123
+                  description: HTTP headers to include with requests
+                http_auth_username:
+                  type: string
+                  description: Basic authentication username
+                  example: newusername
+                http_auth_password:
+                  type: string
+                  description: Basic authentication password
+                  example: newpassword
+                monitor_group_id:
+                  type: string
+                  description: ID of the monitor group to assign this monitor to (set to null to
+                    remove from group)
+                  example: x5y2m8nQrS
+                  nullable: true
+    delete:
+      summary: Delete website monitor
+      tags:
+        - Website Monitors
+      description: Delete a website monitor from the board.
+      operationId: deleteWebsiteMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the website monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: website monitor deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        "401":
+          description: unauthorized
+        "404":
+          description: monitor not found
+  /boards/{board_id}/website_monitors/{id}/pause:
+    post:
+      summary: Pause website monitor
+      tags:
+        - Website Monitors
+      description: Pause an active website monitor. When paused, the monitor will not
+        be checked.
+      operationId: pauseWebsiteMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the website monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitor paused successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/WebsiteMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: monitor not found
+  /boards/{board_id}/website_monitors/{id}/unpause:
+    post:
+      summary: Unpause website monitor
+      tags:
+        - Website Monitors
+      description: Resume a paused website monitor. The monitor will begin checking again.
+      operationId: unpauseWebsiteMonitor
+      parameters:
+        - name: board_id
+          in: path
+          description: Unique ID of the board
+          required: true
+          example: m2z5x3nOJa
+          schema:
+            type: string
+        - name: id
+          in: path
+          description: Unique ID of the website monitor
+          required: true
+          example: x5y2m8nQrS
+          schema:
+            type: string
+      responses:
+        "200":
+          description: monitor unpaused successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: "#/components/schemas/WebsiteMonitor"
+        "401":
+          description: unauthorized
+        "404":
+          description: monitor not found
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    MonitoringRegion:
+      type: object
+      properties:
+        region_id:
+          description: Unique ID of the monitoring region
+          type: string
+          example: us-east
+        dns_name:
+          description: DNS name of the monitoring region
+          type: string
+          example: monitor-us-east.statusgator.com
+        ip_address:
+          description: IP address of the monitoring region
+          type: string
+          example: 52.1.2.3
+        provider:
+          description: Cloud provider of the monitoring region
+          type: string
+          example: AWS
+        code:
+          description: Code of the monitoring region
+          type: string
+          example: us-east-1
+        name:
+          description: Name of the monitoring region
+          type: string
+          example: US East
+        desc:
+          description: Description of the monitoring region
+          type: string
+          example: US East (N. Virginia)
+        icon_url:
+          description: Icon URL of the monitoring region
+          type: string
+          example: https://statusgator.com/assets/external_logos/aws.png
+        color:
+          description: Color associated with the monitoring region
+          type: string
+          example: "#1a5db2"
+    Board:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the board
+          type: string
+          example: m2z5x3nOJa
+        name:
+          description: Name of board
+          type: string
+          example: Cloud Services
+        public_token:
+          description: Public token for the board
+          type: string
+          example: abc123def456
+        created_at:
+          description: ISO 8601 timestamp of when the board was created
+          type: string
+          example: 2025-09-12T12:35:54Z
+        updated_at:
+          description: ISO 8601 timestamp of when the board was last updated
+          type: string
+          example: 2025-09-12T12:40:54Z
+    Monitor:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the monitor
+          type: string
+          example: uVLl2YK1rn
+        checked_at:
+          description: Last time the service status was checked
+          type: string
+          format: date_time
+          example: 2025-09-05T23:05:23.463Z
+        created_at:
+          description: When this monitor was created
+          type: string
+          format: date_time
+          example: 2023-07-06T14:18:35.607Z
+        updated_at:
+          description: When this monitor was last edited
+          type: string
+          format: date_time
+          example: 2023-07-06T14:18:35.607Z
+        filtered_status:
+          description: The status of the monitor after filtering through component filters
+          type: string
+          enum:
+            - up
+            - down
+            - warn
+            - maintenance
+          example: warn
+        description:
+          description: An optional description you provide for the monitor when creating
+          type: string
+          nullable: true
+          example: null
+        unfiltered_status:
+          description: The original status of the monitor before applying any filters
+          type: string
+          enum:
+            - up
+            - down
+            - warn
+            - maintenance
+          example: warn
+        last_message:
+          description: The last incident message or summary we collected, not always present
+          type: string
+          nullable: true
+          example: CGK (Jakarta) on 2025-09-05
+        last_details:
+          description: The last incident description we collected, not always present
+          type: string
+          nullable: true
+          example: In progress - Scheduled maintenance is currently in progress. We will
+            provide updates as necessary. Sep 05, 2025 - 22:00 UTC
+        overridden_message:
+          description: If you have manually overridden the status of the monitor, the
+            message you specified
+          type: string
+          nullable: true
+          example: null
+        overridden_status:
+          description: Manually overridden status
+          type: string
+          enum:
+            - up
+            - down
+            - warn
+            - maintenance
+          nullable: true
+          example: null
+        overrides_locked_at:
+          description: If you locked the override, when you did so
+          type: string
+          format: date_time
+          nullable: true
+          example: null
+        paused_at:
+          description: If the monitor is paused (applies only to ping/website monitor)
+          type: string
+          format: date_time
+          nullable: true
+          example: null
+        filter_count:
+          description: If you have components filtered here, how many components you monitor
+          type: integer
+          example: 0
+        icon_url:
+          description: A URL to the icon, either the original icon or one you've uploaded
+            to customize
+          type: string
+          example: https://favicons-dev.statusgator.com/FiM8Ile0FV3wLjxF.jpg
+        position:
+          description: If you have manually ordered your monitors, a numerical order
+          type: integer
+          example: 3
+        monitor_type:
+          description: The kind of monitor it is
+          type: string
+          enum:
+            - ServiceMonitor
+            - WebsiteMonitor
+            - PingMonitor
+            - CustomMonitor
+          example: ServiceMonitor
+        early_warning_signal:
+          description: If we have detected an ongoing, unacknowledged outage
+          type: boolean
+          example: false
+        display_name:
+          description: The name of the monitor, either the default or your custom name
+          type: string
+          example: Cloudflare
+        service:
+          description: This section only shown for type ServiceMonitor
+          type: object
+          properties:
+            id:
+              description: Unique ID of the service
+              type: string
+              example: PQNMcnNFWw
+            name:
+              description: Name of the service
+              type: string
+              example: Cloudflare
+            slug:
+              description: URL friendly short name
+              type: string
+              example: cloudflare
+            home_page_url:
+              description: Home page URL
+              type: string
+              example: http://www.cloudflare.com
+            status_page_url:
+              description: Official status page URL, if applicable
+              type: string
+              example: https://www.cloudflarestatus.com
+            icon_url:
+              description: URL to the default icon for the service
+              type: string
+              example: https://favicons-dev.statusgator.com/FiM8Ile0FV3wLjxF.jpg
+            landing_page_url:
+              description: Our unofficial public status page for the service
+              type: string
+              example: https://studio.colinabartlett.com:3004/services/cloudflare
+            official:
+              description: Whether there is an official status page for the service
+              type: boolean
+              example: true
+            rating:
+              description: Status page rating for the service, only present for official
+                services with tracking data
+              type: object
+              nullable: true
+              properties:
+                letter_grade:
+                  description: Letter grade rating (A, B, C, D, or F)
+                  type: string
+                  example: A
+                description:
+                  description: Human-readable description of the rating
+                  type: string
+                  example: Excellent
+                average_delay_minutes:
+                  description: Average status page acknowledgement delay in minutes
+                  type: number
+                  example: 8.3
+        group:
+          description: Monitor group this monitor belongs to, if any
+          type: object
+          nullable: true
+          properties:
+            id:
+              description: Unique ID for the monitor group
+              type: string
+              example: k2x9m7nPqR
+            name:
+              description: Name of the monitor group
+              type: string
+              example: Infrastructure
+            position:
+              description: Sort order of the group
+              type: integer
+              example: 1
+    MonitorGroup:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the monitor group
+          type: string
+          example: x5y2m8nQrS
+        name:
+          description: Name of the monitor group
+          type: string
+          example: Production Services
+        position:
+          description: Display position of the group (lower numbers appear first)
+          type: integer
+          example: 1
+          nullable: true
+        created_at:
+          description: ISO 8601 timestamp of when the group was created
+          type: string
+          example: 2025-09-19T09:00:00Z
+        updated_at:
+          description: ISO 8601 timestamp of when the group was last updated
+          type: string
+          example: 2025-09-19T10:30:00Z
+    User:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the user
+          type: string
+          example: k2x9m7nPqR
+        email:
+          description: Email address of the user
+          type: string
+          example: user@example.com
+        first_name:
+          description: First name of the user
+          type: string
+          example: John
+        last_name:
+          description: Last name of the user
+          type: string
+          example: Doe
+        company:
+          description: Company name
+          type: string
+          example: Example Corp
+        job_title:
+          description: Job title of the user
+          type: string
+          nullable: true
+          example: DevOps Engineer
+        role:
+          description: Role of the user (org_admin or editor)
+          type: string
+          example: editor
+        created_at:
+          description: ISO 8601 timestamp of when the user was created
+          type: string
+          example: 2025-01-15T10:30:00Z
+        last_sign_in_at:
+          description: ISO 8601 timestamp of when the user last signed in
+          type: string
+          nullable: true
+          example: 2025-01-15T10:30:00Z
+        confirmed:
+          description: Whether the user has confirmed their email address
+          type: boolean
+          example: true
+        two_factor_enabled:
+          description: Whether the user has two-factor authentication enabled
+          type: boolean
+          example: false
+    Service:
+      type: object
+      properties:
+        id:
+          description: Unique ID of the service
+          type: string
+          example: k2x9m7nPqR
+        name:
+          description: Name of the service
+          type: string
+          example: GitHub
+        public_url:
+          description: URL to the public status page for this service
+          type: string
+          example: https://www.githubstatus.com/
+        home_page_url:
+          description: URL to the service home page
+          type: string
+          example: https://github.com
+        description:
+          description: Description of the service
+          type: string
+          nullable: true
+          example: GitHub is a web-based version control and collaboration platform for
+            software developers.
+        created_at:
+          description: ISO 8601 timestamp of when the service was created
+          type: string
+          example: 2025-09-12T12:35:54Z
+        updated_at:
+          description: ISO 8601 timestamp of when the service was last updated
+          type: string
+          example: 2025-09-12T12:40:54Z
+        icon_url:
+          description: URL to the service icon
+          type: string
+          example: https://statusgator.com/favicons/github.png
+        landing_page_url:
+          description: URL to the StatusGator landing page for this service
+          type: string
+          example: https://statusgator.com/services/github
+        category_names:
+          description: Array of category names this service belongs to
+          type: array
+          items:
+            type: string
+          example:
+            - Development Tools
+            - Version Control
+        official:
+          description: Whether this is an official StatusGator service
+          type: boolean
+          example: true
+        rating:
+          description: Status page rating for the service, only present for official
+            services with tracking data
+          type: object
+          nullable: true
+          properties:
+            letter_grade:
+              description: Letter grade rating (A, B, C, D, or F)
+              type: string
+              example: A
+            description:
+              description: Human-readable description of the rating
+              type: string
+              example: Excellent
+            average_delay_minutes:
+              description: Average status page acknowledgement delay in minutes
+              type: number
+              example: 8.3
+    Component:
+      type: object
+      properties:
+        id:
+          description: Unique ID of the component
+          type: string
+          example: k2x9m7nPqR
+        name:
+          description: Name of the component
+          type: string
+          example: API
+        group_name:
+          description: Group name for the component
+          type: string
+          nullable: true
+          example: Core Services
+        service_id:
+          description: Public ID of the service this component belongs to
+          type: string
+          nullable: true
+          example: k2x9m7nPqR
+        created_at:
+          description: ISO 8601 timestamp of when the component was created
+          type: string
+          example: 2025-09-12T12:35:54Z
+        updated_at:
+          description: ISO 8601 timestamp of when the component was last updated
+          type: string
+          example: 2025-09-12T12:40:54Z
+    MonitorComponent:
+      type: object
+      properties:
+        id:
+          description: Unique ID of the component
+          type: string
+          example: k2x9m7nPqR
+        name:
+          description: Name of the component
+          type: string
+          example: API
+        group_name:
+          description: Group name for the component
+          type: string
+          nullable: true
+          example: Core Services
+        service_id:
+          description: Public ID of the service this component belongs to
+          type: string
+          nullable: true
+          example: k2x9m7nPqR
+        status:
+          description: Current status of the component
+          type: string
+          nullable: true
+          enum:
+            - up
+            - down
+            - warn
+            - maintenance
+            - unknown
+          example: up
+        created_at:
+          description: ISO 8601 timestamp of when the component was created
+          type: string
+          example: 2025-09-12T12:35:54Z
+        updated_at:
+          description: ISO 8601 timestamp of when the component was last updated
+          type: string
+          example: 2025-09-12T12:40:54Z
+    BoardRow:
+      type: object
+      properties:
+        monitor_id:
+          description: Internal monitor ID
+          type: string
+          example: L1hZpHOn63
+        name:
+          description: Monitor name
+          type: string
+          example: Zoom
+        icon_url:
+          description: Icon URL
+          type: string
+          example: zoom.png
+        status:
+          description: Status during the event
+          type: string
+          enum:
+            - up
+            - down
+            - maintenance
+            - unknown
+            - warn
+          example: down
+        started_at:
+          description: Event start time (UTC)
+          type: string
+          example: 2025-09-12T12:00:00Z
+        ended_at:
+          description: Event end time (UTC)
+          type: string
+          nullable: true
+          example: 2025-09-12T13:00:00Z
+        duration:
+          description: Event duration in minutes
+          type: number
+          nullable: true
+          example: 60
+        message:
+          description: Short message for the event
+          type: string
+          nullable: true
+          example: Outage in progress
+        details:
+          description: Detailed message for the event
+          type: string
+          nullable: true
+          example: We are investigating
+        early_warning_signal:
+          description: Early Warning Signal indicator
+          type: boolean
+          example: false
+    PingResponse:
+      type: object
+      properties:
+        message:
+          description: Simple ping response message
+          type: string
+          example: pong
+    WebsiteMonitor:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the website monitor
+          type: string
+          example: x5y2m8nQrS
+        name:
+          description: Display name of the monitor
+          type: string
+          example: My Website Monitor
+        url:
+          description: Website URL being monitored
+          type: string
+          example: https://example.com
+        description:
+          description: Optional description for the monitor
+          type: string
+          example: Production API monitoring
+          nullable: true
+        monitor_group_id:
+          description: ID of the monitor group this monitor belongs to
+          type: string
+          example: x5y2m8nQrS
+          nullable: true
+        status:
+          description: Current status of the monitor
+          type: string
+          example: up
+          enum:
+            - up
+            - down
+            - warn
+            - unknown
+        last_checked_at:
+          description: ISO 8601 timestamp of when the monitor was last checked
+          type: string
+          example: 2025-09-19T10:30:00Z
+          nullable: true
+        created_at:
+          description: ISO 8601 timestamp of when the monitor was created
+          type: string
+          example: 2025-09-19T09:00:00Z
+        updated_at:
+          description: ISO 8601 timestamp of when the monitor was last updated
+          type: string
+          example: 2025-09-19T10:30:00Z
+        check_interval:
+          description: Check interval in minutes
+          type: integer
+          example: 5
+          enum:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+        check_content:
+          description: Whether to monitor content vs uptime
+          type: boolean
+          example: false
+        content:
+          description: Text content to search for (required if check_content=true)
+          type: string
+          example: "API Status: OK"
+          nullable: true
+        alert_content_found:
+          description: Alert if content found vs not found
+          type: boolean
+          example: false
+        check_regions:
+          description: Array of monitoring regions
+          type: array
+          items:
+            type: string
+          example:
+            - us-east
+            - us-west
+        alert_any_location:
+          description: Alert if any location down vs all locations down
+          type: boolean
+          example: false
+        http_method:
+          description: HTTP method to use for monitoring
+          type: string
+          example: GET
+          enum:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+        response_codes:
+          description: Expected HTTP response code
+          type: string
+          example: "200"
+          nullable: true
+        follow_redirects:
+          description: Whether to follow HTTP redirects
+          type: boolean
+          example: true
+        timeout:
+          description: Request timeout in seconds
+          type: integer
+          example: 30
+          enum:
+            - 5
+            - 15
+            - 30
+            - 60
+        retry_count:
+          description: Number of retries before alerting
+          type: integer
+          example: 0
+          enum:
+            - 0
+            - 1
+            - 2
+            - 3
+        request_body:
+          description: Request body for POST/PUT requests
+          type: string
+          example: '{"test": true}'
+          nullable: true
+        request_headers:
+          description: HTTP headers to include with requests
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                example: Authorization
+              value:
+                type: string
+                example: Bearer token
+        http_auth_username:
+          description: Basic authentication username
+          type: string
+          example: username
+          nullable: true
+        http_auth_password:
+          description: Basic authentication password
+          type: string
+          example: password
+          nullable: true
+        paused_at:
+          description: ISO 8601 timestamp of when the monitor was paused, null if active
+          type: string
+          example: null
+          nullable: true
+    PingMonitor:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the ping monitor
+          type: string
+          example: x5y2m8nQrS
+        name:
+          description: Display name of the monitor
+          type: string
+          example: My Ping Monitor
+        url:
+          description: Hostname or IP address being monitored
+          type: string
+          example: example.com
+        description:
+          description: Optional description for the monitor
+          type: string
+          example: Production server monitoring
+          nullable: true
+        monitor_group_id:
+          description: ID of the monitor group this monitor belongs to
+          type: string
+          example: x5y2m8nQrS
+          nullable: true
+        status:
+          description: Current status of the monitor
+          type: string
+          example: up
+          enum:
+            - up
+            - down
+            - warn
+            - unknown
+        last_checked_at:
+          description: ISO 8601 timestamp of when the monitor was last checked
+          type: string
+          example: 2025-09-19T10:30:00Z
+          nullable: true
+        created_at:
+          description: ISO 8601 timestamp of when the monitor was created
+          type: string
+          example: 2025-09-19T09:00:00Z
+        updated_at:
+          description: ISO 8601 timestamp of when the monitor was last updated
+          type: string
+          example: 2025-09-19T10:30:00Z
+        check_interval:
+          description: Check interval in minutes
+          type: integer
+          example: 5
+          enum:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+        check_regions:
+          description: Array of monitoring regions
+          type: array
+          items:
+            type: string
+          example:
+            - us-east
+            - us-west
+        alert_any_location:
+          description: Alert if any location down vs all locations down
+          type: boolean
+          example: false
+        timeout:
+          description: Request timeout in seconds
+          type: integer
+          example: 30
+          enum:
+            - 5
+            - 15
+            - 30
+            - 60
+        retry_count:
+          description: Number of retries before alerting
+          type: integer
+          example: 0
+          enum:
+            - 0
+            - 1
+            - 2
+            - 3
+        paused_at:
+          description: ISO 8601 timestamp of when the monitor was paused, null if active
+          type: string
+          example: null
+          nullable: true
+    CustomMonitor:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the custom monitor
+          type: string
+          example: x5y2m8nQrS
+        name:
+          description: Display name of the monitor
+          type: string
+          example: My Custom Monitor
+        description:
+          description: Description for the monitor
+          type: string
+          example: Custom service we manually update
+          nullable: true
+        monitor_group_id:
+          description: ID of the monitor group this monitor belongs to
+          type: string
+          example: x5y2m8nQrS
+          nullable: true
+        status:
+          description: Current status of the monitor
+          type: string
+          example: up
+          enum:
+            - up
+            - down
+            - warn
+            - maintenance
+        created_at:
+          description: ISO 8601 timestamp of when the monitor was created
+          type: string
+          example: 2025-09-19T09:00:00Z
+        updated_at:
+          description: ISO 8601 timestamp of when the monitor was last updated
+          type: string
+          example: 2025-09-19T10:30:00Z
+    ServiceMonitor:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the service monitor
+          type: string
+          example: x5y2m8nQrS
+        name:
+          description: Display name of the monitor
+          type: string
+          example: GitHub
+        description:
+          description: Description for the monitor
+          type: string
+          example: Monitor GitHub status page
+          nullable: true
+        monitor_group_id:
+          description: ID of the monitor group this monitor belongs to
+          type: string
+          example: x5y2m8nQrS
+          nullable: true
+        service_id:
+          description: Public ID of the status page service being monitored
+          type: string
+          example: abc123xyz
+        created_at:
+          description: ISO 8601 timestamp of when the monitor was created
+          type: string
+          example: 2025-09-19T09:00:00Z
+        updated_at:
+          description: ISO 8601 timestamp of when the monitor was last updated
+          type: string
+          example: 2025-09-19T10:30:00Z
+    Incident:
+      type: object
+      properties:
+        id:
+          description: Unique public ID of the incident
+          type: string
+          example: abc123def
+        name:
+          description: Name of the incident
+          type: string
+          example: Database outage
+        details:
+          description: Detailed information about the incident
+          type: string
+          nullable: true
+          example: We are currently experiencing a database outage affecting all services.
+        started_at:
+          description: ISO 8601 timestamp of when the incident started
+          type: string
+          format: datetime
+          nullable: true
+          example: 2023-10-01T12:00:00Z
+        resolved_at:
+          description: ISO 8601 timestamp of when the incident was resolved
+          type: string
+          format: datetime
+          nullable: true
+          example: 2023-10-01T14:30:00Z
+        phase:
+          description: Current phase of the incident
+          type: string
+          example: investigating
+          enum:
+            - investigating
+            - identified
+            - monitoring
+            - resolved
+            - in_progress
+            - verifying
+            - completed
+            - scheduled
+        severity:
+          description: Severity level of the incident
+          type: string
+          example: major
+          enum:
+            - minor
+            - major
+            - maintenance
+        will_start_at:
+          description: ISO 8601 timestamp of when scheduled maintenance will start
+          type: string
+          format: datetime
+          nullable: true
+          example: 2023-10-02T02:00:00Z
+        will_end_at:
+          description: ISO 8601 timestamp of when scheduled maintenance will end
+          type: string
+          format: datetime
+          nullable: true
+          example: 2023-10-02T04:00:00Z
+        auto_complete_maintenance:
+          description: Whether maintenance should be auto-completed
+          type: boolean
+          nullable: true
+          example: false
+        board_id:
+          description: Public ID of the board this incident belongs to
+          type: string
+          example: lh16iGAYKI
+        duration:
+          description: Duration of the incident in minutes
+          type: number
+          nullable: true
+          example: 150.5
+        maintenance_duration:
+          description: Duration of scheduled maintenance in minutes
+          type: number
+          nullable: true
+          example: 120
+        scheduled_maintenance:
+          description: Whether this is a scheduled maintenance
+          type: boolean
+          example: false
+        resolved_or_completed:
+          description: Whether the incident is resolved or completed
+          type: boolean
+          example: false
+        created_at:
+          description: ISO 8601 timestamp of when the incident was created
+          type: string
+          format: datetime
+          example: 2023-10-01T11:45:00Z
+        updated_at:
+          description: ISO 8601 timestamp of when the incident was last updated
+          type: string
+          format: datetime
+          example: 2023-10-01T12:15:00Z
+    IncidentUpdate:
+      type: object
+      properties:
+        id:
+          description: Unique ID of the incident update
+          type: integer
+          example: 123
+        incident_id:
+          description: Public ID of the incident this update belongs to
+          type: string
+          example: abc123def
+        details:
+          description: Details of the incident update
+          type: string
+          nullable: true
+          example: We have identified the root cause and are working on a fix.
+        phase:
+          description: Current phase of the incident
+          type: string
+          example: identified
+          enum:
+            - investigating
+            - identified
+            - monitoring
+            - resolved
+            - in_progress
+            - verifying
+            - completed
+            - scheduled
+        severity:
+          description: Severity level of the incident update
+          type: string
+          example: major
+          enum:
+            - minor
+            - major
+            - maintenance
+        posted_at:
+          description: ISO 8601 timestamp of when the update was posted
+          type: string
+          format: datetime
+          example: 2023-10-01T12:30:00Z
+        notify_subscribers:
+          description: Whether subscribers were notified about this update
+          type: boolean
+          example: true
+        created_at:
+          description: ISO 8601 timestamp of when the update was created
+          type: string
+          format: datetime
+          example: 2023-10-01T12:30:00Z
+        updated_at:
+          description: ISO 8601 timestamp of when the update was last modified
+          type: string
+          format: datetime
+          example: 2023-10-01T12:30:00Z
+    StatusPageSubscriber:
+      type: object
+      properties:
+        id:
+          description: Unique ID for the subscriber
+          type: string
+          example: m2z5x3nOJa
+        email:
+          description: Email address of the subscriber
+          type: string
+          example: user@example.com
+        confirmed:
+          description: Whether the subscription has been confirmed
+          type: boolean
+          example: true
+        confirmed_at:
+          description: ISO 8601 timestamp of when the subscription was confirmed
+          type: string
+          nullable: true
+          example: 2025-09-12T12:35:54Z
+        monitor_ids:
+          description: Array of monitor IDs the subscriber is subscribed to (empty means
+            all monitors)
+          type: array
+          items:
+            type: string
+          example:
+            - m2z5x3nOJa
+            - k9p8q7rStU
+        created_at:
+          description: ISO 8601 timestamp of when the subscriber was created
+          type: string
+          example: 2025-09-12T12:35:54Z
+        updated_at:
+          description: ISO 8601 timestamp of when the subscriber was last updated
+          type: string
+          example: 2025-09-12T12:40:54Z
+    OutageReport:
+      type: object
+      properties:
+        id:
+          description: Unique public ID of the outage report
+          type: string
+          example: abc123def
+        monitor_id:
+          description: Public ID of the monitor this report is for
+          type: string
+          example: xyz789ghi
+        service_name:
+          description: Name of the service being reported
+          type: string
+          example: GitHub
+        comment:
+          description: User-provided description of the outage
+          type: string
+          nullable: true
+          example: API returning 500s
+        email:
+          description: Email address of the reporter
+          type: string
+          nullable: true
+          example: reporter@example.com
+        component_ids:
+          description: Public IDs of affected components
+          type: array
+          items:
+            type: string
+          example:
+            - comp1
+            - comp2
+        confirmed_at:
+          description: ISO 8601 timestamp of when the report was confirmed
+          type: string
+          format: datetime
+          example: 2023-10-01T12:00:00Z
+        created_at:
+          description: ISO 8601 timestamp of when the report was created
+          type: string
+          format: datetime
+          example: 2023-10-01T12:00:00Z
+security:
+  - bearerAuth: []
+servers:
+  - url: https://{defaultHost}/api/v3
+    variables:
+      defaultHost:
+        default: statusgator.com
