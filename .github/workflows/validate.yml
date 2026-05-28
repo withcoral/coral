@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Detect changes
         id: filter
@@ -203,7 +203,8 @@ jobs:
           # Note: the install script generally runs fine without a GITHUB_TOKEN set, and we don't advise users to set
           # one during installation, but in CI it often fails. See https://github.com/orgs/community/discussions/42748
           # for the discussion.
-          GITHUB_TOKEN: ${{ github.token }}
+          # Do not expose even a read-scoped token to PR-controlled install script changes.
+          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.token || '' }}
         run: |
           install_dir="$RUNNER_TEMP/coral-bin"
           CORAL_INSTALL_DIR="$install_dir" sh < scripts/install.sh
@@ -220,6 +221,14 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: ui/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: ui/.node-version
@@ -256,6 +265,14 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: ui/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: ui/.node-version
@@ -302,12 +319,34 @@ jobs:
       - name: Run make lint-proto
         run: make lint-proto
 
-  gha-security-audit:
-    name: Github Actions security audit with zizmor
+  gha-security-audit-pr:
+    name: Github Actions security audit with zizmor (PR)
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ needs.changes.outputs.github_actions == 'true' }}
+    if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name == 'pull_request' }}
     permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
+        with:
+          version: v1.25.2
+          annotations: true
+          advanced-security: false
+          min-severity: low
+
+  gha-security-audit-sarif:
+    name: Github Actions security audit with zizmor (SARIF)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
       security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
     steps:
       - name: Checkout repository
@@ -319,8 +358,8 @@ jobs:
         uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
         with:
           version: v1.25.2
-          annotations: ${{ github.event_name == 'pull_request' }}
-          advanced-security: ${{ github.event_name != 'pull_request' }}
+          annotations: false
+          advanced-security: true
           min-severity: low
 
   source-lint:
@@ -411,7 +450,8 @@ jobs:
         ui-build,
         ui-tests,
         proto-lint,
-        gha-security-audit,
+        gha-security-audit-pr,
+        gha-security-audit-sarif,
         source-lint,
         docs-freshness,
         license-check,
@@ -429,7 +469,8 @@ jobs:
           UI_BUILD_RESULT: ${{ needs.ui-build.result }}
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
-          GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
+          GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
+          GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
           DOCS_FRESHNESS_RESULT: ${{ needs.docs-freshness.result }}
           LICENSE_CHECK_RESULT: ${{ needs.license-check.result }}
@@ -442,7 +483,8 @@ jobs:
             "ui-build:$UI_BUILD_RESULT"
             "ui-tests:$UI_TESTS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
-            "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
+            "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
+            "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"
             "source-lint:$SOURCE_LINT_RESULT"
             "docs-freshness:$DOCS_FRESHNESS_RESULT"
             "license-check:$LICENSE_CHECK_RESULT"

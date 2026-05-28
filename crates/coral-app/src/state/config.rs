@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
+use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
@@ -38,6 +39,55 @@ struct PersistedAppConfig {
     version: u32,
     #[serde(default)]
     workspaces: BTreeMap<String, PersistedWorkspaceConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RawFeatureOverrides {
+    entries: BTreeMap<String, RawFeatureValue>,
+    container: RawFeatureContainerState,
+}
+
+impl RawFeatureOverrides {
+    pub(crate) fn container(&self) -> RawFeatureContainerState {
+        self.container
+    }
+
+    pub(crate) fn get(&self, key: &str) -> Option<RawFeatureValue> {
+        self.entries.get(key).copied()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, RawFeatureValue)> + '_ {
+        self.entries
+            .iter()
+            .map(|(key, value)| (key.as_str(), *value))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_entries_for_tests(
+        entries: impl IntoIterator<Item = (&'static str, RawFeatureValue)>,
+    ) -> Self {
+        Self {
+            entries: entries
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+            container: RawFeatureContainerState::Table,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum RawFeatureContainerState {
+    #[default]
+    Missing,
+    Table,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawFeatureValue {
+    Bool(bool),
+    UnsupportedType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -146,6 +196,103 @@ impl SourceCatalog {
         }
 
         removed
+    }
+}
+
+pub(crate) fn load_raw_feature_overrides(
+    layout: &AppStateLayout,
+) -> Result<RawFeatureOverrides, AppError> {
+    if !layout.config_file().exists() {
+        return Ok(RawFeatureOverrides::default());
+    }
+
+    let _lock = FileLock::shared(layout.state_lock())?;
+    if !layout.config_file().exists() {
+        return Ok(RawFeatureOverrides::default());
+    }
+
+    let raw = std::fs::read_to_string(layout.config_file())?;
+    let doc = raw.parse::<DocumentMut>()?;
+    Ok(raw_feature_overrides_from_document(&doc))
+}
+
+pub(crate) fn set_raw_feature_override(
+    layout: &AppStateLayout,
+    key: &str,
+    enabled: bool,
+) -> Result<(), AppError> {
+    let _lock = FileLock::exclusive(layout.state_lock())?;
+    let mut doc = read_config_document(layout)?;
+    ensure_feature_table(&doc)?;
+    if doc.get("features").is_none() {
+        doc.insert("features", toml_edit::table());
+    }
+    let Some(feature_table) = doc.get_mut("features").and_then(Item::as_table_mut) else {
+        return Err(AppError::InvalidInput(
+            "unsupported [features] config; expected a table".to_string(),
+        ));
+    };
+    feature_table.insert(key, value(enabled));
+    if doc.get("version").is_none() {
+        doc.insert("version", value(i64::from(default_config_version())));
+    }
+    write_config_document(layout, &doc)
+}
+
+fn raw_feature_overrides_from_document(doc: &DocumentMut) -> RawFeatureOverrides {
+    let Some(features) = doc.get("features") else {
+        return RawFeatureOverrides::default();
+    };
+
+    let Some(table) = features.as_table() else {
+        warn!("ignoring unsupported [features] config; expected a table");
+        return RawFeatureOverrides {
+            entries: BTreeMap::new(),
+            container: RawFeatureContainerState::Unsupported,
+        };
+    };
+
+    let entries = table
+        .iter()
+        .map(|(key, item)| {
+            let value = item
+                .as_bool()
+                .map_or(RawFeatureValue::UnsupportedType, RawFeatureValue::Bool);
+            (key.to_string(), value)
+        })
+        .collect();
+    RawFeatureOverrides {
+        entries,
+        container: RawFeatureContainerState::Table,
+    }
+}
+
+fn read_config_document(layout: &AppStateLayout) -> Result<DocumentMut, AppError> {
+    if !layout.config_file().exists() {
+        return Ok(DocumentMut::new());
+    }
+    let raw = std::fs::read_to_string(layout.config_file())?;
+    Ok(raw.parse::<DocumentMut>()?)
+}
+
+fn write_config_document(layout: &AppStateLayout, doc: &DocumentMut) -> Result<(), AppError> {
+    if let Some(parent) = layout.config_file().parent() {
+        storage_fs::ensure_dir(parent)?;
+    }
+    storage_fs::write_atomic(layout.config_file(), doc.to_string().as_bytes())?;
+    Ok(())
+}
+
+fn ensure_feature_table(doc: &DocumentMut) -> Result<(), AppError> {
+    let Some(features) = doc.get("features") else {
+        return Ok(());
+    };
+    if features.is_table() {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(
+            "unsupported [features] config; expected a table".to_string(),
+        ))
     }
 }
 
@@ -364,10 +511,16 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{AppConfig, PersistedAppConfig, SourceCatalog, render_config};
+    use tempfile::TempDir;
+
+    use super::{
+        AppConfig, PersistedAppConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
+        load_raw_feature_overrides, render_config, set_raw_feature_override,
+    };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
+    use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
 
     fn default_workspace() -> WorkspaceName {
@@ -386,6 +539,35 @@ mod tests {
             credential_storage: None,
             origin: SourceOrigin::Imported,
         }
+    }
+
+    fn test_layout(temp: &TempDir) -> AppStateLayout {
+        AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout")
+    }
+
+    fn write_config(layout: &AppStateLayout, raw: &str) {
+        std::fs::create_dir_all(
+            layout
+                .config_file()
+                .parent()
+                .expect("config file should have parent"),
+        )
+        .expect("create config dir");
+        std::fs::write(layout.config_file(), raw).expect("write config");
+    }
+
+    fn raw_feature_entries(layout: &AppStateLayout) -> BTreeMap<String, RawFeatureValue> {
+        load_raw_feature_overrides(layout)
+            .expect("feature overrides")
+            .iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
+    }
+
+    fn raw_feature_container(layout: &AppStateLayout) -> RawFeatureContainerState {
+        load_raw_feature_overrides(layout)
+            .expect("feature overrides")
+            .container()
     }
 
     #[test]
@@ -552,11 +734,15 @@ version = 1
 endpoint = "http://localhost:4318"
 headers = "from=config"
 
-[trace_history]
-enabled = false
-retention_days = 3
+	[trace_history]
+	enabled = false
+	retention_days = 3
 
-[workspaces.default.sources.github]
+	[features]
+	feedback = true
+	future_feature = "not-yet-known"
+
+	[workspaces.default.sources.github]
 version = "1.0.0"
 variables = {}
 secrets = []
@@ -595,6 +781,18 @@ origin = "bundled"
             raw.contains("retention_days = 3"),
             "trace history retention should be preserved"
         );
+        assert!(
+            raw.contains("[features]"),
+            "features section should be preserved"
+        );
+        assert!(
+            raw.contains("feedback = true"),
+            "known feature override should be preserved"
+        );
+        assert!(
+            raw.contains("future_feature = \"not-yet-known\""),
+            "future feature override should be preserved"
+        );
 
         // The newly added source must be present.
         assert!(raw.contains("[workspaces.default.sources.slack]"));
@@ -630,5 +828,145 @@ origin = "bundled"
         )
         .expect_err("invalid source key should fail");
         assert!(error.to_string().contains("source name"));
+    }
+
+    #[test]
+    fn raw_feature_overrides_default_when_config_file_is_missing_without_creating_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("missing-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+
+        let entries = raw_feature_entries(&layout);
+
+        assert!(entries.is_empty());
+        assert!(
+            !config_dir.exists(),
+            "read-only feature loading should not create config state"
+        );
+    }
+
+    #[test]
+    fn raw_feature_overrides_load_supported_table_entries() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(
+            &layout,
+            r#"
+version = 1
+
+[features]
+feedback = true
+future_flag = false
+wrong_type = "yes"
+
+[features.nested]
+enabled = true
+"#,
+        );
+
+        let entries = raw_feature_entries(&layout);
+
+        assert_eq!(entries.get("feedback"), Some(&RawFeatureValue::Bool(true)));
+        assert_eq!(
+            entries.get("future_flag"),
+            Some(&RawFeatureValue::Bool(false))
+        );
+        assert_eq!(
+            entries.get("wrong_type"),
+            Some(&RawFeatureValue::UnsupportedType)
+        );
+        assert_eq!(
+            entries.get("nested"),
+            Some(&RawFeatureValue::UnsupportedType)
+        );
+    }
+
+    #[test]
+    fn raw_feature_overrides_accept_dotted_feature_table() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(&layout, "features.feedback = false\n");
+
+        let entries = raw_feature_entries(&layout);
+
+        assert_eq!(entries.get("feedback"), Some(&RawFeatureValue::Bool(false)));
+    }
+
+    #[test]
+    fn raw_feature_overrides_ignore_inline_feature_table() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(&layout, "features = { feedback = true }\n");
+
+        let entries = raw_feature_entries(&layout);
+
+        assert!(entries.is_empty());
+        assert_eq!(
+            raw_feature_container(&layout),
+            RawFeatureContainerState::Unsupported
+        );
+    }
+
+    #[test]
+    fn raw_feature_overrides_fail_for_invalid_toml() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(&layout, "[features\nfeedback = true\n");
+
+        let error = load_raw_feature_overrides(&layout).expect_err("invalid TOML should fail");
+
+        assert!(error.to_string().contains("TOML parse error"));
+    }
+
+    #[test]
+    fn set_raw_feature_override_creates_config_file_with_features_table() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+
+        set_raw_feature_override(&layout, "feedback", true).expect("set feature");
+
+        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+        assert!(raw.contains("version = 1"));
+        assert!(raw.contains("[features]"));
+        assert!(raw.contains("feedback = true"));
+    }
+
+    #[test]
+    fn set_raw_feature_override_preserves_unrelated_feature_entries() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(
+            &layout,
+            r#"
+[features]
+future_flag = "yes"
+feedback = true
+"#,
+        );
+
+        set_raw_feature_override(&layout, "feedback", false).expect("set feature");
+        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+        assert!(raw.contains("feedback = false"));
+        assert!(raw.contains("future_flag = \"yes\""));
+
+        set_raw_feature_override(&layout, "feedback", true).expect("set feature");
+        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+        assert!(raw.contains("feedback = true"));
+        assert!(raw.contains("future_flag = \"yes\""));
+    }
+
+    #[test]
+    fn feature_mutations_reject_inline_feature_container_without_rewriting_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let original = "features = { feedback = true }\n";
+        write_config(&layout, original);
+
+        let error =
+            set_raw_feature_override(&layout, "feedback", true).expect_err("inline features");
+
+        assert!(error.to_string().contains("unsupported [features] config"));
+        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+        assert_eq!(raw, original);
     }
 }

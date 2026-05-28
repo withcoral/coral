@@ -70,7 +70,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{CoreError, QuerySource, RequestAuthenticator};
+use crate::{CoreError, QuerySource, RequestAuthenticator, SourceInputResolver};
 use coral_spec::ValidatedSourceManifest;
 
 pub(crate) mod common;
@@ -91,14 +91,17 @@ pub(crate) fn compile_query_source(
     source: &QuerySource,
     runtime_context: &crate::QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     compile_validated_manifest(
         source.source_spec(),
         &BackendCompileRequest {
+            source,
             runtime_context,
             source_secrets: source.secrets().clone(),
             source_variables: source.variables().clone(),
             request_authenticators,
+            source_input_resolver,
         },
     )
 }
@@ -111,13 +114,20 @@ pub(crate) fn compile_source_manifest(
     runtime_context: &crate::QueryRuntimeContext,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     let request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>> = HashMap::new();
+    let source = QuerySource::new(
+        manifest.clone(),
+        source_variables.clone(),
+        source_secrets.clone(),
+    );
     compile_validated_manifest(
         manifest,
         &BackendCompileRequest {
+            source: &source,
             runtime_context,
             source_secrets,
             source_variables,
             request_authenticators: &request_authenticators,
+            source_input_resolver: None,
         },
     )
 }

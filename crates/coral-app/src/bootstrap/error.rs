@@ -22,6 +22,9 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// Provider-managed credential refresh failed during active source use.
+    #[error("credential refresh failed: {0}")]
+    CredentialRefresh(String),
     /// Filesystem access failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -31,6 +34,9 @@ pub enum AppError {
     /// `config.toml` decoding failed.
     #[error(transparent)]
     TomlDecode(#[from] toml::de::Error),
+    /// `config.toml` parsing failed while preserving raw TOML structure.
+    #[error(transparent)]
+    TomlEditDecode(#[from] toml_edit::TomlError),
     /// `config.toml` encoding failed.
     #[error(transparent)]
     TomlEncode(#[from] toml::ser::Error),
@@ -178,6 +184,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::SourceNotFound(_) => Code::NotFound,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
             Code::FailedPrecondition
@@ -186,6 +193,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::Io(_)
         | AppError::Yaml(_)
         | AppError::TomlDecode(_)
+        | AppError::TomlEditDecode(_)
         | AppError::TomlEncode(_)
         | AppError::Json(_)
         | AppError::Transport(_)

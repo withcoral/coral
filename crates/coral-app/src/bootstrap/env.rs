@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use coral_engine::QueryRuntimeContext;
 
 use super::consts::CORAL_CONFIG_DIR;
+use super::error::AppError;
+use crate::state::AppStateLayout;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AppEnvironment {
@@ -22,6 +24,13 @@ impl AppEnvironment {
 
     pub(crate) fn coral_config_dir_override(&self) -> Option<PathBuf> {
         self.coral_config_dir_override.clone()
+    }
+
+    pub(crate) fn app_state_layout(
+        &self,
+        config_dir_override: Option<PathBuf>,
+    ) -> Result<AppStateLayout, AppError> {
+        AppStateLayout::discover(config_dir_override.or_else(|| self.coral_config_dir_override()))
     }
 
     pub(crate) fn query_runtime_context(&self) -> QueryRuntimeContext {

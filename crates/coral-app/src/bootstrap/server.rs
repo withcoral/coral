@@ -49,7 +49,7 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -245,11 +245,7 @@ impl ServerBuilder {
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
-        let layout = AppStateLayout::discover(
-            self.config
-                .config_dir
-                .or_else(|| env.coral_config_dir_override()),
-        )?;
+        let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config

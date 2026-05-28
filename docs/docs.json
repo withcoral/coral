@@ -86,6 +86,7 @@
         "group": "Reference",
         "pages": [
           "reference/cli-reference",
+          "reference/configuration",
           "reference/bundled-sources",
           "reference/community-sources",
           "reference/source-spec-reference"

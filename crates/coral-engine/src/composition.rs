@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
+use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
 use reqwest::header::{HeaderName, HeaderValue};
 
@@ -23,6 +24,8 @@ pub struct EngineExtensions {
     pub query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
     /// Request-time custom authenticators keyed by `auth.authenticator`.
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    /// Request-time resolver for app-managed source inputs.
+    pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
 /// Neutral policy decision for one source registration failure.
@@ -109,6 +112,31 @@ impl RequestAuthenticatorError {
     }
 }
 
+/// Neutral error type for request-time source input resolution failures.
+#[derive(Debug, thiserror::Error)]
+pub enum SourceInputResolverError {
+    /// The resolver was configured with invalid input.
+    #[error("{0}")]
+    InvalidInput(String),
+    /// The resolver could not proceed because a precondition was unmet.
+    #[error("{0}")]
+    FailedPrecondition(String),
+}
+
+impl SourceInputResolverError {
+    #[must_use]
+    /// Builds an invalid-input error.
+    pub fn invalid_input(detail: impl Into<String>) -> Self {
+        Self::InvalidInput(detail.into())
+    }
+
+    #[must_use]
+    /// Builds a failed-precondition error.
+    pub fn failed_precondition(detail: impl Into<String>) -> Self {
+        Self::FailedPrecondition(detail.into())
+    }
+}
+
 /// Request-time HTTP authenticator registered through engine extensions.
 pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
     /// Stable authenticator name used in diagnostics and manifest dispatch.
@@ -140,6 +168,24 @@ pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
     ) -> Result<(), RequestAuthenticatorError> {
         Ok(())
     }
+}
+
+/// Request-time resolver for source inputs owned by the app layer.
+///
+/// The engine calls this only when a selected source is about to issue an
+/// outbound request, allowing app-managed credentials to refresh lazily.
+#[async_trait]
+pub trait SourceInputResolver: Send + Sync + std::fmt::Debug {
+    /// Returns current resolved inputs for the selected source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceInputResolverError`] when app-managed inputs cannot be
+    /// resolved for active source use.
+    async fn resolve_inputs(
+        &self,
+        source: &QuerySource,
+    ) -> Result<BTreeMap<String, String>, SourceInputResolverError>;
 }
 
 /// Post-query hook for observing fully materialized successful query results.
