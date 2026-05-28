@@ -673,6 +673,8 @@ per `tools/call`, and Streamable HTTP sources run the initialize handshake on
 every call. A single SQL query that scans multiple MCP tables incurs that
 handshake once per table scan. Session pooling is a future optimization.
 
+#### MCP error reasons
+
 Query-time failures surface as one of the following structured error reasons.
 Every reason carries `source` and `mcp_stage` metadata. Tool-scoped reasons
 (`MCP_TOOL_CALL_FAILED`, `MCP_TOOL_RETURNED_ERROR`, `MCP_RESULT_DECODE_FAILED`,
