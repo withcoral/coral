@@ -1,0 +1,644 @@
+name: shortcut
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query members, workflows, epics, stories, iterations, and milestones
+  from Shortcut via the Shortcut REST API v3.
+base_url: https://api.app.shortcut.com/api/v3
+
+inputs:
+  SHORTCUT_TOKEN:
+    kind: secret
+    hint: |
+      Shortcut API token. Generate one at
+      https://app.shortcut.com/settings/account/api-tokens.
+      The token is sent as the Shortcut-Token request header.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Shortcut-Token
+      from: input
+      key: SHORTCUT_TOKEN
+
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM shortcut.members LIMIT 5
+  - SELECT id, name FROM shortcut.workflows LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # members — workspace members
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: members
+    description: >-
+      Members of the Shortcut workspace. Each row is one member.
+      Join email to linear.users or github.members for cross-tool
+      team analytics.
+    guide: |
+      No required filters. `email` is sourced from the nested
+      `profile.email_address` field in the API response. `mention_name`
+      is the @-handle used in Shortcut comments and descriptions.
+    request:
+      method: GET
+      path: /members
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Member UUID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Member display name.
+        expr:
+          kind: path
+          path:
+            - profile
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Member email address (from profile.email_address).
+        expr:
+          kind: path
+          path:
+            - profile
+            - email_address
+      - name: mention_name
+        type: Utf8
+        nullable: true
+        description: Member @-handle used in Shortcut comments and descriptions.
+        expr:
+          kind: path
+          path:
+            - profile
+            - mention_name
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Member role in the workspace.
+        expr:
+          kind: path
+          path:
+            - role
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the member was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the member was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # workflows — workspace workflows and states
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: workflows
+    description: >-
+      Workflows in the Shortcut workspace. Each row is one workflow.
+      Use id to join with stories on workflow_id.
+    guide: |
+      No required filters. Each workflow contains a set of states.
+      Use `id` to join with `shortcut.stories` on `workflow_id` to
+      map stories to their workflow.
+    request:
+      method: GET
+      path: /workflows
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Workflow ID. Join to shortcut.stories.workflow_id.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Workflow name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Workflow description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the workflow was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the workflow was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # epics — epics in the workspace
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: epics
+    description: >-
+      Epics in the Shortcut workspace. Each row is one epic. Use id
+      to join with stories on epic_id.
+    guide: |
+      No required filters. Use `state` to filter locally by epic
+      lifecycle: to do, in progress, or done. Use `id` to join with
+      `shortcut.stories` on `epic_id`. Use `started_at` and
+      `completed_at` for epic cycle-time analytics.
+    request:
+      method: GET
+      path: /epics
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Epic ID. Join to shortcut.stories.epic_id.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Epic name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Epic description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Epic state: to do, in progress, or done."
+        expr:
+          kind: path
+          path:
+            - state
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the epic is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the epic was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the epic was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the epic was started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - started_at
+      - name: completed_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the epic was completed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # stories — stories (work items) in the workspace
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: stories
+    description: >-
+      Stories (work items) in the Shortcut workspace discovered via the
+      search API. Each row is one story. Use query filter for Shortcut
+      search syntax pushdown.
+    guide: |
+      Optional `query` filter pushes down to the Shortcut search API.
+      Use Shortcut search operators such as `is:started`, `type:bug`,
+      `epic:my-epic`, or `iteration:current`. Without a query filter,
+      returns all stories. Results are paginated with a maximum of 25
+      stories per page. Use `epic_id` to join with `shortcut.epics` and
+      `iteration_id` to join with `shortcut.iterations`.
+    filters:
+      - name: query
+        required: false
+    request:
+      method: GET
+      path: /search/stories
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: next
+      response_cursor_path:
+        - next
+      page_size:
+        default: 25
+        max: 25
+        query_param: page_size
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Story ID (public ID).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Story name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: story_type
+        type: Utf8
+        nullable: true
+        description: "Story type: feature, bug, or chore."
+        expr:
+          kind: path
+          path:
+            - story_type
+      - name: workflow_id
+        type: Int64
+        nullable: true
+        description: ID of the workflow the story belongs to. Join to shortcut.workflows.id.
+        expr:
+          kind: path
+          path:
+            - workflow_id
+      - name: workflow_state_id
+        type: Int64
+        nullable: true
+        description: ID of the workflow state the story is currently in.
+        expr:
+          kind: path
+          path:
+            - workflow_state_id
+      - name: epic_id
+        type: Int64
+        nullable: true
+        description: ID of the epic the story belongs to. Join to shortcut.epics.id.
+        expr:
+          kind: path
+          path:
+            - epic_id
+      - name: iteration_id
+        type: Int64
+        nullable: true
+        description: ID of the iteration the story belongs to. Join to shortcut.iterations.id.
+        expr:
+          kind: path
+          path:
+            - iteration_id
+      - name: estimate
+        type: Int64
+        nullable: true
+        description: Story point estimate.
+        expr:
+          kind: path
+          path:
+            - estimate
+      - name: cycle_time
+        type: Int64
+        nullable: true
+        description: Cycle time in seconds from start to completion.
+        expr:
+          kind: path
+          path:
+            - cycle_time
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the story is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: completed
+        type: Boolean
+        nullable: true
+        description: Whether the story is completed.
+        expr:
+          kind: path
+          path:
+            - completed
+      - name: app_url
+        type: Utf8
+        nullable: true
+        description: URL of the story in the Shortcut web interface.
+        expr:
+          kind: path
+          path:
+            - app_url
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the story was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the story was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: completed_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the story was completed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed_at
+      - name: query_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: query
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # iterations — iterations (sprints) in the workspace
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: iterations
+    description: >-
+      Iterations (sprints) in the Shortcut workspace. Each row is one
+      iteration. Use id to join with stories on iteration_id.
+    guide: |
+      No required filters. Use `status` to filter locally by iteration
+      state: unstarted, started, or done. Use `id` to join with
+      `shortcut.stories` on `iteration_id` for sprint analytics.
+    request:
+      method: GET
+      path: /iterations
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Iteration ID. Join to shortcut.stories.iteration_id.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Iteration name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Iteration status: unstarted, started, or done."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Iteration start date (YYYY-MM-DD).
+        expr:
+          kind: path
+          path:
+            - start_date
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Iteration end date (YYYY-MM-DD).
+        expr:
+          kind: path
+          path:
+            - end_date
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the iteration was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the iteration was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # milestones — milestones in the workspace
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: milestones
+    description: >-
+      Milestones in the Shortcut workspace. Each row is one milestone.
+      Use id to join with epics for roadmap analytics.
+    guide: |
+      No required filters. Use `state` to filter locally by milestone
+      state: to do, in progress, or done. Use `started_at` and
+      `completed_at` for milestone cycle-time analytics.
+    request:
+      method: GET
+      path: /milestones
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Milestone ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Milestone name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Milestone description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Milestone state: to do, in progress, or done."
+        expr:
+          kind: path
+          path:
+            - state
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the milestone was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the milestone was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the milestone was started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - started_at
+      - name: completed_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the milestone was completed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed_at
