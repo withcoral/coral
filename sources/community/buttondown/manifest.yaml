@@ -1,0 +1,382 @@
+name: buttondown
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Buttondown subscribers, emails, tags, and surveys for newsletter and
+  creator workflow analysis.
+base_url: https://api.buttondown.com/v1
+
+inputs:
+  BUTTONDOWN_API_KEY:
+    kind: secret
+    hint: |
+      Buttondown API key. Create one in Buttondown settings and paste only the
+      key value, without the `Token` prefix.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Token {{input.BUTTONDOWN_API_KEY}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, email_address, type FROM buttondown.subscribers LIMIT 1
+  - SELECT id, subject FROM buttondown.emails LIMIT 1
+
+tables:
+  - name: subscribers
+    description: Subscribers in a Buttondown newsletter.
+    guide: |
+      Use this table to inspect subscriber status, source, referrer, and
+      acquisition timestamps.
+    fetch_limit_default: 100
+    filters:
+      - name: type
+      - name: tag
+      - name: email_address
+      - name: source
+      - name: date_start
+      - name: date_end
+    request:
+      method: GET
+      path: /subscribers
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: tag
+          from: filter
+          key: tag
+        - name: email_address
+          from: filter
+          key: email_address
+        - name: source
+          from: filter
+          key: source
+        - name: date__start
+          from: filter
+          key: date_start
+        - name: date__end
+          from: filter
+          key: date_end
+    response:
+      rows_path: [results]
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Subscriber ID.
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Subscriber email address.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Subscriber status/type.
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: Subscriber creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [creation_date]}
+      - name: referrer_url
+        type: Utf8
+        nullable: true
+        description: Referrer URL when known.
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Subscriber acquisition source.
+      - name: delivered_count
+        type: Int64
+        nullable: true
+        description: Number of delivered emails.
+      - name: open_count
+        type: Int64
+        nullable: true
+        description: Number of opened emails.
+      - name: clicked_count
+        type: Int64
+        nullable: true
+        description: Number of clicked emails.
+      - name: open_rate
+        type: Float64
+        nullable: true
+        description: Subscriber open rate.
+      - name: click_rate
+        type: Float64
+        nullable: true
+        description: Subscriber click rate.
+      - name: risk_score
+        type: Float64
+        nullable: true
+        description: Buttondown risk score.
+      - name: tags_json
+        type: Json
+        nullable: true
+        description: Subscriber tags.
+        expr: {kind: path, path: [tags]}
+      - name: metadata_json
+        type: Json
+        nullable: true
+        description: Raw Buttondown metadata object.
+        expr: {kind: path, path: [metadata]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw subscriber object.
+        expr: {kind: path, path: []}
+
+  - name: emails
+    description: Emails and drafts in Buttondown.
+    guide: |
+      Use `status` to filter drafts, scheduled sends, and published emails.
+    fetch_limit_default: 100
+    filters:
+      - name: status
+      - name: subject
+      - name: email_type
+      - name: source
+      - name: publish_date_start
+      - name: publish_date_end
+    request:
+      method: GET
+      path: /emails
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: subject
+          from: filter
+          key: subject
+        - name: email_type
+          from: filter
+          key: email_type
+        - name: source
+          from: filter
+          key: source
+        - name: publish_date__start
+          from: filter
+          key: publish_date_start
+        - name: publish_date__end
+          from: filter
+          key: publish_date_end
+    response:
+      rows_path: [results]
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Email ID.
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Email subject.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Email status.
+      - name: email_type
+        type: Utf8
+        nullable: true
+        description: Email type.
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Email source.
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: Email creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [creation_date]}
+      - name: modification_date
+        type: Timestamp
+        nullable: true
+        description: Email modification timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [modification_date]}
+      - name: publish_date
+        type: Timestamp
+        nullable: true
+        description: Publish timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [publish_date]}
+      - name: canonical_url
+        type: Utf8
+        nullable: true
+        description: Public email URL.
+      - name: absolute_url
+        type: Utf8
+        nullable: true
+        description: Buttondown archive URL.
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Email slug.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Archive description.
+      - name: metadata_json
+        type: Json
+        nullable: true
+        description: Email metadata.
+        expr: {kind: path, path: [metadata]}
+      - name: analytics_json
+        type: Json
+        nullable: true
+        description: Email analytics payload when available.
+        expr: {kind: path, path: [analytics]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw email object.
+        expr: {kind: path, path: []}
+
+  - name: tags
+    description: Subscriber tags configured in Buttondown.
+    request:
+      method: GET
+      path: /tags
+    response:
+      rows_path: [results]
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tag ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tag name.
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Tag color.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Internal tag description.
+      - name: public_description
+        type: Utf8
+        nullable: true
+        description: Public tag description.
+      - name: subscriber_editable
+        type: Boolean
+        nullable: true
+        description: Whether subscribers can edit this tag.
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: Tag creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [creation_date]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw tag object.
+        expr: {kind: path, path: []}
+
+  - name: surveys
+    description: Buttondown surveys.
+    filters:
+      - name: status
+    request:
+      method: GET
+      path: /surveys
+      query:
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path: [results]
+    pagination:
+      mode: link_header
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Survey ID.
+      - name: identifier
+        type: Utf8
+        nullable: true
+        description: Survey identifier.
+      - name: question
+        type: Utf8
+        nullable: true
+        description: Survey question.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Survey status.
+      - name: response_count
+        type: Int64
+        nullable: true
+        description: Number of responses.
+      - name: response_cadence
+        type: Utf8
+        nullable: true
+        description: Survey response cadence.
+      - name: input_type
+        type: Utf8
+        nullable: true
+        description: Survey input type.
+      - name: answers_json
+        type: Json
+        nullable: true
+        description: Survey answer options.
+        expr: {kind: path, path: [answers]}
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: Survey creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [creation_date]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw survey object.
+        expr: {kind: path, path: []}
