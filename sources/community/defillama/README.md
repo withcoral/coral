@@ -53,8 +53,8 @@ Protocol metadata with chain-level TVL breakdown. Returns a single row with `cur
 | `name` | Utf8 | Protocol display name |
 | `category` | Utf8 | DeFi category |
 | `chains` | Json | Array of chain names the protocol operates on |
-| `currentChainTvls` | Json | Current TVL per chain (e.g. `{"Ethereum": 5000000000}`) |
-| `chainTvls` | Json | Historical TVL data per chain |
+| `current_chain_tvls` | Json | Current TVL per chain (e.g. `{"Ethereum": 5000000000}`) |
+| `chain_tvls` | Json | Historical TVL data per chain |
 
 ---
 
@@ -83,7 +83,7 @@ LIMIT 20;
 ### Single protocol chain breakdown
 
 ```sql
-SELECT name, currentChainTvls, chainTvls
+SELECT name, current_chain_tvls, chain_tvls
 FROM defillama.protocol_tvl
 WHERE slug = 'aave';
 ```

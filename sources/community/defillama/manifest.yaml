@@ -9,6 +9,7 @@ base_url: https://api.llama.fi
 test_queries:
   - SELECT name, slug, tvl FROM defillama.protocols WHERE tvl IS NOT NULL ORDER BY tvl DESC LIMIT 1
   - SELECT slug, change_7d FROM defillama.protocols WHERE change_7d < -10 AND tvl IS NOT NULL LIMIT 5
+  - SELECT name, current_chain_tvls FROM defillama.protocol_tvl WHERE slug = 'aave' LIMIT 1
 tables:
   - name: protocols
     description: >-
@@ -70,9 +71,17 @@ tables:
       - name: chains
         type: Json
         description: Array of chain names the protocol operates on.
-      - name: currentChainTvls
+      - name: current_chain_tvls
         type: Json
         description: Current TVL per chain as a JSON object (e.g. {"Ethereum": 5000000000}).
-      - name: chainTvls
+        expr:
+          kind: path
+          path:
+            - currentChainTvls
+      - name: chain_tvls
         type: Json
         description: Historical TVL data per chain as a JSON object.
+        expr:
+          kind: path
+          path:
+            - chainTvls
