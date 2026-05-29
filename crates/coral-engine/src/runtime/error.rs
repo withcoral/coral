@@ -7,8 +7,11 @@ use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 
 use crate::backends::http::ProviderQueryError;
+use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
-use crate::{CoreError, SourceDecoratorError, TableInfo};
+use crate::{
+    CoreError, QueryResultObserverError, SourceDecoratorError, SourceInputResolverError, TableInfo,
+};
 
 pub(crate) fn datafusion_to_core(error: &DataFusionError, tables: &[TableInfo]) -> CoreError {
     datafusion_to_core_with_sql(error, tables, None)
@@ -34,8 +37,14 @@ pub(crate) fn datafusion_to_core_with_sql(
             if let Some(provider_error) = inner.downcast_ref::<ProviderQueryError>() {
                 return provider_error_to_core(provider_error);
             }
+            if let Some(mcp_error) = inner.downcast_ref::<McpProviderQueryError>() {
+                return mcp_provider_error_to_core(mcp_error);
+            }
             if let Some(source_decorator_error) = inner.downcast_ref::<SourceDecoratorError>() {
                 return source_decorator_error_to_core(source_decorator_error);
+            }
+            if let Some(source_input_error) = inner.downcast_ref::<SourceInputResolverError>() {
+                return source_input_resolver_error_to_core(source_input_error);
             }
             CoreError::internal(inner.to_string())
         }
@@ -49,6 +58,24 @@ pub(crate) fn source_decorator_error_to_core(error: &SourceDecoratorError) -> Co
     match error {
         SourceDecoratorError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
         SourceDecoratorError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(detail.clone())
+        }
+    }
+}
+
+pub(crate) fn query_result_observer_error_to_core(error: &QueryResultObserverError) -> CoreError {
+    match error {
+        QueryResultObserverError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
+        QueryResultObserverError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(detail.clone())
+        }
+    }
+}
+
+fn source_input_resolver_error_to_core(error: &SourceInputResolverError) -> CoreError {
+    match error {
+        SourceInputResolverError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
+        SourceInputResolverError::FailedPrecondition(detail) => {
             CoreError::FailedPrecondition(detail.clone())
         }
     }
@@ -137,16 +164,13 @@ fn table_not_found_ref(
         return Some(table_ref);
     }
 
-    if !is_legacy_table_not_found_plan(detail) {
-        return None;
-    }
+    let raw = extract_table_not_found(detail)?;
 
-    extract_table_not_found(detail)
-        .and_then(table_ref_parts_from_sql_object)
-        .or_else(|| {
-            extract_table_not_found(detail)
-                .map(|raw| TableRefParts::new(raw.split('.').map(ToString::to_string).collect()))
-        })
+    table_ref_parts_from_sql_object(raw).or_else(|| {
+        Some(TableRefParts::new(
+            raw.split('.').map(ToString::to_string).collect(),
+        ))
+    })
 }
 
 fn looks_like_table_not_found(detail: &str) -> bool {
@@ -154,10 +178,6 @@ fn looks_like_table_not_found(detail: &str) -> bool {
     lowered.contains("table")
         && lowered.contains("not found")
         && !lowered.contains("table function")
-}
-
-fn is_legacy_table_not_found_plan(detail: &str) -> bool {
-    extract_table_not_found(detail).is_some()
 }
 
 fn extract_table_not_found(detail: &str) -> Option<&str> {
@@ -218,6 +238,10 @@ fn table_ref_parts_from_object_name(object_name: ObjectName) -> Option<TableRefP
 }
 
 fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
+    CoreError::QueryFailure(Box::new(error.to_structured()))
+}
+
+fn mcp_provider_error_to_core(error: &McpProviderQueryError) -> CoreError {
     CoreError::QueryFailure(Box::new(error.to_structured()))
 }
 

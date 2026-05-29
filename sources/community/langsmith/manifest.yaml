@@ -1,0 +1,822 @@
+name: langsmith
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query LangSmith projects, runs, datasets, examples, and feedback.
+base_url: "{{input.LANGSMITH_API_BASE}}"
+
+inputs:
+  LANGSMITH_API_BASE:
+    kind: variable
+    default: https://api.smith.langchain.com
+    hint: |
+      Base URL for the LangSmith API. Keep the default for LangSmith Cloud.
+      For self-hosted deployments, use your LangSmith API base URL.
+  LANGSMITH_API_KEY:
+    kind: secret
+    hint: |
+      LangSmith API key. Create one from LangSmith settings and grant read
+      access to the projects, runs, datasets, examples, and feedback you plan
+      to query.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-API-Key
+      from: input
+      key: LANGSMITH_API_KEY
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT version FROM langsmith.info LIMIT 1
+
+tables:
+  - name: info
+    description: LangSmith server and deployment metadata.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /api/v1/info
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: version
+        type: Utf8
+        nullable: true
+        description: LangSmith server version.
+        expr: {kind: path, path: [version]}
+      - name: git_sha
+        type: Utf8
+        nullable: true
+        description: Server build Git SHA.
+        expr: {kind: path, path: [git_sha]}
+      - name: license_expiration_time
+        type: Timestamp
+        nullable: true
+        description: License expiration time for self-hosted deployments.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [license_expiration_time]}
+      - name: instance_flags
+        type: Json
+        nullable: true
+        description: Deployment feature flags.
+        expr: {kind: path, path: [instance_flags]}
+      - name: batch_ingest_config
+        type: Json
+        nullable: true
+        description: Batch ingest configuration.
+        expr: {kind: path, path: [batch_ingest_config]}
+      - name: customer_info
+        type: Json
+        nullable: true
+        description: Customer information for the deployment.
+        expr: {kind: path, path: [customer_info]}
+
+  - name: projects
+    description: LangSmith tracing projects, also called tracer sessions.
+    filters:
+      - name: name
+      - name: name_contains
+      - name: reference_free
+      - name: reference_dataset_id
+      - name: metadata
+      - name: filter
+      - name: include_stats
+    request:
+      method: GET
+      path: /api/v1/sessions
+      query:
+        - name: name
+          from: filter
+          key: name
+        - name: name_contains
+          from: filter
+          key: name_contains
+        - name: reference_free
+          from: filter_bool
+          key: reference_free
+        - name: reference_dataset
+          from: filter
+          key: reference_dataset_id
+        - name: metadata
+          from: filter
+          key: metadata
+        - name: filter
+          from: filter
+          key: filter
+        - name: include_stats
+          from: filter_bool
+          key: include_stats
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+        expr: {kind: path, path: [description]}
+      - name: tenant_id
+        type: Utf8
+        nullable: true
+        description: Tenant ID that owns the project.
+        expr: {kind: path, path: [tenant_id]}
+      - name: reference_dataset_id
+        type: Utf8
+        nullable: true
+        description: Reference dataset linked to this project.
+        expr: {kind: path, path: [reference_dataset_id]}
+      - name: default_dataset_id
+        type: Utf8
+        nullable: true
+        description: Default dataset linked to this project.
+        expr: {kind: path, path: [default_dataset_id]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Project start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [start_time]}
+      - name: end_time
+        type: Timestamp
+        nullable: true
+        description: Project end time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [end_time]}
+      - name: last_run_start_time
+        type: Timestamp
+        nullable: true
+        description: Last run start time in the project.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_run_start_time]}
+      - name: run_count
+        type: Int64
+        nullable: true
+        description: Number of runs in the project.
+        expr: {kind: path, path: [run_count]}
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total token count across project runs.
+        expr: {kind: path, path: [total_tokens]}
+      - name: prompt_tokens
+        type: Int64
+        nullable: true
+        description: Prompt token count across project runs.
+        expr: {kind: path, path: [prompt_tokens]}
+      - name: completion_tokens
+        type: Int64
+        nullable: true
+        description: Completion token count across project runs.
+        expr: {kind: path, path: [completion_tokens]}
+      - name: total_cost
+        type: Float64
+        nullable: true
+        description: Total traced cost for the project.
+        expr: {kind: path, path: [total_cost]}
+      - name: prompt_cost
+        type: Float64
+        nullable: true
+        description: Prompt cost for project runs.
+        expr: {kind: path, path: [prompt_cost]}
+      - name: completion_cost
+        type: Float64
+        nullable: true
+        description: Completion cost for project runs.
+        expr: {kind: path, path: [completion_cost]}
+      - name: latency_p50
+        type: Float64
+        nullable: true
+        description: Project p50 latency.
+        expr: {kind: path, path: [latency_p50]}
+      - name: latency_p99
+        type: Float64
+        nullable: true
+        description: Project p99 latency.
+        expr: {kind: path, path: [latency_p99]}
+      - name: error_rate
+        type: Float64
+        nullable: true
+        description: Project error rate.
+        expr: {kind: path, path: [error_rate]}
+      - name: feedback_stats
+        type: Json
+        nullable: true
+        description: Aggregated project feedback statistics.
+        expr: {kind: path, path: [feedback_stats]}
+      - name: extra
+        type: Json
+        nullable: true
+        description: Project metadata and extra fields.
+        expr: {kind: path, path: [extra]}
+
+  - name: runs
+    description: LangSmith runs queried from tracing projects.
+    filters:
+      - name: project_id
+      - name: run_type
+      - name: trace_id
+      - name: parent_run_id
+      - name: reference_example_id
+      - name: start_time
+      - name: end_time
+      - name: error
+      - name: query
+      - name: filter
+      - name: trace_filter
+      - name: tree_filter
+      - name: is_root
+      - name: order
+    request:
+      method: POST
+      path: /api/v1/runs/query
+      body:
+        - path: [session]
+          from: filter
+          key: project_id
+        - path: [run_type]
+          from: filter
+          key: run_type
+        - path: [trace]
+          from: filter
+          key: trace_id
+        - path: [parent_run]
+          from: filter
+          key: parent_run_id
+        - path: [reference_example]
+          from: filter
+          key: reference_example_id
+        - path: [start_time]
+          from: filter
+          key: start_time
+        - path: [end_time]
+          from: filter
+          key: end_time
+        - path: [error]
+          from: filter_bool
+          key: error
+        - path: [query]
+          from: filter
+          key: query
+        - path: [filter]
+          from: filter
+          key: filter
+        - path: [trace_filter]
+          from: filter
+          key: trace_filter
+        - path: [tree_filter]
+          from: filter
+          key: tree_filter
+        - path: [is_root]
+          from: filter_bool
+          key: is_root
+        - path: [order]
+          from: filter
+          key: order
+          default: desc
+    response:
+      rows_path: [runs]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [cursor]
+      response_cursor_path: [cursors, next]
+      page_size:
+        default: 100
+        max: 100
+        body_path: [limit]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Run ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Run name.
+        expr: {kind: path, path: [name]}
+      - name: run_type
+        type: Utf8
+        nullable: true
+        description: Run type, such as llm, chain, tool, or retriever.
+        expr: {kind: path, path: [run_type]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Run status.
+        expr: {kind: path, path: [status]}
+      - name: error
+        type: Utf8
+        nullable: true
+        description: Run error text, if present.
+        expr: {kind: path, path: [error]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Run start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [start_time]}
+      - name: end_time
+        type: Timestamp
+        nullable: true
+        description: Run end time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [end_time]}
+      - name: first_token_time
+        type: Timestamp
+        nullable: true
+        description: First token time for streaming runs.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [first_token_time]}
+      - name: session_id
+        type: Utf8
+        nullable: true
+        description: Project/session ID for the run.
+        expr: {kind: path, path: [session_id]}
+      - name: trace_id
+        type: Utf8
+        nullable: true
+        description: Trace ID for the run tree.
+        expr: {kind: path, path: [trace_id]}
+      - name: parent_run_id
+        type: Utf8
+        nullable: true
+        description: Parent run ID.
+        expr: {kind: path, path: [parent_run_id]}
+      - name: reference_example_id
+        type: Utf8
+        nullable: true
+        description: Reference example ID linked to this run.
+        expr: {kind: path, path: [reference_example_id]}
+      - name: reference_dataset_id
+        type: Utf8
+        nullable: true
+        description: Reference dataset ID linked to this run.
+        expr: {kind: path, path: [reference_dataset_id]}
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total tokens used by this run.
+        expr: {kind: path, path: [total_tokens]}
+      - name: prompt_tokens
+        type: Int64
+        nullable: true
+        description: Prompt tokens used by this run.
+        expr: {kind: path, path: [prompt_tokens]}
+      - name: completion_tokens
+        type: Int64
+        nullable: true
+        description: Completion tokens used by this run.
+        expr: {kind: path, path: [completion_tokens]}
+      - name: total_cost
+        type: Float64
+        nullable: true
+        description: Total cost for this run.
+        expr: {kind: path, path: [total_cost]}
+      - name: prompt_cost
+        type: Float64
+        nullable: true
+        description: Prompt cost for this run.
+        expr: {kind: path, path: [prompt_cost]}
+      - name: completion_cost
+        type: Float64
+        nullable: true
+        description: Completion cost for this run.
+        expr: {kind: path, path: [completion_cost]}
+      - name: inputs
+        type: Json
+        nullable: true
+        description: Run inputs.
+        expr: {kind: path, path: [inputs]}
+      - name: outputs
+        type: Json
+        nullable: true
+        description: Run outputs.
+        expr: {kind: path, path: [outputs]}
+      - name: events
+        type: Json
+        nullable: true
+        description: Run events.
+        expr: {kind: path, path: [events]}
+      - name: tags
+        type: Json
+        nullable: true
+        description: Run tags.
+        expr: {kind: path, path: [tags]}
+      - name: feedback_stats
+        type: Json
+        nullable: true
+        description: Feedback statistics attached to the run.
+        expr: {kind: path, path: [feedback_stats]}
+      - name: extra
+        type: Json
+        nullable: true
+        description: Extra run metadata.
+        expr: {kind: path, path: [extra]}
+
+  - name: datasets
+    description: LangSmith datasets for evaluation and testing.
+    filters:
+      - name: name
+      - name: name_contains
+      - name: data_type
+      - name: metadata
+    request:
+      method: GET
+      path: /api/v1/datasets
+      query:
+        - name: name
+          from: filter
+          key: name
+        - name: name_contains
+          from: filter
+          key: name_contains
+        - name: data_type
+          from: filter
+          key: data_type
+        - name: metadata
+          from: filter
+          key: metadata
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Dataset ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Dataset name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Dataset description.
+        expr: {kind: path, path: [description]}
+      - name: data_type
+        type: Utf8
+        nullable: true
+        description: Dataset data type.
+        expr: {kind: path, path: [data_type]}
+      - name: tenant_id
+        type: Utf8
+        nullable: true
+        description: Tenant ID that owns the dataset.
+        expr: {kind: path, path: [tenant_id]}
+      - name: example_count
+        type: Int64
+        nullable: true
+        description: Number of examples in the dataset.
+        expr: {kind: path, path: [example_count]}
+      - name: session_count
+        type: Int64
+        nullable: true
+        description: Number of sessions linked to the dataset.
+        expr: {kind: path, path: [session_count]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Dataset creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: modified_at
+        type: Timestamp
+        nullable: true
+        description: Dataset modification time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [modified_at]}
+      - name: last_session_start_time
+        type: Timestamp
+        nullable: true
+        description: Last linked session start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_session_start_time]}
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Dataset metadata.
+        expr: {kind: path, path: [metadata]}
+      - name: inputs_schema_definition
+        type: Json
+        nullable: true
+        description: Input schema definition.
+        expr: {kind: path, path: [inputs_schema_definition]}
+      - name: outputs_schema_definition
+        type: Json
+        nullable: true
+        description: Output schema definition.
+        expr: {kind: path, path: [outputs_schema_definition]}
+
+  - name: examples
+    description: Examples in LangSmith datasets.
+    filters:
+      - name: dataset_id
+      - name: metadata
+      - name: full_text_contains
+      - name: splits
+      - name: as_of
+      - name: order
+      - name: filter
+    request:
+      method: GET
+      path: /api/v1/examples
+      query:
+        - name: dataset
+          from: filter
+          key: dataset_id
+        - name: metadata
+          from: filter
+          key: metadata
+        - name: full_text_contains
+          from: filter
+          key: full_text_contains
+        - name: splits
+          from: filter
+          key: splits
+        - name: as_of
+          from: filter
+          key: as_of
+        - name: order
+          from: filter
+          key: order
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Example ID.
+        expr: {kind: path, path: [id]}
+      - name: dataset_id
+        type: Utf8
+        nullable: true
+        description: Dataset ID that owns the example.
+        expr: {kind: path, path: [dataset_id]}
+      - name: source_run_id
+        type: Utf8
+        nullable: true
+        description: Source run ID used to create the example.
+        expr: {kind: path, path: [source_run_id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Example name.
+        expr: {kind: path, path: [name]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Example creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: modified_at
+        type: Timestamp
+        nullable: true
+        description: Example modification time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [modified_at]}
+      - name: inputs
+        type: Json
+        nullable: true
+        description: Example inputs.
+        expr: {kind: path, path: [inputs]}
+      - name: outputs
+        type: Json
+        nullable: true
+        description: Example outputs.
+        expr: {kind: path, path: [outputs]}
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Example metadata.
+        expr: {kind: path, path: [metadata]}
+      - name: attachment_urls
+        type: Json
+        nullable: true
+        description: Example attachment URLs.
+        expr: {kind: path, path: [attachment_urls]}
+
+  - name: feedback
+    description: Feedback records attached to runs, traces, sessions, or comparative experiments.
+    filters:
+      - name: run_id
+      - name: trace_id
+      - name: session_id
+      - name: key
+      - name: source
+      - name: has_comment
+      - name: has_score
+      - name: level
+      - name: min_created_at
+      - name: max_created_at
+    request:
+      method: GET
+      path: /api/v1/feedback
+      query:
+        - name: run
+          from: filter
+          key: run_id
+        - name: trace_id
+          from: filter
+          key: trace_id
+        - name: session
+          from: filter
+          key: session_id
+        - name: key
+          from: filter
+          key: key
+        - name: source
+          from: filter
+          key: source
+        - name: has_comment
+          from: filter_bool
+          key: has_comment
+        - name: has_score
+          from: filter_bool
+          key: has_score
+        - name: level
+          from: filter
+          key: level
+        - name: min_created_at
+          from: filter
+          key: min_created_at
+        - name: max_created_at
+          from: filter
+          key: max_created_at
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Feedback ID.
+        expr: {kind: path, path: [id]}
+      - name: run_id
+        type: Utf8
+        nullable: true
+        description: Run ID for the feedback.
+        expr: {kind: path, path: [run_id]}
+      - name: trace_id
+        type: Utf8
+        nullable: true
+        description: Trace ID for the feedback.
+        expr: {kind: path, path: [trace_id]}
+      - name: session_id
+        type: Utf8
+        nullable: true
+        description: Session/project ID for the feedback.
+        expr: {kind: path, path: [session_id]}
+      - name: key
+        type: Utf8
+        nullable: true
+        description: Feedback key.
+        expr: {kind: path, path: [key]}
+      - name: score
+        type: Float64
+        nullable: true
+        description: Numeric feedback score.
+        expr: {kind: path, path: [score]}
+      - name: value
+        type: Utf8
+        nullable: true
+        description: String feedback value.
+        expr: {kind: path, path: [value]}
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Feedback comment.
+        expr: {kind: path, path: [comment]}
+      - name: correction
+        type: Json
+        nullable: true
+        description: Feedback correction payload.
+        expr: {kind: path, path: [correction]}
+      - name: feedback_source
+        type: Json
+        nullable: true
+        description: Feedback source metadata.
+        expr: {kind: path, path: [feedback_source]}
+      - name: feedback_group_id
+        type: Utf8
+        nullable: true
+        description: Feedback group ID.
+        expr: {kind: path, path: [feedback_group_id]}
+      - name: feedback_thread_id
+        type: Utf8
+        nullable: true
+        description: Feedback thread ID.
+        expr: {kind: path, path: [feedback_thread_id]}
+      - name: comparative_experiment_id
+        type: Utf8
+        nullable: true
+        description: Comparative experiment ID.
+        expr: {kind: path, path: [comparative_experiment_id]}
+      - name: is_root
+        type: Boolean
+        nullable: true
+        description: Whether this is root feedback.
+        expr: {kind: path, path: [is_root]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Feedback creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: modified_at
+        type: Timestamp
+        nullable: true
+        description: Feedback modification time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [modified_at]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Feedback start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [start_time]}
+      - name: extra
+        type: Json
+        nullable: true
+        description: Extra feedback metadata.
+        expr: {kind: path, path: [extra]}

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Coral Create Source Spec"
+  short_description: "Author Coral source specs with lint/test validation"
+  default_prompt: "Use $coral-create-source-spec to create or refine a Coral source spec YAML, and validate it."
+
+policy:
+  allow_implicit_invocation: true

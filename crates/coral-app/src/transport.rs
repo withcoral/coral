@@ -2,17 +2,30 @@
 
 use std::future::Future;
 
-use coral_api::v1::{
-    Column, QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, Table, TableSummary,
-    ValidateSourceResponse, Workspace, query_test_result,
+use coral_api::{
+    CORAL_ERROR_DOMAIN, grpc_response_status_code,
+    v1::{
+        CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
+        ColumnSearchResult as ProtoColumnSearchResult,
+        DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
+        QueryTestResult, QueryTestSuccess, Source, Table, TableFunction, TableFunctionArgument,
+        TableFunctionResultColumn, TableSummary, ValidateSourceResponse, Workspace, catalog_item,
+        query_test_result,
+    },
 };
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
-use tonic::{Code, Status};
-use tracing::Instrument as _;
+use tonic::codegen::{Service, http};
+use tonic::{Code, Request, Status};
+use tonic_types::{ErrorDetail, StatusExt as _};
+use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::{AppError, app_status, core_status};
+use crate::catalog::discovery::{
+    CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
+    ColumnSearchResult, DescribeTableResult,
+};
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -42,21 +55,121 @@ pub(crate) fn extract_trace_context(
     opentelemetry::global::get_text_map_propagator(|p| p.extract(&MetadataExtractor(metadata)))
 }
 
-/// Creates a span parented to the trace context extracted from `metadata`.
-pub(crate) fn grpc_span(
-    metadata: &tonic::metadata::MetadataMap,
-    name: &'static str,
-) -> tracing::Span {
-    let parent_cx = extract_trace_context(metadata);
+/// Wraps a generated tonic service and stores the inbound gRPC path on the request.
+///
+/// Tonic preserves `http::Request` extensions when it decodes the protobuf
+/// message into a `tonic::Request`, but generated server wrappers do not insert
+/// `tonic::GrpcMethod` the way generated clients do. This keeps the method
+/// data at the transport boundary and lets handlers read it from the request.
+#[derive(Clone)]
+pub(crate) struct GrpcMethodAnnotatedService<S> {
+    inner: S,
+}
+
+impl<S> GrpcMethodAnnotatedService<S> {
+    pub(crate) fn new(inner: S) -> Self {
+        Self { inner }
+    }
+}
+
+impl<S, B> Service<http::Request<B>> for GrpcMethodAnnotatedService<S>
+where
+    S: Service<http::Request<B>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
+        if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
+            request.extensions_mut().insert(method);
+        }
+        self.inner.call(request)
+    }
+}
+
+impl<S> tonic::server::NamedService for GrpcMethodAnnotatedService<S>
+where
+    S: tonic::server::NamedService,
+{
+    const NAME: &'static str = S::NAME;
+}
+
+/// Creates a span parented to the trace context extracted from a gRPC request.
+pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
+    let parent_cx = extract_trace_context(request.metadata());
+    let metadata = grpc_method(request);
+    let span_name = format!("{}/{}", metadata.service, metadata.method);
     let span = tracing::info_span!(
         "grpc",
-        grpc.method = name,
+        error.type = tracing::field::Empty,
+        exception.message = tracing::field::Empty,
+        otel.kind = "server",
+        otel.name = span_name.as_str(),
+        rpc.system = "grpc",
+        rpc.system.name = "grpc",
+        rpc.service = metadata.service.as_str(),
+        rpc.method = metadata.method.as_str(),
+        rpc.response.status_code = tracing::field::Empty,
+        grpc.method = metadata.method.as_str(),
         grpc.status_code = tracing::field::Empty,
         grpc.code = tracing::field::Empty,
         status = tracing::field::Empty,
     );
-    let _ = span.set_parent(parent_cx);
+    drop(span.set_parent(parent_cx));
     span
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GrpcServerMethod {
+    service: String,
+    method: String,
+}
+
+impl GrpcServerMethod {
+    fn from_path(path: &str) -> Option<Self> {
+        let trimmed = path.strip_prefix('/').unwrap_or(path);
+        let (service, method) = trimmed.split_once('/')?;
+        if service.is_empty() || method.is_empty() || method.contains('/') {
+            return None;
+        }
+        Some(Self {
+            service: service.to_string(),
+            method: method.to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct GrpcMethodMetadata {
+    service: String,
+    method: String,
+}
+
+impl GrpcMethodMetadata {
+    fn new(service: impl Into<String>, method: impl Into<String>) -> Self {
+        Self {
+            service: service.into(),
+            method: method.into(),
+        }
+    }
+}
+
+fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
+    if let Some(method) = request.extensions().get::<tonic::GrpcMethod<'static>>() {
+        return GrpcMethodMetadata::new(method.service(), method.method());
+    }
+    request.extensions().get::<GrpcServerMethod>().map_or_else(
+        || GrpcMethodMetadata::new("coral.v1.UnknownService", "Unknown"),
+        |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
+    )
 }
 
 pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
@@ -65,50 +178,58 @@ where
 {
     let result = future.instrument(span.clone()).await;
     match &result {
-        Ok(_) => record_grpc_status(&span, Code::Ok),
-        Err(status) => record_grpc_status(&span, status.code()),
+        Ok(_) => record_grpc_status(&span, Code::Ok, None),
+        Err(status) => record_grpc_status(&span, status.code(), Some(status)),
     }
     result
 }
 
-fn record_grpc_status(span: &tracing::Span, code: Code) {
+fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>) {
+    let response_status_code = grpc_response_status_code(code);
     span.record("grpc.status_code", code as i64);
-    span.record("grpc.code", grpc_code_label(code));
+    span.record("grpc.code", response_status_code);
+    span.record("rpc.response.status_code", response_status_code);
     if code == Code::Ok {
         span.record("status", "ok");
         span.set_status(OtelStatus::Ok);
     } else {
+        let error = status.map_or_else(
+            || GrpcErrorTelemetry {
+                error_type: response_status_code.to_string(),
+                message: response_status_code.to_string(),
+            },
+            decode_grpc_error,
+        );
         span.record("status", "error");
-        span.set_status(OtelStatus::error(grpc_code_label(code)));
+        span.record("error.type", error.error_type.as_str());
+        span.record("exception.message", field::display(error.message.as_str()));
+        span.set_status(OtelStatus::error(error.message));
     }
 }
 
-fn grpc_code_label(code: Code) -> &'static str {
-    match code {
-        Code::Ok => "ok",
-        Code::Cancelled => "cancelled",
-        Code::Unknown => "unknown",
-        Code::InvalidArgument => "invalid_argument",
-        Code::DeadlineExceeded => "deadline_exceeded",
-        Code::NotFound => "not_found",
-        Code::AlreadyExists => "already_exists",
-        Code::PermissionDenied => "permission_denied",
-        Code::ResourceExhausted => "resource_exhausted",
-        Code::FailedPrecondition => "failed_precondition",
-        Code::Aborted => "aborted",
-        Code::OutOfRange => "out_of_range",
-        Code::Unimplemented => "unimplemented",
-        Code::Internal => "internal",
-        Code::Unavailable => "unavailable",
-        Code::DataLoss => "data_loss",
-        Code::Unauthenticated => "unauthenticated",
+struct GrpcErrorTelemetry {
+    error_type: String,
+    message: String,
+}
+
+fn decode_grpc_error(status: &Status) -> GrpcErrorTelemetry {
+    for detail in status.get_error_details_vec() {
+        if let ErrorDetail::ErrorInfo(info) = detail
+            && info.domain == CORAL_ERROR_DOMAIN
+        {
+            return GrpcErrorTelemetry {
+                error_type: info.reason,
+                message: status.message().to_string(),
+            };
+        }
+    }
+
+    GrpcErrorTelemetry {
+        error_type: grpc_response_status_code(status.code()).to_string(),
+        message: status.message().to_string(),
     }
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "used directly as a map_err adapter across tonic service handlers"
-)]
 pub(crate) fn query_status(error: QueryManagerError) -> Status {
     match error {
         QueryManagerError::App(error) => app_status(error),
@@ -147,6 +268,129 @@ pub(crate) fn table_summary_to_proto(
         name: table.table_name,
         description: table.description,
         required_filters: table.required_filters,
+        guide: table.guide,
+    }
+}
+
+pub(crate) fn catalog_item_to_proto(
+    workspace_name: &WorkspaceName,
+    item: CatalogItem,
+) -> ProtoCatalogItem {
+    match item {
+        CatalogItem::Table(table) => ProtoCatalogItem {
+            item: Some(catalog_item::Item::Table(table_summary_to_proto(
+                workspace_name,
+                table,
+            ))),
+        },
+        CatalogItem::TableFunction(function) => ProtoCatalogItem {
+            item: Some(catalog_item::Item::TableFunction(table_function_to_proto(
+                workspace_name,
+                function,
+            ))),
+        },
+    }
+}
+
+pub(crate) fn catalog_search_result_to_proto(
+    workspace_name: &WorkspaceName,
+    result: CatalogSearchResult,
+) -> ProtoCatalogSearchResult {
+    ProtoCatalogSearchResult {
+        item: Some(catalog_item_to_proto(workspace_name, result.item)),
+        matched_fields: result
+            .matched_fields
+            .into_iter()
+            .map(CatalogMetadataField::as_proto_name)
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+pub(crate) fn table_function_to_proto(
+    workspace_name: &WorkspaceName,
+    function: coral_engine::TableFunctionInfo,
+) -> TableFunction {
+    TableFunction {
+        workspace: Some(workspace_to_proto(workspace_name)),
+        schema_name: function.schema_name,
+        name: function.function_name,
+        description: function.description,
+        arguments: function
+            .arguments
+            .into_iter()
+            .map(|argument| TableFunctionArgument {
+                name: argument.name,
+                required: argument.required,
+                values: argument.values,
+            })
+            .collect(),
+        result_columns: function
+            .result_columns
+            .into_iter()
+            .map(|column| TableFunctionResultColumn {
+                name: column.name,
+                data_type: column.data_type,
+                nullable: column.nullable,
+                description: column.description,
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn describe_table_response_to_proto(
+    workspace_name: &WorkspaceName,
+    result: DescribeTableResult,
+) -> ProtoDescribeTableResponse {
+    match result {
+        DescribeTableResult::Found(table) => ProtoDescribeTableResponse {
+            table: Some(table_to_proto(workspace_name, table)),
+            suggestions: Vec::new(),
+            available_schemas: Vec::new(),
+            same_schema_tables: Vec::new(),
+        },
+        DescribeTableResult::Missing(context) => ProtoDescribeTableResponse {
+            table: None,
+            suggestions: context
+                .suggestions
+                .into_iter()
+                .map(|table| table_summary_to_proto(workspace_name, table))
+                .collect(),
+            available_schemas: context.available_schemas,
+            same_schema_tables: context
+                .same_schema_tables
+                .into_iter()
+                .map(|table| table_summary_to_proto(workspace_name, table))
+                .collect(),
+        },
+    }
+}
+
+pub(crate) fn column_search_result_to_proto(result: ColumnSearchResult) -> ProtoColumnSearchResult {
+    ProtoColumnSearchResult {
+        column: Some(column_to_proto(result.column)),
+        matched_fields: result
+            .matched_fields
+            .into_iter()
+            .map(ColumnMetadataField::as_proto_name)
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+pub(crate) fn pagination_to_proto(
+    total_count: u32,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
+    next_offset: Option<u32>,
+) -> PaginationResponse {
+    PaginationResponse {
+        total_count,
+        limit,
+        offset,
+        has_more,
+        next_offset: next_offset.unwrap_or(0),
     }
 }
 
@@ -154,15 +398,7 @@ fn table_to_proto_with_columns(
     workspace_name: &WorkspaceName,
     table: coral_engine::TableInfo,
 ) -> Table {
-    let columns = table
-        .columns
-        .into_iter()
-        .map(|column| Column {
-            name: column.name,
-            data_type: column.data_type,
-            nullable: column.nullable,
-        })
-        .collect();
+    let columns = table.columns.into_iter().map(column_to_proto).collect();
 
     Table {
         workspace: Some(workspace_to_proto(workspace_name)),
@@ -171,6 +407,19 @@ fn table_to_proto_with_columns(
         description: table.description,
         columns,
         required_filters: table.required_filters,
+        guide: table.guide,
+    }
+}
+
+fn column_to_proto(column: coral_engine::ColumnInfo) -> Column {
+    Column {
+        name: column.name,
+        data_type: column.data_type,
+        nullable: column.nullable,
+        is_virtual: column.is_virtual,
+        is_required_filter: column.is_required_filter,
+        description: column.description,
+        ordinal_position: column.ordinal_position,
     }
 }
 
@@ -198,6 +447,7 @@ pub(crate) fn validate_source_response_to_proto(
 ) -> ValidateSourceResponse {
     let coral_engine::SourceValidationReport {
         tables,
+        table_functions,
         query_tests,
     } = report;
     ValidateSourceResponse {
@@ -207,17 +457,30 @@ pub(crate) fn validate_source_response_to_proto(
             .map(|table| table_to_proto(workspace_name, table))
             .collect(),
         query_tests: query_tests.iter().map(query_test_result_to_proto).collect(),
+        table_functions: table_functions
+            .into_iter()
+            .map(|function| table_function_to_proto(workspace_name, function))
+            .collect(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::{QueryTestFailure, Workspace, query_test_result};
-    use tonic::Code;
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "proto shape assertions intentionally fail loudly in tests"
+    )]
+
+    use coral_api::{
+        grpc_response_status_code,
+        v1::{QueryTestFailure, Workspace, query_test_result},
+    };
+    use tonic::{Code, Request};
 
     use super::{
-        grpc_code_label, query_status, query_test_result_to_proto, table_summary_to_proto,
-        table_to_proto, workspace_name_from_proto, workspace_to_proto,
+        GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
+        query_test_result_to_proto, table_summary_to_proto, table_to_proto,
+        workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
@@ -247,14 +510,42 @@ mod tests {
     }
 
     #[test]
-    fn grpc_code_labels_are_low_cardinality() {
-        assert_eq!(grpc_code_label(Code::Ok), "ok");
-        assert_eq!(grpc_code_label(Code::InvalidArgument), "invalid_argument");
+    fn grpc_response_status_codes_use_otel_names() {
+        assert_eq!(grpc_response_status_code(Code::Ok), "OK");
         assert_eq!(
-            grpc_code_label(Code::FailedPrecondition),
-            "failed_precondition"
+            grpc_response_status_code(Code::InvalidArgument),
+            "INVALID_ARGUMENT"
         );
-        assert_eq!(grpc_code_label(Code::Unavailable), "unavailable");
+        assert_eq!(grpc_response_status_code(Code::Unavailable), "UNAVAILABLE");
+    }
+
+    #[test]
+    fn grpc_server_method_derives_from_uri_path() {
+        assert_eq!(
+            GrpcServerMethod::from_path("/coral.v1.QueryService/ExecuteSql"),
+            Some(GrpcServerMethod {
+                service: "coral.v1.QueryService".to_string(),
+                method: "ExecuteSql".to_string(),
+            })
+        );
+        assert_eq!(GrpcServerMethod::from_path("/missing-method"), None);
+        assert_eq!(
+            GrpcServerMethod::from_path("/coral.v1.QueryService/Extra/Path"),
+            None
+        );
+    }
+
+    #[test]
+    fn grpc_method_reads_server_method_from_request_extensions() {
+        let mut request = Request::new(());
+        request
+            .extensions_mut()
+            .insert(GrpcServerMethod::from_path("/coral.v1.QueryService/ExecuteSql").unwrap());
+
+        assert_eq!(
+            grpc_method(&request),
+            GrpcMethodMetadata::new("coral.v1.QueryService", "ExecuteSql")
+        );
     }
 
     #[test]
@@ -284,10 +575,15 @@ mod tests {
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
+            guide: "Filter by org_id.".to_string(),
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
                 nullable: false,
+                is_virtual: false,
+                is_required_filter: true,
+                description: "User id".to_string(),
+                ordinal_position: 0,
             }],
             required_filters: vec!["org_id".to_string()],
         };
@@ -298,10 +594,15 @@ mod tests {
         assert_eq!(proto.schema_name, "demo");
         assert_eq!(proto.name, "users");
         assert_eq!(proto.description, "User records");
+        assert_eq!(proto.guide, "Filter by org_id.");
         assert_eq!(proto.columns.len(), 1);
         assert_eq!(proto.columns[0].name, "id");
         assert_eq!(proto.columns[0].data_type, "Int64");
         assert!(!proto.columns[0].nullable);
+        assert!(!proto.columns[0].is_virtual);
+        assert!(proto.columns[0].is_required_filter);
+        assert_eq!(proto.columns[0].description, "User id");
+        assert_eq!(proto.columns[0].ordinal_position, 0);
         assert_eq!(proto.required_filters, vec!["org_id"]);
     }
 
@@ -312,10 +613,15 @@ mod tests {
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
+            guide: "Filter by org_id.".to_string(),
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
                 nullable: false,
+                is_virtual: false,
+                is_required_filter: true,
+                description: "User id".to_string(),
+                ordinal_position: 0,
             }],
             required_filters: vec!["org_id".to_string()],
         };
@@ -326,6 +632,7 @@ mod tests {
         assert_eq!(proto.schema_name, "demo");
         assert_eq!(proto.name, "users");
         assert_eq!(proto.description, "User records");
+        assert_eq!(proto.guide, "Filter by org_id.");
         assert_eq!(proto.required_filters, vec!["org_id"]);
     }
 

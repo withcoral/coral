@@ -1,24 +1,28 @@
 //! Query-time loading, validation, and execution over installed sources.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CoralQuery, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    SourceValidationReport, TableInfo,
+    CatalogInfo, CoralQuery, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
-use opentelemetry::trace::Status as OtelStatus;
+use opentelemetry::{KeyValue, trace::Status as OtelStatus};
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
+use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::query::extensions::{
+    CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
+};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
-use crate::state::{AppStateLayout, ConfigStore, SecretStore};
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
@@ -35,7 +39,7 @@ pub(crate) struct ValidatedSource {
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
-    secret_store: SecretStore,
+    credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
@@ -44,14 +48,14 @@ pub(crate) struct QueryManager {
 impl QueryManager {
     pub(crate) fn new(
         config_store: ConfigStore,
-        secret_store: SecretStore,
+        credential_manager: CredentialManager,
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
         Self {
             config_store,
-            secret_store,
+            credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
@@ -62,12 +66,27 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
+        table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(&sources);
-        CoralQuery::list_tables(&sources, runtime, schema_filter)
+        let runtime = self.runtime_config(workspace_name, &sources);
+        CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
+            .await
+            .map_err(QueryManagerError::Core)
+    }
+
+    pub(crate) async fn list_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_filter: Option<&str>,
+    ) -> Result<CatalogInfo, QueryManagerError> {
+        let sources = self
+            .load_query_sources(workspace_name)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self.runtime_config(workspace_name, &sources);
+        CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
     }
@@ -77,44 +96,45 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         sql: &str,
     ) -> Result<QueryExecution, QueryManagerError> {
-        let started_at = Instant::now();
-        let query_span = create_query_span(workspace_name, sql);
-        let result = async {
-            let sources = self
-                .load_query_sources(workspace_name)
-                .map_err(QueryManagerError::App)?;
-            let runtime = self.runtime_config(&sources);
-            CoralQuery::execute_sql(&sources, runtime, sql)
-                .await
-                .map_err(QueryManagerError::Core)
-        }
-        .instrument(query_span.clone())
-        .await;
+        run_query_operation(
+            QueryOperation::ExecuteSql,
+            workspace_name,
+            sql,
+            async {
+                let sources = self
+                    .load_query_sources(workspace_name)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self.runtime_config(workspace_name, &sources);
+                CoralQuery::execute_sql(&sources, runtime, sql)
+                    .await
+                    .map_err(QueryManagerError::Core)
+            },
+            |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
+        )
+        .await
+    }
 
-        let metrics = crate::telemetry::metrics::metrics();
-        let status = crate::telemetry::metrics::status_attr(result.is_ok());
-        metrics.count.add(1, std::slice::from_ref(&status));
-        metrics.duration.record(
-            started_at.elapsed().as_secs_f64(),
-            std::slice::from_ref(&status),
-        );
-
-        if let Ok(execution) = &result {
-            let row_count = u64::try_from(execution.row_count()).unwrap_or(u64::MAX);
-            query_span.record("row_count", row_count);
-            query_span.record("status", "ok");
-            query_span.set_status(OtelStatus::Ok);
-            metrics
-                .rows
-                .record(row_count, std::slice::from_ref(&status));
-        } else if let Err(error) = &result {
-            let error_kind = query_error_kind(error);
-            query_span.record("status", "error");
-            query_span.record("error.kind", error_kind);
-            query_span.set_status(OtelStatus::error(error_kind));
-        }
-
-        result
+    pub(crate) async fn explain_sql(
+        &self,
+        workspace_name: &WorkspaceName,
+        sql: &str,
+    ) -> Result<QueryPlan, QueryManagerError> {
+        run_query_operation(
+            QueryOperation::ExplainSql,
+            workspace_name,
+            sql,
+            async {
+                let sources = self
+                    .load_query_sources(workspace_name)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self.runtime_config(workspace_name, &sources);
+                CoralQuery::explain_sql(&sources, runtime, sql)
+                    .await
+                    .map_err(QueryManagerError::Core)
+            },
+            |_| None,
+        )
+        .await
     }
 
     pub(crate) async fn validate_source(
@@ -129,7 +149,7 @@ impl QueryManager {
         let (query_source, version) = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(std::slice::from_ref(&query_source));
+        let runtime = self.runtime_config(workspace_name, std::slice::from_ref(&query_source));
         let report = CoralQuery::validate_source(
             &query_source,
             runtime,
@@ -152,6 +172,9 @@ impl QueryManager {
         for source in catalog.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
+                Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
+                    return Err(error);
+                }
                 Err(error) => {
                     tracing::warn!(
                         source = %source.name,
@@ -172,9 +195,17 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         validate_required_variables(source, source_spec.declared_inputs())?;
-        let stored_secrets = self
-            .secret_store
-            .read_source_secrets_for(workspace_name, &source.name)?;
+        let stored_secrets =
+            if let Some(credential_storage) = source.credential_storage_for_material() {
+                let credential_set_id = CredentialSetId::for_source(&source.name);
+                self.credential_manager.read_material(
+                    workspace_name,
+                    &credential_set_id,
+                    credential_storage,
+                )?
+            } else {
+                BTreeMap::new()
+            };
         let mut resolved_secrets = BTreeMap::new();
         let missing_secrets: Vec<String> = source_spec
             .required_secret_names()
@@ -192,9 +223,10 @@ impl QueryManager {
                 source.name
             )));
         }
-        for secret_name in source_spec.required_secret_names() {
-            let value = stored_secrets[&secret_name].clone();
-            resolved_secrets.insert(secret_name, value);
+        for secret_name in source_spec.declared_secret_names() {
+            if let Some(value) = stored_secrets.get(&secret_name) {
+                resolved_secrets.insert(secret_name, value.clone());
+            }
         }
         Ok((
             QuerySource::new(source_spec, source.variables.clone(), resolved_secrets),
@@ -202,24 +234,100 @@ impl QueryManager {
         ))
     }
 
-    fn runtime_config(&self, selected_sources: &[QuerySource]) -> QueryRuntimeConfig {
-        QueryRuntimeConfig::new(
-            self.runtime_context.clone(),
-            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources),
-        )
+    fn runtime_config(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+    ) -> QueryRuntimeConfig {
+        let mut extensions =
+            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+        let provider_input_resolver = extensions.source_input_resolver.take();
+        extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
+            workspace_name.clone(),
+            self.config_store.clone(),
+            self.credential_manager.clone(),
+            provider_input_resolver,
+        )));
+        QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
 
-fn create_query_span(workspace_name: &WorkspaceName, sql: &str) -> tracing::Span {
+#[derive(Clone, Copy)]
+enum QueryOperation {
+    ExecuteSql,
+    ExplainSql,
+}
+
+impl QueryOperation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExecuteSql => "execute_sql",
+            Self::ExplainSql => "explain_sql",
+        }
+    }
+}
+
+async fn run_query_operation<T, Fut, RowCount>(
+    operation: QueryOperation,
+    workspace_name: &WorkspaceName,
+    sql: &str,
+    query: Fut,
+    row_count: RowCount,
+) -> Result<T, QueryManagerError>
+where
+    Fut: Future<Output = Result<T, QueryManagerError>>,
+    RowCount: FnOnce(&T) -> Option<u64>,
+{
+    let started_at = Instant::now();
+    let query_span = create_query_span(operation, workspace_name, sql);
+    let result = query.instrument(query_span.clone()).await;
+
+    let metrics = crate::telemetry::metrics::metrics();
+    let status = crate::telemetry::metrics::status_attr(result.is_ok());
+    let attributes = [status, KeyValue::new("operation", operation.as_str())];
+    metrics.count.add(1, &attributes);
+    metrics
+        .duration
+        .record(started_at.elapsed().as_secs_f64(), &attributes);
+
+    if let Ok(value) = &result {
+        query_span.record("status", "ok");
+        query_span.set_status(OtelStatus::Ok);
+        if let Some(row_count) = row_count(value) {
+            query_span.record("row_count", row_count);
+            metrics.rows.record(row_count, &attributes);
+        }
+    } else if let Err(error) = &result {
+        let error_kind = query_error_kind(error);
+        let error_type = query_error_type(error);
+        let error_message = query_error_message(error);
+        query_span.record("status", "error");
+        query_span.record("error.kind", error_kind);
+        query_span.record("error.type", error_type.as_str());
+        query_span.record("exception.message", error_message.as_str());
+        query_span.set_status(OtelStatus::error(error_message));
+    }
+
+    result
+}
+
+fn create_query_span(
+    operation: QueryOperation,
+    workspace_name: &WorkspaceName,
+    sql: &str,
+) -> tracing::Span {
+    let operation = operation.as_str();
     tracing::info_span!(
         "coral.query",
         otel.name = "coral.query",
-        operation = "execute_sql",
+        operation = operation,
         workspace = %workspace_name.as_str(),
         sql = %sql,
         row_count = tracing::field::Empty,
         status = tracing::field::Empty,
         error.kind = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        exception.message = tracing::field::Empty,
     )
 }
 
@@ -227,6 +335,57 @@ fn query_error_kind(error: &QueryManagerError) -> &'static str {
     match error {
         QueryManagerError::App(_) => "app",
         QueryManagerError::Core(_) => "core",
+    }
+}
+
+fn query_error_type(error: &QueryManagerError) -> String {
+    match error {
+        QueryManagerError::App(error) => app_error_type(error).to_string(),
+        QueryManagerError::Core(error) => core_error_type(error),
+    }
+}
+
+fn query_error_message(error: &QueryManagerError) -> String {
+    match error {
+        QueryManagerError::App(error) => error.to_string(),
+        QueryManagerError::Core(CoreError::QueryFailure(error)) => error.summary().to_string(),
+        QueryManagerError::Core(error) => error.to_string(),
+    }
+}
+
+fn app_error_type(error: &AppError) -> &'static str {
+    match error {
+        AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::InvalidInput(_) => "INVALID_INPUT",
+        AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
+        AppError::Io(_) => "IO",
+        AppError::Yaml(_) => "YAML",
+        AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
+        AppError::TomlEncode(_) => "TOML_ENCODE",
+        AppError::Json(_) => "JSON",
+        AppError::Transport(_) => "TRANSPORT",
+        AppError::TaskJoin(_) => "TASK_JOIN",
+        AppError::Credentials(_) => "CREDENTIALS",
+        AppError::MissingConfigDir => "MISSING_CONFIG_DIR",
+    }
+}
+
+fn core_error_type(error: &CoreError) -> String {
+    match error {
+        CoreError::QueryFailure(error) => error.reason().to_string(),
+        error => status_code_error_type(error.status_code()).to_string(),
+    }
+}
+
+fn status_code_error_type(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::InvalidArgument => "INVALID_ARGUMENT",
+        StatusCode::NotFound => "NOT_FOUND",
+        StatusCode::FailedPrecondition => "FAILED_PRECONDITION",
+        StatusCode::Unavailable => "UNAVAILABLE",
+        StatusCode::Unimplemented => "UNIMPLEMENTED",
+        StatusCode::Internal => "INTERNAL",
     }
 }
 
@@ -254,4 +413,342 @@ fn validate_required_variables(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use coral_engine::{
+        EngineExtensions, SourceInputResolutionContext, SourceInputResolver,
+        SourceInputResolverError,
+    };
+    use coral_spec::parse_source_manifest_yaml;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::sources::model::SourceOrigin;
+
+    struct QueryManagerFixture {
+        _temp: TempDir,
+        manager: QueryManager,
+    }
+
+    fn query_manager_with(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> QueryManagerFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            runtime_context,
+            layout,
+            providers,
+        );
+        QueryManagerFixture {
+            _temp: temp,
+            manager,
+        }
+    }
+
+    #[test]
+    fn runtime_config_preserves_app_owned_http_body_capture_max_bytes() {
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default().with_http_body_capture_max_bytes(Some(42)),
+            Vec::new(),
+        );
+
+        let runtime = fixture
+            .manager
+            .runtime_config(&WorkspaceName::default(), &[]);
+
+        let config = runtime
+            .context
+            .http_body_capture_max_bytes
+            .expect("body capture config");
+        assert_eq!(config, 42);
+    }
+
+    #[test]
+    fn load_query_source_passes_present_optional_secrets_to_runtime() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("optional_auth").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: optional_auth
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.com
+inputs:
+  API_KEY:
+    kind: secret
+    required: false
+  OAUTH_TOKEN:
+    kind: secret
+    required: false
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: API_KEY
+        - from: bearer
+          key: OAUTH_TOKEN
+tables:
+  - name: items
+    description: Items
+    request:
+      path: /items
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("write manifest");
+        let source = InstalledSource {
+            name: source_name.clone(),
+            version: Some("0.1.0".to_string()),
+            variables: BTreeMap::new(),
+            secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::File),
+            origin: SourceOrigin::Imported,
+        };
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace_name, source.clone())
+            .expect("persist source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())]),
+            )
+            .expect("persist secret material");
+
+        let (query_source, _) = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect("optional secret should load when present");
+
+        assert_eq!(
+            query_source.secrets(),
+            &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())])
+        );
+    }
+
+    #[test]
+    fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github").expect("source name");
+        config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name,
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["GITHUB_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Keychain),
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist source");
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let manager = QueryManager::new(
+            config_store,
+            CredentialManager::new(credential_store),
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+
+        let error = manager
+            .load_query_sources(&workspace_name)
+            .expect_err("unavailable keychain should fail closed");
+
+        assert!(
+            matches!(
+                error,
+                AppError::Credentials(CredentialsError::Unavailable(_))
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("configured for keychain storage"),
+            "keychain-routed query failure should name the routed backend: {error}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct DelegatingInputResolver {
+        calls: Arc<AtomicUsize>,
+        observed_token: Arc<Mutex<Option<String>>>,
+    }
+
+    #[tonic::async_trait]
+    impl SourceInputResolver for DelegatingInputResolver {
+        async fn resolve_inputs(
+            &self,
+            source: &SourceInputResolutionContext,
+        ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.observed_token.lock().expect("observed token lock") =
+                source.secrets().get("API_TOKEN").cloned();
+            Ok(BTreeMap::from([
+                ("API_TOKEN".to_string(), "delegated-token".to_string()),
+                ("DELEGATED_ONLY".to_string(), "provider-token".to_string()),
+            ]))
+        }
+    }
+
+    struct DelegatingInputResolverProvider {
+        calls: Arc<AtomicUsize>,
+        observed_token: Arc<Mutex<Option<String>>>,
+    }
+
+    impl EngineExtensionsProvider for DelegatingInputResolverProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            EngineExtensions {
+                source_input_resolver: Some(Arc::new(DelegatingInputResolver {
+                    calls: Arc::clone(&self.calls),
+                    observed_token: Arc::clone(&self.observed_token),
+                })),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_token = Arc::new(Mutex::new(None));
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default(),
+            vec![Arc::new(DelegatingInputResolverProvider {
+                calls: Arc::clone(&calls),
+                observed_token: Arc::clone(&observed_token),
+            })],
+        );
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let workspace_name = WorkspaceName::default();
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["API_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::File),
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
+            )
+            .expect("write credential material");
+        let source_spec = parse_source_manifest_yaml(
+            r#"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://example.com
+  API_TOKEN:
+    kind: secret
+base_url: "{{input.API_BASE}}"
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("parse source manifest");
+        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
+        let runtime = fixture
+            .manager
+            .runtime_config(&workspace_name, std::slice::from_ref(&source));
+        let input_resolver = runtime
+            .extensions
+            .source_input_resolver
+            .expect("runtime installs input resolver");
+
+        let resolved_inputs = input_resolver
+            .resolve_inputs(&SourceInputResolutionContext::from_query_source(&source))
+            .await
+            .expect("resolve source inputs");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            resolved_inputs.get("API_TOKEN").map(String::as_str),
+            Some("stored-token")
+        );
+        assert_eq!(
+            resolved_inputs.get("API_BASE").map(String::as_str),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            resolved_inputs.get("DELEGATED_ONLY").map(String::as_str),
+            Some("provider-token")
+        );
+        assert_eq!(
+            observed_token
+                .lock()
+                .expect("observed token lock")
+                .as_deref(),
+            Some("stored-token")
+        );
+    }
 }

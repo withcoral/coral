@@ -1,3 +1,9 @@
+#![allow(
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test code: assertion-style indexing is idiomatic in tests"
+)]
+
 use std::path::Path;
 
 use coral_engine::CoralQuery;
@@ -11,10 +17,11 @@ fn jsonl_manifest(name: &str, dir: &Path, glob: &str) -> Value {
         "name": name,
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "users",
             "description": "Users fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": glob

@@ -22,23 +22,21 @@ impl ParsedTemplate {
         let mut parts = Vec::new();
         let mut rest = raw.as_str();
 
-        while let Some(start) = rest.find("{{") {
-            if start > 0 {
-                parts.push(TemplatePart::Literal(rest[..start].to_string()));
+        while let Some((literal, after_start)) = rest.split_once("{{") {
+            if !literal.is_empty() {
+                parts.push(TemplatePart::Literal(literal.to_string()));
             }
 
-            let token_start = start + 2;
-            let Some(end_rel) = rest[token_start..].find("}}") else {
+            let Some((raw_token, after_token)) = after_start.split_once("}}") else {
                 return Err(ManifestError::validation(format!(
                     "unclosed template token in '{raw}'"
                 )));
             };
-            let end = token_start + end_rel;
-            let token = rest[token_start..end].trim();
-            let (raw_key, default_value) = match token.split_once('|') {
-                Some((key, default)) => (key.trim(), Some(default.to_string())),
-                None => (token, None),
-            };
+            let token = raw_token.trim();
+            let (raw_key, default_value) = split_default(token)
+                .map_or((token, None), |(key, default)| {
+                    (key.trim(), Some(default.to_string()))
+                });
             let (namespace, key) = match raw_key.split_once('.') {
                 Some((namespace, key)) => (TemplateNamespace::parse(namespace), key.to_string()),
                 None => (TemplateNamespace::Other(raw_key.to_string()), String::new()),
@@ -50,7 +48,7 @@ impl ParsedTemplate {
                 key,
                 default_value,
             }));
-            rest = &rest[end + 2..];
+            rest = after_token;
         }
 
         if !rest.is_empty() {
@@ -161,6 +159,32 @@ impl TemplateToken {
     pub fn default_value(&self) -> Option<&str> {
         self.default_value.as_deref()
     }
+
+    /// Returns the input keys referenced by this token.
+    pub fn input_keys(&self) -> Vec<&str> {
+        if self.namespace == TemplateNamespace::Input {
+            return vec![self.key.as_str()];
+        }
+        Vec::new()
+    }
+
+    /// Returns the filter keys referenced by this token.
+    pub fn filter_keys(&self) -> Vec<&str> {
+        if self.namespace == TemplateNamespace::Filter {
+            vec![self.key.as_str()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Returns the state keys referenced by this token.
+    pub fn state_keys(&self) -> Vec<&str> {
+        if self.namespace == TemplateNamespace::State {
+            vec![self.key.as_str()]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// The namespace component of one template token.
@@ -195,6 +219,26 @@ impl TemplateNamespace {
     }
 }
 
+fn split_default(raw: &str) -> Option<(&str, &str)> {
+    for (index, ch) in raw.char_indices() {
+        if ch != '|' {
+            continue;
+        }
+        let prev_is_pipe = raw
+            .get(..index)
+            .and_then(|prefix| prefix.chars().next_back())
+            == Some('|');
+        let next_is_pipe = raw
+            .get(index + ch.len_utf8()..)
+            .and_then(|suffix| suffix.chars().next())
+            == Some('|');
+        if !prev_is_pipe && !next_is_pipe {
+            return raw.get(..index).zip(raw.get(index + ch.len_utf8()..));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ParsedTemplate, TemplateNamespace, TemplatePart};
@@ -210,22 +254,23 @@ mod tests {
             "Bearer {{input.API_TOKEN}} for {{filter.org|openai}}"
         );
         assert_eq!(template.parts().len(), 4);
+        let parts = template.parts();
         assert!(matches!(
-            &template.parts()[0],
-            TemplatePart::Literal(part) if part == "Bearer "
+            parts.first(),
+            Some(TemplatePart::Literal(part)) if part == "Bearer "
         ));
         assert!(matches!(
-            &template.parts()[1],
-            TemplatePart::Token(token)
+            parts.get(1),
+            Some(TemplatePart::Token(token))
                 if token.namespace() == &TemplateNamespace::Input && token.key() == "API_TOKEN"
         ));
         assert!(matches!(
-            &template.parts()[2],
-            TemplatePart::Literal(part) if part == " for "
+            parts.get(2),
+            Some(TemplatePart::Literal(part)) if part == " for "
         ));
         assert!(matches!(
-            &template.parts()[3],
-            TemplatePart::Token(token)
+            parts.get(3),
+            Some(TemplatePart::Token(token))
                 if token.namespace() == &TemplateNamespace::Filter
                     && token.key() == "org"
                     && token.default_value() == Some("openai")
@@ -256,5 +301,27 @@ mod tests {
     fn rejects_unclosed_tokens() {
         let error = ParsedTemplate::parse("{{input.API_TOKEN").expect_err("unclosed token");
         assert!(error.to_string().contains("unclosed template token"));
+    }
+
+    #[test]
+    fn default_values_can_contain_fallback_operator() {
+        let template = ParsedTemplate::parse("{{input.API_KEY|foo||bar}}").expect("template");
+        let token = template.tokens().next().expect("token");
+
+        assert_eq!(token.namespace(), &TemplateNamespace::Input);
+        assert_eq!(token.key(), "API_KEY");
+        assert_eq!(token.default_value(), Some("foo||bar"));
+        assert_eq!(token.input_keys(), vec!["API_KEY"]);
+    }
+
+    #[test]
+    fn fallback_operator_is_not_a_template_default_separator() {
+        let template =
+            ParsedTemplate::parse("{{input.API_KEY || input.OAUTH_TOKEN}}").expect("template");
+        let token = template.tokens().next().expect("token");
+
+        assert_eq!(token.namespace(), &TemplateNamespace::Input);
+        assert_eq!(token.key(), "API_KEY || input.OAUTH_TOKEN");
+        assert_eq!(token.default_value(), None);
     }
 }

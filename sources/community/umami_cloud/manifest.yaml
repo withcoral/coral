@@ -1,0 +1,785 @@
+name: umami_cloud
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query websites, pageviews, events, sessions, and summary statistics
+  from Umami Cloud (or a self-hosted Umami deployment).
+inputs:
+  UMAMI_BASE_URL:
+    kind: variable
+    default: https://api.umami.is/v1
+    hint: >-
+      Base URL for the Umami API.
+      Keep the default for Umami Cloud.
+      For self-hosted Umami, use https://<your-host>/api.
+  UMAMI_API_KEY:
+    kind: secret
+    hint: >-
+      Generate an API key from Settings -> API keys in Umami Cloud.
+      See https://docs.umami.is/docs/cloud/api-key
+base_url: "{{input.UMAMI_BASE_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: x-umami-api-key
+      from: input
+      key: UMAMI_API_KEY
+rate_limit:
+  retry_after_header: Retry-After
+test_queries:
+  - SELECT * FROM umami_cloud.websites LIMIT 1
+tables:
+  - name: websites
+    description: >-
+      All websites registered in the authenticated Umami account.
+      Use the `id` column as the `website_id` filter in other tables.
+    guide: |
+      Start here to discover your website IDs. The `id` value is required
+      as the `website_id` filter for pageviews, sessions, stats, and metrics.
+      Example: SELECT id, name, domain FROM umami_cloud.websites
+    filters:
+      - name: search
+    request:
+      method: GET
+      path: /websites
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: includeTeams
+          from: literal
+          value: true
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Unique website UUID. Use this as the `website_id` filter in other tables.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the website in Umami.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Tracked domain (e.g. example.com).
+        expr:
+          kind: path
+          path:
+            - domain
+      - name: share_id
+        type: Utf8
+        nullable: true
+        description: Public share token when share URL is enabled; null otherwise.
+        expr:
+          kind: path
+          path:
+            - shareId
+      - name: reset_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp of the last data reset, or null if never reset.
+        expr:
+          kind: path
+          path:
+            - resetAt
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: UUID of the user who owns this website.
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: team_id
+        type: Utf8
+        nullable: true
+        description: UUID of the team this website belongs to; null for personal websites.
+        expr:
+          kind: path
+          path:
+            - teamId
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: UUID of the user who created this website.
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: deleted_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the website was deleted; null if active.
+        expr:
+          kind: path
+          path:
+            - deletedAt
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: UTC timestamp when the website was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: UTC timestamp when the website was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the `search` filter used to narrow results.
+        expr:
+          kind: from_filter
+          key: search
+
+  - name: pageviews
+    description: >-
+      Raw pageview and custom-event rows for a website within a time range.
+      Each row is one tracked hit: a page load (event_type = 1) or a custom
+      event (event_type = 2). Requires `website_id`, `start_at`, and `end_at`.
+    guide: |
+      Requires website_id (UUID from umami_cloud.websites), start_at, and end_at
+      as Unix millisecond timestamps.
+      Example:
+        SELECT url_path, country, browser, os, device, created_at
+        FROM umami_cloud.pageviews
+        WHERE website_id = '<uuid>'
+          AND start_at = 1700000000000
+          AND end_at   = 1702678400000
+        LIMIT 50
+    filters:
+      - name: website_id
+        required: true
+      - name: start_at
+        required: true
+      - name: end_at
+        required: true
+      - name: search
+    request:
+      method: GET
+      path: /websites/{{filter.website_id}}/events
+      query:
+        - name: startAt
+          from: filter_int
+          key: start_at
+        - name: endAt
+          from: filter_int
+          key: end_at
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 500
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Unique event UUID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: website_id
+        type: Utf8
+        nullable: true
+        description: UUID of the website this event belongs to.
+        expr:
+          kind: path
+          path:
+            - websiteId
+      - name: session_id
+        type: Utf8
+        nullable: true
+        description: UUID of the session this event belongs to.
+        expr:
+          kind: path
+          path:
+            - sessionId
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: UTC timestamp when this event was recorded.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Hostname of the tracked website (e.g. umami.is).
+        expr:
+          kind: path
+          path:
+            - hostname
+      - name: url_path
+        type: Utf8
+        nullable: true
+        description: URL path of the page that was viewed or where the event fired.
+        expr:
+          kind: path
+          path:
+            - urlPath
+      - name: url_query
+        type: Utf8
+        nullable: true
+        description: Query string of the URL at the time of the event.
+        expr:
+          kind: path
+          path:
+            - urlQuery
+      - name: referrer_path
+        type: Utf8
+        nullable: true
+        description: Path portion of the referrer URL.
+        expr:
+          kind: path
+          path:
+            - referrerPath
+      - name: referrer_query
+        type: Utf8
+        nullable: true
+        description: Query string of the referrer URL.
+        expr:
+          kind: path
+          path:
+            - referrerQuery
+      - name: referrer_domain
+        type: Utf8
+        nullable: true
+        description: Domain of the referrer (e.g. google.com).
+        expr:
+          kind: path
+          path:
+            - referrerDomain
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Two-letter ISO 3166-1 country code of the visitor.
+        expr:
+          kind: path
+          path:
+            - country
+      - name: city
+        type: Utf8
+        nullable: true
+        description: City name of the visitor.
+        expr:
+          kind: path
+          path:
+            - city
+      - name: device
+        type: Utf8
+        nullable: true
+        description: Device category (desktop, mobile, tablet).
+        expr:
+          kind: path
+          path:
+            - device
+      - name: os
+        type: Utf8
+        nullable: true
+        description: Operating system name (e.g. Mac OS, Windows 10, iOS).
+        expr:
+          kind: path
+          path:
+            - os
+      - name: browser
+        type: Utf8
+        nullable: true
+        description: Browser name (e.g. chrome, safari, firefox).
+        expr:
+          kind: path
+          path:
+            - browser
+      - name: page_title
+        type: Utf8
+        nullable: true
+        description: HTML page title at the time of the event.
+        expr:
+          kind: path
+          path:
+            - pageTitle
+      - name: event_type
+        type: Int64
+        nullable: true
+        description: Event type code. 1 = pageview, 2 = custom event.
+        expr:
+          kind: path
+          path:
+            - eventType
+      - name: event_name
+        type: Utf8
+        nullable: true
+        description: Custom event name; empty string for pageviews.
+        expr:
+          kind: path
+          path:
+            - eventName
+      - name: has_data
+        type: Int64
+        nullable: true
+        description: 1 if this event has associated custom event-data properties, 0 otherwise.
+        expr:
+          kind: path
+          path:
+            - hasData
+      - name: website_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the `website_id` filter used to scope this query.
+        expr:
+          kind: from_filter
+          key: website_id
+
+  - name: sessions
+    description: >-
+      Visitor sessions for a website within a time range. Each row represents
+      one browsing session with device, location, and engagement metadata.
+      Requires `website_id`, `start_at`, and `end_at`.
+    guide: |
+      Requires website_id (UUID from umami_cloud.websites), start_at, and end_at
+      as Unix millisecond timestamps.
+      Example:
+        SELECT id, country, browser, os, device, visits, views, first_at, last_at
+        FROM umami_cloud.sessions
+        WHERE website_id = '<uuid>'
+          AND start_at = 1700000000000
+          AND end_at   = 1702678400000
+        LIMIT 50
+    filters:
+      - name: website_id
+        required: true
+      - name: start_at
+        required: true
+      - name: end_at
+        required: true
+      - name: search
+    request:
+      method: GET
+      path: /websites/{{filter.website_id}}/sessions
+      query:
+        - name: startAt
+          from: filter_int
+          key: start_at
+        - name: endAt
+          from: filter_int
+          key: end_at
+        - name: search
+          from: filter
+          key: search
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 20
+        max: 500
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Unique session UUID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: website_id
+        type: Utf8
+        nullable: true
+        description: UUID of the website this session belongs to.
+        expr:
+          kind: path
+          path:
+            - websiteId
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Hostname of the tracked website.
+        expr:
+          kind: path
+          path:
+            - hostname
+      - name: browser
+        type: Utf8
+        nullable: true
+        description: Browser name (e.g. chrome, safari, firefox).
+        expr:
+          kind: path
+          path:
+            - browser
+      - name: os
+        type: Utf8
+        nullable: true
+        description: Operating system name (e.g. Mac OS, Windows 10, iOS).
+        expr:
+          kind: path
+          path:
+            - os
+      - name: device
+        type: Utf8
+        nullable: true
+        description: Device category (desktop, mobile, tablet).
+        expr:
+          kind: path
+          path:
+            - device
+      - name: screen
+        type: Utf8
+        nullable: true
+        description: Screen resolution reported by the visitor (e.g. 1800x1169).
+        expr:
+          kind: path
+          path:
+            - screen
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Browser language tag (e.g. en-US).
+        expr:
+          kind: path
+          path:
+            - language
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Two-letter ISO 3166-1 country code of the visitor.
+        expr:
+          kind: path
+          path:
+            - country
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Region or state code (e.g. SE-AB).
+        expr:
+          kind: path
+          path:
+            - region
+      - name: city
+        type: Utf8
+        nullable: true
+        description: City name of the visitor.
+        expr:
+          kind: path
+          path:
+            - city
+      - name: first_at
+        type: Timestamp
+        nullable: true
+        description: UTC timestamp of the first event in this session.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - firstAt
+      - name: last_at
+        type: Timestamp
+        nullable: true
+        description: UTC timestamp of the most recent event in this session.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastAt
+      - name: visits
+        type: Int64
+        nullable: true
+        description: Number of distinct visits within this session.
+        expr:
+          kind: path
+          path:
+            - visits
+      - name: views
+        type: Int64
+        nullable: true
+        description: Total page views recorded in this session.
+        expr:
+          kind: path
+          path:
+            - views
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: UTC timestamp when this session record was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: website_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the `website_id` filter used to scope this query.
+        expr:
+          kind: from_filter
+          key: website_id
+
+  - name: stats
+    description: >-
+      Aggregated summary statistics for a website over a time range: total
+      pageviews, unique visitors, visits, bounces, and total time on site.
+      Returns a single row per query. Requires `website_id`, `start_at`, and `end_at`.
+    guide: |
+      Requires website_id (UUID from umami_cloud.websites), start_at, and end_at
+      as Unix millisecond timestamps.
+      Example:
+        SELECT pageviews, visitors, visits, bounces, total_time
+        FROM umami_cloud.stats
+        WHERE website_id = '<uuid>'
+          AND start_at = 1700000000000
+          AND end_at   = 1702678400000
+    filters:
+      - name: website_id
+        required: true
+      - name: start_at
+        required: true
+      - name: end_at
+        required: true
+    request:
+      method: GET
+      path: /websites/{{filter.website_id}}/stats
+      query:
+        - name: startAt
+          from: filter_int
+          key: start_at
+        - name: endAt
+          from: filter_int
+          key: end_at
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: pageviews
+        type: Int64
+        nullable: true
+        description: Total page hits in the time range.
+        expr:
+          kind: path
+          path:
+            - pageviews
+      - name: visitors
+        type: Int64
+        nullable: true
+        description: Number of unique visitors in the time range.
+        expr:
+          kind: path
+          path:
+            - visitors
+      - name: visits
+        type: Int64
+        nullable: true
+        description: Number of unique visits (sessions) in the time range.
+        expr:
+          kind: path
+          path:
+            - visits
+      - name: bounces
+        type: Int64
+        nullable: true
+        description: Number of visitors who viewed only a single page.
+        expr:
+          kind: path
+          path:
+            - bounces
+      - name: total_time
+        type: Int64
+        nullable: true
+        description: Total time spent on the website in milliseconds across all visits.
+        expr:
+          kind: path
+          path:
+            - totaltime
+      - name: website_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the `website_id` filter used to scope this query.
+        expr:
+          kind: from_filter
+          key: website_id
+
+  - name: metrics
+    description: >-
+      Ranked breakdown of a single dimension for a website over a time range.
+      Each row has a dimension value (`x`) and a visitor count (`y`).
+      Requires `website_id`, `start_at`, `end_at`, and `type`.
+    guide: |
+      Requires website_id, start_at, end_at (Unix ms timestamps), and type.
+      Valid type values: path, entry, exit, title, query, referrer, channel,
+      domain, country, region, city, browser, os, device, language, screen,
+      event, hostname, tag, distinctId.
+      Results are paginated automatically (500 rows per page).
+      Example:
+        SELECT x AS browser, y AS visitors
+        FROM umami_cloud.metrics
+        WHERE website_id = '<uuid>'
+          AND start_at = 1700000000000
+          AND end_at   = 1702678400000
+          AND type     = 'browser'
+        ORDER BY y DESC
+        LIMIT 10
+    filters:
+      - name: website_id
+        required: true
+      - name: start_at
+        required: true
+      - name: end_at
+        required: true
+      - name: type
+        required: true
+      - name: path
+      - name: referrer
+      - name: browser
+      - name: os
+      - name: device
+      - name: country
+      - name: language
+      - name: hostname
+      - name: region
+      - name: city
+    request:
+      method: GET
+      path: /websites/{{filter.website_id}}/metrics
+      query:
+        - name: startAt
+          from: filter_int
+          key: start_at
+        - name: endAt
+          from: filter_int
+          key: end_at
+        - name: type
+          from: filter
+          key: type
+        - name: path
+          from: filter
+          key: path
+        - name: referrer
+          from: filter
+          key: referrer
+        - name: browser
+          from: filter
+          key: browser
+        - name: os
+          from: filter
+          key: os
+        - name: device
+          from: filter
+          key: device
+        - name: country
+          from: filter
+          key: country
+        - name: language
+          from: filter
+          key: language
+        - name: hostname
+          from: filter
+          key: hostname
+        - name: region
+          from: filter
+          key: region
+        - name: city
+          from: filter
+          key: city
+    response:
+      rows_path: []
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 500
+        max: 500
+        query_param: limit
+    columns:
+      - name: x
+        type: Utf8
+        nullable: true
+        description: Dimension value (e.g. browser name, country code, URL path).
+        expr:
+          kind: path
+          path:
+            - x
+      - name: y
+        type: Int64
+        nullable: true
+        description: Visitor count for this dimension value.
+        expr:
+          kind: path
+          path:
+            - y
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the `type` filter (e.g. browser, country, os, device).
+        expr:
+          kind: from_filter
+          key: type
+      - name: website_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the `website_id` filter used to scope this query.
+        expr:
+          kind: from_filter
+          key: website_id

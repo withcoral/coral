@@ -25,14 +25,14 @@
 //! assert_eq!(request.sql, "select 1");
 //! ```
 
-#[allow(
+#[expect(
+    clippy::allow_attributes,
     clippy::allow_attributes_without_reason,
     clippy::default_trait_access,
     clippy::doc_markdown,
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
     clippy::too_many_lines,
-    missing_docs,
     reason = "This module is generated from protobuf/tonic definitions."
 )]
 /// Generated `coral.v1` `protobuf` messages, enums, and `gRPC` services.
@@ -47,6 +47,19 @@ pub mod v1 {
 /// manifests like `github.search_issues`. Only the response direction
 /// needs the bump — requests are small SQL strings.
 pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
+/// Maximum gRPC message size for `CatalogService` *responses*, in bytes.
+///
+/// Catalog discovery can return full table/column metadata for large source
+/// sets, and the legacy unbounded table-listing path still needs to round-trip
+/// responses larger than tonic's 4 MB default.
+pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
+
+/// Maximum gRPC message size for `TraceService` *responses*, in bytes.
+///
+/// Trace details can include large span attributes, which may exceed tonic's
+/// default 4 MB response cap.
+pub const TRACE_RESPONSE_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the local Coral transport,
 /// in bytes.
@@ -63,6 +76,9 @@ pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
+/// Machine-readable reason for a configured source lookup miss.
+pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
+
 /// Reserved `ErrorInfo.metadata` key for a one-line error summary.
 pub const CORAL_ERROR_METADATA_SUMMARY: &str = "summary";
 
@@ -71,3 +87,29 @@ pub const CORAL_ERROR_METADATA_DETAIL: &str = "detail";
 
 /// Reserved `ErrorInfo.metadata` key for actionable recovery guidance.
 pub const CORAL_ERROR_METADATA_HINT: &str = "hint";
+
+/// Returns the canonical OpenTelemetry `rpc.response.status_code` value.
+#[must_use]
+pub fn grpc_response_status_code(code: tonic::Code) -> &'static str {
+    use tonic::Code;
+
+    match code {
+        Code::Ok => "OK",
+        Code::Cancelled => "CANCELLED",
+        Code::Unknown => "UNKNOWN",
+        Code::InvalidArgument => "INVALID_ARGUMENT",
+        Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        Code::NotFound => "NOT_FOUND",
+        Code::AlreadyExists => "ALREADY_EXISTS",
+        Code::PermissionDenied => "PERMISSION_DENIED",
+        Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+        Code::FailedPrecondition => "FAILED_PRECONDITION",
+        Code::Aborted => "ABORTED",
+        Code::OutOfRange => "OUT_OF_RANGE",
+        Code::Unimplemented => "UNIMPLEMENTED",
+        Code::Internal => "INTERNAL",
+        Code::Unavailable => "UNAVAILABLE",
+        Code::DataLoss => "DATA_LOSS",
+        Code::Unauthenticated => "UNAUTHENTICATED",
+    }
+}

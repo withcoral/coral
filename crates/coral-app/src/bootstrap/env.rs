@@ -3,9 +3,10 @@
 use std::path::PathBuf;
 
 use coral_engine::QueryRuntimeContext;
-use directories::BaseDirs;
 
 use super::consts::CORAL_CONFIG_DIR;
+use super::error::AppError;
+use crate::state::AppStateLayout;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AppEnvironment {
@@ -17,7 +18,7 @@ impl AppEnvironment {
     pub(crate) fn discover() -> Self {
         Self {
             coral_config_dir_override: coral_config_dir_override(),
-            user_home_dir: BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
+            user_home_dir: etcetera::home_dir().ok(),
         }
     }
 
@@ -25,14 +26,22 @@ impl AppEnvironment {
         self.coral_config_dir_override.clone()
     }
 
+    pub(crate) fn app_state_layout(
+        &self,
+        config_dir_override: Option<PathBuf>,
+    ) -> Result<AppStateLayout, AppError> {
+        AppStateLayout::discover(config_dir_override.or_else(|| self.coral_config_dir_override()))
+    }
+
     pub(crate) fn query_runtime_context(&self) -> QueryRuntimeContext {
         QueryRuntimeContext {
             home_dir: self.user_home_dir.clone(),
+            ..QueryRuntimeContext::default()
         }
     }
 }
 
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "coral-app is the single owner of process environment access."
 )]
@@ -43,29 +52,35 @@ fn coral_config_dir_override() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{AppEnvironment, CORAL_CONFIG_DIR, coral_config_dir_override};
+    use std::path::PathBuf;
 
     #[test]
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "This test intentionally controls CORAL_CONFIG_DIR to validate the app-owned accessor."
     )]
     fn coral_config_dir_override_reads_env_once_through_app_accessor() {
         if std::env::var_os("CORAL_RUN_CORAL_CONFIG_DIR_TEST").is_some() {
+            let expected = std::env::var_os(CORAL_CONFIG_DIR)
+                .map(PathBuf::from)
+                .expect("CORAL_CONFIG_DIR should be set in subprocess");
             assert_eq!(
                 coral_config_dir_override().as_deref(),
-                Some(std::path::Path::new("/tmp/coral-config-dir-override"))
+                Some(expected.as_path())
             );
             let env = AppEnvironment::discover();
             assert_eq!(
                 env.coral_config_dir_override().as_deref(),
-                Some(std::path::Path::new("/tmp/coral-config-dir-override"))
+                Some(expected.as_path())
             );
             return;
         }
 
+        let override_dir =
+            std::env::temp_dir().join(format!("coral-config-dir-override-{}", std::process::id()));
         let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
             .env("CORAL_RUN_CORAL_CONFIG_DIR_TEST", "1")
-            .env(CORAL_CONFIG_DIR, "/tmp/coral-config-dir-override")
+            .env(CORAL_CONFIG_DIR, override_dir)
             .arg("--exact")
             .arg(
                 "bootstrap::env::tests::coral_config_dir_override_reads_env_once_through_app_accessor",

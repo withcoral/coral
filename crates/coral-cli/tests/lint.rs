@@ -19,7 +19,11 @@ fn temp_manifest(content: &str) -> (TempDir, PathBuf) {
 fn coral_lint(file: &Path) -> std::process::Output {
     let config_dir = tempfile::tempdir().expect("config dir");
     Command::new(env!("CARGO_BIN_EXE_coral"))
-        .args(["source", "lint", file.to_str().unwrap()])
+        .args([
+            "source",
+            "lint",
+            file.to_str().expect("temp manifest path is valid UTF-8"),
+        ])
         .env("CORAL_CONFIG_DIR", config_dir.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

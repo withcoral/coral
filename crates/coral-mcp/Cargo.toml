@@ -10,16 +10,22 @@ publish = false
 workspace = true
 
 [dependencies]
+regex.workspace = true
 rmcp.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
 
 coral-api.workspace = true
 coral-client.workspace = true
 
 [dev-dependencies]
 coral-app.workspace = true
+jsonschema.workspace = true
 tempfile.workspace = true
 tonic-types.workspace = true

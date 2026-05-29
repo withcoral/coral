@@ -5,6 +5,7 @@
 //! - endpoint dialing into the generated gRPC transport surface
 //! - lightweight shared Arrow IPC decoding helpers
 //! - lightweight shared result-format rendering used by CLI and MCP
+//! - lightweight client-side decoding helpers for shared transport DTOs
 //!
 //! It does **not** currently try to present a richer domain SDK. Callers that
 //! need more abstraction should add it above this crate rather than widening
@@ -16,8 +17,10 @@
 
 mod client;
 mod error;
+mod grpc;
 pub mod local;
 mod propagation;
+mod sources;
 mod status_error;
 
 use std::io::Cursor;
@@ -31,9 +34,11 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient, default_workspace,
+    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient,
+    default_workspace,
 };
 pub use error::{ClientError, QueryResultError};
+pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,
 };
@@ -100,8 +105,9 @@ pub fn decode_execute_sql_response(
     response: &ExecuteSqlResponse,
 ) -> Result<CollectedQueryResult, QueryResultError> {
     let (schema, batches) = decode_arrow_ipc_stream(&response.arrow_ipc_stream)?;
-    let row_count = usize::try_from(response.row_count)
-        .map_err(|_| QueryResultError::InvalidResponse("row_count must not be negative".into()))?;
+    let row_count = usize::try_from(response.row_count).map_err(|_err| {
+        QueryResultError::InvalidResponse("row_count must not be negative".into())
+    })?;
     CollectedQueryResult::new(schema, batches, row_count)
 }
 
@@ -210,7 +216,8 @@ mod tests {
         assert_eq!(decoded.row_count(), 2);
         assert_eq!(decoded.schema().fields().len(), 2);
         assert_eq!(decoded.batches().len(), 1);
-        assert_eq!(decoded.batches()[0].num_rows(), 2);
+        let batch = decoded.batches().first().expect("decoded batch");
+        assert_eq!(batch.num_rows(), 2);
     }
 
     #[test]
@@ -236,7 +243,8 @@ mod tests {
         assert!(json.contains("\"name\":null"));
         let rows = batches_to_json_rows(decoded.batches()).expect("rows");
         assert_eq!(rows.len(), 2);
-        assert!(rows[1].get("name").is_some_and(Value::is_null));
+        let row = rows.get(1).expect("second row");
+        assert!(row.get("name").is_some_and(Value::is_null));
     }
 
     #[test]

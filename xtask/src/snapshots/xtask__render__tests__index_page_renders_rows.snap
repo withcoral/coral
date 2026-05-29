@@ -1,6 +1,6 @@
 ---
 source: xtask/src/render.rs
-assertion_line: 440
+assertion_line: 455
 expression: "index_page(&[demo, minimal])"
 ---
 ---
@@ -10,7 +10,7 @@ description: "Data sources that ship with Coral."
 
 {/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
 
-Coral supports connecting to some data sources out of the box.<br />
+Coral supports connecting to some data sources out of the box. These bundled specs live in [sources/core](https://github.com/withcoral/coral/tree/main/sources/core).<br />
 If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).
 
 <Tip>
@@ -30,7 +30,7 @@ If the source you need is not available, you can extend Coral by [writing a cust
 Supported sources fall into two categories.
 
 - **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.
-- **File-backed** — Coral reads local Parquet or JSONL files directly.
+- **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.
 
 ## Upgrading bundled sources
 

@@ -1,0 +1,512 @@
+name: crates_io
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query the Rust crate registry (crates.io) for packages, versions,
+  dependencies, owners, categories, and keywords via the public crates.io
+  API. No authentication required.
+base_url: https://crates.io/api/v1
+
+test_queries:
+  - SELECT name, downloads FROM crates_io.crates WHERE q = 'serde' LIMIT 1
+  - SELECT num, downloads FROM crates_io.crate_versions WHERE crate_name = 'serde' LIMIT 1
+  - SELECT crate_id, req FROM crates_io.crate_dependencies WHERE crate_name = 'tokio' AND version = '1.38.0' LIMIT 1
+  - SELECT login, kind FROM crates_io.crate_owners WHERE crate_name = 'serde' LIMIT 1
+  - SELECT id, category, crates_cnt FROM crates_io.categories LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # crates — search / list crates
+  # ──────────────────────────────────────────────────────────────────────
+  - name: crates
+    description: |
+      Search and list Rust crates on crates.io. Pass `q` for a keyword
+      search, `category` for a category slug (e.g. `web-programming`),
+      `keyword` for a keyword (e.g. `http`), and `sort` for ordering
+      (`alphabetical`, `relevance`, `downloads`, `recent-downloads`,
+      `recent-updates`, `new`). When `q` is set, the default sort is
+      `relevance`; otherwise `alphabetical`. Pass `include_yanked = 'yes'`
+      to include yanked crates in search results.
+    fetch_limit_default: 100
+    filters:
+      - name: q
+      - name: category
+      - name: keyword
+      - name: sort
+      - name: letter
+      - name: include_yanked
+    request:
+      method: GET
+      path: /crates
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: category
+          from: filter
+          key: category
+        - name: all_keywords
+          from: filter
+          key: keyword
+        - name: sort
+          from: filter
+          key: sort
+        - name: letter
+          from: filter
+          key: letter
+        - name: include_yanked
+          from: filter
+          key: include_yanked
+    response:
+      rows_path:
+        - crates
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 100
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Crate identifier (same as name).
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Crate name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Short description of the crate.
+      - name: downloads
+        type: Int64
+        nullable: false
+        description: Total all-time download count.
+      - name: recent_downloads
+        type: Int64
+        nullable: true
+        description: Download count for the last 90 days.
+      - name: default_version
+        type: Utf8
+        nullable: true
+        description: Default display version for the crate.
+      - name: max_version
+        type: Utf8
+        nullable: false
+        description: Highest published version number.
+      - name: newest_version
+        type: Utf8
+        nullable: false
+        description: Most recently published version number.
+      - name: num_versions
+        type: Int64
+        nullable: false
+        description: Total number of published versions.
+      - name: homepage
+        type: Utf8
+        nullable: true
+        description: Homepage URL.
+      - name: repository
+        type: Utf8
+        nullable: true
+        description: Source repository URL.
+      - name: documentation
+        type: Utf8
+        nullable: true
+        description: Documentation URL (usually docs.rs).
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the crate was first published.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: When the crate was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: yanked
+        type: Boolean
+        nullable: false
+        description: Whether all versions of the crate have been yanked.
+      - name: exact_match
+        type: Boolean
+        nullable: false
+        description: Whether the crate name was an exact match for the query.
+      - name: categories
+        type: Json
+        nullable: true
+        description: Categories attached to the crate when included by the API.
+      - name: keywords
+        type: Json
+        nullable: true
+        description: Keywords attached to the crate when included by the API.
+      - name: links
+        type: Json
+        nullable: true
+        description: Related API links (versions, downloads, owners, reverse_dependencies).
+
+  # ──────────────────────────────────────────────────────────────────────
+  # crate_versions — versions of a crate
+  # ──────────────────────────────────────────────────────────────────────
+  - name: crate_versions
+    description: |
+      List all versions of a specific crate. Requires `crate_name` filter.
+      Use `sort` to order by `date` or `semver` (default: `semver`).
+    filters:
+      - name: crate_name
+        required: true
+      - name: sort
+    request:
+      method: GET
+      path: /crates/{{filter.crate_name}}/versions
+      query:
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path:
+        - versions
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Opaque version identifier.
+      - name: crate
+        type: Utf8
+        nullable: false
+        description: Name of the crate this version belongs to.
+        expr:
+          kind: path
+          path:
+            - crate
+      - name: num
+        type: Utf8
+        nullable: false
+        description: Version number string (e.g. 1.0.228).
+      - name: downloads
+        type: Int64
+        nullable: false
+        description: Download count for this version.
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When this version was published.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: When this version was last updated (yanked/unyanked).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: yanked
+        type: Boolean
+        nullable: false
+        description: Whether this version has been yanked.
+      - name: yank_message
+        type: Utf8
+        nullable: true
+        description: Message given when yanking, if any.
+      - name: license
+        type: Utf8
+        nullable: true
+        description: SPDX license expression (e.g. MIT OR Apache-2.0).
+      - name: rust_version
+        type: Utf8
+        nullable: true
+        description: Minimum supported Rust version (MSRV).
+      - name: edition
+        type: Utf8
+        nullable: true
+        description: Rust edition used (e.g. 2021).
+      - name: crate_size
+        type: Int64
+        nullable: true
+        description: Compressed crate file size in bytes.
+      - name: has_lib
+        type: Boolean
+        nullable: true
+        description: Whether this version provides a library target.
+      - name: checksum
+        type: Utf8
+        nullable: false
+        description: SHA256 checksum of the compressed crate file.
+      - name: features
+        type: Json
+        nullable: false
+        description: Cargo features defined by this version.
+      - name: published_by
+        type: Json
+        nullable: true
+        description: User who published this version (id, login, name, avatar, url).
+      - name: dl_path
+        type: Utf8
+        nullable: false
+        description: API path to download the crate file.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Crate description at the time of this version.
+      - name: homepage
+        type: Utf8
+        nullable: true
+        description: Homepage URL at the time of this version.
+      - name: repository
+        type: Utf8
+        nullable: true
+        description: Repository URL at the time of this version.
+      - name: documentation
+        type: Utf8
+        nullable: true
+        description: Documentation URL at the time of this version.
+
+  # ──────────────────────────────────────────────────────────────────────
+  # crate_dependencies — deps of a specific version
+  # ──────────────────────────────────────────────────────────────────────
+  - name: crate_dependencies
+    description: |
+      List dependencies of a specific crate version. Requires both
+      `crate_name` and `version` filters.
+    filters:
+      - name: crate_name
+        required: true
+      - name: version
+        required: true
+    request:
+      method: GET
+      path: /crates/{{filter.crate_name}}/{{filter.version}}/dependencies
+    response:
+      rows_path:
+        - dependencies
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Opaque dependency identifier.
+      - name: version_id
+        type: Int64
+        nullable: false
+        description: ID of the version this dependency belongs to.
+      - name: crate_id
+        type: Utf8
+        nullable: false
+        description: Name of the dependency crate.
+      - name: req
+        type: Utf8
+        nullable: false
+        description: Version requirement string (e.g. ^1, =1.0.228).
+      - name: kind
+        type: Utf8
+        nullable: false
+        description: Dependency kind (normal, dev, or build).
+      - name: optional
+        type: Boolean
+        nullable: false
+        description: Whether this dependency is optional.
+      - name: default_features
+        type: Boolean
+        nullable: false
+        description: Whether default features are enabled.
+      - name: features
+        type: Json
+        nullable: false
+        description: Features explicitly enabled for this dependency.
+      - name: target
+        type: Utf8
+        nullable: true
+        description: Target platform constraint, if any (e.g. cfg(unix)).
+      - name: downloads
+        type: Int64
+        nullable: false
+        description: Download count for the dependency crate.
+
+  # ──────────────────────────────────────────────────────────────────────
+  # crate_owners — owners (users + teams) of a crate
+  # ──────────────────────────────────────────────────────────────────────
+  - name: crate_owners
+    description: |
+      List owners of a crate. Returns both individual users and teams.
+      Requires `crate_name` filter.
+    filters:
+      - name: crate_name
+        required: true
+    request:
+      method: GET
+      path: /crates/{{filter.crate_name}}/owners
+    response:
+      rows_path:
+        - users
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Opaque owner identifier.
+      - name: login
+        type: Utf8
+        nullable: false
+        description: Login name (username or team slug like github:org:team).
+      - name: kind
+        type: Utf8
+        nullable: false
+        description: Owner kind — `user` or `team`.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name.
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Avatar URL.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: GitHub profile or team URL.
+
+  # ──────────────────────────────────────────────────────────────────────
+  # categories — registry categories
+  # ──────────────────────────────────────────────────────────────────────
+  - name: categories
+    description: |
+      List all crate categories on crates.io. Use `sort` to order by
+      `alpha` (default) or `crates` (by crate count).
+    fetch_limit_default: 100
+    filters:
+      - name: sort
+    request:
+      method: GET
+      path: /categories
+      query:
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path:
+        - categories
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 20
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Category slug identifier (e.g. web-programming).
+      - name: category
+        type: Utf8
+        nullable: false
+        description: Human-readable category name (e.g. Web programming).
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: URL-friendly category slug.
+      - name: description
+        type: Utf8
+        nullable: false
+        description: Description of the category.
+      - name: crates_cnt
+        type: Int64
+        nullable: false
+        description: Number of crates in this category.
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When this category was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # keywords — registry keywords
+  # ──────────────────────────────────────────────────────────────────────
+  - name: keywords
+    description: |
+      List all crate keywords on crates.io. Use `sort` to order by
+      `alpha` (default) or `crates` (by crate count).
+    fetch_limit_default: 100
+    filters:
+      - name: sort
+    request:
+      method: GET
+      path: /keywords
+      query:
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path:
+        - keywords
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 100
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Keyword identifier (same as keyword string).
+      - name: keyword
+        type: Utf8
+        nullable: false
+        description: The keyword string.
+      - name: crates_cnt
+        type: Int64
+        nullable: false
+        description: Number of crates tagged with this keyword.
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When this keyword was first used.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at

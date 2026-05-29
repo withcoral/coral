@@ -1,0 +1,1057 @@
+name: travis_ci
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query repositories, builds, jobs, branches, stages, cron jobs,
+  environment variables, settings, caches, build requests,
+  organizations, and broadcasts from Travis CI.
+base_url: https://api.travis-ci.com
+
+inputs:
+  TRAVIS_CI_API_TOKEN:
+    kind: secret
+    hint: >-
+      Travis CI API token. Generate from your Travis CI profile
+      settings page or via CLI: travis login --pro && travis token --pro.
+  TRAVIS_CI_OWNER:
+    kind: variable
+    hint: >-
+      GitHub owner login (user or org) whose repositories to query.
+      Used for the repositories endpoint. Example: my-github-org.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: token {{input.TRAVIS_CI_API_TOKEN}}
+    - name: Travis-API-Version
+      from: literal
+      value: "3"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - >-
+    SELECT id, name, slug
+    FROM travis_ci.repositories
+    LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # repositories
+  # ──────────────────────────────────────────────────────────────────────
+  - name: repositories
+    description: >-
+      Repositories the configured owner has access to on Travis CI.
+    guide: >
+      Start here to discover repo slugs used by other tables.
+      `SELECT id, name, slug, active, private
+      FROM travis_ci.repositories LIMIT 20`.
+    request:
+      method: GET
+      path: /owner/{{input.TRAVIS_CI_OWNER}}/repos
+    response:
+      rows_path:
+        - repositories
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique Travis CI repository ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Repository name.
+        expr:
+          kind: path
+          path: [name]
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Repository slug (owner/name).
+        expr:
+          kind: path
+          path: [slug]
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the repository is active on Travis CI.
+        expr:
+          kind: path
+          path: [active]
+      - name: private
+        type: Boolean
+        nullable: true
+        description: Whether the repository is private.
+        expr:
+          kind: path
+          path: [private]
+      - name: github_id
+        type: Int64
+        nullable: true
+        description: GitHub repository ID.
+        expr:
+          kind: path
+          path: [github_id]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Repository description from GitHub.
+        expr:
+          kind: path
+          path: [description]
+      - name: starred
+        type: Boolean
+        nullable: true
+        description: Whether the current user has starred this repo.
+        expr:
+          kind: path
+          path: [starred]
+      - name: managed_by_installation
+        type: Boolean
+        nullable: true
+        description: Managed by a GitHub App installation.
+        expr:
+          kind: path
+          path: [managed_by_installation]
+      - name: active_on_org
+        type: Boolean
+        nullable: true
+        description: Active on travis-ci.org.
+        expr:
+          kind: path
+          path: [active_on_org]
+      - name: server_type
+        type: Utf8
+        nullable: true
+        description: Server type (git or svn).
+        expr:
+          kind: path
+          path: [server_type]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # builds
+  # ──────────────────────────────────────────────────────────────────────
+  - name: builds
+    description: >-
+      Builds for a repository with state, duration, event type,
+      and commit details.
+    guide: >
+      Requires `repo_slug` filter (URL-encoded, e.g. `owner%2Frepo`).
+      `SELECT id, number, state, duration, event_type
+      FROM travis_ci.builds
+      WHERE repo_slug = 'owner%2Frepo' LIMIT 20`.
+    filters:
+      - name: repo_slug
+        required: true
+    request:
+      method: GET
+      path: /repo/{{filter.repo_slug}}/builds
+    response:
+      rows_path:
+        - builds
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug filter value.
+        expr:
+          kind: from_filter
+          key: repo_slug
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique build ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: number
+        type: Utf8
+        nullable: true
+        description: Incremental build number.
+        expr:
+          kind: path
+          path: [number]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Build state (passed, failed, errored, canceled, created, started).
+        expr:
+          kind: path
+          path: [state]
+      - name: duration
+        type: Int64
+        nullable: true
+        description: Build duration in seconds.
+        expr:
+          kind: path
+          path: [duration]
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: Trigger event (push, pull_request, cron, api).
+        expr:
+          kind: path
+          path: [event_type]
+      - name: previous_state
+        type: Utf8
+        nullable: true
+        description: State of the previous build.
+        expr:
+          kind: path
+          path: [previous_state]
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: Build start timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [started_at]
+      - name: finished_at
+        type: Utf8
+        nullable: true
+        description: Build finish timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [finished_at]
+      - name: created_by_login
+        type: Utf8
+        nullable: true
+        description: Login of the user who triggered the build.
+        expr:
+          kind: path
+          path: [created_by, login]
+      - name: branch_name
+        type: Utf8
+        nullable: true
+        description: Branch name.
+        expr:
+          kind: path
+          path: [branch, name]
+      - name: commit_sha
+        type: Utf8
+        nullable: true
+        description: Commit SHA.
+        expr:
+          kind: path
+          path: [commit, sha]
+      - name: commit_message
+        type: Utf8
+        nullable: true
+        description: Commit message.
+        expr:
+          kind: path
+          path: [commit, message]
+      - name: commit_author_name
+        type: Utf8
+        nullable: true
+        description: Commit author name.
+        expr:
+          kind: path
+          path: [commit, author, name]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # jobs
+  # ──────────────────────────────────────────────────────────────────────
+  - name: jobs
+    description: >-
+      Jobs belonging to a specific build with state, queue, and
+      timing details.
+    guide: >
+      Requires `build_id` filter.
+      `SELECT id, number, state, queue
+      FROM travis_ci.jobs WHERE build_id = '12345'`.
+    filters:
+      - name: build_id
+        required: true
+    request:
+      method: GET
+      path: /build/{{filter.build_id}}/jobs
+    response:
+      rows_path:
+        - jobs
+    pagination:
+      mode: none
+    columns:
+      - name: build_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Build ID filter value.
+        expr:
+          kind: from_filter
+          key: build_id
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique job ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: number
+        type: Utf8
+        nullable: true
+        description: Job number (e.g. 1.1, 1.2).
+        expr:
+          kind: path
+          path: [number]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Job state.
+        expr:
+          kind: path
+          path: [state]
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: Job start timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [started_at]
+      - name: finished_at
+        type: Utf8
+        nullable: true
+        description: Job finish timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [finished_at]
+      - name: queue
+        type: Utf8
+        nullable: true
+        description: Queue this job ran on.
+        expr:
+          kind: path
+          path: [queue]
+      - name: allow_failure
+        type: Boolean
+        nullable: true
+        description: Whether this job is allowed to fail.
+        expr:
+          kind: path
+          path: [allow_failure]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # stages
+  # ──────────────────────────────────────────────────────────────────────
+  - name: stages
+    description: >-
+      Build stages with name, state, and timing information.
+    guide: >
+      Requires `build_id` filter.
+      `SELECT id, name, state, started_at, finished_at
+      FROM travis_ci.stages WHERE build_id = '12345'`.
+    filters:
+      - name: build_id
+        required: true
+    request:
+      method: GET
+      path: /build/{{filter.build_id}}/stages
+    response:
+      rows_path:
+        - stages
+    pagination:
+      mode: none
+    columns:
+      - name: build_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Build ID filter value.
+        expr:
+          kind: from_filter
+          key: build_id
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique stage ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: number
+        type: Int64
+        nullable: true
+        description: Incremental stage number.
+        expr:
+          kind: path
+          path: [number]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Stage name.
+        expr:
+          kind: path
+          path: [name]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Stage state (passed, failed, errored, canceled).
+        expr:
+          kind: path
+          path: [state]
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: Stage start timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [started_at]
+      - name: finished_at
+        type: Utf8
+        nullable: true
+        description: Stage finish timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [finished_at]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # branches
+  # ──────────────────────────────────────────────────────────────────────
+  - name: branches
+    description: >-
+      Branches for a repository with default status and last build.
+    guide: >
+      Requires `repo_slug` filter.
+      `SELECT name, default_branch, exists_on_github
+      FROM travis_ci.branches
+      WHERE repo_slug = 'owner%2Frepo'`.
+    filters:
+      - name: repo_slug
+        required: true
+    request:
+      method: GET
+      path: /repo/{{filter.repo_slug}}/branches
+    response:
+      rows_path:
+        - branches
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug filter value.
+        expr:
+          kind: from_filter
+          key: repo_slug
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Branch name.
+        expr:
+          kind: path
+          path: [name]
+      - name: default_branch
+        type: Boolean
+        nullable: true
+        description: Whether this is the default branch.
+        expr:
+          kind: path
+          path: [default_branch]
+      - name: exists_on_github
+        type: Boolean
+        nullable: true
+        description: Whether the branch exists on GitHub.
+        expr:
+          kind: path
+          path: [exists_on_github]
+      - name: last_build_id
+        type: Int64
+        nullable: true
+        description: ID of the last build on this branch.
+        expr:
+          kind: path
+          path: [last_build, id]
+      - name: last_build_state
+        type: Utf8
+        nullable: true
+        description: State of the last build.
+        expr:
+          kind: path
+          path: [last_build, state]
+      - name: last_build_number
+        type: Utf8
+        nullable: true
+        description: Number of the last build.
+        expr:
+          kind: path
+          path: [last_build, number]
+      - name: last_build_duration
+        type: Int64
+        nullable: true
+        description: Duration of the last build in seconds.
+        expr:
+          kind: path
+          path: [last_build, duration]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # crons
+  # ──────────────────────────────────────────────────────────────────────
+  - name: crons
+    description: >-
+      Cron jobs for a repository with interval, schedule, and
+      last/next run timestamps.
+    guide: >
+      Requires `repo_slug` filter.
+      `SELECT id, interval, active, next_run
+      FROM travis_ci.crons
+      WHERE repo_slug = 'owner%2Frepo'`.
+    filters:
+      - name: repo_slug
+        required: true
+    request:
+      method: GET
+      path: /repo/{{filter.repo_slug}}/crons
+    response:
+      rows_path:
+        - crons
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug filter value.
+        expr:
+          kind: from_filter
+          key: repo_slug
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique cron ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: interval
+        type: Utf8
+        nullable: true
+        description: Cron interval (daily, weekly, monthly).
+        expr:
+          kind: path
+          path: [interval]
+      - name: dont_run_if_recent_build_exists
+        type: Boolean
+        nullable: true
+        description: Skip if a recent build exists.
+        expr:
+          kind: path
+          path: [dont_run_if_recent_build_exists]
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the cron is active.
+        expr:
+          kind: path
+          path: [active]
+      - name: last_run
+        type: Utf8
+        nullable: true
+        description: Last run timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [last_run]
+      - name: next_run
+        type: Utf8
+        nullable: true
+        description: Next scheduled run timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [next_run]
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+      - name: branch_name
+        type: Utf8
+        nullable: true
+        description: Branch name for this cron.
+        expr:
+          kind: path
+          path: [branch, name]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # env_vars
+  # ──────────────────────────────────────────────────────────────────────
+  - name: env_vars
+    description: >-
+      Environment variables for a repository with name, value,
+      and visibility flag.
+    guide: >
+      Requires `repo_slug` filter.
+      `SELECT id, name, value, public
+      FROM travis_ci.env_vars
+      WHERE repo_slug = 'owner%2Frepo'`.
+    filters:
+      - name: repo_slug
+        required: true
+    request:
+      method: GET
+      path: /repo/{{filter.repo_slug}}/env_vars
+    response:
+      rows_path:
+        - env_vars
+    pagination:
+      mode: none
+    columns:
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug filter value.
+        expr:
+          kind: from_filter
+          key: repo_slug
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique environment variable ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Variable name.
+        expr:
+          kind: path
+          path: [name]
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Variable value (null if not public).
+        expr:
+          kind: path
+          path: [value]
+      - name: public
+        type: Boolean
+        nullable: true
+        description: Whether the variable is publicly visible.
+        expr:
+          kind: path
+          path: [public]
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Branch restriction for this variable.
+        expr:
+          kind: path
+          path: [branch]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # settings
+  # ──────────────────────────────────────────────────────────────────────
+  - name: settings
+    description: >-
+      Repository settings like build_pushes, build_pull_requests,
+      auto_cancel, and maximum concurrent builds.
+    guide: >
+      Requires `repo_slug` filter.
+      `SELECT name, value
+      FROM travis_ci.settings
+      WHERE repo_slug = 'owner%2Frepo'`.
+    filters:
+      - name: repo_slug
+        required: true
+    request:
+      method: GET
+      path: /repo/{{filter.repo_slug}}/settings
+    response:
+      rows_path:
+        - settings
+    pagination:
+      mode: none
+    columns:
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug filter value.
+        expr:
+          kind: from_filter
+          key: repo_slug
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Setting name.
+        expr:
+          kind: path
+          path: [name]
+      - name: value
+        type: Json
+        nullable: true
+        description: Setting value (boolean or integer).
+        expr:
+          kind: path
+          path: [value]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # caches
+  # ──────────────────────────────────────────────────────────────────────
+  - name: caches
+    description: >-
+      Build caches for a repository with size, branch, and
+      last modified timestamp.
+    guide: >
+      Requires `repo_slug` filter.
+      `SELECT slug, branch, size, last_modified
+      FROM travis_ci.caches
+      WHERE repo_slug = 'owner%2Frepo'`.
+    filters:
+      - name: repo_slug
+        required: true
+    request:
+      method: GET
+      path: /repo/{{filter.repo_slug}}/caches
+    response:
+      rows_path:
+        - caches
+    pagination:
+      mode: none
+    columns:
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug filter value.
+        expr:
+          kind: from_filter
+          key: repo_slug
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Cache slug/name.
+        expr:
+          kind: path
+          path: [slug]
+      - name: size
+        type: Int64
+        nullable: true
+        description: Cache size in bytes.
+        expr:
+          kind: path
+          path: [size]
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Branch this cache belongs to.
+        expr:
+          kind: path
+          path: [branch]
+      - name: last_modified
+        type: Utf8
+        nullable: true
+        description: Last modified timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [last_modified]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # requests
+  # ──────────────────────────────────────────────────────────────────────
+  - name: requests
+    description: >-
+      Build requests for a repository with state, result,
+      event type, and branch.
+    guide: >
+      Requires `repo_slug` filter.
+      `SELECT id, state, result, event_type, branch_name
+      FROM travis_ci.requests
+      WHERE repo_slug = 'owner%2Frepo' LIMIT 20`.
+    filters:
+      - name: repo_slug
+        required: true
+    request:
+      method: GET
+      path: /repo/{{filter.repo_slug}}/requests
+    response:
+      rows_path:
+        - requests
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug filter value.
+        expr:
+          kind: from_filter
+          key: repo_slug
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique request ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Request state.
+        expr:
+          kind: path
+          path: [state]
+      - name: result
+        type: Utf8
+        nullable: true
+        description: Request result (approved, rejected).
+        expr:
+          kind: path
+          path: [result]
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Request message.
+        expr:
+          kind: path
+          path: [message]
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: Event that triggered the request.
+        expr:
+          kind: path
+          path: [event_type]
+      - name: branch_name
+        type: Utf8
+        nullable: true
+        description: Branch name for this request.
+        expr:
+          kind: path
+          path: [branch_name]
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # organizations
+  # ──────────────────────────────────────────────────────────────────────
+  - name: organizations
+    description: >-
+      Organizations the current user is a member of.
+    guide: >
+      `SELECT id, login, name, github_id
+      FROM travis_ci.organizations`.
+    request:
+      method: GET
+      path: /orgs
+    response:
+      rows_path:
+        - organizations
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique organization ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: login
+        type: Utf8
+        nullable: true
+        description: Organization login.
+        expr:
+          kind: path
+          path: [login]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization name.
+        expr:
+          kind: path
+          path: [name]
+      - name: github_id
+        type: Int64
+        nullable: true
+        description: GitHub organization ID.
+        expr:
+          kind: path
+          path: [github_id]
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar URL.
+        expr:
+          kind: path
+          path: [avatar_url]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # broadcasts
+  # ──────────────────────────────────────────────────────────────────────
+  - name: broadcasts
+    description: >-
+      System broadcasts and notifications for the current user.
+    guide: >
+      `SELECT id, message, category, active, created_at
+      FROM travis_ci.broadcasts`.
+    request:
+      method: GET
+      path: /broadcasts
+    response:
+      rows_path:
+        - broadcasts
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique broadcast ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Broadcast message text.
+        expr:
+          kind: path
+          path: [message]
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Broadcast category (announcement, warning).
+        expr:
+          kind: path
+          path: [category]
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the broadcast is still active.
+        expr:
+          kind: path
+          path: [active]
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+
+  # ──────────────────────────────────────────────────────────────────────
+  # user
+  # ──────────────────────────────────────────────────────────────────────
+  - name: user
+    description: >-
+      Current authenticated user profile.
+    guide: >
+      Single-row table.
+      `SELECT id, login, name, github_id FROM travis_ci.user`.
+    request:
+      method: GET
+      path: /user
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique user ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: login
+        type: Utf8
+        nullable: true
+        description: GitHub login.
+        expr:
+          kind: path
+          path: [login]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr:
+          kind: path
+          path: [name]
+      - name: github_id
+        type: Int64
+        nullable: true
+        description: GitHub user ID.
+        expr:
+          kind: path
+          path: [github_id]
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: Avatar URL.
+        expr:
+          kind: path
+          path: [avatar_url]
+      - name: is_syncing
+        type: Boolean
+        nullable: true
+        description: Whether the user is currently syncing.
+        expr:
+          kind: path
+          path: [is_syncing]
+      - name: synced_at
+        type: Utf8
+        nullable: true
+        description: Last sync timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [synced_at]

@@ -80,6 +80,7 @@ pub(crate) fn resolve_installed_manifest(
         )));
     }
     candidate.installed = true;
+    candidate.credential_storage = Some(source.effective_credential_storage());
     Ok(InstalledSourceManifest {
         source_spec,
         candidate,
@@ -108,16 +109,22 @@ fn candidate_from_manifest(
         inputs: manifest.declared_inputs().to_vec(),
         installed,
         origin,
+        credential_storage: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "manifest input order assertions intentionally fail loudly in tests"
+    )]
+
     use std::collections::BTreeSet;
 
     use coral_spec::ManifestInputKind;
 
-    use super::{describe_manifest, list_bundled_sources};
+    use super::{describe_manifest, list_bundled_sources, load_bundled_source};
     use crate::sources::SourceName;
     use crate::sources::model::SourceOrigin;
 
@@ -136,6 +143,13 @@ mod tests {
                 .any(|source| source.name == SourceName::parse("stripe").expect("source"))
         );
         assert!(sources.iter().all(|source| !source.version.is_empty()));
+    }
+
+    #[test]
+    fn community_sources_are_not_bundled() {
+        let hn = SourceName::parse("hn").expect("source");
+        let error = load_bundled_source(&hn).expect_err("community source should not be bundled");
+        assert!(error.to_string().contains("unknown bundled source 'hn'"));
     }
 
     #[test]

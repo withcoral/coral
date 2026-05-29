@@ -16,11 +16,16 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    ColumnSpec, FilterSpec, HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec,
-    PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
-    inputs::collect_source_inputs_value, validate::validate_template, validate_http_function,
-    validate_http_function_names, validate_http_table, validate_table_names, validate_test_queries,
+    ColumnSpec, DetailHintDeclaringSurface, DetailHintSpec, DetailHintTargetTable, FilterSpec,
+    HeaderSpec, ManifestError, ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec,
+    RequestSpec, ResponseSpec, Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
+    SourceTableFunctionSpec, TableCommon,
+    inputs::{
+        collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
+    },
+    validate::validate_template,
+    validate_detail_hint_references, validate_http_function, validate_http_function_names,
+    validate_http_table, validate_table_names, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -134,6 +139,10 @@ struct RawHttpTableSpec {
     #[serde(default)]
     fetch_limit_default: Option<usize>,
     #[serde(default)]
+    search_limits: Option<SearchLimitsSpec>,
+    #[serde(default)]
+    detail_hints: Vec<DetailHintSpec>,
+    #[serde(default)]
     request: RequestSpec,
     #[serde(default)]
     requests: Vec<RequestRouteSpec>,
@@ -206,16 +215,17 @@ impl HttpTableSpec {
 }
 
 impl HttpSourceManifest {
+    /// Returns all source secrets declared by this manifest.
+    pub fn declared_secret_names(&self) -> BTreeSet<String> {
+        declared_secret_input_names(&self.declared_inputs)
+    }
+
     /// Returns the source secrets required by this manifest.
     ///
-    /// In the new input model, every declared input with `kind: secret` is
-    /// required because secrets cannot carry defaults.
+    /// In the new input model, required declared inputs with `kind: secret`
+    /// must be available before a source can compile or authenticate.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        self.declared_inputs
-            .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret)
-            .map(|input| input.key.clone())
-            .collect()
+        required_secret_input_names(&self.declared_inputs)
     }
 }
 
@@ -229,6 +239,8 @@ impl RawHttpTableSpec {
             &self.request,
             &self.requests,
             &self.pagination,
+            self.search_limits.as_ref(),
+            &self.detail_hints,
         )?;
 
         Ok(HttpTableSpec {
@@ -238,6 +250,8 @@ impl RawHttpTableSpec {
                 self.guide,
                 self.filters,
                 self.fetch_limit_default,
+                self.search_limits,
+                self.detail_hints,
                 self.columns,
             ),
             request: self.request,
@@ -293,6 +307,7 @@ impl HttpSourceManifest {
                 Ok(function)
             })
             .collect::<Result<Vec<_>>>()?;
+        validate_http_detail_hints(&common.name, &tables, &functions)?;
         if base_url.raw().trim().is_empty() {
             return Err(ManifestError::validation(format!(
                 "source '{}' must define a non-empty base_url",
@@ -318,6 +333,37 @@ impl HttpSourceManifest {
     }
 }
 
+fn validate_http_detail_hints(
+    schema: &str,
+    tables: &[HttpTableSpec],
+    functions: &[SourceTableFunctionSpec],
+) -> Result<()> {
+    let targets = tables
+        .iter()
+        .map(|table| DetailHintTargetTable {
+            name: table.name(),
+            filters: table.filters(),
+        })
+        .collect::<Vec<_>>();
+    let sources = tables
+        .iter()
+        .map(|table| DetailHintDeclaringSurface {
+            surface_kind: "table",
+            surface_name: table.name(),
+            hints: &table.common.detail_hints,
+            columns: table.columns(),
+        })
+        .chain(functions.iter().map(|function| DetailHintDeclaringSurface {
+            surface_kind: "function",
+            surface_name: &function.name,
+            hints: &function.detail_hints,
+            columns: &function.columns,
+        }))
+        .collect::<Vec<_>>();
+
+    validate_detail_hint_references(schema, &targets, &sources)
+}
+
 #[cfg(test)]
 pub(crate) fn test_http_table_spec(
     name: &str,
@@ -332,6 +378,8 @@ pub(crate) fn test_http_table_spec(
             String::new(),
             filters,
             None,
+            None,
+            Vec::new(),
             columns,
         ),
         request,

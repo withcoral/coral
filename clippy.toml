@@ -1,3 +1,8 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
+
 disallowed-methods = [
   { path = "std::env::var", reason = "Read process environment only through crate-owned env modules." },
   { path = "std::env::var_os", reason = "Read process environment only through crate-owned env modules." },

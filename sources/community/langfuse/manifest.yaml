@@ -1,0 +1,697 @@
+name: langfuse
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query traces, observations, scores, sessions, and projects from Langfuse
+  (Cloud or self-hosted).
+inputs:
+  LANGFUSE_BASE_URL:
+    kind: variable
+    default: https://cloud.langfuse.com
+    hint: |
+      Base URL of your Langfuse instance.
+      Cloud regions:
+        EU:    https://cloud.langfuse.com  (default)
+        US:    https://us.cloud.langfuse.com
+        Japan: https://jp.cloud.langfuse.com
+      For self-hosted instances use your own URL (e.g. http://localhost:3000).
+  LANGFUSE_PUBLIC_KEY:
+    kind: secret
+    hint: |
+      Your Langfuse project public key. Find it in your project settings
+      under API Keys. Used as the HTTP Basic Auth username.
+      See [Langfuse API docs](https://langfuse.com/docs/api).
+  LANGFUSE_SECRET_KEY:
+    kind: secret
+    hint: |
+      Your Langfuse project secret key. Find it in your project settings
+      under API Keys. Used as the HTTP Basic Auth password.
+      See [Langfuse API docs](https://langfuse.com/docs/api).
+base_url: "{{input.LANGFUSE_BASE_URL}}"
+auth:
+  type: BasicAuth
+  username: "{{input.LANGFUSE_PUBLIC_KEY}}"
+  password: "{{input.LANGFUSE_SECRET_KEY}}"
+test_queries:
+  - SELECT * FROM langfuse.projects LIMIT 1
+  - SELECT * FROM langfuse.traces LIMIT 1
+tables:
+  - name: projects
+    description: Langfuse projects accessible with the API keys
+    guide: |
+      Start here to confirm connectivity and inspect project metadata.
+      Each row is one Langfuse project. The `id` field can be used to
+      scope downstream queries.
+    request:
+      method: GET
+      path: /api/public/projects
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the project was created
+        expr:
+          kind: path
+          path:
+            - createdAt
+  - name: traces
+    description: LLM application traces recorded in the project
+    guide: |
+      Each row is one trace — a top-level request through your LLM
+      application. Use `name` to filter by trace type, `user_id` to
+      scope to a specific user, and `session_id` to group multi-turn
+      conversations. Join `id` to `observations.trace_id` to drill into
+      individual spans and generations. Results are ordered newest-first.
+    filters:
+      - name: user_id
+        required: false
+      - name: name
+        required: false
+      - name: session_id
+        required: false
+      - name: tags
+        required: false
+      - name: environment
+        required: false
+    request:
+      method: GET
+      path: /api/public/traces
+      query:
+        - name: userId
+          from: filter
+          key: user_id
+        - name: name
+          from: filter
+          key: name
+        - name: sessionId
+          from: filter
+          key: session_id
+        - name: tags
+          from: filter
+          key: tags
+        - name: environment
+          from: filter
+          key: environment
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Trace ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Trace name (identifies the use case or feature)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID associated with this trace
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: session_id
+        type: Utf8
+        nullable: true
+        description: Session ID for grouping multi-turn conversations
+        expr:
+          kind: path
+          path:
+            - sessionId
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Deployment environment (e.g. production, staging)
+        expr:
+          kind: path
+          path:
+            - environment
+      - name: release
+        type: Utf8
+        nullable: true
+        description: Application release version
+        expr:
+          kind: path
+          path:
+            - release
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Application version
+        expr:
+          kind: path
+          path:
+            - version
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Tags attached to this trace (JSON array)
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Timestamp when the trace was recorded
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: latency
+        type: Float64
+        nullable: true
+        description: End-to-end latency in seconds
+        expr:
+          kind: path
+          path:
+            - latency
+      - name: total_cost
+        type: Float64
+        nullable: true
+        description: Total cost in USD across all observations in this trace
+        expr:
+          kind: path
+          path:
+            - totalCost
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID this trace belongs to
+        expr:
+          kind: path
+          path:
+            - projectId
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the trace record was created
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the trace record was last updated
+        expr:
+          kind: path
+          path:
+            - updatedAt
+  - name: observations
+    description: Spans, generations, and events within traces
+    guide: |
+      Each row is one observation — a span, generation, or event inside a
+      trace. Use `type = 'GENERATION'` to focus on LLM calls with token
+      usage and cost. Filter by `trace_id` to get all observations for a
+      specific trace. `model` shows which LLM was called. `latency` and
+      `total_cost` are the most useful columns for performance analysis.
+    filters:
+      - name: trace_id
+        required: false
+      - name: type
+        required: false
+      - name: name
+        required: false
+      - name: user_id
+        required: false
+      - name: environment
+        required: false
+    request:
+      method: GET
+      path: /api/public/observations
+      query:
+        - name: traceId
+          from: filter
+          key: trace_id
+        - name: type
+          from: filter
+          key: type
+        - name: name
+          from: filter
+          key: name
+        - name: userId
+          from: filter
+          key: user_id
+        - name: environment
+          from: filter
+          key: environment
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Observation ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: trace_id
+        type: Utf8
+        nullable: true
+        description: Parent trace ID
+        expr:
+          kind: path
+          path:
+            - traceId
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Observation type (SPAN, GENERATION, or EVENT)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Observation name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: model
+        type: Utf8
+        nullable: true
+        description: Model name used for this generation
+        expr:
+          kind: path
+          path:
+            - model
+      - name: model_parameters
+        type: Utf8
+        nullable: true
+        description: Model parameters as a JSON object
+        expr:
+          kind: path
+          path:
+            - modelParameters
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: Observation start timestamp
+        expr:
+          kind: path
+          path:
+            - startTime
+      - name: end_time
+        type: Utf8
+        nullable: true
+        description: Observation end timestamp
+        expr:
+          kind: path
+          path:
+            - endTime
+      - name: latency
+        type: Float64
+        nullable: true
+        description: Observation latency in seconds
+        expr:
+          kind: path
+          path:
+            - latency
+      - name: input_tokens
+        type: Int64
+        nullable: true
+        description: Number of input tokens
+        expr:
+          kind: path
+          path:
+            - usage
+            - input
+      - name: output_tokens
+        type: Int64
+        nullable: true
+        description: Number of output tokens
+        expr:
+          kind: path
+          path:
+            - usage
+            - output
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total tokens (input + output)
+        expr:
+          kind: path
+          path:
+            - usage
+            - total
+      - name: input_cost
+        type: Float64
+        nullable: true
+        description: Calculated input cost in USD
+        expr:
+          kind: path
+          path:
+            - calculatedInputCost
+      - name: output_cost
+        type: Float64
+        nullable: true
+        description: Calculated output cost in USD
+        expr:
+          kind: path
+          path:
+            - calculatedOutputCost
+      - name: total_cost
+        type: Float64
+        nullable: true
+        description: Calculated total cost in USD
+        expr:
+          kind: path
+          path:
+            - calculatedTotalCost
+      - name: level
+        type: Utf8
+        nullable: true
+        description: Log level (DEBUG, DEFAULT, WARNING, ERROR)
+        expr:
+          kind: path
+          path:
+            - level
+      - name: status_message
+        type: Utf8
+        nullable: true
+        description: Status message or error description
+        expr:
+          kind: path
+          path:
+            - statusMessage
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Version tag on this observation
+        expr:
+          kind: path
+          path:
+            - version
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Deployment environment
+        expr:
+          kind: path
+          path:
+            - environment
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the observation was created
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the observation was last updated
+        expr:
+          kind: path
+          path:
+            - updatedAt
+  - name: scores
+    description: Evaluation scores attached to traces or observations
+    guide: |
+      Each row is one score — a numeric or categorical evaluation attached
+      to a trace or observation. Scores come from human annotation, LLM
+      judges, or custom SDK calls. Use `data_type = 'NUMERIC'` for
+      numeric scores and `data_type = 'CATEGORICAL'` for label-based
+      scores. Filter by `trace_id` to see all scores for a specific trace.
+    filters:
+      - name: trace_id
+        required: false
+      - name: observation_id
+        required: false
+      - name: name
+        required: false
+      - name: data_type
+        required: false
+      - name: environment
+        required: false
+    request:
+      method: GET
+      path: /api/public/v2/scores
+      query:
+        - name: traceId
+          from: filter
+          key: trace_id
+        - name: observationId
+          from: filter
+          key: observation_id
+        - name: name
+          from: filter
+          key: name
+        - name: dataType
+          from: filter
+          key: data_type
+        - name: environment
+          from: filter
+          key: environment
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Score ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: trace_id
+        type: Utf8
+        nullable: true
+        description: Trace ID this score is attached to
+        expr:
+          kind: path
+          path:
+            - traceId
+      - name: observation_id
+        type: Utf8
+        nullable: true
+        description: Observation ID this score is attached to (if observation-level)
+        expr:
+          kind: path
+          path:
+            - observationId
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Score name (e.g. quality, relevance, hallucination)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: value
+        type: Float64
+        nullable: true
+        description: Numeric score value (null for categorical scores)
+        expr:
+          kind: path
+          path:
+            - value
+      - name: string_value
+        type: Utf8
+        nullable: true
+        description: Categorical score label (null for numeric scores)
+        expr:
+          kind: path
+          path:
+            - stringValue
+      - name: data_type
+        type: Utf8
+        nullable: true
+        description: Score data type (NUMERIC, CATEGORICAL, or BOOLEAN)
+        expr:
+          kind: path
+          path:
+            - dataType
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Score source (API, ANNOTATION, or EVAL)
+        expr:
+          kind: path
+          path:
+            - source
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Optional comment on the score
+        expr:
+          kind: path
+          path:
+            - comment
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Deployment environment
+        expr:
+          kind: path
+          path:
+            - environment
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the score was created
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the score was last updated
+        expr:
+          kind: path
+          path:
+            - updatedAt
+  - name: sessions
+    description: Multi-turn conversation sessions grouping related traces
+    guide: |
+      Each row is one session — a group of traces that belong to the same
+      multi-turn conversation or workflow. Use `id` to filter traces by
+      session via `WHERE session_id = '<id>'` on the `traces` table.
+    filters:
+      - name: environment
+        required: false
+    request:
+      method: GET
+      path: /api/public/sessions
+      query:
+        - name: environment
+          from: filter
+          key: environment
+    response:
+      rows_path:
+        - data
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Session ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the session was created
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the session was last updated
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID this session belongs to
+        expr:
+          kind: path
+          path:
+            - projectId
+      - name: environment
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the environment filter applied to this query
+        expr:
+          kind: from_filter
+          key: environment

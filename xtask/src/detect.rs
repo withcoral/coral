@@ -3,7 +3,7 @@
 //! A manifest's descriptions feed documentation, MCP surfaces, and the
 //! `coral.columns` catalog. When an upstream generation step (e.g. `OpenAPI`
 //! → YAML) applies a character cap, sentences get cut mid-phrase. This module
-//! walks each `sources/*/manifest.y{a,}ml` and flags descriptions that exhibit
+//! walks each `sources/**/manifest.y{a,}ml` and flags descriptions that exhibit
 //! deterministic truncation signals.
 //!
 //! Signals (ordered from least to most likely false-positive):
@@ -22,6 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use walkdir::WalkDir;
 
 /// Tokens that rarely, if ever, terminate a complete English description.
 /// If a description ends on one of these, it almost certainly got chopped.
@@ -96,34 +97,10 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
             continue;
         }
         if p.is_dir() {
-            let direct = ["manifest.yaml", "manifest.yml"]
-                .iter()
-                .map(|name| p.join(name))
-                .find(|path| path.is_file());
-            if let Some(nested) = direct {
-                out.push(nested);
-                continue;
-            }
-            // No direct manifest — recurse for sources/*/manifest.y{a,}ml.
-            if let Ok(entries) = fs::read_dir(p) {
-                let mut children: Vec<PathBuf> = entries
-                    .filter_map(std::result::Result::ok)
-                    .map(|e| e.path())
-                    .filter(|c| c.is_dir())
-                    .collect();
-                children.sort();
-                for child in children {
-                    for name in ["manifest.yaml", "manifest.yml"] {
-                        let candidate = child.join(name);
-                        if candidate.is_file() {
-                            out.push(candidate);
-                            break;
-                        }
-                    }
-                }
-            }
+            out.extend(manifest_files_under(p));
         }
     }
+    out.sort();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut unique: Vec<PathBuf> = Vec::new();
     for p in out {
@@ -133,6 +110,19 @@ pub(crate) fn iter_manifests(paths: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     unique
+}
+
+fn manifest_files_under(dir: &Path) -> Vec<PathBuf> {
+    WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let file_name = entry.file_name().to_str()?;
+            matches!(file_name, "manifest.yaml" | "manifest.yml").then(|| entry.into_path())
+        })
+        .collect()
 }
 
 /// Walk a manifest file and yield (1-based line number, resolved description).
@@ -147,7 +137,10 @@ pub(crate) fn extract_descriptions(content: &str) -> Vec<(usize, String)> {
     let mut results: Vec<(usize, String)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let Some((key_indent, value)) = parse_description_header(lines[i]) else {
+        let line = lines
+            .get(i)
+            .expect("line index is bounded by loop condition");
+        let Some((key_indent, value)) = parse_description_header(line) else {
             i += 1;
             continue;
         };
@@ -165,7 +158,10 @@ pub(crate) fn extract_descriptions(content: &str) -> Vec<(usize, String)> {
             continue;
         }
 
-        let first = value.chars().next().unwrap();
+        let first = value
+            .chars()
+            .next()
+            .expect("empty values are handled before scalar dispatch");
         if first == '|' || first == '>' {
             let chomp = value.chars().nth(1).filter(|c| *c == '-' || *c == '+');
             let fold = first == '>';
@@ -225,7 +221,9 @@ fn consume_plain_scalar(
     let mut pieces: Vec<String> = vec![first_value.trim().to_string()];
     let mut i = start + 1;
     while i < lines.len() {
-        let cont = lines[i];
+        let cont = lines
+            .get(i)
+            .expect("line index is bounded by loop condition");
         let stripped = cont.trim();
         if stripped.is_empty() {
             break;
@@ -244,11 +242,17 @@ fn consume_plain_scalar(
 /// `''` escapes a literal single quote; everything else is literal.
 fn consume_single_quoted(lines: &[&str], start: usize, first_value: &str) -> (String, usize) {
     // Strip the opening quote. `first_value` is guaranteed to start with `'`.
-    let mut buf = first_value[1..].to_string();
+    let mut buf = first_value
+        .strip_prefix('\'')
+        .expect("single-quoted scalar starts with quote")
+        .to_string();
     let mut i = start;
     loop {
         if let Some(pos) = find_unescaped_single_quote(&buf) {
-            let text = buf[..pos].replace("''", "'");
+            let text = buf
+                .get(..pos)
+                .expect("single-quote scanner returns a char boundary")
+                .replace("''", "'");
             return (text, i + 1);
         }
         i += 1;
@@ -256,7 +260,12 @@ fn consume_single_quoted(lines: &[&str], start: usize, first_value: &str) -> (St
             return (buf.replace("''", "'"), i);
         }
         buf.push(' ');
-        buf.push_str(lines[i].trim());
+        buf.push_str(
+            lines
+                .get(i)
+                .expect("line index is bounded by prior length check")
+                .trim(),
+        );
     }
 }
 
@@ -264,7 +273,7 @@ fn find_unescaped_single_quote(buf: &str) -> Option<usize> {
     let bytes = buf.as_bytes();
     let mut j = 0;
     while j < bytes.len() {
-        if bytes[j] == b'\'' {
+        if bytes.get(j).copied() == Some(b'\'') {
             if bytes.get(j + 1).copied() == Some(b'\'') {
                 j += 2;
                 continue;
@@ -278,11 +287,17 @@ fn find_unescaped_single_quote(buf: &str) -> Option<usize> {
 
 /// Consume a possibly multi-line double-quoted scalar. Supports `\"` escape.
 fn consume_double_quoted(lines: &[&str], start: usize, first_value: &str) -> (String, usize) {
-    let mut buf = first_value[1..].to_string();
+    let mut buf = first_value
+        .strip_prefix('"')
+        .expect("double-quoted scalar starts with quote")
+        .to_string();
     let mut i = start;
     loop {
         if let Some(pos) = find_unescaped_double_quote(&buf) {
-            let text = unescape_double_quoted(&buf[..pos]);
+            let text = unescape_double_quoted(
+                buf.get(..pos)
+                    .expect("double-quote scanner returns a char boundary"),
+            );
             return (text, i + 1);
         }
         i += 1;
@@ -290,7 +305,12 @@ fn consume_double_quoted(lines: &[&str], start: usize, first_value: &str) -> (St
             return (unescape_double_quoted(&buf), i);
         }
         buf.push(' ');
-        buf.push_str(lines[i].trim());
+        buf.push_str(
+            lines
+                .get(i)
+                .expect("line index is bounded by prior length check")
+                .trim(),
+        );
     }
 }
 
@@ -298,9 +318,9 @@ fn find_unescaped_double_quote(buf: &str) -> Option<usize> {
     let bytes = buf.as_bytes();
     let mut j = 0;
     while j < bytes.len() {
-        match bytes[j] {
-            b'\\' if j + 1 < bytes.len() => j += 2,
-            b'"' => return Some(j),
+        match bytes.get(j).copied() {
+            Some(b'\\') if j + 1 < bytes.len() => j += 2,
+            Some(b'"') => return Some(j),
             _ => j += 1,
         }
     }
@@ -343,7 +363,9 @@ fn consume_block_scalar(
     let mut content_lines: Vec<String> = Vec::new();
     let mut block_indent: Option<usize> = None;
     while i < lines.len() {
-        let raw = lines[i];
+        let raw = lines
+            .get(i)
+            .expect("line index is bounded by loop condition");
         if raw.trim().is_empty() {
             content_lines.push(String::new());
             i += 1;
@@ -391,7 +413,9 @@ fn fold_block(content_lines: &[String]) -> String {
             out.push_str(line);
             continue;
         }
-        let prev = &content_lines[i - 1];
+        let prev = content_lines
+            .get(i - 1)
+            .expect("previous content line exists after first iteration");
         if prev.is_empty() || line.is_empty() {
             out.push('\n');
         } else {
@@ -462,7 +486,10 @@ pub(crate) fn classify(description: &str) -> Vec<String> {
 fn last_clause(text: &str) -> &str {
     for (i, c) in text.char_indices().rev() {
         if matches!(c, '.' | '!' | '?') {
-            return text[i + c.len_utf8()..].trim();
+            return text
+                .get(i + c.len_utf8()..)
+                .expect("char_indices yields valid UTF-8 boundaries")
+                .trim();
         }
     }
     text
@@ -482,18 +509,22 @@ fn trailing_word(text: &str) -> Option<&str> {
     }
     let is_word_byte = |b: u8| b.is_ascii_alphabetic() || matches!(b, b'\'' | b'_' | b'-');
     let mut start = bytes.len();
-    while start > 0 && is_word_byte(bytes[start - 1]) {
+    while start > 0 && bytes.get(start - 1).is_some_and(|b| is_word_byte(*b)) {
         start -= 1;
     }
     // Regex requires the first char to be [A-Za-z]. Advance past any leading
     // non-alpha word chars (e.g. leading apostrophe).
-    while start < bytes.len() && !bytes[start].is_ascii_alphabetic() {
+    while start < bytes.len()
+        && bytes
+            .get(start)
+            .is_some_and(|byte| !byte.is_ascii_alphabetic())
+    {
         start += 1;
     }
     if start >= bytes.len() {
         None
     } else {
-        Some(&trimmed[start..])
+        trimmed.get(start..)
     }
 }
 
@@ -654,6 +685,44 @@ tables:
     }
 
     #[test]
+    fn iter_manifests_recurses_nested_source_groups() {
+        let root = unique_temp_dir("iter-manifests");
+        let core_manifest = root.join("sources/core/github/manifest.yaml");
+        let community_manifest = root.join("sources/community/hn/manifest.yaml");
+        fs::create_dir_all(core_manifest.parent().expect("core parent")).expect("create core");
+        fs::create_dir_all(community_manifest.parent().expect("community parent"))
+            .expect("create community");
+        fs::write(&core_manifest, "name: github\n").expect("write core manifest");
+        fs::write(&community_manifest, "name: hn\n").expect("write community manifest");
+
+        let manifests = iter_manifests(&[root.join("sources")]);
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+        assert_eq!(manifests, vec![community_manifest, core_manifest]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn iter_manifests_does_not_follow_symlinked_directories() {
+        let root = unique_temp_dir("iter-manifests-symlink");
+        let real_manifest = root.join("real/manifest.yaml");
+        let linked_manifest = root.join("sources/linked/manifest.yaml");
+        fs::create_dir_all(real_manifest.parent().expect("real parent")).expect("create real");
+        fs::create_dir_all(root.join("sources")).expect("create sources");
+        fs::write(&real_manifest, "name: real\n").expect("write manifest");
+        std::os::unix::fs::symlink(root.join("real"), root.join("sources/linked"))
+            .expect("create symlink");
+
+        let manifests = iter_manifests(&[root.join("sources")]);
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+        assert!(
+            manifests.is_empty(),
+            "symlinked manifest should not be traversed: {linked_manifest:?}"
+        );
+    }
+
+    #[test]
     fn extract_multi_line_plain_scalar() {
         let yaml = "
 tables:
@@ -731,5 +800,13 @@ tables:
         let text = "A short-form, server-generated string that provides succinct, important information about an object suitable for primary";
         let reasons = classify(text);
         assert!(reasons.iter().any(|r| r.starts_with("suspicious-length")));
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("coral-xtask-{name}-{}-{nonce}", std::process::id()))
     }
 }

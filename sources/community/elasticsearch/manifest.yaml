@@ -1,0 +1,696 @@
+dsl_version: 3
+name: elasticsearch
+version: 1.0.0
+description: >-
+  Inspect Elasticsearch cluster health, nodes, indices, shards, aliases,
+  index templates, and pending cluster tasks through the native REST and
+  _cat APIs.
+backend: http
+base_url: "{{input.ELASTICSEARCH_URL}}"
+inputs:
+  ELASTICSEARCH_URL:
+    kind: variable
+    default: http://localhost:9200
+    hint: |
+      Base URL of your Elasticsearch HTTP endpoint, including scheme and
+      port. Default is `http://localhost:9200` for a local node. For
+      Elastic Cloud use `https://<deployment>.es.<region>.cloud.es.io:9243`.
+      Do not include a trailing slash.
+  ELASTICSEARCH_USER:
+    kind: variable
+    default: elastic
+    hint: |
+      Elasticsearch username. Defaults to `elastic` for the built-in
+      superuser. For a least-privilege user, grant the `monitor` cluster
+      privilege (covers cluster_health, nodes, templates, pending_tasks)
+      plus the `monitor` index privilege on the indices you want visible
+      (required for the indices, shards, and aliases tables) — e.g. a role
+      with cluster `["monitor"]` and indices `[{names:["*"],
+      privileges:["monitor","view_index_metadata"]}]`.
+  ELASTICSEARCH_PASSWORD:
+    kind: secret
+    hint: |
+      Password for the Elasticsearch user. A non-empty password is required —
+      Coral cannot install a source with a blank secret. On a local cluster
+      with security disabled, enable the built-in security realm and set a
+      password, or front the cluster with an authenticating proxy.
+auth:
+  type: BasicAuth
+  username: "{{input.ELASTICSEARCH_USER}}"
+  password: "{{input.ELASTICSEARCH_PASSWORD}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM elasticsearch.cluster_health LIMIT 1
+  - SELECT * FROM elasticsearch.indices LIMIT 1
+tables:
+  - name: cluster_health
+    description: Overall cluster health summary from the _cluster/health API
+    guide: |
+      Returns a single row describing cluster-wide health. `status` is the
+      key indicator: `green` (all shards allocated), `yellow` (all primaries
+      allocated, some replicas unassigned), or `red` (some primaries
+      unassigned — data is unavailable). A non-zero `unassigned_shards` or
+      `number_of_pending_tasks` usually signals allocation or master
+      pressure. Numeric fields are returned as proper JSON numbers.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /_cluster/health
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: cluster_name
+        type: Utf8
+        nullable: false
+        description: Name of the cluster
+        expr:
+          kind: path
+          path:
+            - cluster_name
+      - name: status
+        type: Utf8
+        nullable: false
+        description: "Cluster health: green, yellow, or red"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: number_of_nodes
+        type: Int64
+        nullable: true
+        description: Total number of nodes in the cluster
+        expr:
+          kind: path
+          path:
+            - number_of_nodes
+      - name: number_of_data_nodes
+        type: Int64
+        nullable: true
+        description: Number of data-holding nodes
+        expr:
+          kind: path
+          path:
+            - number_of_data_nodes
+      - name: active_primary_shards
+        type: Int64
+        nullable: true
+        description: Number of active primary shards
+        expr:
+          kind: path
+          path:
+            - active_primary_shards
+      - name: active_shards
+        type: Int64
+        nullable: true
+        description: Total number of active primary and replica shards
+        expr:
+          kind: path
+          path:
+            - active_shards
+      - name: relocating_shards
+        type: Int64
+        nullable: true
+        description: Number of shards currently relocating
+        expr:
+          kind: path
+          path:
+            - relocating_shards
+      - name: initializing_shards
+        type: Int64
+        nullable: true
+        description: Number of shards currently initializing
+        expr:
+          kind: path
+          path:
+            - initializing_shards
+      - name: unassigned_shards
+        type: Int64
+        nullable: true
+        description: Number of unassigned shards; non-zero on yellow or red
+        expr:
+          kind: path
+          path:
+            - unassigned_shards
+      - name: delayed_unassigned_shards
+        type: Int64
+        nullable: true
+        description: Shards whose allocation is intentionally delayed
+        expr:
+          kind: path
+          path:
+            - delayed_unassigned_shards
+      - name: number_of_pending_tasks
+        type: Int64
+        nullable: true
+        description: Cluster state update tasks waiting to be processed
+        expr:
+          kind: path
+          path:
+            - number_of_pending_tasks
+      - name: number_of_in_flight_fetch
+        type: Int64
+        nullable: true
+        description: Number of unfinished shard info fetches
+        expr:
+          kind: path
+          path:
+            - number_of_in_flight_fetch
+      - name: task_max_waiting_in_queue_millis
+        type: Int64
+        nullable: true
+        description: Longest time a pending task has waited, in milliseconds
+        expr:
+          kind: path
+          path:
+            - task_max_waiting_in_queue_millis
+      - name: active_shards_percent_as_number
+        type: Float64
+        nullable: true
+        description: Percentage of active shards out of all shards
+        expr:
+          kind: path
+          path:
+            - active_shards_percent_as_number
+
+  - name: nodes
+    description: Per-node resource usage from the _cat/nodes API
+    guide: |
+      Returns one row per node with heap, RAM, CPU, load, disk, and role
+      information. `master` is `*` for the elected master and `-` otherwise.
+      Values come from the _cat API as strings; numeric-looking fields are
+      typed as text and may need CAST in SQL (e.g.
+      `CAST(heap_percent AS INTEGER)`). Use this to spot nodes under heap or
+      disk pressure.
+    request:
+      method: GET
+      path: /_cat/nodes
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: bytes
+          from: literal
+          value: b
+        - name: h
+          from: literal
+          value: name,ip,node.role,master,version,heap.percent,ram.percent,cpu,load_1m,load_5m,load_15m,disk.used_percent,uptime
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Node name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: Node IP address
+        expr:
+          kind: path
+          path:
+            - ip
+      - name: node_role
+        type: Utf8
+        nullable: true
+        description: "Node roles abbreviation (e.g. dim, m, d)"
+        expr:
+          kind: path
+          path:
+            - node.role
+      - name: master
+        type: Utf8
+        nullable: true
+        description: "* for the elected master node, - otherwise"
+        expr:
+          kind: path
+          path:
+            - master
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Elasticsearch version running on the node
+        expr:
+          kind: path
+          path:
+            - version
+      - name: heap_percent
+        type: Utf8
+        nullable: true
+        description: Used heap as a percentage (string from _cat)
+        expr:
+          kind: path
+          path:
+            - heap.percent
+      - name: ram_percent
+        type: Utf8
+        nullable: true
+        description: Used RAM as a percentage (string from _cat)
+        expr:
+          kind: path
+          path:
+            - ram.percent
+      - name: cpu
+        type: Utf8
+        nullable: true
+        description: Recent CPU usage percentage (string from _cat)
+        expr:
+          kind: path
+          path:
+            - cpu
+      - name: load_1m
+        type: Utf8
+        nullable: true
+        description: 1-minute load average (string from _cat)
+        expr:
+          kind: path
+          path:
+            - load_1m
+      - name: load_5m
+        type: Utf8
+        nullable: true
+        description: 5-minute load average (string from _cat)
+        expr:
+          kind: path
+          path:
+            - load_5m
+      - name: load_15m
+        type: Utf8
+        nullable: true
+        description: 15-minute load average (string from _cat)
+        expr:
+          kind: path
+          path:
+            - load_15m
+      - name: disk_used_percent
+        type: Utf8
+        nullable: true
+        description: Percentage of disk used (string from _cat)
+        expr:
+          kind: path
+          path:
+            - disk.used_percent
+      - name: uptime
+        type: Utf8
+        nullable: true
+        description: Node uptime as a human-readable duration
+        expr:
+          kind: path
+          path:
+            - uptime
+
+  - name: indices
+    description: Per-index document counts and storage from the _cat/indices API
+    guide: |
+      Returns one row per index (including system indices). `health` and
+      `status` mirror cluster_health semantics at the index level. Counts
+      and sizes come from the _cat API as strings and are typed as text;
+      CAST in SQL when you need arithmetic (e.g.
+      `CAST("docs_count" AS BIGINT)`). Filter with a SQL WHERE clause on
+      `index` after fetching.
+    request:
+      method: GET
+      path: /_cat/indices
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: bytes
+          from: literal
+          value: b
+        - name: h
+          from: literal
+          value: health,status,index,uuid,pri,rep,docs.count,docs.deleted,store.size,pri.store.size
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: index
+        type: Utf8
+        nullable: false
+        description: Index name
+        expr:
+          kind: path
+          path:
+            - index
+      - name: uuid
+        type: Utf8
+        nullable: true
+        description: Index UUID
+        expr:
+          kind: path
+          path:
+            - uuid
+      - name: health
+        type: Utf8
+        nullable: true
+        description: "Index health: green, yellow, or red"
+        expr:
+          kind: path
+          path:
+            - health
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Index status: open or close"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: pri
+        type: Utf8
+        nullable: true
+        description: Number of primary shards (string from _cat)
+        expr:
+          kind: path
+          path:
+            - pri
+      - name: rep
+        type: Utf8
+        nullable: true
+        description: Number of replicas per primary (string from _cat)
+        expr:
+          kind: path
+          path:
+            - rep
+      - name: docs_count
+        type: Utf8
+        nullable: true
+        description: Number of documents (string from _cat)
+        expr:
+          kind: path
+          path:
+            - docs.count
+      - name: docs_deleted
+        type: Utf8
+        nullable: true
+        description: Number of deleted documents not yet merged away
+        expr:
+          kind: path
+          path:
+            - docs.deleted
+      - name: store_size
+        type: Utf8
+        nullable: true
+        description: Total store size in bytes including replicas (string)
+        expr:
+          kind: path
+          path:
+            - store.size
+      - name: pri_store_size
+        type: Utf8
+        nullable: true
+        description: Primary-only store size in bytes (string from _cat)
+        expr:
+          kind: path
+          path:
+            - pri.store.size
+
+  - name: shards
+    description: Per-shard allocation and state from the _cat/shards API
+    guide: |
+      Returns one row per shard copy. `prirep` is `p` for primary and `r`
+      for replica. `state` values include STARTED, RELOCATING,
+      INITIALIZING, and UNASSIGNED. Rows with state UNASSIGNED and a
+      populated `unassigned_reason` explain why a cluster is yellow or red.
+      `node` is null for unassigned shards.
+    request:
+      method: GET
+      path: /_cat/shards
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: bytes
+          from: literal
+          value: b
+        - name: h
+          from: literal
+          value: index,shard,prirep,state,docs,store,node,unassigned.reason
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: index
+        type: Utf8
+        nullable: false
+        description: Index the shard belongs to
+        expr:
+          kind: path
+          path:
+            - index
+      - name: shard
+        type: Utf8
+        nullable: true
+        description: Shard number (string from _cat)
+        expr:
+          kind: path
+          path:
+            - shard
+      - name: prirep
+        type: Utf8
+        nullable: true
+        description: "p for primary shard, r for replica shard"
+        expr:
+          kind: path
+          path:
+            - prirep
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Shard state: STARTED, RELOCATING, INITIALIZING, UNASSIGNED"
+        expr:
+          kind: path
+          path:
+            - state
+      - name: docs
+        type: Utf8
+        nullable: true
+        description: Number of documents in the shard (string from _cat)
+        expr:
+          kind: path
+          path:
+            - docs
+      - name: store
+        type: Utf8
+        nullable: true
+        description: Shard store size in bytes (string from _cat)
+        expr:
+          kind: path
+          path:
+            - store
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Node holding the shard; null when unassigned
+        expr:
+          kind: path
+          path:
+            - node
+      - name: unassigned_reason
+        type: Utf8
+        nullable: true
+        description: Reason the shard is unassigned, when applicable
+        expr:
+          kind: path
+          path:
+            - unassigned.reason
+
+  - name: aliases
+    description: Index alias mappings from the _cat/aliases API
+    guide: |
+      Returns one row per alias-to-index mapping. `is_write_index` marks the
+      target that receives writes for a multi-index alias. `filter`,
+      `routing_index`, and `routing_search` are `-` when not configured.
+    request:
+      method: GET
+      path: /_cat/aliases
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: h
+          from: literal
+          value: alias,index,filter,routing.index,routing.search,is_write_index
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: alias
+        type: Utf8
+        nullable: false
+        description: Alias name
+        expr:
+          kind: path
+          path:
+            - alias
+      - name: index
+        type: Utf8
+        nullable: false
+        description: Concrete index the alias points to
+        expr:
+          kind: path
+          path:
+            - index
+      - name: filter
+        type: Utf8
+        nullable: true
+        description: "- when no filter is configured, otherwise a filter marker"
+        expr:
+          kind: path
+          path:
+            - filter
+      - name: routing_index
+        type: Utf8
+        nullable: true
+        description: Index routing value, or - when unset
+        expr:
+          kind: path
+          path:
+            - routing.index
+      - name: routing_search
+        type: Utf8
+        nullable: true
+        description: Search routing value, or - when unset
+        expr:
+          kind: path
+          path:
+            - routing.search
+      - name: is_write_index
+        type: Utf8
+        nullable: true
+        description: Whether this index is the alias write target
+        expr:
+          kind: path
+          path:
+            - is_write_index
+
+  - name: templates
+    description: Index templates from the _cat/templates API
+    guide: |
+      Returns one row per index template. `index_patterns` is a string
+      representation of the patterns the template applies to. `order` and
+      `version` come from the _cat API as strings.
+    request:
+      method: GET
+      path: /_cat/templates
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: h
+          from: literal
+          value: name,index_patterns,order,version,composed_of
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Template name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: index_patterns
+        type: Utf8
+        nullable: true
+        description: Index patterns the template matches
+        expr:
+          kind: path
+          path:
+            - index_patterns
+      - name: order
+        type: Utf8
+        nullable: true
+        description: Merge order for legacy templates (string from _cat)
+        expr:
+          kind: path
+          path:
+            - order
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Template version, when set
+        expr:
+          kind: path
+          path:
+            - version
+      - name: composed_of
+        type: Utf8
+        nullable: true
+        description: Component templates this index template composes
+        expr:
+          kind: path
+          path:
+            - composed_of
+
+  - name: pending_tasks
+    description: Cluster state update tasks waiting in the master queue
+    guide: |
+      Returns one row per pending cluster-level task from
+      _cat/pending_tasks. A consistently non-empty result with high
+      `time_in_queue` indicates master node pressure. An empty result is
+      healthy and expected on an idle cluster.
+    request:
+      method: GET
+      path: /_cat/pending_tasks
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: h
+          from: literal
+          value: insertOrder,timeInQueue,priority,source
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: insert_order
+        type: Utf8
+        nullable: true
+        description: Order in which the task was inserted (string from _cat)
+        expr:
+          kind: path
+          path:
+            - insertOrder
+      - name: time_in_queue
+        type: Utf8
+        nullable: true
+        description: How long the task has waited in the queue
+        expr:
+          kind: path
+          path:
+            - timeInQueue
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: "Task priority (e.g. URGENT, HIGH, NORMAL)"
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Description of the cluster state change
+        expr:
+          kind: path
+          path:
+            - source

@@ -11,16 +11,22 @@ workspace = true
 
 [dependencies]
 arrow.workspace = true
+axum.workspace = true
+base64.workspace = true
 chrono.workspace = true
-directories.workspace = true
+etcetera.workspace = true
 fs2.workspace = true
+keyring-core.workspace = true
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
+regex.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
@@ -28,9 +34,12 @@ toml.workspace = true
 toml_edit.workspace = true
 tonic.workspace = true
 tonic-types.workspace = true
+tonic-web.workspace = true
+tower.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 coral-api.workspace = true
@@ -38,10 +47,19 @@ coral-auth-aws = { path = "../auth/aws" }
 coral-engine.workspace = true
 coral-spec.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store.workspace = true
+
 [dev-dependencies]
 coral-client.workspace = true
+prost.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-reqwest.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 

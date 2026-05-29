@@ -1,0 +1,723 @@
+name: datahub
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query datasets, dataflows, datajobs, users, tags, and domains from DataHub
+  (Open Source or self-hosted). Covers data catalog inventory, lineage
+  ownership, and governance metadata via the DataHub GraphQL API.
+inputs:
+  DATAHUB_GMS_URL:
+    kind: variable
+    default: http://localhost:8080
+    hint: >-
+      Base URL of your DataHub GMS (Generalized Metadata Service) instance.
+      For a local Docker quickstart use http://localhost:8080.
+      For a remote deployment use its full base URL
+      (e.g. https://datahub.example.com). Do not include /api/graphql --
+      that path is appended automatically.
+      See https://datahubproject.io/docs/quickstart for setup.
+  DATAHUB_TOKEN:
+    kind: secret
+    hint: >-
+      Personal Access Token for authenticated DataHub deployments.
+      Generate one in DataHub UI under Settings > Access Tokens.
+      For local unauthenticated OSS instances pass any non-empty placeholder
+      (e.g. no-auth) -- DataHub OSS ignores the Authorization header.
+      See https://datahubproject.io/docs/authentication/personal-access-tokens.
+base_url: "{{input.DATAHUB_GMS_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.DATAHUB_TOKEN}}
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM datahub.datasets LIMIT 1
+  - SELECT * FROM datahub.tags LIMIT 1
+tables:
+  - name: datasets
+    description: >-
+      Data catalog inventory -- datasets registered across all platforms
+      (Hive, S3, Kafka, HDFS, etc.) with ownership and descriptions.
+    guide: |
+      Each row is one registered dataset. `platform` is the underlying data
+      platform (e.g. hive, s3, kafka). `owners` is a comma-joined list of
+      owner usernames. Use `urn` to join to lineage or governance queries.
+      This table fetches up to 1000 datasets in a single GraphQL request.
+      The DataHub GraphQL search API supports offset pagination via start/count
+      but the Coral DSL does not support body-based offset pagination; if your
+      catalog exceeds 1000 datasets the count value in the manifest body must
+      be raised manually until native pagination support is added.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query SearchDatasets($input: SearchInput!) {
+              search(input: $input) {
+                total
+                searchResults {
+                  entity {
+                    ... on Dataset {
+                      urn
+                      name
+                      platform { name }
+                      properties {
+                        description
+                        qualifiedName
+                      }
+                      ownership {
+                        owners {
+                          owner {
+                            ... on CorpUser { username }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - input
+            - type
+          from: literal
+          value: DATASET
+        - path:
+            - variables
+            - input
+            - query
+          from: literal
+          value: "*"
+        - path:
+            - variables
+            - input
+            - start
+          from: literal
+          value: 0
+        - path:
+            - variables
+            - input
+            - count
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - data
+        - search
+        - searchResults
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: urn
+        type: Utf8
+        nullable: false
+        description: Unique DataHub Resource Name for this dataset.
+        expr:
+          kind: path
+          path:
+            - entity
+            - urn
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Dataset name as registered in DataHub.
+        expr:
+          kind: path
+          path:
+            - entity
+            - name
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: Underlying data platform (e.g. hive, s3, kafka, hdfs).
+        expr:
+          kind: path
+          path:
+            - entity
+            - platform
+            - name
+      - name: qualified_name
+        type: Utf8
+        nullable: true
+        description: Fully qualified dataset name when available.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - qualifiedName
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Dataset description from DataHub properties.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - description
+      - name: owners
+        type: Utf8
+        nullable: true
+        description: Comma-joined list of owner usernames.
+        expr:
+          kind: join_array_path
+          path:
+            - entity
+            - ownership
+            - owners
+          item_path:
+            - owner
+            - username
+          separator: ","
+
+  - name: tags
+    description: >-
+      Governance and classification tags registered in DataHub.
+    guide: |
+      Each row is one tag. Use `urn` to cross-reference tags applied to
+      datasets or other entities. `name` is the display label shown in the UI.
+      Fetches up to 1000 tags in a single request; most catalogs have far fewer.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query SearchTags($input: SearchInput!) {
+              search(input: $input) {
+                total
+                searchResults {
+                  entity {
+                    ... on Tag {
+                      urn
+                      properties {
+                        name
+                        description
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - input
+            - type
+          from: literal
+          value: TAG
+        - path:
+            - variables
+            - input
+            - query
+          from: literal
+          value: "*"
+        - path:
+            - variables
+            - input
+            - start
+          from: literal
+          value: 0
+        - path:
+            - variables
+            - input
+            - count
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - data
+        - search
+        - searchResults
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: urn
+        type: Utf8
+        nullable: false
+        description: Unique Tag URN.
+        expr:
+          kind: path
+          path:
+            - entity
+            - urn
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tag display name.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Tag description.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - description
+
+  - name: domains
+    description: >-
+      Business domains used to group and govern metadata entities in DataHub.
+    guide: |
+      Each row is one domain. Domains are top-level groupings such as
+      Marketing, Engineering, or Sales. Use `urn` to scope dataset or
+      user queries by domain. Fetches up to 1000 domains in a single request.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query SearchDomains($input: SearchInput!) {
+              search(input: $input) {
+                total
+                searchResults {
+                  entity {
+                    ... on Domain {
+                      urn
+                      properties {
+                        name
+                        description
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - input
+            - type
+          from: literal
+          value: DOMAIN
+        - path:
+            - variables
+            - input
+            - query
+          from: literal
+          value: "*"
+        - path:
+            - variables
+            - input
+            - start
+          from: literal
+          value: 0
+        - path:
+            - variables
+            - input
+            - count
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - data
+        - search
+        - searchResults
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: urn
+        type: Utf8
+        nullable: false
+        description: Unique Domain URN.
+        expr:
+          kind: path
+          path:
+            - entity
+            - urn
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Domain name (e.g. Marketing, Engineering).
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Domain description.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - description
+
+  - name: dataflows
+    description: >-
+      Orchestration pipelines and DAGs registered in DataHub
+      (e.g. Airflow DAGs).
+    guide: |
+      Each row is one pipeline or DAG. `platform` is the orchestrator
+      (e.g. airflow). Join `urn` to `datahub.datajobs.flow_urn` to see
+      the individual tasks within a pipeline.
+      Fetches up to 1000 pipelines in a single request.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query SearchDataFlows($input: SearchInput!) {
+              search(input: $input) {
+                total
+                searchResults {
+                  entity {
+                    ... on DataFlow {
+                      urn
+                      platform { name }
+                      properties {
+                        name
+                        description
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - input
+            - type
+          from: literal
+          value: DATA_FLOW
+        - path:
+            - variables
+            - input
+            - query
+          from: literal
+          value: "*"
+        - path:
+            - variables
+            - input
+            - start
+          from: literal
+          value: 0
+        - path:
+            - variables
+            - input
+            - count
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - data
+        - search
+        - searchResults
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: urn
+        type: Utf8
+        nullable: false
+        description: Unique DataFlow URN.
+        expr:
+          kind: path
+          path:
+            - entity
+            - urn
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Pipeline or DAG name.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - name
+      - name: platform
+        type: Utf8
+        nullable: true
+        description: Orchestration platform (e.g. airflow).
+        expr:
+          kind: path
+          path:
+            - entity
+            - platform
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Pipeline description.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - description
+
+  - name: datajobs
+    description: >-
+      Individual pipeline tasks and jobs registered in DataHub
+      (e.g. Airflow tasks within a DAG).
+    guide: |
+      Each row is one task or job within a pipeline. `flow_urn` links back
+      to the parent pipeline in `datahub.dataflows`. `flow_platform` is the
+      orchestrator. Join `flow_urn` to `datahub.dataflows.urn` to get the
+      parent DAG name. Fetches up to 1000 jobs in a single request.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query SearchDataJobs($input: SearchInput!) {
+              search(input: $input) {
+                total
+                searchResults {
+                  entity {
+                    ... on DataJob {
+                      urn
+                      properties {
+                        name
+                        description
+                      }
+                      dataFlow {
+                        urn
+                        platform { name }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - input
+            - type
+          from: literal
+          value: DATA_JOB
+        - path:
+            - variables
+            - input
+            - query
+          from: literal
+          value: "*"
+        - path:
+            - variables
+            - input
+            - start
+          from: literal
+          value: 0
+        - path:
+            - variables
+            - input
+            - count
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - data
+        - search
+        - searchResults
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: urn
+        type: Utf8
+        nullable: false
+        description: Unique DataJob URN.
+        expr:
+          kind: path
+          path:
+            - entity
+            - urn
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Task or job name.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Task description.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - description
+      - name: flow_urn
+        type: Utf8
+        nullable: true
+        description: URN of the parent pipeline. Join to datahub.dataflows.urn.
+        expr:
+          kind: path
+          path:
+            - entity
+            - dataFlow
+            - urn
+      - name: flow_platform
+        type: Utf8
+        nullable: true
+        description: Orchestration platform of the parent pipeline (e.g. airflow).
+        expr:
+          kind: path
+          path:
+            - entity
+            - dataFlow
+            - platform
+            - name
+
+  - name: users
+    description: >-
+      DataHub users (CorpUsers) -- people registered in the catalog with
+      display names and email addresses.
+    guide: |
+      Each row is one registered user. `username` is the login identifier.
+      `display_name` is the human-readable name shown in the UI.
+      Use `urn` to cross-reference ownership on datasets.
+      Fetches up to 1000 users in a single request.
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /api/graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query SearchUsers($input: SearchInput!) {
+              search(input: $input) {
+                total
+                searchResults {
+                  entity {
+                    ... on CorpUser {
+                      urn
+                      username
+                      properties {
+                        displayName
+                        email
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - input
+            - type
+          from: literal
+          value: CORP_USER
+        - path:
+            - variables
+            - input
+            - query
+          from: literal
+          value: "*"
+        - path:
+            - variables
+            - input
+            - start
+          from: literal
+          value: 0
+        - path:
+            - variables
+            - input
+            - count
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - data
+        - search
+        - searchResults
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: urn
+        type: Utf8
+        nullable: false
+        description: Unique CorpUser URN.
+        expr:
+          kind: path
+          path:
+            - entity
+            - urn
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Login username (often an email address).
+        expr:
+          kind: path
+          path:
+            - entity
+            - username
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable display name.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - displayName
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr:
+          kind: path
+          path:
+            - entity
+            - properties
+            - email

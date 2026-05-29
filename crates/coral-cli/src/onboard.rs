@@ -1,12 +1,13 @@
 use coral_api::v1::{ExecuteSqlRequest, Source, SourceInfo};
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
+    manifest_input_from_proto,
 };
 use dialoguer::console::{measure_text_width, style};
 use dialoguer::{Select, theme::ColorfulTheme};
 use tonic::Request;
 
-use crate::source_ops;
+use crate::{browser, source_ops};
 
 const SOURCE_DESCRIPTION_PREVIEW_LIMIT: usize = 88;
 
@@ -60,7 +61,9 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
 
         match select_top_level(&theme, &bundled_sources)? {
             TopLevelChoice::BundledSource(idx) => {
-                let source = &bundled_sources[idx];
+                let source = bundled_sources
+                    .get(idx)
+                    .expect("selected source index comes from menu items");
                 if source.installed {
                     run_installed_source_menu(app, &theme, source).await?;
                 } else {
@@ -152,7 +155,11 @@ async fn run_installed_source_menu(
         .default(0)
         .interact_opt()?;
 
-    match selection.map(|i| actions[i]) {
+    match selection.map(|i| {
+        *actions
+            .get(i)
+            .expect("selected action index comes from menu items")
+    }) {
         Some(InstalledSourceAction::Validate) => {
             source_ops::validate_and_warn(
                 app,
@@ -165,11 +172,14 @@ async fn run_installed_source_menu(
             let inputs = source
                 .inputs
                 .iter()
-                .map(source_ops::manifest_input_from_proto)
+                .map(manifest_input_from_proto)
                 .collect::<Result<Vec<_>, _>>()?;
-            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            let inputs = source_ops::prompt_for_inputs_with_credential_methods_in_mode(
+                &inputs,
+                source_ops::CredentialPromptMode::CredentialMethodFirst,
+            )?;
             let result =
-                source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
+                source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
             println!("Reconfigured source {}", result.name);
             source_ops::validate_and_warn(
                 app,
@@ -188,10 +198,13 @@ async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<
     let inputs = source
         .inputs
         .iter()
-        .map(source_ops::manifest_input_from_proto)
+        .map(manifest_input_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-    let result = source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
+    let inputs = source_ops::prompt_for_inputs_with_credential_methods_in_mode(
+        &inputs,
+        source_ops::CredentialPromptMode::CredentialMethodFirst,
+    )?;
+    let result = source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
     println!("Added source {}", result.name);
     source_ops::validate_and_warn(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
 }
@@ -279,7 +292,12 @@ async fn show_next_steps_screen(
             .default(0)
             .interact_opt()?;
 
-        let action = selection.map(|i| items[i].1);
+        let action = selection.map(|i| {
+            items
+                .get(i)
+                .expect("selected next-step index comes from menu items")
+                .1
+        });
         match action {
             Some(NextStepAction::RunExampleQuery) => {
                 let sql = "SELECT schema_name, COUNT(*) AS table_count FROM coral.tables GROUP BY schema_name ORDER BY 1";
@@ -297,7 +315,12 @@ async fn show_next_steps_screen(
             }
             Some(NextStepAction::AddMoreSources) => return Ok(NextStepChoice::AddMoreSources),
             Some(NextStepAction::OpenDocs) => {
-                open_url("https://withcoral.com/docs");
+                match browser::open_url("https://withcoral.com/docs") {
+                    Ok(()) => {}
+                    Err(err) => {
+                        println!("{}", style(format!("Could not open browser: {err}")).dim());
+                    }
+                }
             }
             Some(NextStepAction::Exit) | None => return Ok(NextStepChoice::Exit),
         }
@@ -315,25 +338,6 @@ async fn run_first_query(app: &AppClient, sql: &str) -> Result<String, anyhow::E
         .into_inner();
     let result = decode_execute_sql_response(&response)?;
     Ok(format_batches_table(result.batches())?)
-}
-
-fn open_url(url: &str) {
-    let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()
-    } else if cfg!(target_os = "linux") {
-        std::process::Command::new("xdg-open").arg(url).status()
-    } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", url])
-            .status()
-    } else {
-        return;
-    };
-    match result {
-        Ok(status) if status.success() => {}
-        Ok(status) => println!("{}", style(format!("Browser exited with {status}")).dim()),
-        Err(err) => println!("{}", style(format!("Could not open browser: {err}")).dim()),
-    }
 }
 
 fn truncate_description(description: &str, max_len: usize) -> String {
@@ -364,6 +368,7 @@ mod tests {
             inputs: Vec::new(),
             installed: true,
             origin: 1,
+            credential_storage: 1,
         };
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("✓ "));
@@ -380,6 +385,7 @@ mod tests {
             inputs: Vec::new(),
             installed: false,
             origin: 1,
+            credential_storage: 0,
         };
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("  "));
@@ -395,6 +401,7 @@ mod tests {
             inputs: Vec::new(),
             installed: false,
             origin: 1,
+            credential_storage: 0,
         };
         let long = SourceInfo {
             name: "statusgator".to_string(),
@@ -403,6 +410,7 @@ mod tests {
             inputs: Vec::new(),
             installed: false,
             origin: 1,
+            credential_storage: 0,
         };
         let width = 11; // len of "statusgator"
         let short_item = format_source_list_item(&short, width);

@@ -7,6 +7,7 @@
 
 use std::fmt::Write as _;
 
+use coral_api::grpc_response_status_code;
 use coral_client::{CoralQueryError, DecodedStatusError, decode_status_error};
 
 /// Renders a `tonic::Status` as a user-facing stderr block.
@@ -23,6 +24,20 @@ pub(crate) fn render_query_error(status: &tonic::Status) -> String {
     match decode_status_error(status) {
         DecodedStatusError::Structured(error) => render_structured(&error),
         DecodedStatusError::Plain(message) => render_plain(status.code(), &message),
+    }
+}
+
+pub(crate) fn telemetry_error_type(status: &tonic::Status) -> String {
+    match decode_status_error(status) {
+        DecodedStatusError::Structured(error) => error.reason,
+        DecodedStatusError::Plain(_) => grpc_response_status_code(status.code()).to_string(),
+    }
+}
+
+pub(crate) fn telemetry_error_message(status: &tonic::Status) -> String {
+    match decode_status_error(status) {
+        DecodedStatusError::Structured(error) => error.summary,
+        DecodedStatusError::Plain(message) => message,
     }
 }
 
@@ -110,6 +125,27 @@ mod tests {
     }
 
     #[test]
+    fn structured_telemetry_uses_reason_and_summary() {
+        let status = build_coral_status(
+            "MISSING_REQUIRED_FILTER",
+            vec![
+                (
+                    "summary",
+                    "github.files requires `WHERE pull_number = <constant>`",
+                ),
+                ("detail", "missing required filter"),
+            ],
+            false,
+        );
+
+        assert_eq!(telemetry_error_type(&status), "MISSING_REQUIRED_FILTER");
+        assert_eq!(
+            telemetry_error_message(&status),
+            "github.files requires `WHERE pull_number = <constant>`"
+        );
+    }
+
+    #[test]
     fn structured_omits_detail_when_absent() {
         let status = build_coral_status(
             "PROVIDER_REQUEST_FAILED",
@@ -168,6 +204,14 @@ mod tests {
     fn plain_status_includes_grpc_code() {
         let rendered = render_plain(Code::Internal, "legacy opaque failure");
         assert_eq!(rendered, "Error (internal error): legacy opaque failure\n");
+    }
+
+    #[test]
+    fn plain_telemetry_uses_grpc_code_and_message() {
+        let status = Status::new(Code::FailedPrecondition, "missing source setup");
+
+        assert_eq!(telemetry_error_type(&status), "FAILED_PRECONDITION");
+        assert_eq!(telemetry_error_message(&status), "missing source setup");
     }
 
     #[test]

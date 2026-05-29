@@ -117,11 +117,11 @@ mod tests {
             load_manifests(&root).expect("empty source dir should not fail manifest loading");
         assert!(manifests.is_empty());
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
-    fn load_manifests_accepts_parquet_backend_manifest() {
+    fn load_manifests_accepts_parquet_file_manifest() {
         let root = unique_temp_dir("coral-loader-parquet");
         let source_dir = root.join("otel_metrics");
         fs::create_dir_all(&source_dir).expect("create source dir");
@@ -131,10 +131,11 @@ mod tests {
 name: otel_metrics
 version: 0.1.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: metrics
     description: Metrics exported as parquet
+    format: parquet
     source:
       location: file:///tmp/coral-otel-metrics/
       glob: "**/*.parquet"
@@ -148,13 +149,14 @@ tables:
 
         let manifests = load_manifests(&root).expect("parquet manifest should load");
         assert_eq!(manifests.len(), 1);
-        assert_eq!(manifests[0].schema_name(), "otel_metrics");
+        let manifest = manifests.first().expect("parquet manifest");
+        assert_eq!(manifest.schema_name(), "otel_metrics");
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
-    fn load_manifests_accepts_jsonl_backend_manifest() {
+    fn load_manifests_accepts_jsonl_file_manifest() {
         let root = unique_temp_dir("coral-loader-jsonl");
         let source_dir = root.join("claude");
         fs::create_dir_all(&source_dir).expect("create source dir");
@@ -164,10 +166,11 @@ tables:
 name: claude
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: messages
     description: Claude Code conversation messages
+    format: jsonl
     source:
       location: file:///tmp/claude-jsonl/
       glob: "**/*.jsonl"
@@ -182,10 +185,11 @@ tables:
 
         let manifests = load_manifests(&root).expect("jsonl manifest should load");
         assert_eq!(manifests.len(), 1);
-        assert_eq!(manifests[0].schema_name(), "claude");
-        assert_eq!(manifests[0].backend(), crate::SourceBackend::Jsonl);
+        let manifest = manifests.first().expect("jsonl manifest");
+        assert_eq!(manifest.schema_name(), "claude");
+        assert_eq!(manifest.backend(), crate::SourceBackend::File);
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -201,10 +205,11 @@ tables:
 name: good_plugin
 version: 0.1.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: data
     description: Some data
+    format: parquet
     source:
       location: file:///tmp/good/
       glob: "**/*.parquet"
@@ -231,9 +236,10 @@ tables:
 
         let manifests = load_manifests(&root).expect("should not error on malformed source");
         assert_eq!(manifests.len(), 1, "only the valid source should be loaded");
-        assert_eq!(manifests[0].schema_name(), "good_plugin");
+        let manifest = manifests.first().expect("valid manifest");
+        assert_eq!(manifest.schema_name(), "good_plugin");
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -247,10 +253,11 @@ tables:
 name: my_plugin
 version: 0.1.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: data
     description: Some data
+    format: parquet
     source:
       location: file:///tmp/my/
       glob: "**/*.parquet"
@@ -261,9 +268,10 @@ tables:
 
         let manifests = load_manifests(&root).expect(".yaml manifest should load");
         assert_eq!(manifests.len(), 1);
-        assert_eq!(manifests[0].schema_name(), "my_plugin");
+        let manifest = manifests.first().expect("yaml manifest");
+        assert_eq!(manifest.schema_name(), "my_plugin");
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -280,10 +288,11 @@ tables:
 name: dual
 version: 0.1.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: data
     description: Some data
+    format: parquet
     source:
       location: file:///tmp/dual/
       glob: "**/*.parquet"
@@ -296,7 +305,7 @@ tables:
         let manifests = load_manifests(&root).expect("should load exactly one manifest");
         assert_eq!(manifests.len(), 1, "should not load both .yml and .yaml");
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -311,6 +320,6 @@ tables:
         let manifests = load_manifests(&root).expect("should not error when all sources are bad");
         assert!(manifests.is_empty());
 
-        let _ = fs::remove_dir_all(&root);
+        drop(fs::remove_dir_all(&root));
     }
 }

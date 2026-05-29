@@ -31,7 +31,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!
 //! # let source_spec = parse_source_manifest_yaml(
-//! #     "name: demo\nversion: 0.1.0\ndsl_version: 3\nbackend: jsonl\ntables: []",
+//! #     "name: demo\nversion: 0.1.0\ndsl_version: 3\nbackend: file\ntables: []",
 //! # )?;
 //! # let sources = vec![QuerySource::new(
 //! #     source_spec,
@@ -41,7 +41,7 @@
 //! # async fn demo(
 //! #     sources: &[QuerySource],
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None).await?;
+//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None, None).await?;
 //! # Ok(())
 //! # }
 //! # Ok(())
@@ -61,13 +61,15 @@ pub mod contracts;
 mod runtime;
 
 pub use composition::{
-    EngineExtensions, RequestAuthenticator, RequestAuthenticatorError, SourceDecorator,
-    SourceDecoratorError, SourceFailurePolicy, SourceTables,
+    EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
+    RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
-    ColumnInfo, CoreError, QueryExecution, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableInfo,
+    CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -88,10 +90,33 @@ impl CoralQuery {
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
         schema_filter: Option<&str>,
+        table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
-            .list_tables(schema_filter))
+            .list_tables(schema_filter, table_filter))
+    }
+
+    /// Lists queryable catalog metadata from the provided source set.
+    ///
+    /// When `schema_filter` is present, only catalog items for that visible
+    /// `SQL` schema are returned. Tables and source-scoped table functions are
+    /// collected from one runtime build so callers see one consistent catalog
+    /// snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if credential resolution fails, if any validated
+    /// source spec cannot be compiled, or if the underlying query runtime
+    /// cannot be built.
+    pub async fn list_catalog(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        schema_filter: Option<&str>,
+    ) -> Result<CatalogInfo, CoreError> {
+        Ok(runtime::query::build_runtime(sources, runtime)
+            .await?
+            .catalog_info(schema_filter))
     }
 
     /// Executes one `SQL` statement over the provided source set.
@@ -112,6 +137,30 @@ impl CoralQuery {
         runtime::query::build_runtime(sources, runtime)
             .await?
             .execute_sql(sql)
+            .await
+    }
+
+    /// Explains one `SQL` statement with logical and physical plan renderings.
+    ///
+    /// The explanation is built against the provided source set and current
+    /// runtime state. It does not execute the SQL statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// or if the query engine cannot explain the statement.
+    pub async fn explain_sql(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+    ) -> Result<QueryPlan, CoreError> {
+        if sql.trim().is_empty() {
+            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+        }
+
+        runtime::query::build_runtime(sources, runtime)
+            .await?
+            .explain_sql(sql)
             .await
     }
 
@@ -142,14 +191,14 @@ impl CoralQuery {
     ) -> Result<SourceValidationReport, CoreError> {
         let query_runtime =
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
-        let tables = query_runtime.list_tables(Some(source.source_name()));
-        if tables.is_empty() {
-            if let Some(failure) = query_runtime.registration_failure(source.source_name()) {
+        let source_name = source.source_name();
+        let catalog = query_runtime.catalog_info(Some(source_name));
+        if catalog.tables.is_empty() && catalog.table_functions.is_empty() {
+            if let Some(failure) = query_runtime.registration_failure(source_name) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));
             }
             return Err(CoreError::FailedPrecondition(format!(
-                "source '{}' did not become queryable during validation",
-                source.source_name()
+                "source '{source_name}' did not become queryable during validation"
             )));
         }
 
@@ -172,7 +221,11 @@ impl CoralQuery {
             }
         }
 
-        Ok(SourceValidationReport::new(tables, query_tests))
+        Ok(SourceValidationReport::new(
+            catalog.tables,
+            catalog.table_functions,
+            query_tests,
+        ))
     }
 }
 

@@ -1,0 +1,757 @@
+name: hubspot
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query HubSpot CRM contacts, companies, deals, tickets, and owners from
+  HubSpot (Cloud). Join with bundled Stripe, Intercom, and Linear sources
+  on email and company domain.
+inputs:
+  HUBSPOT_ACCESS_TOKEN:
+    kind: secret
+    required: true
+    hint: |
+      Private app access token (Bearer). Create a private app under
+      Settings > Integrations > Private Apps with read scopes for CRM
+      objects you plan to query (contacts, companies, deals, tickets,
+      owners). See
+      [HubSpot private apps](https://developers.hubspot.com/docs/apps/legacy-apps/private-apps/overview).
+base_url: https://api.hubapi.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.HUBSPOT_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT id, email, firstname, lastname FROM hubspot.contacts LIMIT 5
+  - SELECT id, email FROM hubspot.owners LIMIT 5
+tables:
+  - name: contacts
+    description: HubSpot CRM contacts (people).
+    guide: |
+      Start here for customer identity. Join `email` to `stripe.customers`,
+      `intercom.contacts`, and `linear.users`. Use `hubspot_owner_id` with
+      `hubspot.owners`. Prefer `search_contacts` when you know the email.
+      Always use `LIMIT` on large portals; respect HubSpot rate limits.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/contacts
+      query:
+        - name: properties
+          from: literal
+          value: >-
+            email,firstname,lastname,jobtitle,company,phone,lifecyclestage,
+            hubspot_owner_id,createdate,lastmodifieddate
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot contact record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Primary email address (join key for Stripe, Intercom, Linear).
+        expr:
+          kind: path
+          path:
+            - properties
+            - email
+      - name: firstname
+        type: Utf8
+        nullable: true
+        description: First name.
+        expr:
+          kind: path
+          path:
+            - properties
+            - firstname
+      - name: lastname
+        type: Utf8
+        nullable: true
+        description: Last name.
+        expr:
+          kind: path
+          path:
+            - properties
+            - lastname
+      - name: jobtitle
+        type: Utf8
+        nullable: true
+        description: Job title.
+        expr:
+          kind: path
+          path:
+            - properties
+            - jobtitle
+      - name: company
+        type: Utf8
+        nullable: true
+        description: Associated company name on the contact record.
+        expr:
+          kind: path
+          path:
+            - properties
+            - company
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: Phone number.
+        expr:
+          kind: path
+          path:
+            - properties
+            - phone
+      - name: lifecyclestage
+        type: Utf8
+        nullable: true
+        description: Lifecycle stage (for example subscriber, lead, customer).
+        expr:
+          kind: path
+          path:
+            - properties
+            - lifecyclestage
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Owner ID; join to `hubspot.owners.id`.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: companies
+    description: HubSpot CRM companies (accounts).
+    guide: |
+      Use `domain` to match Stripe customers or enrich account lists.
+      Join `hubspot_owner_id` to `hubspot.owners`. Use `LIMIT` on large
+      portals.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/companies
+      query:
+        - name: properties
+          from: literal
+          value: >-
+            name,domain,industry,phone,city,state,country,
+            hubspot_owner_id,numberofemployees,annualrevenue,
+            createdate,lastmodifieddate
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot company record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Company name.
+        expr:
+          kind: path
+          path:
+            - properties
+            - name
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Company domain (join key for account matching).
+        expr:
+          kind: path
+          path:
+            - properties
+            - domain
+      - name: industry
+        type: Utf8
+        nullable: true
+        description: Industry.
+        expr:
+          kind: path
+          path:
+            - properties
+            - industry
+      - name: city
+        type: Utf8
+        nullable: true
+        description: City.
+        expr:
+          kind: path
+          path:
+            - properties
+            - city
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Country/region.
+        expr:
+          kind: path
+          path:
+            - properties
+            - country
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Owner ID; join to `hubspot.owners.id`.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: numberofemployees
+        type: Utf8
+        nullable: true
+        description: Employee count (HubSpot string property).
+        expr:
+          kind: path
+          path:
+            - properties
+            - numberofemployees
+      - name: annualrevenue
+        type: Utf8
+        nullable: true
+        description: Annual revenue (HubSpot string property).
+        expr:
+          kind: path
+          path:
+            - properties
+            - annualrevenue
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: deals
+    description: HubSpot CRM deals (pipeline opportunities).
+    guide: |
+      Use `dealstage` and `pipeline` for pipeline analytics. Filter with
+      `LIMIT`. Owner on `hubspot_owner_id`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/deals
+      query:
+        - name: properties
+          from: literal
+          value: >-
+            dealname,dealstage,pipeline,amount,closedate,
+            hubspot_owner_id,createdate,lastmodifieddate
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot deal record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: dealname
+        type: Utf8
+        nullable: true
+        description: Deal name.
+        expr:
+          kind: path
+          path:
+            - properties
+            - dealname
+      - name: dealstage
+        type: Utf8
+        nullable: true
+        description: Deal stage in the pipeline.
+        expr:
+          kind: path
+          path:
+            - properties
+            - dealstage
+      - name: pipeline
+        type: Utf8
+        nullable: true
+        description: Pipeline ID.
+        expr:
+          kind: path
+          path:
+            - properties
+            - pipeline
+      - name: amount
+        type: Utf8
+        nullable: true
+        description: Deal amount (HubSpot string property).
+        expr:
+          kind: path
+          path:
+            - properties
+            - amount
+      - name: closedate
+        type: Utf8
+        nullable: true
+        description: Close date (HubSpot date string).
+        expr:
+          kind: path
+          path:
+            - properties
+            - closedate
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Owner ID; join to `hubspot.owners.id`.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: tickets
+    description: HubSpot CRM service tickets.
+    guide: |
+      Service tickets in HubSpot CRM (not Intercom conversations). Use for
+      pipeline/status on CRM tickets. Prefer `intercom.conversations` for
+      product support inbox history.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/tickets
+      query:
+        - name: properties
+          from: literal
+          value: >-
+            subject,content,hs_pipeline,hs_pipeline_stage,
+            hs_ticket_priority,hubspot_owner_id,createdate,lastmodifieddate
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot ticket record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Ticket subject.
+        expr:
+          kind: path
+          path:
+            - properties
+            - subject
+      - name: hs_pipeline
+        type: Utf8
+        nullable: true
+        description: Ticket pipeline ID.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_pipeline
+      - name: hs_pipeline_stage
+        type: Utf8
+        nullable: true
+        description: Ticket pipeline stage ID.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_pipeline_stage
+      - name: hs_ticket_priority
+        type: Utf8
+        nullable: true
+        description: Ticket priority.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_ticket_priority
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Owner ID; join to `hubspot.owners.id`.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: owners
+    description: HubSpot CRM owners (users who own records).
+    guide: |
+      Maps `hubspot_owner_id` on contacts, companies, deals, and tickets to
+      human-readable names and emails. Join `email` to other tools' user
+      tables.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/owners
+      query:
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot owner ID (matches `hubspot_owner_id` on CRM objects).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Owner email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: firstname
+        type: Utf8
+        nullable: true
+        description: First name.
+        expr:
+          kind: path
+          path:
+            - firstName
+      - name: lastname
+        type: Utf8
+        nullable: true
+        description: Last name.
+        expr:
+          kind: path
+          path:
+            - lastName
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: HubSpot user ID for the owner.
+        expr:
+          kind: path
+          path:
+            - userId
+  - name: search_contacts
+    description: Look up contacts by exact email (CRM Search API).
+    guide: |
+      Requires `email`. Use instead of scanning `contacts` when you know the
+      address. Subject to HubSpot Search API rate limits (~4 req/s per token).
+    fetch_limit_default: 50
+    filters:
+      - name: email
+        required: true
+    request:
+      method: POST
+      path: /crm/v3/objects/contacts/search
+      body:
+        - path:
+            - filterGroups
+            - "0"
+            - filters
+            - "0"
+            - propertyName
+          from: literal
+          value: email
+        - path:
+            - filterGroups
+            - "0"
+            - filters
+            - "0"
+            - operator
+          from: literal
+          value: EQ
+        - path:
+            - filterGroups
+            - "0"
+            - filters
+            - "0"
+            - value
+          from: filter
+          key: email
+        - path:
+            - properties
+          from: literal
+          value:
+            - email
+            - firstname
+            - lastname
+            - jobtitle
+            - company
+            - lifecyclestage
+            - hubspot_owner_id
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        body_path:
+          - limit
+    columns:
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Filter email used for the search (echo).
+        expr:
+          kind: from_filter
+          key: email
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot contact record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: contact_email
+        type: Utf8
+        nullable: true
+        description: Email on the matched contact.
+        expr:
+          kind: path
+          path:
+            - properties
+            - email
+      - name: firstname
+        type: Utf8
+        nullable: true
+        description: First name.
+        expr:
+          kind: path
+          path:
+            - properties
+            - firstname
+      - name: lastname
+        type: Utf8
+        nullable: true
+        description: Last name.
+        expr:
+          kind: path
+          path:
+            - properties
+            - lastname
+      - name: jobtitle
+        type: Utf8
+        nullable: true
+        description: Job title.
+        expr:
+          kind: path
+          path:
+            - properties
+            - jobtitle
+      - name: company
+        type: Utf8
+        nullable: true
+        description: Company name on the contact.
+        expr:
+          kind: path
+          path:
+            - properties
+            - company
+      - name: lifecyclestage
+        type: Utf8
+        nullable: true
+        description: Lifecycle stage.
+        expr:
+          kind: path
+          path:
+            - properties
+            - lifecyclestage
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Owner ID; join to `hubspot.owners.id`.
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id

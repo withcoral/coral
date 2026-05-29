@@ -60,7 +60,7 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns resolved source secrets required by the manifest.
+    /// Returns resolved declared source secrets that are available at runtime.
     pub fn secrets(&self) -> &BTreeMap<String, String> {
         &self.secrets
     }
@@ -160,6 +160,8 @@ impl QueryTestResult {
 pub struct SourceValidationReport {
     /// Tables exposed by the validated source.
     pub tables: Vec<super::TableInfo>,
+    /// Table functions exposed by the validated source.
+    pub table_functions: Vec<super::TableFunctionInfo>,
     /// One result per declared validation query, in manifest order.
     pub query_tests: Vec<QueryTestResult>,
 }
@@ -167,9 +169,14 @@ pub struct SourceValidationReport {
 impl SourceValidationReport {
     #[must_use]
     /// Builds one structured source-validation report.
-    pub fn new(tables: Vec<super::TableInfo>, query_tests: Vec<QueryTestResult>) -> Self {
+    pub fn new(
+        tables: Vec<super::TableInfo>,
+        table_functions: Vec<super::TableFunctionInfo>,
+        query_tests: Vec<QueryTestResult>,
+    ) -> Self {
         Self {
             tables,
+            table_functions,
             query_tests,
         }
     }
@@ -180,6 +187,17 @@ impl SourceValidationReport {
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// Optional positive byte cap for pre-export HTTP body preview capture.
+    pub http_body_capture_max_bytes: Option<usize>,
+}
+
+impl QueryRuntimeContext {
+    /// Adds app-owned local trace body capture byte cap to this runtime context.
+    #[must_use]
+    pub fn with_http_body_capture_max_bytes(mut self, max_bytes: Option<usize>) -> Self {
+        self.http_body_capture_max_bytes = max_bytes.filter(|bytes| *bytes > 0);
+        self
+    }
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.
@@ -202,6 +220,48 @@ impl QueryRuntimeConfig {
     }
 }
 
+/// Query-engine plan renderings for one `SQL` statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryPlan {
+    unoptimized_logical: String,
+    optimized_logical: String,
+    physical: String,
+}
+
+impl QueryPlan {
+    #[must_use]
+    /// Builds one query-plan snapshot from engine plan renderings.
+    pub fn new(
+        unoptimized_logical_plan: String,
+        optimized_logical_plan: String,
+        physical_plan: String,
+    ) -> Self {
+        Self {
+            unoptimized_logical: unoptimized_logical_plan,
+            optimized_logical: optimized_logical_plan,
+            physical: physical_plan,
+        }
+    }
+
+    #[must_use]
+    /// Returns the parsed logical plan before logical optimizer rules run.
+    pub fn unoptimized_logical_plan(&self) -> &str {
+        &self.unoptimized_logical
+    }
+
+    #[must_use]
+    /// Returns the logical plan after logical optimizer rules run.
+    pub fn optimized_logical_plan(&self) -> &str {
+        &self.optimized_logical
+    }
+
+    #[must_use]
+    /// Returns the physical execution plan after physical optimizer rules run.
+    pub fn physical_plan(&self) -> &str {
+        &self.physical
+    }
+}
+
 /// The fully materialized result of executing one `SQL` statement.
 #[derive(Debug, Clone)]
 pub struct QueryExecution {
@@ -218,10 +278,15 @@ impl QueryExecution {
         let schema = arrow_schema
             .fields()
             .iter()
-            .map(|field| ColumnInfo {
+            .enumerate()
+            .map(|(position, field)| ColumnInfo {
                 name: field.name().clone(),
                 data_type: field.data_type().to_string(),
                 nullable: field.is_nullable(),
+                is_virtual: false,
+                is_required_filter: false,
+                description: String::new(),
+                ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
             })
             .collect();
         let row_count = batches.iter().map(RecordBatch::num_rows).sum();

@@ -2,8 +2,10 @@
 
 mod config;
 mod layout;
-mod secrets;
 
 pub(crate) use config::ConfigStore;
+pub(crate) use config::{
+    RawFeatureContainerState, RawFeatureOverrides, RawFeatureValue, load_raw_feature_overrides,
+    set_raw_feature_override,
+};
 pub(crate) use layout::AppStateLayout;
-pub(crate) use secrets::{CredentialsError, SecretStore};

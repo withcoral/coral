@@ -1,0 +1,626 @@
+name: plausible
+version: 1.0.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Plausible Analytics web stats as SQL tables. Get aggregate metrics,
+  time-series data, and traffic breakdowns by page and source for any site
+  in your Plausible account. Join with GitHub, Linear, or Notion for
+  cross-source product intelligence.
+
+base_url: https://plausible.io
+
+inputs:
+  PLAUSIBLE_API_KEY:
+    kind: secret
+    hint: |
+      Your Plausible API key. Generate one from:
+      plausible.io → Settings → API keys → New API key
+      See https://plausible.io/docs/stats-api
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.PLAUSIBLE_API_KEY}}
+
+rate_limit:
+  extra_statuses:
+    - 429
+  retry_after_header: Retry-After
+
+test_queries:
+  - SELECT function_name FROM coral.table_functions WHERE schema_name = 'plausible' ORDER BY function_name LIMIT 1
+
+functions:
+  - name: breakdown
+    description: >-
+      Break down Plausible stats by any supported property for a site and period.
+      Supported property values: event:page, visit:source, visit:country,
+      visit:device, visit:browser, visit:os, visit:utm_source, visit:utm_campaign.
+      Dimension column matching the property is populated; others are NULL.
+    fetch_limit_default: 100
+    args:
+      - name: site_id
+        required: true
+        bind:
+          arg: site_id
+      - name: property
+        required: true
+        bind:
+          arg: property
+      - name: period
+        required: false
+        bind:
+          arg: period
+    request:
+      method: GET
+      path: /api/v1/stats/breakdown
+      query:
+        - name: site_id
+          from: arg
+          key: site_id
+        - name: property
+          from: arg
+          key: property
+        - name: period
+          from: arg
+          key: period
+        - name: metrics
+          from: literal
+          value: visitors,pageviews,bounce_rate,visits,visit_duration
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: page
+        type: Utf8
+        nullable: true
+        description: Page path dimension value — populated when property is event:page
+        expr:
+          kind: path
+          path:
+            - page
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Traffic source dimension — populated when property is visit:source
+        expr:
+          kind: path
+          path:
+            - source
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Country code dimension — populated when property is visit:country
+        expr:
+          kind: path
+          path:
+            - country
+      - name: device
+        type: Utf8
+        nullable: true
+        description: Device type dimension — populated when property is visit:device
+        expr:
+          kind: path
+          path:
+            - device
+      - name: browser
+        type: Utf8
+        nullable: true
+        description: Browser name dimension — populated when property is visit:browser
+        expr:
+          kind: path
+          path:
+            - browser
+      - name: os
+        type: Utf8
+        nullable: true
+        description: Operating system dimension — populated when property is visit:os
+        expr:
+          kind: path
+          path:
+            - os
+      - name: utm_source
+        type: Utf8
+        nullable: true
+        description: UTM source dimension — populated when property is visit:utm_source
+        expr:
+          kind: path
+          path:
+            - utm_source
+      - name: utm_campaign
+        type: Utf8
+        nullable: true
+        description: UTM campaign dimension — populated when property is visit:utm_campaign
+        expr:
+          kind: path
+          path:
+            - utm_campaign
+      - name: visitors
+        type: Int64
+        nullable: true
+        description: Unique visitors
+        expr:
+          kind: path
+          path:
+            - visitors
+      - name: pageviews
+        type: Int64
+        nullable: true
+        description: Total page views
+        expr:
+          kind: path
+          path:
+            - pageviews
+      - name: bounce_rate
+        type: Float64
+        nullable: true
+        description: Bounce rate as a percentage (0-100)
+        expr:
+          kind: path
+          path:
+            - bounce_rate
+      - name: visits
+        type: Int64
+        nullable: true
+        description: Total sessions
+        expr:
+          kind: path
+          path:
+            - visits
+      - name: visit_duration
+        type: Float64
+        nullable: true
+        description: Average visit duration in seconds
+        expr:
+          kind: path
+          path:
+            - visit_duration
+
+tables:
+  - name: aggregate
+    description: >-
+      Aggregate web metrics for a Plausible site over a time period.
+      Returns one row with visitors, pageviews, bounce_rate, visits, and
+      visit_duration. Requires site_id. period defaults to 30d when omitted.
+    guide: |
+      Requires site_id (your tracked domain, e.g. yourdomain.com).
+      period values: 12mo, 6mo, month, 30d, 7d, day (default: 30d when omitted).
+      For a custom range use period = 'custom' and date = 'YYYY-MM-DD,YYYY-MM-DD'.
+
+      Example:
+        SELECT visitors, pageviews, bounce_rate, visit_duration
+        FROM plausible.aggregate
+        WHERE site_id = 'yourdomain.com' AND period = '30d'
+    filters:
+      - name: site_id
+        required: true
+      - name: period
+        required: false
+      - name: date
+        required: false
+    request:
+      method: GET
+      path: /api/v1/stats/aggregate
+      query:
+        - name: site_id
+          from: filter
+          key: site_id
+        - name: period
+          from: filter
+          key: period
+        - name: date
+          from: filter
+          key: date
+        - name: metrics
+          from: literal
+          value: visitors,pageviews,bounce_rate,visits,visit_duration
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: visitors
+        type: Int64
+        nullable: true
+        description: Unique visitors in the period
+        expr:
+          kind: path
+          path:
+            - results
+            - visitors
+            - value
+      - name: pageviews
+        type: Int64
+        nullable: true
+        description: Total page views in the period
+        expr:
+          kind: path
+          path:
+            - results
+            - pageviews
+            - value
+      - name: bounce_rate
+        type: Float64
+        nullable: true
+        description: Bounce rate as a percentage (0-100)
+        expr:
+          kind: path
+          path:
+            - results
+            - bounce_rate
+            - value
+      - name: visits
+        type: Int64
+        nullable: true
+        description: Total sessions in the period
+        expr:
+          kind: path
+          path:
+            - results
+            - visits
+            - value
+      - name: visit_duration
+        type: Float64
+        nullable: true
+        description: Average visit duration in seconds
+        expr:
+          kind: path
+          path:
+            - results
+            - visit_duration
+            - value
+      - name: site_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Site domain filter applied to this query (virtual)
+        expr:
+          kind: from_filter
+          key: site_id
+      - name: period
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Period filter applied to this query (virtual)
+        expr:
+          kind: from_filter
+          key: period
+
+  - name: timeseries
+    description: >-
+      Time-bucketed web metrics for a Plausible site. Returns one row per day
+      or month. Use to chart visitor trends or spot traffic spikes over time.
+      Requires site_id. period defaults to 30d when omitted.
+    guide: |
+      Requires site_id. period values: 12mo, 6mo, month, 30d, 7d, day.
+      interval: day (default) or month. Omit interval to let Plausible auto-select.
+      For a custom range use period = 'custom' and date = 'YYYY-MM-DD,YYYY-MM-DD'.
+
+      Example:
+        SELECT date, visitors, pageviews
+        FROM plausible.timeseries
+        WHERE site_id = 'yourdomain.com' AND period = '30d'
+        ORDER BY date DESC
+    filters:
+      - name: site_id
+        required: true
+      - name: period
+        required: false
+      - name: interval
+        required: false
+      - name: date
+        required: false
+    request:
+      method: GET
+      path: /api/v1/stats/timeseries
+      query:
+        - name: site_id
+          from: filter
+          key: site_id
+        - name: period
+          from: filter
+          key: period
+        - name: interval
+          from: filter
+          key: interval
+        - name: date
+          from: filter
+          key: date
+        - name: metrics
+          from: literal
+          value: visitors,pageviews,bounce_rate,visits,visit_duration
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: date
+        type: Utf8
+        nullable: false
+        description: Date bucket — YYYY-MM-DD for day interval, YYYY-MM for month interval
+        expr:
+          kind: path
+          path:
+            - date
+      - name: visitors
+        type: Int64
+        nullable: true
+        description: Unique visitors for this date bucket
+        expr:
+          kind: path
+          path:
+            - visitors
+      - name: pageviews
+        type: Int64
+        nullable: true
+        description: Total page views for this date bucket
+        expr:
+          kind: path
+          path:
+            - pageviews
+      - name: bounce_rate
+        type: Float64
+        nullable: true
+        description: Bounce rate as a percentage (0-100) for this date bucket
+        expr:
+          kind: path
+          path:
+            - bounce_rate
+      - name: visits
+        type: Int64
+        nullable: true
+        description: Total sessions for this date bucket
+        expr:
+          kind: path
+          path:
+            - visits
+      - name: visit_duration
+        type: Float64
+        nullable: true
+        description: Average visit duration in seconds for this date bucket
+        expr:
+          kind: path
+          path:
+            - visit_duration
+      - name: site_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Site domain filter applied to this query (virtual)
+        expr:
+          kind: from_filter
+          key: site_id
+
+  - name: pages
+    description: >-
+      Top pages for a Plausible site ranked by visitors. Each row is one page
+      path with visitor, pageview, and bounce rate metrics. Requires site_id.
+      period defaults to 30d when omitted.
+    guide: |
+      Requires site_id. Returns top pages by visitors descending.
+
+      Example:
+        SELECT page, visitors, pageviews, bounce_rate
+        FROM plausible.pages
+        WHERE site_id = 'yourdomain.com' AND period = '30d'
+        ORDER BY visitors DESC
+        LIMIT 20
+    filters:
+      - name: site_id
+        required: true
+      - name: period
+        required: false
+      - name: date
+        required: false
+    request:
+      method: GET
+      path: /api/v1/stats/breakdown
+      query:
+        - name: site_id
+          from: filter
+          key: site_id
+        - name: period
+          from: filter
+          key: period
+        - name: date
+          from: filter
+          key: date
+        - name: property
+          from: literal
+          value: event:page
+        - name: metrics
+          from: literal
+          value: visitors,pageviews,bounce_rate,visits,visit_duration
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: page
+        type: Utf8
+        nullable: false
+        description: Page path (e.g. /blog/post-title)
+        expr:
+          kind: path
+          path:
+            - page
+      - name: visitors
+        type: Int64
+        nullable: true
+        description: Unique visitors who viewed this page
+        expr:
+          kind: path
+          path:
+            - visitors
+      - name: pageviews
+        type: Int64
+        nullable: true
+        description: Total page views for this page
+        expr:
+          kind: path
+          path:
+            - pageviews
+      - name: bounce_rate
+        type: Float64
+        nullable: true
+        description: Bounce rate for sessions starting on this page (0-100)
+        expr:
+          kind: path
+          path:
+            - bounce_rate
+      - name: visits
+        type: Int64
+        nullable: true
+        description: Total sessions that included this page
+        expr:
+          kind: path
+          path:
+            - visits
+      - name: visit_duration
+        type: Float64
+        nullable: true
+        description: Average visit duration for sessions including this page in seconds
+        expr:
+          kind: path
+          path:
+            - visit_duration
+      - name: site_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Site domain filter applied to this query (virtual)
+        expr:
+          kind: from_filter
+          key: site_id
+
+  - name: sources
+    description: >-
+      Traffic sources for a Plausible site ranked by visitors. Each row is one
+      referral source. Direct and untracked traffic appears as "(Direct / None)".
+      Requires site_id. period defaults to 30d when omitted.
+    guide: |
+      Requires site_id. Returns traffic sources by visitor count descending.
+      "(Direct / None)" represents direct or untracked traffic.
+
+      Example:
+        SELECT source, visitors, bounce_rate
+        FROM plausible.sources
+        WHERE site_id = 'yourdomain.com' AND period = '30d'
+        ORDER BY visitors DESC
+        LIMIT 10
+    filters:
+      - name: site_id
+        required: true
+      - name: period
+        required: false
+      - name: date
+        required: false
+    request:
+      method: GET
+      path: /api/v1/stats/breakdown
+      query:
+        - name: site_id
+          from: filter
+          key: site_id
+        - name: period
+          from: filter
+          key: period
+        - name: date
+          from: filter
+          key: date
+        - name: property
+          from: literal
+          value: visit:source
+        - name: metrics
+          from: literal
+          value: visitors,pageviews,bounce_rate,visits,visit_duration
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: source
+        type: Utf8
+        nullable: false
+        description: Traffic source name (e.g. Google, Twitter, or "(Direct / None)")
+        expr:
+          kind: path
+          path:
+            - source
+      - name: visitors
+        type: Int64
+        nullable: true
+        description: Unique visitors from this source
+        expr:
+          kind: path
+          path:
+            - visitors
+      - name: pageviews
+        type: Int64
+        nullable: true
+        description: Total page views from this source
+        expr:
+          kind: path
+          path:
+            - pageviews
+      - name: bounce_rate
+        type: Float64
+        nullable: true
+        description: Bounce rate for sessions from this source (0-100)
+        expr:
+          kind: path
+          path:
+            - bounce_rate
+      - name: visits
+        type: Int64
+        nullable: true
+        description: Total sessions from this source
+        expr:
+          kind: path
+          path:
+            - visits
+      - name: visit_duration
+        type: Float64
+        nullable: true
+        description: Average visit duration for sessions from this source in seconds
+        expr:
+          kind: path
+          path:
+            - visit_duration
+      - name: site_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Site domain filter applied to this query (virtual)
+        expr:
+          kind: from_filter
+          key: site_id
