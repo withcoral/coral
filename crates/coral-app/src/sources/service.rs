@@ -330,7 +330,8 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, AppError> + Send + 'static,
 {
-    task::spawn_blocking(operation)
+    let span = tracing::Span::current();
+    task::spawn_blocking(move || span.in_scope(operation))
         .await
         .map_err(|error| Status::internal(format!("source operation task failed: {error}")))?
         .map_err(app_status)
