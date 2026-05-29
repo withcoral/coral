@@ -145,3 +145,24 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name FROM coral.columns
   project-scoped endpoints which may be preferred in future revisions.
 - The Discovery API (GraphQL) is not used in this source. Models, tests,
   and sources metadata require the Discovery API and are out of scope for v1.
+
+  ## Agent Skill
+
+This source includes an agent skill for querying dbt Cloud health.
+
+### Quick Queries
+
+```sql
+-- Recent failed runs
+SELECT r.id, j.name as job_name, r.status, r.started_at
+FROM dbt_cloud.runs r
+JOIN dbt_cloud.jobs j ON j.id = r.job_id
+WHERE r.status = 20
+ORDER BY r.started_at DESC
+LIMIT 20;
+
+-- Environment overview
+SELECT name, type, deployment_type, state
+FROM dbt_cloud.environments
+ORDER BY name;
+```
