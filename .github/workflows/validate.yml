@@ -489,7 +489,7 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: coral-performance-${{ runner.os }}
+          shared-key: coral-validate-${{ runner.os }}
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -504,7 +504,7 @@ jobs:
 
       - name: Benchmark coral.tables query
         run: |
-          cargo run --locked -p xtask -- perf-check \
+          cargo run --locked -p xtask --release -- perf-check \
             --coral-bin target/release/coral \
             --max-mean-seconds 0.75
 

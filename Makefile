@@ -16,7 +16,7 @@ rust-checks:
 
 perf-check:
 	cargo build --locked -p coral-cli --release
-	cargo run --locked -p xtask -- perf-check --coral-bin target/release/coral
+	cargo run --locked -p xtask --release -- perf-check --coral-bin target/release/coral
 
 # ----------------------------------------------------------------------------
 # Dependency license scan
