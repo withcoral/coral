@@ -659,11 +659,10 @@ pub(crate) async fn validate_and_print(
     app: &AppClient,
     source_name: &str,
     limit: TableDisplayLimit,
-    severity_mode: ValidationSeverityMode,
 ) -> Result<(), anyhow::Error> {
     let response = validate_source(app, source_name).await?;
     print_validation_pretty(&response, limit)?;
-    match validation_follow_up(&response, severity_mode) {
+    match validation_follow_up(&response, ValidationSeverityMode::WarnOnly) {
         ValidationFollowUp::None => Ok(()),
         ValidationFollowUp::Warn(message) => {
             eprintln!("Warning: {message}");
@@ -678,9 +677,7 @@ pub(crate) async fn validate_and_warn(
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
-    if let Err(err) =
-        validate_and_print(app, source_name, limit, ValidationSeverityMode::WarnOnly).await
-    {
+    if let Err(err) = validate_and_print(app, source_name, limit).await {
         eprintln!("Warning: validation failed: {err}");
     }
     Ok(())
