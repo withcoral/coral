@@ -1,0 +1,574 @@
+name: incident_io
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query incident.io incidents, follow-up actions, users, on-call schedules,
+  incident roles, and severity configuration for SRE and incident response
+  workflows.
+base_url: https://api.incident.io
+
+inputs:
+  INCIDENT_IO_API_TOKEN:
+    kind: secret
+    hint: >-
+      incident.io API key from Settings -> API keys. The key permissions
+      determine which incident response resources this source can read.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.INCIDENT_IO_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name, rank FROM incident_io.severities LIMIT 1
+  - SELECT id, reference, name, status__category FROM incident_io.incidents LIMIT 1
+  - SELECT id, name, email FROM incident_io.users LIMIT 1
+
+tables:
+  - name: incidents
+    description: >-
+      incident.io incidents with status, severity, roles, timestamps,
+      external issue references, and duration metrics.
+    guide: |
+      Start here for operational review:
+      `SELECT reference, name, status__category, severity__name, permalink
+       FROM incident_io.incidents ORDER BY created_at DESC LIMIT 25`.
+      Use filters such as status_one_of, status_category_one_of,
+      severity_one_of, created_at_gte, created_at_lte, updated_at_gte,
+      updated_at_lte, sort_by, and filter_mode to push filtering upstream.
+    filters:
+      - name: sort_by
+      - name: filter_mode
+      - name: status_one_of
+      - name: status_not_in
+      - name: status_category_one_of
+      - name: status_category_not_in
+      - name: severity_one_of
+      - name: severity_not_in
+      - name: severity_gte
+      - name: severity_lte
+      - name: incident_type_one_of
+      - name: incident_type_not_in
+      - name: created_at_gte
+      - name: created_at_lte
+      - name: created_at_date_range
+      - name: updated_at_gte
+      - name: updated_at_lte
+      - name: updated_at_date_range
+      - name: mode_one_of
+    request:
+      method: GET
+      path: /v2/incidents
+      query:
+        - name: sort_by
+          from: filter
+          key: sort_by
+        - name: filter_mode
+          from: filter
+          key: filter_mode
+        - name: status[one_of]
+          from: filter
+          key: status_one_of
+        - name: status[not_in]
+          from: filter
+          key: status_not_in
+        - name: status_category[one_of]
+          from: filter
+          key: status_category_one_of
+        - name: status_category[not_in]
+          from: filter
+          key: status_category_not_in
+        - name: severity[one_of]
+          from: filter
+          key: severity_one_of
+        - name: severity[not_in]
+          from: filter
+          key: severity_not_in
+        - name: severity[gte]
+          from: filter
+          key: severity_gte
+        - name: severity[lte]
+          from: filter
+          key: severity_lte
+        - name: incident_type[one_of]
+          from: filter
+          key: incident_type_one_of
+        - name: incident_type[not_in]
+          from: filter
+          key: incident_type_not_in
+        - name: created_at[gte]
+          from: filter
+          key: created_at_gte
+        - name: created_at[lte]
+          from: filter
+          key: created_at_lte
+        - name: created_at[date_range]
+          from: filter
+          key: created_at_date_range
+        - name: updated_at[gte]
+          from: filter
+          key: updated_at_gte
+        - name: updated_at[lte]
+          from: filter
+          key: updated_at_lte
+        - name: updated_at[date_range]
+          from: filter
+          key: updated_at_date_range
+        - name: mode[one_of]
+          from: filter
+          key: mode_one_of
+    response:
+      rows_path: [incidents]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination_meta, after]
+      page_size:
+        default: 100
+        max: 250
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Incident ID.
+      - name: reference
+        type: Utf8
+        nullable: true
+        description: Human-readable incident reference.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Incident name.
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Incident summary.
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Incident visibility.
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: Incident permalink.
+      - name: call_url
+        type: Utf8
+        nullable: true
+        description: Call URL attached to the incident.
+      - name: mode
+        type: Utf8
+        nullable: true
+        description: Incident mode.
+      - name: status__id
+        type: Utf8
+        nullable: true
+        description: Incident status ID.
+        expr: {kind: path, path: [status, id]}
+      - name: status__name
+        type: Utf8
+        nullable: true
+        description: Incident status name.
+        expr: {kind: path, path: [status, name]}
+      - name: status__category
+        type: Utf8
+        nullable: true
+        description: Incident status category.
+        expr: {kind: path, path: [status, category]}
+      - name: severity__id
+        type: Utf8
+        nullable: true
+        description: Severity ID.
+        expr: {kind: path, path: [severity, id]}
+      - name: severity__name
+        type: Utf8
+        nullable: true
+        description: Severity name.
+        expr: {kind: path, path: [severity, name]}
+      - name: severity__rank
+        type: Int64
+        nullable: true
+        description: Severity rank.
+        expr: {kind: path, path: [severity, rank]}
+      - name: incident_type__id
+        type: Utf8
+        nullable: true
+        description: Incident type ID.
+        expr: {kind: path, path: [incident_type, id]}
+      - name: incident_type__name
+        type: Utf8
+        nullable: true
+        description: Incident type name.
+        expr: {kind: path, path: [incident_type, name]}
+      - name: creator
+        type: Json
+        nullable: true
+        description: Creator metadata.
+      - name: custom_field_entries
+        type: Json
+        nullable: true
+        description: Custom field entries attached to the incident.
+      - name: duration_metrics
+        type: Json
+        nullable: true
+        description: Incident duration metric values.
+      - name: incident_role_assignments
+        type: Json
+        nullable: true
+        description: Incident role assignments.
+      - name: external_issue_reference
+        type: Json
+        nullable: true
+        description: Linked external issue reference.
+      - name: has_debrief
+        type: Boolean
+        nullable: true
+        description: Whether the incident has a debrief.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Incident creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Incident update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: actions
+    description: Follow-up actions across incident.io.
+    guide: |
+      Review open follow-up work:
+      `SELECT description, status, priority, incident__reference, due_at
+       FROM incident_io.actions WHERE status = 'outstanding' LIMIT 50`.
+    filters:
+      - name: incident_id
+      - name: status
+      - name: priority
+      - name: incident_mode
+    request:
+      method: GET
+      path: /v2/actions
+      query:
+        - name: incident_id
+          from: filter
+          key: incident_id
+        - name: status
+          from: filter
+          key: status
+        - name: priority
+          from: filter
+          key: priority
+        - name: incident_mode
+          from: filter
+          key: incident_mode
+    response:
+      rows_path: [actions]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination_meta, after]
+      page_size:
+        default: 100
+        max: 250
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Action ID.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Action description.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Action status.
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Action priority.
+      - name: assignee
+        type: Json
+        nullable: true
+        description: Assigned user.
+      - name: creator
+        type: Json
+        nullable: true
+        description: User or automation that created the action.
+      - name: incident__id
+        type: Utf8
+        nullable: true
+        description: Associated incident ID.
+        expr: {kind: path, path: [incident, id]}
+      - name: incident__reference
+        type: Utf8
+        nullable: true
+        description: Associated incident reference.
+        expr: {kind: path, path: [incident, reference]}
+      - name: incident__name
+        type: Utf8
+        nullable: true
+        description: Associated incident name.
+        expr: {kind: path, path: [incident, name]}
+      - name: external_issue_reference
+        type: Json
+        nullable: true
+        description: Linked external issue reference.
+      - name: due_at
+        type: Timestamp
+        nullable: true
+        description: Action due time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [due_at]}
+      - name: completed_at
+        type: Timestamp
+        nullable: true
+        description: Action completion time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [completed_at]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Action creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Action update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: users
+    description: incident.io users visible to the API key.
+    guide: |
+      `SELECT id, name, email, role, slack_user_id FROM incident_io.users LIMIT 50`.
+    filters:
+      - name: email
+    request:
+      method: GET
+      path: /v2/users
+      query:
+        - name: email
+          from: filter
+          key: email
+    response:
+      rows_path: [users]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination_meta, after]
+      page_size:
+        default: 100
+        max: 250
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User name.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email.
+      - name: role
+        type: Utf8
+        nullable: true
+        description: User role.
+      - name: slack_user_id
+        type: Utf8
+        nullable: true
+        description: Slack user ID.
+
+  - name: schedules
+    description: Configured incident.io on-call schedules.
+    guide: |
+      Review on-call coverage:
+      `SELECT id, name, timezone, current_shifts
+       FROM incident_io.schedules LIMIT 50`.
+    request:
+      method: GET
+      path: /v2/schedules
+    response:
+      rows_path: [schedules]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination_meta, after]
+      page_size:
+        default: 100
+        max: 250
+        query_param: page_size
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Schedule ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Schedule name.
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Schedule timezone.
+      - name: config
+        type: Json
+        nullable: true
+        description: Schedule configuration.
+      - name: annotations
+        type: Json
+        nullable: true
+        description: Schedule annotations.
+      - name: current_shifts
+        type: Json
+        nullable: true
+        description: Current schedule shifts returned by incident.io.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Schedule creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Schedule update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: incident_roles
+    description: Incident role definitions configured in incident.io.
+    guide: |
+      `SELECT id, name, description, role_type FROM incident_io.incident_roles`.
+    request:
+      method: GET
+      path: /v2/incident_roles
+    response:
+      rows_path: [incident_roles]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Incident role ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Incident role name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Incident role description.
+      - name: role_type
+        type: Utf8
+        nullable: true
+        description: Incident role type.
+      - name: instructions
+        type: Utf8
+        nullable: true
+        description: Instructions for the role.
+      - name: shortform
+        type: Utf8
+        nullable: true
+        description: Short role label.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Incident role creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Incident role update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: severities
+    description: Incident severity definitions configured in incident.io.
+    guide: |
+      `SELECT id, name, rank, description FROM incident_io.severities ORDER BY rank`.
+    request:
+      method: GET
+      path: /v1/severities
+    response:
+      rows_path: [severities]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Severity ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Severity name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Severity description.
+      - name: rank
+        type: Int64
+        nullable: true
+        description: Severity rank.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Severity creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Severity update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
