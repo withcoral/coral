@@ -57,9 +57,27 @@ ORDER BY inserted_at DESC;
 - This source is read-only.
 - The public Knock API exposes notification runtime data such as messages,
   users, tenants, events, delivery logs, and activities.
+- `workflow_run_id` and `workflow_recipient_run_id` are read from the nested
+  `source` object in Knock message responses.
 - Workflow template management lives in Knock's separate Management API at
   `https://control.knock.app` and requires a service token, so it is
   intentionally not mixed into this runtime source.
+
+## Validation evidence
+
+Static validation run locally:
+
+```bash
+coral source lint sources/community/knock/manifest.yaml
+make lint-sources
+yamllint sources/community/knock/manifest.yaml
+git diff --check origin/main..HEAD
+gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
+```
+
+Credentialed `coral source add --file`, `coral source test knock`, and
+representative live queries require a Knock API key and were not run in this
+workspace.
 
 ## API references
 

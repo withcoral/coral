@@ -137,11 +137,13 @@ tables:
       - name: workflow_run_id
         type: Utf8
         nullable: true
-        description: Top-level workflow run ID.
+        description: Workflow run ID from the message source object.
+        expr: {kind: path, path: [source, workflow_run_id]}
       - name: workflow_recipient_run_id
         type: Utf8
         nullable: true
-        description: Recipient workflow run ID.
+        description: Recipient workflow run ID from the message source object.
+        expr: {kind: path, path: [source, workflow_recipient_run_id]}
       - name: inserted_at
         type: Timestamp
         nullable: true
