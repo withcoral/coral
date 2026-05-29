@@ -15,7 +15,7 @@ coral source add --file sources/community/nvd/manifest.yaml
 
 ## Rate Limits
 
-Without an API key: 5 requests per 30 seconds. With an API key: 50 requests per 30 seconds. The NVD API key is not currently wired into this source manifest. All queries run unauthenticated.
+All queries run unauthenticated at 5 requests per 30 seconds. The NVD API supports an optional `apiKey` request header that raises the limit to 50 requests per 30 seconds, but this source does not wire an API key. If you need higher throughput, use `coral source add --interactive` to configure a custom header manually.
 
 ## Tables
 
