@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { type Source, type SourceInputSpec } from '@/generated/coral/v1/sources_pb'
+import type { Source } from '@/generated/coral/v1/sources_pb'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { Icon as ButtonIcon } from '@/wax/components/button/icon'
-import { IconButton } from '@/wax/components/button/icon-button'
 import { Text as ButtonText } from '@/wax/components/button/text'
 import * as Dialog from '@/wax/components/dialog'
 import { Icon } from '@/wax/components/icon'
@@ -16,7 +15,6 @@ import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
   deleteSource,
-  getBundledSourceInfo,
   getInstalledSource,
   originLabel,
   type InstallInput,
@@ -24,6 +22,8 @@ import {
 } from '@/lib/sources'
 
 import * as styles from './source-detail.css'
+
+const SECRET_PLACEHOLDER = '••••••••'
 
 export function SourceDetailDialog({
   name,
@@ -65,19 +65,17 @@ function SourceDetailDialogContent({
   onRemoved: (name: string) => void
 }) {
   const [source, setSource] = useState<Source | null>(null)
-  const [inputs, setInputs] = useState<SourceInputSpec[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirmingRemove, setConfirmingRemove] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
-      const [installed, info] = await Promise.all([
-        getInstalledSource(name),
-        getBundledSourceInfo(name).catch(() => null),
-      ])
+      const installed = await getInstalledSource(name)
       setSource(installed)
-      setInputs(info?.info.inputs ?? [])
+      setDrafts({})
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e))
     }
@@ -99,6 +97,46 @@ function SourceDetailDialogContent({
       setDeleting(false)
     }
   }, [name, onRemoved])
+
+  const editable = source ? originLabel(source.origin) === 'bundled' : false
+
+  const hasChanges = useMemo(() => {
+    if (!source) return false
+    for (const v of source.variables) {
+      const draft = drafts[`var:${v.key}`]
+      if (draft !== undefined && draft !== v.value) return true
+    }
+    for (const s of source.secrets) {
+      const draft = drafts[`sec:${s.key}`]
+      if (draft !== undefined && draft.length > 0) return true
+    }
+    return false
+  }, [drafts, source])
+
+  async function save() {
+    if (!source) return
+    setSaving(true)
+    try {
+      const bindings: InstallInput[] = source.variables.map((v) => ({
+        key: v.key,
+        value: drafts[`var:${v.key}`] ?? v.value,
+        secret: false,
+      }))
+      for (const s of source.secrets) {
+        const draft = drafts[`sec:${s.key}`]
+        if (draft !== undefined && draft.length > 0) {
+          bindings.push({ key: s.key, value: draft, secret: true })
+        }
+      }
+      await createBundledSource(name, bindings)
+      addToast('success', { title: `Updated ${name}` })
+      await refresh()
+    } catch (e) {
+      addToast('error', { title: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const icon = providerIcon(name)
   const origin = source ? originLabel(source.origin) : null
@@ -137,17 +175,73 @@ function SourceDetailDialogContent({
 
       {!source && !loadError ? (
         <Typography.BodySmall variant="tertiary">Loading…</Typography.BodySmall>
-      ) : !source ? null : (
-        <Bindings source={source} inputs={inputs ?? []} onSaved={refresh} />
+      ) : !source ? null : source.variables.length === 0 && source.secrets.length === 0 ? (
+        <section className={styles.section}>
+          <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+          <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
+        </section>
+      ) : (
+        <section className={styles.section}>
+          <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+          {!editable ? (
+            <Typography.BodySmall variant="tertiary">
+              Imported sources can't be edited here yet — re-import the source spec to change its
+              credentials.
+            </Typography.BodySmall>
+          ) : null}
+          <div className={styles.bindingList}>
+            {source.variables.map((v) => {
+              const draftKey = `var:${v.key}`
+              return (
+                <div key={draftKey} className={styles.bindingRow}>
+                  <span className={styles.keyLabel}>{v.key}</span>
+                  <TextInput
+                    value={drafts[draftKey] ?? v.value}
+                    onChange={(value) => setDrafts((p) => ({ ...p, [draftKey]: value }))}
+                    placeholder={v.key}
+                    disabled={!editable || saving}
+                  />
+                </div>
+              )
+            })}
+            {source.secrets.map((s) => {
+              const draftKey = `sec:${s.key}`
+              return (
+                <div key={draftKey} className={styles.bindingRow}>
+                  <span className={styles.keyLabel}>{s.key}</span>
+                  <TextInput
+                    type="password"
+                    value={drafts[draftKey] ?? ''}
+                    onChange={(value) => setDrafts((p) => ({ ...p, [draftKey]: value }))}
+                    placeholder={SECRET_PLACEHOLDER}
+                    disabled={!editable || saving}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </section>
       )}
 
       <Dialog.Actions>
         <ButtonContainer variant="bare" size="32" onClick={() => setConfirmingRemove(true)}>
           <ButtonText>Remove</ButtonText>
         </ButtonContainer>
-        <ButtonContainer variant="primary" size="32" onClick={onClose}>
-          <ButtonText>Close</ButtonText>
-        </ButtonContainer>
+        {editable && hasChanges ? (
+          <ButtonContainer
+            variant="primary"
+            size="32"
+            onClick={() => void save()}
+            disabled={saving}
+          >
+            {saving ? <ButtonIcon name="Loader" /> : null}
+            <ButtonText>{saving ? 'Saving…' : 'Save changes'}</ButtonText>
+          </ButtonContainer>
+        ) : (
+          <ButtonContainer variant="primary" size="32" onClick={onClose}>
+            <ButtonText>Close</ButtonText>
+          </ButtonContainer>
+        )}
       </Dialog.Actions>
 
       <Dialog.Root open={confirmingRemove} onOpenChange={setConfirmingRemove}>
@@ -182,170 +276,6 @@ function SourceDetailDialogContent({
         </Dialog.Portal>
       </Dialog.Root>
     </>
-  )
-}
-
-function Bindings({
-  source,
-  onSaved,
-}: {
-  source: Source
-  inputs: SourceInputSpec[]
-  onSaved: () => Promise<void>
-}) {
-  const editable = originLabel(source.origin) === 'bundled'
-
-  if (source.variables.length === 0 && source.secrets.length === 0) {
-    return (
-      <section className={styles.section}>
-        <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
-        <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
-      </section>
-    )
-  }
-
-  return (
-    <section className={styles.section}>
-      <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
-      {!editable ? (
-        <Typography.BodySmall variant="tertiary">
-          Imported sources can't be edited here yet — re-import the source spec to change its
-          credentials.
-        </Typography.BodySmall>
-      ) : null}
-      <div className={styles.bindingList}>
-        {source.variables.map((v) => (
-          <BindingRow
-            key={`var:${v.key}`}
-            sourceName={source.name}
-            kind="variable"
-            keyName={v.key}
-            currentValue={v.value}
-            source={source}
-            editable={editable}
-            onSaved={onSaved}
-          />
-        ))}
-        {source.secrets.map((s) => (
-          <BindingRow
-            key={`sec:${s.key}`}
-            sourceName={source.name}
-            kind="secret"
-            keyName={s.key}
-            currentValue={null}
-            source={source}
-            editable={editable}
-            onSaved={onSaved}
-          />
-        ))}
-      </div>
-    </section>
-  )
-}
-
-function BindingRow({
-  sourceName,
-  kind,
-  keyName,
-  currentValue,
-  source,
-  editable,
-  onSaved,
-}: {
-  sourceName: string
-  kind: 'variable' | 'secret'
-  keyName: string
-  currentValue: string | null
-  source: Source
-  editable: boolean
-  onSaved: () => Promise<void>
-}) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState('')
-  const [saving, setSaving] = useState(false)
-
-  function startEdit() {
-    setDraft(kind === 'variable' ? (currentValue ?? '') : '')
-    setEditing(true)
-  }
-
-  async function save() {
-    setSaving(true)
-    try {
-      const trimmed = draft.trim()
-      const bindings: InstallInput[] = []
-      for (const v of source.variables) {
-        const value = kind === 'variable' && v.key === keyName ? trimmed : v.value
-        bindings.push({ key: v.key, value, secret: false })
-      }
-      if (kind === 'secret') {
-        if (trimmed.length === 0) {
-          addToast('error', { title: `Enter a new value for ${keyName}` })
-          setSaving(false)
-          return
-        }
-        bindings.push({ key: keyName, value: trimmed, secret: true })
-      }
-      await createBundledSource(sourceName, bindings)
-      addToast('success', { title: `Updated ${keyName}` })
-      setEditing(false)
-      setDraft('')
-      await onSaved()
-    } catch (e) {
-      addToast('error', { title: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  if (!editing) {
-    return (
-      <div className={styles.keyValue}>
-        <span className={styles.keyLabel}>{keyName}</span>
-        <span className={styles.keyValueText}>
-          {kind === 'variable' ? currentValue || '—' : '•••••••• (secret)'}
-        </span>
-        {editable ? (
-          <IconButton
-            name="Pencil"
-            variant="bare"
-            size="22"
-            ariaLabel={`Edit ${keyName}`}
-            onClick={startEdit}
-          />
-        ) : null}
-      </div>
-    )
-  }
-
-  return (
-    <div className={styles.keyValueEdit}>
-      <span className={styles.keyLabel}>{keyName}</span>
-      <TextInput
-        type={kind === 'secret' ? 'password' : 'text'}
-        value={draft}
-        onChange={setDraft}
-        placeholder={kind === 'secret' ? 'Enter new value' : keyName}
-        disabled={saving}
-      />
-      <div className={styles.editActions}>
-        <ButtonContainer
-          variant="bare"
-          size="32"
-          onClick={() => {
-            setEditing(false)
-            setDraft('')
-          }}
-          disabled={saving}
-        >
-          <ButtonText>Cancel</ButtonText>
-        </ButtonContainer>
-        <ButtonContainer variant="primary" size="32" onClick={() => void save()} disabled={saving}>
-          {saving ? <ButtonIcon name="Loader" /> : null}
-          <ButtonText>{saving ? 'Saving…' : 'Save'}</ButtonText>
-        </ButtonContainer>
-      </div>
-    </div>
   )
 }
 

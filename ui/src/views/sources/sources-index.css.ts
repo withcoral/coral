@@ -154,12 +154,6 @@ export const cardFooter = style({
   marginBlockStart: 'auto',
 })
 
-export const connectedIcon = style({
-  alignItems: 'center',
-  color: theme.pill.green.color,
-  display: 'inline-flex',
-})
-
 export const originPill = style({
   alignItems: 'center',
   background: theme.surface.onMainContent,

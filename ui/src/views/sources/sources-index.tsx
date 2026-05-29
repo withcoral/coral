@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
 import { ErrorBanner } from '@/components/error-banner'
@@ -265,13 +264,6 @@ function SourceCard({ entry, onClick }: { entry: IndexEntry; onClick: () => void
           <span className={styles.originPill}>Imported</span>
         ) : entry.origin === 'bundled' ? (
           <span className={styles.originPill}>Core</span>
-        ) : null}
-        {entry.installed ? (
-          <Tooltip content="Connected">
-            <span className={styles.connectedIcon} aria-label="Connected">
-              <Icon color="success" name="CircleCheck" size="16" />
-            </span>
-          </Tooltip>
         ) : null}
       </div>
       {entry.description ? (

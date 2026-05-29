@@ -222,7 +222,7 @@ function SourceInstallDialogContent({
         <>
           {inputs.length === 0 ? (
             <Typography.BodySmall variant="tertiary">
-              No configuration needed — click Save to add the source.
+              No configuration needed — click Add source to install.
             </Typography.BodySmall>
           ) : (
             <div className={styles.fieldGroup}>

@@ -75,38 +75,17 @@ export const bindingList = style({
   padding: 12,
 })
 
-export const keyValue = style({
+export const bindingRow = style({
   alignItems: 'center',
   display: 'grid',
   gap: 10,
-  gridTemplateColumns: 'minmax(120px, max-content) 1fr auto',
-})
-
-export const keyValueEdit = style({
-  display: 'grid',
-  gap: 10,
   gridTemplateColumns: 'minmax(120px, max-content) 1fr',
-  rowGap: 8,
-})
-
-export const editActions = style({
-  display: 'flex',
-  gap: 8,
-  gridColumn: '1 / -1',
-  justifyContent: 'flex-end',
 })
 
 export const keyLabel = style({
   color: theme.content.secondary,
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
   fontSize: 12,
-})
-
-export const keyValueText = style({
-  color: theme.content.primary,
-  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-  fontSize: 12,
-  wordBreak: 'break-all',
 })
 
 export const alertError = style({

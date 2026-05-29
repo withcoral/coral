@@ -58,9 +58,14 @@ const PROVIDER_ICONS: Record<string, string> = {
   xai: '/images/providers/xai.svg',
 
   // Project / product
+  clickup: '/images/providers/clickup.svg',
+  intercom: '/images/providers/intercom.svg',
   launchdarkly: '/images/providers/launchdarkly.svg',
   linear: '/images/providers/linear.svg',
+  notion: '/images/providers/notion.svg',
   slack: '/images/providers/slack.png',
+  stripe: '/images/providers/stripe.svg',
+  wandb: '/images/providers/wandb.svg',
 }
 
 export function providerIcon(key: string): string | null {
