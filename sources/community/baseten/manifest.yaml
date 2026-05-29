@@ -20,6 +20,11 @@ auth:
 test_queries:
   - SELECT id, name, instance_type_name, deployments_count FROM baseten.models LIMIT 5
   - SELECT name, created_at, team_name FROM baseten.secrets LIMIT 10
+  - >-
+    SELECT id, name, status, min_replicas, max_replicas, target_concurrency
+    FROM baseten.deployments
+    WHERE model_id = (SELECT id FROM baseten.models LIMIT 1)
+    LIMIT 5
 
 tables:
   - name: models
