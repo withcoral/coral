@@ -1,14 +1,15 @@
 //! Implements the gRPC `SearchService`.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::Arc;
 
+use chrono::{Duration, SecondsFormat, Utc};
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::search_service_server::SearchService as SearchServiceApi;
 use coral_api::v1::{
-    CatalogMetadata, ColumnHint, NativeSearchPath, SearchFieldRole, SearchProvider,
+    CatalogMetadata, ColumnHint, NativeSearchPath, ObservedValue, SearchFieldRole, SearchProvider,
     SearchProviderState, SearchProviderStatus, SearchRequest, SearchResponse, SearchResult,
     SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
     SearchTableColumnPreviewColumn,
@@ -25,8 +26,9 @@ use crate::bootstrap::{AppError, app_status};
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::search::index::{
     CatalogSearchFieldRole, CatalogSearchHit, CatalogSearchResultType, CatalogSearchSurfaceKind,
-    SearchIndexError, SearchIndexStore,
+    ObservedValueSearchHit, ObservedValueSurfaceKind, SearchIndexError, SearchIndexStore,
 };
+use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::transport::{
     catalog_item_to_proto, grpc_span, instrument_grpc, query_status, table_function_to_proto,
@@ -47,8 +49,16 @@ const SURFACE_NAME_TOKEN_BOOST: u32 = 1_000;
 const SURFACE_NAME_TOKEN_PLURAL_BOOST: u32 = 900;
 const SURFACE_NAME_SUBSTRING_BOOST: u32 = 500;
 const QUERY_FIELD_MATCH_BOOST: u32 = 1_000;
+const FIELD_PATH_EXACT_BOOST: u32 = 1_000;
+const FIELD_PATH_TOKEN_BOOST: u32 = 750;
+const FIELD_PATH_SUBSTRING_BOOST: u32 = 500;
+const VALUE_EXACT_MATCH_BOOST: u32 = 1_000;
+const VALUE_TOKEN_MATCH_BOOST: u32 = 750;
+const OBSERVED_CHILD_PATH_BOOST: u32 = 1_000;
+const OBSERVED_VALUES_PER_FIELD_LIMIT: usize = 3;
 const CATALOG_FINGERPRINT_FILE_NAME: &str = "catalog.sha256";
 const CATALOG_DIRTY_FILE_NAME: &str = "catalog.dirty";
+const OBSERVED_VALUE_RETENTION_DAYS: i64 = 90;
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
@@ -204,6 +214,36 @@ impl SearchIndexRefresher {
             .search_dir(workspace_name)
             .join(CATALOG_DIRTY_FILE_NAME)
     }
+
+    pub(crate) fn discard_source_observed_values(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        match SearchIndexStore::open_existing_workspace(&self.layout, workspace_name) {
+            Ok(Some(index)) => {
+                if let Err(error) =
+                    index.delete_observed_values_for_source(workspace_name, source_name)
+                {
+                    tracing::warn!(
+                        workspace = %workspace_name,
+                        source = %source_name,
+                        error = %error,
+                        "failed to discard observed values for mutated source"
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    source = %source_name,
+                    error = %error,
+                    "failed to open search index while discarding observed values"
+                );
+            }
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -256,6 +296,9 @@ impl UniversalSearch {
         let (mut candidates, catalog_status) = self
             .catalog_metadata_candidates(workspace_name, &catalog, &terms, limit)
             .await;
+        let (observed_candidates, observed_status) =
+            self.observed_value_candidates(workspace_name, &catalog, &terms, limit);
+        candidates.extend(observed_candidates);
         candidates.sort();
 
         let total_count = candidates.len();
@@ -277,8 +320,8 @@ impl UniversalSearch {
                 },
                 SearchProviderStatus {
                     provider: SearchProvider::ObservedValues as i32,
-                    state: SearchProviderState::NotEnabled as i32,
-                    note: "Observed-value search is not enabled in this build".to_string(),
+                    state: observed_status.state as i32,
+                    note: observed_status.note,
                 },
             ],
             truncation: Some(SearchResultTruncation {
@@ -336,9 +379,57 @@ impl UniversalSearch {
         let note = catalog_provider_note(state, candidates.len(), page.has_more);
         (candidates, CatalogProviderStatus { state, note })
     }
+
+    fn observed_value_candidates(
+        &self,
+        workspace_name: &WorkspaceName,
+        catalog: &CatalogInfo,
+        terms: &QueryTerms,
+        limit: u32,
+    ) -> (Vec<Candidate>, ObservedProviderStatus) {
+        let index = match SearchIndexStore::open_workspace(&self.indexes.layout, workspace_name) {
+            Ok(index) => index,
+            Err(error) => return (Vec::new(), observed_index_error_status(&error)),
+        };
+        let retention_cutoff = observed_value_retention_cutoff();
+        if let Err(error) = index.purge_observed_values_before(workspace_name, &retention_cutoff) {
+            tracing::warn!(
+                workspace = %workspace_name,
+                error = %error,
+                "failed to purge stale observed values before search"
+            );
+        }
+        let search_limit = usize::try_from(limit)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(3)
+            .max(25);
+        let hits = match index.search_observed_values(workspace_name, &terms.terms, search_limit) {
+            Ok(hits) => hits,
+            Err(error) => return (Vec::new(), observed_index_error_status(&error)),
+        };
+        let live_sources = catalog_source_names(catalog);
+        let candidates = observed_value_candidates_from_hits(
+            workspace_name,
+            terms,
+            hits.into_iter()
+                .filter(|hit| live_sources.contains(&hit.source_name)),
+        );
+        let state = if candidates.is_empty() {
+            SearchProviderState::Empty
+        } else {
+            SearchProviderState::ResultsFound
+        };
+        let note = observed_provider_note(state, candidates.len());
+        (candidates, ObservedProviderStatus { state, note })
+    }
 }
 
 struct CatalogProviderStatus {
+    state: SearchProviderState,
+    note: String,
+}
+
+struct ObservedProviderStatus {
     state: SearchProviderState,
     note: String,
 }
@@ -759,13 +850,13 @@ fn catalog_function_candidate(
 
 fn catalog_hit_score(hit: &CatalogSearchHit, terms: &QueryTerms) -> u32 {
     hit.score
-        .saturating_add(source_exact_match_boost(hit, terms))
+        .saturating_add(source_name_exact_match_boost(&hit.schema_name, terms))
         .saturating_add(surface_name_match_boost(&hit.surface_name, terms))
         .saturating_add(query_field_match_boost(hit))
 }
 
-fn source_exact_match_boost(hit: &CatalogSearchHit, terms: &QueryTerms) -> u32 {
-    if exact_query_term_matches(&hit.schema_name, terms) {
+fn source_name_exact_match_boost(source_name: &str, terms: &QueryTerms) -> u32 {
+    if exact_query_term_matches(source_name, terms) {
         SOURCE_EXACT_MATCH_BOOST
     } else {
         0
@@ -1057,6 +1148,15 @@ impl CatalogSearchFieldRole {
     }
 }
 
+impl ObservedValueSurfaceKind {
+    fn to_proto(self) -> SearchSurfaceKind {
+        match self {
+            Self::Table => SearchSurfaceKind::Table,
+            Self::TableFunction => SearchSurfaceKind::TableFunction,
+        }
+    }
+}
+
 fn column_hint_candidate(input: ColumnHintCandidate<'_>, score: u32) -> Candidate {
     Candidate {
         key: format!(
@@ -1121,6 +1221,213 @@ fn native_search_path_candidate(
             })),
         },
     })
+}
+
+fn observed_value_candidates_from_hits(
+    workspace_name: &WorkspaceName,
+    terms: &QueryTerms,
+    hits: impl IntoIterator<Item = ObservedValueSearchHit>,
+) -> Vec<Candidate> {
+    let mut per_field_counts = BTreeMap::<String, usize>::new();
+    let mut candidates = Vec::new();
+    for hit in hits {
+        let field_key = observed_value_field_key(&hit);
+        let count = per_field_counts.entry(field_key).or_default();
+        if *count >= OBSERVED_VALUES_PER_FIELD_LIMIT {
+            continue;
+        }
+        *count += 1;
+        candidates.push(observed_value_candidate(workspace_name, hit, terms));
+    }
+    candidates
+}
+
+fn observed_value_field_key(hit: &ObservedValueSearchHit) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        hit.source_name,
+        hit.surface_kind.as_str(),
+        hit.surface_name,
+        hit.column_name
+    )
+}
+
+fn observed_value_candidate(
+    _workspace_name: &WorkspaceName,
+    hit: ObservedValueSearchHit,
+    terms: &QueryTerms,
+) -> Candidate {
+    let value = observed_value_display(&hit.display_value);
+    let field_path = hit.column_name.clone();
+    let column_name = observed_base_column_name(&field_path).to_string();
+    let score = observed_value_score(&hit, &field_path, terms);
+    Candidate {
+        key: format!(
+            "observed:{}:{}:{}:{}:{}:{}",
+            hit.source_name,
+            hit.surface_kind.as_str(),
+            hit.surface_name,
+            field_path,
+            hit.normalized_value_key,
+            hit.last_observed_at
+        ),
+        score,
+        type_order: 0,
+        result: SearchResult {
+            provider: SearchProvider::ObservedValues as i32,
+            payload: Some(Payload::ObservedValue(ObservedValue {
+                value,
+                schema_name: hit.source_name,
+                surface_name: hit.surface_name,
+                column_name,
+                surface_kind: hit.surface_kind.to_proto() as i32,
+                field_path,
+                observed_count: hit.observed_count,
+                last_observed_at: hit.last_observed_at,
+            })),
+        },
+    }
+}
+
+fn observed_value_score(hit: &ObservedValueSearchHit, field_path: &str, terms: &QueryTerms) -> u32 {
+    hit.score
+        .saturating_add(source_name_exact_match_boost(&hit.source_name, terms))
+        .saturating_add(surface_name_match_boost(&hit.surface_name, terms))
+        .saturating_add(field_path_match_boost(field_path, terms))
+        .saturating_add(observed_value_match_boost_for_hit(hit, field_path, terms))
+        .saturating_add(observed_field_path_boost(field_path))
+}
+
+fn observed_base_column_name(field_path: &str) -> &str {
+    field_path.split('.').next().unwrap_or(field_path)
+}
+
+fn field_path_match_boost(field_path: &str, terms: &QueryTerms) -> u32 {
+    let field_path = normalize(field_path);
+    let tokens = search_tokens(&field_path);
+    terms
+        .terms
+        .iter()
+        .map(|term| literal_field_path_boost(&field_path, &tokens, term))
+        .max()
+        .unwrap_or(0)
+}
+
+fn literal_field_path_boost(field_path: &str, tokens: &[&str], term: &str) -> u32 {
+    if field_path == term {
+        return FIELD_PATH_EXACT_BOOST;
+    }
+    if tokens.iter().any(|token| token == &term) {
+        return FIELD_PATH_TOKEN_BOOST;
+    }
+    if term.chars().count() >= 3 && field_path.contains(term) {
+        return FIELD_PATH_SUBSTRING_BOOST;
+    }
+    0
+}
+
+#[cfg(test)]
+fn observed_value_match_boost(
+    display_value: &str,
+    normalized_value_key: &str,
+    terms: &QueryTerms,
+) -> u32 {
+    observed_value_match_boost_with_filter(display_value, normalized_value_key, terms, |_| false)
+}
+
+fn observed_value_match_boost_for_hit(
+    hit: &ObservedValueSearchHit,
+    field_path: &str,
+    terms: &QueryTerms,
+) -> u32 {
+    observed_value_match_boost_with_filter(
+        &hit.display_value,
+        &hit.normalized_value_key,
+        terms,
+        |term| observed_context_matches_term(hit, field_path, term),
+    )
+}
+
+fn observed_value_match_boost_with_filter(
+    display_value: &str,
+    normalized_value_key: &str,
+    terms: &QueryTerms,
+    mut skip_term: impl FnMut(&str) -> bool,
+) -> u32 {
+    let display_value = normalize(display_value);
+    let normalized_value_key = normalize(normalized_value_key);
+    if terms
+        .terms
+        .iter()
+        .filter(|term| !skip_term(term))
+        .any(|term| term == &display_value || term == &normalized_value_key)
+    {
+        return VALUE_EXACT_MATCH_BOOST;
+    }
+
+    let display_tokens = search_tokens(&display_value);
+    let value_key_tokens = search_tokens(&normalized_value_key);
+    for term in &terms.terms {
+        if skip_term(term) {
+            continue;
+        }
+        if display_tokens.iter().any(|token| token == term)
+            || value_key_tokens.iter().any(|token| token == term)
+        {
+            return VALUE_TOKEN_MATCH_BOOST;
+        }
+        if is_identifier_query_term(term)
+            && (display_value.contains(term) || normalized_value_key.contains(term))
+        {
+            return VALUE_TOKEN_MATCH_BOOST;
+        }
+    }
+
+    0
+}
+
+fn observed_context_matches_term(
+    hit: &ObservedValueSearchHit,
+    field_path: &str,
+    term: &str,
+) -> bool {
+    if normalize(&hit.source_name) == term {
+        return true;
+    }
+
+    let surface_name = normalize(&hit.surface_name);
+    let surface_tokens = search_tokens(&surface_name);
+    if literal_surface_name_boost(&surface_name, &surface_tokens, term) > 0 {
+        return true;
+    }
+
+    let field_path = normalize(field_path);
+    let field_tokens = search_tokens(&field_path);
+    literal_field_path_boost(&field_path, &field_tokens, term) > 0
+}
+
+fn is_identifier_query_term(term: &str) -> bool {
+    term.chars()
+        .any(|character| matches!(character, '_' | '-' | '.' | '#' | '/' | '@'))
+}
+
+fn observed_field_path_boost(field_path: &str) -> u32 {
+    if field_path.contains('.') {
+        OBSERVED_CHILD_PATH_BOOST
+    } else {
+        0
+    }
+}
+
+fn observed_value_display(value: &str) -> String {
+    const MAX_DISPLAY_CHARS: usize = 240;
+    let mut chars = value.chars();
+    let display = chars.by_ref().take(MAX_DISPLAY_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{display}...")
+    } else {
+        display
+    }
 }
 
 fn table_summary(table: &TableInfo) -> TableInfo {
@@ -1190,11 +1497,47 @@ fn catalog_provider_note(state: SearchProviderState, total_count: usize, has_mor
     }
 }
 
+fn observed_provider_note(state: SearchProviderState, total_count: usize) -> String {
+    match state {
+        SearchProviderState::ResultsFound => {
+            format!("Observed values returned {total_count} candidate search hints")
+        }
+        SearchProviderState::Empty => "Observed values returned no search hints".to_string(),
+        _ => String::new(),
+    }
+}
+
 fn catalog_index_error_status(error: &SearchIndexError) -> CatalogProviderStatus {
     CatalogProviderStatus {
         state: SearchProviderState::Error,
         note: format!("Catalog metadata search index is unavailable: {error}"),
     }
+}
+
+fn observed_index_error_status(error: &SearchIndexError) -> ObservedProviderStatus {
+    ObservedProviderStatus {
+        state: SearchProviderState::Error,
+        note: format!("Observed-value search index is unavailable: {error}"),
+    }
+}
+
+fn catalog_source_names(catalog: &CatalogInfo) -> BTreeSet<String> {
+    catalog
+        .tables
+        .iter()
+        .map(|table| table.schema_name.clone())
+        .chain(
+            catalog
+                .table_functions
+                .iter()
+                .map(|function| function.schema_name.clone()),
+        )
+        .collect()
+}
+
+fn observed_value_retention_cutoff() -> String {
+    (Utc::now() - Duration::days(OBSERVED_VALUE_RETENTION_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 fn truncation_note(truncated: bool, total_count: usize, max_results: usize) -> String {
@@ -1214,7 +1557,13 @@ mod tests {
     use tantivy::schema::{STORED, STRING, Schema};
     use tempfile::tempdir;
 
-    use super::{SearchIndexRefresher, catalog_fingerprint, query_terms, sql_call_example};
+    use super::{
+        FIELD_PATH_EXACT_BOOST, SOURCE_EXACT_MATCH_BOOST, SURFACE_NAME_EXACT_BOOST,
+        SearchIndexRefresher, VALUE_EXACT_MATCH_BOOST, VALUE_TOKEN_MATCH_BOOST,
+        catalog_fingerprint, observed_value_match_boost, observed_value_score, query_terms,
+        sql_call_example,
+    };
+    use crate::search::index::{ObservedValueSearchHit, ObservedValueSurfaceKind};
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
 
@@ -1254,6 +1603,79 @@ mod tests {
         assert_eq!(
             sql_call_example(&function),
             "SELECT * FROM \"Search\".\"Search_Issues\"(\"Q\" => '<Q>') LIMIT 10"
+        );
+    }
+
+    #[test]
+    fn observed_value_score_boosts_source_surface_field_and_exact_value() {
+        let terms = query_terms("linear issues identifier BENCH-457").expect("terms");
+        let hit = observed_hit("linear", "issues", "identifier", "BENCH-457", 100);
+
+        assert_eq!(
+            observed_value_score(&hit, &hit.column_name, &terms),
+            100 + SOURCE_EXACT_MATCH_BOOST
+                + SURFACE_NAME_EXACT_BOOST
+                + FIELD_PATH_EXACT_BOOST
+                + VALUE_EXACT_MATCH_BOOST
+        );
+    }
+
+    #[test]
+    fn observed_value_boosts_value_tokens_without_broad_substring_match() {
+        let pr_terms = query_terms("1017").expect("terms");
+        assert_eq!(
+            observed_value_match_boost(
+                "https://github.com/withcoral/coral/pull/1017",
+                "https://github.com/withcoral/coral/pull/1017",
+                &pr_terms,
+            ),
+            VALUE_TOKEN_MATCH_BOOST
+        );
+
+        let repo_terms = query_terms("withcoral/coral").expect("terms");
+        assert_eq!(
+            observed_value_match_boost(
+                "https://github.com/withcoral/coral/pull/1017",
+                "https://github.com/withcoral/coral/pull/1017",
+                &repo_terms,
+            ),
+            VALUE_TOKEN_MATCH_BOOST
+        );
+
+        let substring_terms = query_terms("ora").expect("terms");
+        assert_eq!(
+            observed_value_match_boost("Coral Pivot", "coral pivot", &substring_terms),
+            0
+        );
+    }
+
+    #[test]
+    fn observed_value_score_ignores_value_terms_already_matched_by_context() {
+        let terms = query_terms("github 1017").expect("terms");
+        let generic_github_url = observed_hit(
+            "github",
+            "pulls",
+            "user",
+            "https://github.com/antonmry",
+            100,
+        );
+        let pull_number = observed_hit("github", "pulls", "number", "1017", 100);
+
+        assert_eq!(
+            observed_value_score(&generic_github_url, &generic_github_url.column_name, &terms,),
+            100 + SOURCE_EXACT_MATCH_BOOST
+        );
+        assert_eq!(
+            observed_value_score(&pull_number, &pull_number.column_name, &terms),
+            100 + SOURCE_EXACT_MATCH_BOOST + VALUE_EXACT_MATCH_BOOST
+        );
+        assert!(
+            observed_value_score(&pull_number, &pull_number.column_name, &terms)
+                > observed_value_score(
+                    &generic_github_url,
+                    &generic_github_url.column_name,
+                    &terms,
+                )
         );
     }
 
@@ -1343,5 +1765,25 @@ mod tests {
             .expect("search catalog")
             .iter()
             .any(|hit| hit.surface_name == surface_name)
+    }
+
+    fn observed_hit(
+        source_name: &str,
+        surface_name: &str,
+        column_name: &str,
+        display_value: &str,
+        score: u32,
+    ) -> ObservedValueSearchHit {
+        ObservedValueSearchHit {
+            source_name: source_name.to_string(),
+            surface_kind: ObservedValueSurfaceKind::Table,
+            surface_name: surface_name.to_string(),
+            column_name: column_name.to_string(),
+            normalized_value_key: display_value.to_ascii_lowercase(),
+            display_value: display_value.to_string(),
+            last_observed_at: "2026-06-04T10:00:00.000Z".to_string(),
+            observed_count: 1,
+            score,
+        }
     }
 }

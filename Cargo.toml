@@ -50,6 +50,7 @@ arrow = "58.1.0"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
 base64 = "0.22"
+bincode = { version = "2.0.1", features = ["serde"] }
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -81,6 +82,7 @@ parquet = { version = "58.1.0", features = ["arrow"] }
 prost = "0.14.1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "charset", "form", "http2", "json", "query", "rustls", "system-proxy"] }
 regex = "1"
+redb = "4.1.0"
 rmcp = { version = "1.6.0", features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
@@ -89,7 +91,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 schemars = "1.2.1"
 sha2 = "0.10"
-sqlparser = "0.59.0"
+sqlparser = "0.61.0"
 strsim = "0.11"
 tantivy = "0.26.1"
 thiserror = "2"

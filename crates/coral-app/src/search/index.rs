@@ -3,10 +3,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::{SecondsFormat, Utc};
 use coral_engine::{
     CatalogInfo, ColumnInfo, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
 };
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
@@ -16,10 +19,18 @@ use tantivy::tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer};
 use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 use uuid::Uuid;
 
+use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::storage::fs::ensure_dir;
 use crate::workspaces::WorkspaceName;
 
+const OBSERVED_STATE_FILE_NAME: &str = "observed_values.redb";
+const OBSERVED_RECORDS_TABLE: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("observed_records");
+const OBSERVED_SOURCE_INDEX_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("observed_source_index");
+const OBSERVED_LAST_OBSERVED_INDEX_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("observed_last_observed_index");
 const TRIGRAM_TOKENIZER: &str = "coral_trigram";
 const TANTIVY_VERSION: &str = "0.26.1";
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
@@ -27,7 +38,6 @@ const MAX_RANK_SCORE: u32 = 1_000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SearchIndexStore {
-    #[cfg(test)]
     path: PathBuf,
     index: Index,
     fields: SearchIndexFields,
@@ -66,6 +76,17 @@ impl SearchIndexStore {
         index_is_usable(&layout.search_index_dir(workspace_name))
     }
 
+    pub(crate) fn open_existing_workspace(
+        layout: &AppStateLayout,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<Self>, SearchIndexError> {
+        let path = layout.search_index_dir(workspace_name);
+        if !path.exists() {
+            return Ok(None);
+        }
+        Self::open(path).map(Some)
+    }
+
     pub(crate) fn open(path: impl Into<PathBuf>) -> Result<Self, SearchIndexError> {
         let path = path.into();
         ensure_dir(&path)?;
@@ -74,21 +95,10 @@ impl SearchIndexStore {
         Self::from_index(&path, index)
     }
 
-    fn from_index(
-        #[cfg_attr(
-            not(test),
-            expect(
-                unused_variables,
-                reason = "path is retained for unit-test search index assertions"
-            )
-        )]
-        path: &Path,
-        index: Index,
-    ) -> Result<Self, SearchIndexError> {
+    fn from_index(path: &Path, index: Index) -> Result<Self, SearchIndexError> {
         register_tokenizers(&index)?;
         let fields = SearchIndexFields::from_schema(&index.schema())?;
         Ok(Self {
-            #[cfg(test)]
             path: path.to_path_buf(),
             index,
             fields,
@@ -181,6 +191,116 @@ impl SearchIndexStore {
         Ok(CatalogSearchPage { hits, has_more })
     }
 
+    pub(crate) fn upsert_observed_values(
+        &self,
+        _workspace_name: &WorkspaceName,
+        records: Vec<ObservedValueRecord>,
+    ) -> Result<(), SearchIndexError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let updated = self.upsert_observed_records(records)?;
+
+        let mut writer = self.writer()?;
+        for record in &updated {
+            let key = record.doc_key();
+            let _opstamp = writer.delete_term(Term::from_field_text(self.fields.doc_key, &key));
+            writer.add_document(self.observed_document(record))?;
+        }
+        writer.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn search_observed_values(
+        &self,
+        _workspace_name: &WorkspaceName,
+        terms: &[String],
+        limit: usize,
+    ) -> Result<Vec<ObservedValueSearchHit>, SearchIndexError> {
+        let Some(query) = self.scoped_query("observed_value", terms) else {
+            return Ok(Vec::new());
+        };
+        let docs = self.search_documents(&query, limit)?;
+        let mut hits = docs
+            .into_iter()
+            .filter(|doc| doc_text(doc, self.fields.entity_kind) == "observed_value")
+            .map(|doc| ObservedValueSearchHit {
+                source_name: doc_text(&doc, self.fields.source_name),
+                surface_kind: ObservedValueSurfaceKind::from_str(&doc_text(
+                    &doc,
+                    self.fields.surface_kind,
+                ))
+                .unwrap_or(ObservedValueSurfaceKind::Table),
+                surface_name: doc_text(&doc, self.fields.surface_name),
+                column_name: doc_text(&doc, self.fields.column_name),
+                normalized_value_key: doc_text(&doc, self.fields.normalized_value_key),
+                display_value: doc_text(&doc, self.fields.display_value),
+                last_observed_at: doc_text(&doc, self.fields.last_observed_at),
+                observed_count: doc_text(&doc, self.fields.observed_count)
+                    .parse()
+                    .unwrap_or(0),
+                score: 0,
+            })
+            .collect::<Vec<_>>();
+        assign_rank_scores(&mut hits, |hit, score| hit.score = score);
+        Ok(hits)
+    }
+
+    pub(crate) fn delete_observed_values_for_source(
+        &self,
+        _workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), SearchIndexError> {
+        let removed = self.remove_observed_records_for_source(source_name.as_str())?;
+        if removed.is_empty() {
+            return Ok(());
+        }
+
+        let mut writer = self.writer()?;
+        for record in &removed {
+            let _opstamp = writer.delete_term(Term::from_field_text(
+                self.fields.doc_key,
+                &record.doc_key(),
+            ));
+        }
+        writer.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn purge_observed_values_before(
+        &self,
+        _workspace_name: &WorkspaceName,
+        cutoff: &str,
+    ) -> Result<(), SearchIndexError> {
+        let removed = self.remove_observed_records_before(cutoff)?;
+        if removed.is_empty() {
+            return Ok(());
+        }
+
+        let mut writer = self.writer()?;
+        for record in &removed {
+            let _opstamp = writer.delete_term(Term::from_field_text(
+                self.fields.doc_key,
+                &record.doc_key(),
+            ));
+        }
+        writer.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observed_count_for_test(
+        &self,
+        display_value: &str,
+    ) -> Result<Option<u64>, SearchIndexError> {
+        Ok(self
+            .load_observed_records()?
+            .into_iter()
+            .find(|record| record.display_value == display_value)
+            .map(|record| record.observed_count))
+    }
+
     fn writer(&self) -> Result<IndexWriter, SearchIndexError> {
         Ok(self.index.writer(WRITER_MEMORY_BUDGET_BYTES)?)
     }
@@ -211,11 +331,13 @@ impl SearchIndexStore {
                     self.fields.qualified_name_text,
                     self.fields.description_text,
                     self.fields.searchable_text_text,
+                    self.fields.value_text,
                 ],
             );
             parser.set_field_boost(self.fields.name_text, 4.0);
             parser.set_field_boost(self.fields.qualified_name_text, 5.0);
             parser.set_field_boost(self.fields.description_text, 2.0);
+            parser.set_field_boost(self.fields.value_text, 4.0);
             let (parsed_query, errors) = parser.parse_query_lenient(&query_text);
             if !errors.is_empty() {
                 tracing::debug!(
@@ -242,9 +364,12 @@ impl SearchIndexStore {
     fn exact_identifier_queries(&self, terms: &[String]) -> Vec<Box<dyn Query>> {
         let fields = [
             (self.fields.schema_name, 20.0),
+            (self.fields.source_name, 20.0),
             (self.fields.surface_name, 16.0),
+            (self.fields.column_name, 12.0),
             (self.fields.name, 12.0),
             (self.fields.qualified_name, 10.0),
+            (self.fields.normalized_value_key, 10.0),
             (self.fields.data_type, 4.0),
         ];
         terms
@@ -308,6 +433,289 @@ impl SearchIndexStore {
         doc.add_text(self.fields.searchable_text_text, &record.searchable_text);
         doc
     }
+
+    fn observed_document(&self, record: &ObservedValueStoredRecord) -> TantivyDocument {
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.fields.doc_key, record.doc_key());
+        doc.add_text(self.fields.entity_kind, "observed_value");
+        doc.add_text(self.fields.source_name, &record.source_name);
+        doc.add_text(self.fields.schema_name, &record.source_name);
+        doc.add_text(self.fields.surface_kind, &record.surface_kind);
+        doc.add_text(self.fields.surface_name, &record.surface_name);
+        doc.add_text(self.fields.column_name, &record.column_name);
+        doc.add_text(self.fields.name, &record.column_name);
+        doc.add_text(
+            self.fields.qualified_name,
+            format!(
+                "{}.{}.{}",
+                record.source_name, record.surface_name, record.column_name
+            ),
+        );
+        doc.add_text(
+            self.fields.normalized_value_key,
+            &record.normalized_value_key,
+        );
+        doc.add_text(self.fields.display_value, &record.display_value);
+        doc.add_text(self.fields.searchable_text, &record.searchable_text);
+        doc.add_text(self.fields.last_observed_at, &record.last_observed_at);
+        doc.add_text(
+            self.fields.observed_count,
+            record.observed_count.to_string(),
+        );
+        doc.add_text(self.fields.name_text, &record.column_name);
+        doc.add_text(
+            self.fields.qualified_name_text,
+            format!(
+                "{}.{}.{}",
+                record.source_name, record.surface_name, record.column_name
+            ),
+        );
+        doc.add_text(self.fields.searchable_text_text, &record.searchable_text);
+        doc.add_text(self.fields.value_text, &record.display_value);
+        doc
+    }
+
+    #[cfg(test)]
+    fn observed_state_file(&self) -> PathBuf {
+        observed_state_file_for_index(&self.path)
+    }
+
+    #[cfg(test)]
+    fn load_observed_records(&self) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+        load_observed_records_for_index(&self.path)
+    }
+
+    fn observed_database(&self) -> Result<Database, SearchIndexError> {
+        observed_database_for_index(&self.path)
+    }
+
+    fn upsert_observed_records(
+        &self,
+        records: Vec<ObservedValueRecord>,
+    ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+        let database = self.observed_database()?;
+        let write_txn = database.begin_write()?;
+        let now = now_timestamp();
+        let mut updated = Vec::new();
+        let mut old_last_index_keys = Vec::new();
+
+        {
+            let mut table = write_txn.open_table(OBSERVED_RECORDS_TABLE)?;
+            for record in records {
+                let key = observed_doc_key(
+                    &record.source_name,
+                    record.surface_kind,
+                    &record.surface_name,
+                    &record.column_name,
+                    &record.normalized_value_key,
+                );
+                let stored = match table.get(key.as_str())? {
+                    Some(existing) => {
+                        let mut existing = decode_observed_record(existing.value())?;
+                        old_last_index_keys.push(observed_last_observed_index_key(&existing, &key));
+                        existing.display_value = record.display_value;
+                        existing.searchable_text = record.searchable_text;
+                        existing.sensitivity_tier = record.sensitivity_tier.as_str().to_string();
+                        existing.suggested_operator =
+                            record.suggested_operator.as_str().to_string();
+                        existing.last_observed_at.clone_from(&now);
+                        existing.observed_count = existing
+                            .observed_count
+                            .saturating_add(record.observed_count);
+                        existing
+                    }
+                    None => ObservedValueStoredRecord {
+                        source_name: record.source_name,
+                        surface_kind: record.surface_kind.as_str().to_string(),
+                        surface_name: record.surface_name,
+                        column_name: record.column_name,
+                        normalized_value_key: record.normalized_value_key,
+                        display_value: record.display_value,
+                        searchable_text: record.searchable_text,
+                        sensitivity_tier: record.sensitivity_tier.as_str().to_string(),
+                        suggested_operator: record.suggested_operator.as_str().to_string(),
+                        first_observed_at: now.clone(),
+                        last_observed_at: now.clone(),
+                        observed_count: record.observed_count,
+                    },
+                };
+                let encoded = encode_observed_record(&stored)?;
+                table.insert(key.as_str(), encoded.as_slice())?;
+                updated.push(stored);
+            }
+        }
+
+        {
+            let mut source_index = write_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
+            for record in &updated {
+                source_index.insert(
+                    observed_source_index_key(record).as_str(),
+                    record.doc_key().as_str(),
+                )?;
+            }
+        }
+
+        {
+            let mut last_observed_index =
+                write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+            for key in old_last_index_keys {
+                last_observed_index.remove(key.as_str())?;
+            }
+            for record in &updated {
+                last_observed_index.insert(
+                    observed_last_observed_index_key(record, &record.doc_key()).as_str(),
+                    record.doc_key().as_str(),
+                )?;
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(updated)
+    }
+
+    fn remove_observed_records_for_source(
+        &self,
+        source_name: &str,
+    ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+        let prefix = observed_source_index_prefix(source_name);
+        self.remove_observed_records_from_index_range(OBSERVED_SOURCE_INDEX_TABLE, &prefix, true)
+    }
+
+    fn remove_observed_records_before(
+        &self,
+        cutoff: &str,
+    ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+        self.remove_observed_records_from_index_range(
+            OBSERVED_LAST_OBSERVED_INDEX_TABLE,
+            cutoff,
+            false,
+        )
+    }
+
+    fn remove_observed_records_from_index_range(
+        &self,
+        index_table_definition: TableDefinition<&str, &str>,
+        prefix_or_cutoff: &str,
+        prefix_range: bool,
+    ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+        let database = self.observed_database()?;
+        let write_txn = database.begin_write()?;
+        let index_entries = {
+            let index = write_txn.open_table(index_table_definition)?;
+            let (lower_bound, upper_bound) = if prefix_range {
+                (
+                    prefix_or_cutoff.to_string(),
+                    prefix_range_end(prefix_or_cutoff),
+                )
+            } else {
+                (String::new(), format!("{prefix_or_cutoff}\0"))
+            };
+            index
+                .range(lower_bound.as_str()..upper_bound.as_str())?
+                .map(|entry| {
+                    entry.map(|(index_key, doc_key)| {
+                        (index_key.value().to_string(), doc_key.value().to_string())
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        if index_entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut removed = Vec::new();
+        {
+            let mut records = write_txn.open_table(OBSERVED_RECORDS_TABLE)?;
+            for (_index_key, key) in &index_entries {
+                if let Some(record) = records.remove(key.as_str())? {
+                    removed.push(decode_observed_record(record.value())?);
+                }
+            }
+        }
+        {
+            let mut index = write_txn.open_table(index_table_definition)?;
+            for (index_key, _doc_key) in &index_entries {
+                index.remove(index_key.as_str())?;
+            }
+        }
+        {
+            let mut source_index = write_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
+            if !prefix_range {
+                for record in &removed {
+                    source_index.remove(observed_source_index_key(record).as_str())?;
+                }
+            }
+        }
+        {
+            let mut last_observed_index =
+                write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+            if prefix_range {
+                for record in &removed {
+                    last_observed_index.remove(
+                        observed_last_observed_index_key(record, &record.doc_key()).as_str(),
+                    )?;
+                }
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(removed)
+    }
+
+    #[cfg(test)]
+    fn set_last_observed_at_for_test(
+        &self,
+        display_value: &str,
+        last_observed_at: &str,
+    ) -> Result<(), SearchIndexError> {
+        let database = self.observed_database()?;
+        let write_txn = database.begin_write()?;
+        let mut updated = None;
+        let mut old_last_index_key = None;
+        {
+            let mut table = write_txn.open_table(OBSERVED_RECORDS_TABLE)?;
+            let mut records = Vec::new();
+            for entry in table.iter()? {
+                let (key, value) = entry?;
+                records.push((
+                    key.value().to_string(),
+                    decode_observed_record(value.value())?,
+                ));
+            }
+            for (key, mut record) in records {
+                if record.display_value == display_value {
+                    old_last_index_key = Some(observed_last_observed_index_key(&record, &key));
+                    record.last_observed_at = last_observed_at.to_string();
+                    let encoded = encode_observed_record(&record)?;
+                    table.insert(key.as_str(), encoded.as_slice())?;
+                    updated = Some((key, record));
+                    break;
+                }
+            }
+        }
+        let Some((key, record)) = updated else {
+            write_txn.commit()?;
+            return Ok(());
+        };
+        {
+            let mut last_observed_index =
+                write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+            if let Some(old_key) = old_last_index_key {
+                last_observed_index.remove(old_key.as_str())?;
+            }
+            last_observed_index.insert(
+                observed_last_observed_index_key(&record, &key).as_str(),
+                key.as_str(),
+            )?;
+        }
+        write_txn.commit()?;
+
+        let mut writer = self.writer()?;
+        let _opstamp = writer.delete_term(Term::from_field_text(self.fields.doc_key, &key));
+        writer.add_document(self.observed_document(&record))?;
+        writer.commit()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +731,28 @@ pub(crate) enum SearchIndexError {
     #[error(transparent)]
     Tantivy(#[from] tantivy::TantivyError),
     #[error(transparent)]
+    RedbDatabase(#[from] redb::DatabaseError),
+    #[error(transparent)]
+    RedbStorage(#[from] redb::StorageError),
+    #[error(transparent)]
+    RedbTable(#[from] redb::TableError),
+    #[error(transparent)]
+    RedbTransaction(#[from] redb::TransactionError),
+    #[error(transparent)]
+    RedbCommit(#[from] redb::CommitError),
+    #[error(transparent)]
+    Encode(#[from] bincode::error::EncodeError),
+    #[error(transparent)]
+    Decode(#[from] bincode::error::DecodeError),
+    #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(
+        "observed-value state record '{record_key}' references malformed encoded data: {error}"
+    )]
+    ObservedStateDecode {
+        record_key: String,
+        error: bincode::error::DecodeError,
+    },
     #[error("Tantivy search index schema is missing required field '{field}'")]
     MissingField { field: &'static str },
 }
@@ -434,6 +863,140 @@ impl CatalogSearchFieldRole {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ObservedValueRecord {
+    pub(crate) source_name: String,
+    pub(crate) surface_kind: ObservedValueSurfaceKind,
+    pub(crate) surface_name: String,
+    pub(crate) column_name: String,
+    pub(crate) normalized_value_key: String,
+    pub(crate) display_value: String,
+    pub(crate) searchable_text: String,
+    pub(crate) sensitivity_tier: ObservedValueSensitivityTier,
+    pub(crate) suggested_operator: ObservedValueSuggestedOperator,
+    pub(crate) observed_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ObservedValueSearchHit {
+    pub(crate) source_name: String,
+    pub(crate) surface_kind: ObservedValueSurfaceKind,
+    pub(crate) surface_name: String,
+    pub(crate) column_name: String,
+    pub(crate) normalized_value_key: String,
+    pub(crate) display_value: String,
+    pub(crate) last_observed_at: String,
+    pub(crate) observed_count: u64,
+    pub(crate) score: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ObservedValueSurfaceKind {
+    Table,
+    TableFunction,
+}
+
+impl ObservedValueSurfaceKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::TableFunction => "table_function",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "table" => Some(Self::Table),
+            "table_function" => Some(Self::TableFunction),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ObservedValueSensitivityTier {
+    LowRisk,
+}
+
+impl ObservedValueSensitivityTier {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::LowRisk => "low_risk",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ObservedValueSuggestedOperator {
+    Exact,
+}
+
+impl ObservedValueSuggestedOperator {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ObservedValueStoredRecord {
+    source_name: String,
+    surface_kind: String,
+    surface_name: String,
+    column_name: String,
+    normalized_value_key: String,
+    display_value: String,
+    searchable_text: String,
+    sensitivity_tier: String,
+    suggested_operator: String,
+    first_observed_at: String,
+    last_observed_at: String,
+    observed_count: u64,
+}
+
+impl ObservedValueStoredRecord {
+    fn doc_key(&self) -> String {
+        observed_doc_key(
+            &self.source_name,
+            match self.surface_kind.as_str() {
+                "table_function" => ObservedValueSurfaceKind::TableFunction,
+                _ => ObservedValueSurfaceKind::Table,
+            },
+            &self.surface_name,
+            &self.column_name,
+            &self.normalized_value_key,
+        )
+    }
+}
+
+fn encode_observed_record(record: &ObservedValueStoredRecord) -> Result<Vec<u8>, SearchIndexError> {
+    bincode::serde::encode_to_vec(record, bincode::config::standard()).map_err(Into::into)
+}
+
+fn decode_observed_record(
+    bytes: &[u8],
+) -> Result<ObservedValueStoredRecord, bincode::error::DecodeError> {
+    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+        .map(|(record, _consumed)| record)
+}
+
+fn observed_source_index_key(record: &ObservedValueStoredRecord) -> String {
+    format!("{}{}{}", record.source_name, '\0', record.doc_key())
+}
+
+fn observed_source_index_prefix(source_name: &str) -> String {
+    format!("{source_name}\0")
+}
+
+fn observed_last_observed_index_key(record: &ObservedValueStoredRecord, doc_key: &str) -> String {
+    format!("{}{}{}", record.last_observed_at, '\0', doc_key)
+}
+
+fn prefix_range_end(prefix: &str) -> String {
+    format!("{prefix}{}", char::MAX)
+}
+
 #[derive(Debug)]
 struct CatalogEntityRecord {
     entity_key: String,
@@ -460,16 +1023,22 @@ struct SearchIndexFields {
     source_name: Field,
     schema_name: Field,
     surface_name: Field,
+    column_name: Field,
     name: Field,
     qualified_name: Field,
     data_type: Field,
     required: Field,
     description: Field,
+    normalized_value_key: Field,
+    display_value: Field,
     searchable_text: Field,
+    last_observed_at: Field,
+    observed_count: Field,
     name_text: Field,
     qualified_name_text: Field,
     description_text: Field,
     searchable_text_text: Field,
+    value_text: Field,
 }
 
 impl SearchIndexFields {
@@ -483,16 +1052,22 @@ impl SearchIndexFields {
             source_name: required_field(schema, "source_name")?,
             schema_name: required_field(schema, "schema_name")?,
             surface_name: required_field(schema, "surface_name")?,
+            column_name: required_field(schema, "column_name")?,
             name: required_field(schema, "name")?,
             qualified_name: required_field(schema, "qualified_name")?,
             data_type: required_field(schema, "data_type")?,
             required: required_field(schema, "required")?,
             description: required_field(schema, "description")?,
+            normalized_value_key: required_field(schema, "normalized_value_key")?,
+            display_value: required_field(schema, "display_value")?,
             searchable_text: required_field(schema, "searchable_text")?,
+            last_observed_at: required_field(schema, "last_observed_at")?,
+            observed_count: required_field(schema, "observed_count")?,
             name_text: required_field(schema, "name_text")?,
             qualified_name_text: required_field(schema, "qualified_name_text")?,
             description_text: required_field(schema, "description_text")?,
             searchable_text_text: required_field(schema, "searchable_text_text")?,
+            value_text: required_field(schema, "value_text")?,
         })
     }
 }
@@ -506,7 +1081,8 @@ fn replace_catalog_index_at(path: &Path, catalog: &CatalogInfo) -> Result<(), Se
         fs::remove_dir_all(&replacement_path)?;
     }
 
-    if let Err(error) = build_replacement_index(&replacement_path, catalog) {
+    let observed_records = load_observed_records_for_index(path)?;
+    if let Err(error) = build_replacement_index(&replacement_path, catalog, &observed_records) {
         if let Err(cleanup_error) = fs::remove_dir_all(&replacement_path) {
             tracing::warn!(
                 path = %replacement_path.display(),
@@ -520,7 +1096,11 @@ fn replace_catalog_index_at(path: &Path, catalog: &CatalogInfo) -> Result<(), Se
     swap_index_directory(path, &replacement_path)
 }
 
-fn build_replacement_index(path: &Path, catalog: &CatalogInfo) -> Result<(), SearchIndexError> {
+fn build_replacement_index(
+    path: &Path,
+    catalog: &CatalogInfo,
+    observed_records: &[ObservedValueStoredRecord],
+) -> Result<(), SearchIndexError> {
     ensure_dir(path)?;
     let index = Index::create_in_dir(path, search_schema())?;
     let store = SearchIndexStore::from_index(path, index)?;
@@ -528,6 +1108,9 @@ fn build_replacement_index(path: &Path, catalog: &CatalogInfo) -> Result<(), Sea
 
     for record in catalog_entity_records(catalog) {
         writer.add_document(store.catalog_document(&record))?;
+    }
+    for record in observed_records {
+        writer.add_document(store.observed_document(record))?;
     }
     writer.commit()?;
     Ok(())
@@ -580,6 +1163,51 @@ fn sibling_index_path(path: &Path, label: &str) -> PathBuf {
     parent.join(format!(".{name}-{label}-{}", Uuid::new_v4()))
 }
 
+fn observed_state_file_for_index(path: &Path) -> PathBuf {
+    path.parent().unwrap_or(path).join(OBSERVED_STATE_FILE_NAME)
+}
+
+fn observed_database_for_index(path: &Path) -> Result<Database, SearchIndexError> {
+    let database_path = observed_state_file_for_index(path);
+    if let Some(parent) = database_path.parent() {
+        ensure_dir(parent)?;
+    }
+    let database = Database::create(database_path)?;
+    let write_txn = database.begin_write()?;
+    {
+        let _records = write_txn.open_table(OBSERVED_RECORDS_TABLE)?;
+        let _source_index = write_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
+        let _last_observed_index = write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+    }
+    write_txn.commit()?;
+    Ok(database)
+}
+
+fn load_observed_records_for_index(
+    path: &Path,
+) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+    let database = observed_database_for_index(path)?;
+    let read_txn = database.begin_read()?;
+    let table = read_txn.open_table(OBSERVED_RECORDS_TABLE)?;
+    let mut records = table
+        .iter()?
+        .map(|entry| {
+            entry
+                .map_err(SearchIndexError::from)
+                .and_then(|(key, value)| {
+                    decode_observed_record(value.value()).map_err(|error| {
+                        SearchIndexError::ObservedStateDecode {
+                            record_key: key.value().to_string(),
+                            error,
+                        }
+                    })
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    records.sort_by_key(ObservedValueStoredRecord::doc_key);
+    Ok(records)
+}
+
 fn open_or_create_index(path: &Path) -> Result<Index, SearchIndexError> {
     let meta_file = path.join("meta.json");
     if meta_file.exists() {
@@ -628,16 +1256,22 @@ fn search_schema() -> Schema {
     builder.add_text_field("source_name", STRING | STORED);
     builder.add_text_field("schema_name", STRING | STORED);
     builder.add_text_field("surface_name", STRING | STORED);
+    builder.add_text_field("column_name", STRING | STORED);
     builder.add_text_field("name", STRING | STORED);
     builder.add_text_field("qualified_name", STRING | STORED);
     builder.add_text_field("data_type", STRING | STORED);
     builder.add_text_field("required", STRING | STORED);
     builder.add_text_field("description", stored_text_options());
+    builder.add_text_field("normalized_value_key", STRING | STORED);
+    builder.add_text_field("display_value", stored_text_options());
     builder.add_text_field("searchable_text", stored_text_options());
+    builder.add_text_field("last_observed_at", STRING | STORED);
+    builder.add_text_field("observed_count", STRING | STORED);
     builder.add_text_field("name_text", trigram_text_options());
     builder.add_text_field("qualified_name_text", trigram_text_options());
     builder.add_text_field("description_text", trigram_text_options());
     builder.add_text_field("searchable_text_text", trigram_text_options());
+    builder.add_text_field("value_text", trigram_text_options());
     builder.build()
 }
 
@@ -671,16 +1305,22 @@ fn schema_has_required_fields(schema: &Schema) -> bool {
         "source_name",
         "schema_name",
         "surface_name",
+        "column_name",
         "name",
         "qualified_name",
         "data_type",
         "required",
         "description",
+        "normalized_value_key",
+        "display_value",
         "searchable_text",
+        "last_observed_at",
+        "observed_count",
         "name_text",
         "qualified_name_text",
         "description_text",
         "searchable_text_text",
+        "value_text",
     ]
     .into_iter()
     .all(|field| schema.get_field(field).is_ok())
@@ -980,6 +1620,23 @@ fn table_function_result_column_record(
     });
 }
 
+fn observed_doc_key(
+    source_name: &str,
+    surface_kind: ObservedValueSurfaceKind,
+    surface_name: &str,
+    column_name: &str,
+    normalized_value_key: &str,
+) -> String {
+    format!(
+        "observed:{}:{}:{}:{}:{}",
+        source_name,
+        surface_kind.as_str(),
+        surface_name,
+        column_name,
+        normalized_value_key
+    )
+}
+
 fn qualified_name(schema_name: &str, surface_name: &str) -> String {
     format!("{schema_name}.{surface_name}")
 }
@@ -1061,6 +1718,10 @@ fn doc_text(doc: &TantivyDocument, field: Field) -> String {
         .to_string()
 }
 
+fn now_timestamp() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
 fn assign_rank_scores<T>(hits: &mut [T], mut set_score: impl FnMut(&mut T, u32)) {
     let hit_count = u32::try_from(hits.len()).unwrap_or(u32::MAX);
     for (position, hit) in hits.iter_mut().enumerate() {
@@ -1091,7 +1752,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        CatalogSearchFieldRole, CatalogSearchResultType, SearchIndexStore, tantivy_query_text,
+        CatalogSearchFieldRole, CatalogSearchResultType, ObservedValueRecord,
+        ObservedValueSensitivityTier, ObservedValueSuggestedOperator, ObservedValueSurfaceKind,
+        SearchIndexStore, tantivy_query_text,
     };
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
@@ -1275,6 +1938,37 @@ mod tests {
     }
 
     #[test]
+    fn replace_catalog_rebuild_preserves_observed_values() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let path = temp.path().join("tantivy");
+        {
+            let store = SearchIndexStore::open(&path).expect("store");
+            store
+                .upsert_observed_values(&workspace, vec![observed_record("payments-api", 1)])
+                .expect("upsert observed");
+        }
+
+        let store = SearchIndexStore::replace_catalog_index(&path, &catalog_with_search_function())
+            .expect("replace catalog");
+
+        assert!(
+            !store
+                .search_catalog(&workspace, &["deployments".to_string()], 10)
+                .expect("search catalog")
+                .is_empty()
+        );
+        let observed_hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search observed");
+        assert_eq!(observed_hits.len(), 1);
+        assert_eq!(
+            observed_hits.first().expect("observed hit").display_value,
+            "payments-api"
+        );
+    }
+
+    #[test]
     fn tantivy_query_text_quotes_technical_terms() {
         assert_eq!(
             tantivy_query_text(&["github.search_commits".to_string(), "id".to_string()])
@@ -1291,6 +1985,91 @@ mod tests {
         assert_eq!(super::normalized_rank_score(49, 50), 1);
         assert!(super::normalized_rank_score(24, 50) > 490);
         assert!(super::normalized_rank_score(24, 50) < 520);
+    }
+
+    #[test]
+    fn observed_values_upsert_count_and_search() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![
+                    observed_record("payments-api", 2),
+                    observed_record("payments-api", 1),
+                ],
+            )
+            .expect("upsert observed");
+
+        let hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search observed");
+        assert_eq!(hits.len(), 1);
+        let hit = hits.first().expect("observed hit");
+        assert_eq!(hit.column_name, "service");
+
+        assert_eq!(
+            store
+                .observed_count_for_test("payments-api")
+                .expect("observed state")
+                .expect("stored observed value"),
+            3
+        );
+    }
+
+    #[test]
+    fn observed_values_purge_by_source_and_last_observed_at() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = crate::sources::SourceName::parse("notion").expect("source");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![
+                    observed_record("stale-value", 1),
+                    ObservedValueRecord {
+                        source_name: "notion".to_string(),
+                        display_value: "notion-value".to_string(),
+                        searchable_text: "notion page notion-value".to_string(),
+                        ..observed_record("notion-value", 1)
+                    },
+                ],
+            )
+            .expect("upsert observed");
+
+        store
+            .set_last_observed_at_for_test("stale-value", "2000-01-01T00:00:00.000Z")
+            .expect("age observed state");
+
+        store
+            .purge_observed_values_before(&workspace, "2001-01-01T00:00:00.000Z")
+            .expect("purge stale");
+        assert!(
+            store
+                .search_observed_values(&workspace, &["stale-value".to_string()], 10)
+                .expect("search stale")
+                .is_empty()
+        );
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["notion-value".to_string()], 10)
+                .expect("search fresh")
+                .is_empty()
+        );
+
+        store
+            .delete_observed_values_for_source(&workspace, &source)
+            .expect("delete source values");
+        assert!(
+            store
+                .search_observed_values(&workspace, &["notion-value".to_string()], 10)
+                .expect("search deleted")
+                .is_empty()
+        );
     }
 
     fn catalog_with_search_function() -> CatalogInfo {
@@ -1369,5 +2148,31 @@ mod tests {
             }],
             table_functions: Vec::new(),
         }
+    }
+
+    fn observed_record(value: &str, observed_count: u64) -> ObservedValueRecord {
+        ObservedValueRecord {
+            source_name: "github".to_string(),
+            surface_kind: ObservedValueSurfaceKind::Table,
+            surface_name: "deployments".to_string(),
+            column_name: "service".to_string(),
+            normalized_value_key: format!("key:{value}"),
+            display_value: value.to_string(),
+            searchable_text: format!("github deployments service {value}"),
+            sensitivity_tier: ObservedValueSensitivityTier::LowRisk,
+            suggested_operator: ObservedValueSuggestedOperator::Exact,
+            observed_count,
+        }
+    }
+
+    #[test]
+    fn observed_state_uses_redb_sidecar() {
+        let temp = tempdir().expect("tempdir");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+
+        assert_eq!(
+            store.observed_state_file(),
+            temp.path().join("observed_values.redb")
+        );
     }
 }

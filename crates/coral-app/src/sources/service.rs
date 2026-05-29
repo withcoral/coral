@@ -179,7 +179,9 @@ impl SourceServiceApi for SourceService {
                 sources.create_bundled_source(&workspace_name, &command)
             })
             .await?;
+            let source_name = installed.name.clone();
             search_indexes.mark_catalog_dirty(&response_workspace_name);
+            search_indexes.discard_source_observed_values(&response_workspace_name, &source_name);
             Ok(Response::new(CreateBundledSourceResponse {
                 source: Some(installed_source_to_proto(
                     &response_workspace_name,
@@ -222,7 +224,10 @@ impl SourceServiceApi for SourceService {
                             )
                             .await
                             .map_err(app_status)?;
+                        let source_name = installed.name.clone();
                         search_indexes.mark_catalog_dirty(&workspace_name);
+                        search_indexes
+                            .discard_source_observed_values(&workspace_name, &source_name);
                         Ok(installed)
                     })
                 });
@@ -254,7 +259,10 @@ impl SourceServiceApi for SourceService {
                     sources.import_source(&workspace_name, &command)
                 })
                 .await?;
+                let source_name = installed.name.clone();
                 search_indexes.mark_catalog_dirty(&response_workspace_name);
+                search_indexes
+                    .discard_source_observed_values(&response_workspace_name, &source_name);
                 let response = ImportSourceResponse {
                     event: Some(import_source_response::Event::Source(
                         installed_source_to_proto(&response_workspace_name, installed),
@@ -281,7 +289,10 @@ impl SourceServiceApi for SourceService {
                             .import_source_with_credentials(&workspace_name, command, event_sender)
                             .await
                             .map_err(app_status)?;
+                        let source_name = installed.name.clone();
                         search_indexes.mark_catalog_dirty(&workspace_name);
+                        search_indexes
+                            .discard_source_observed_values(&workspace_name, &source_name);
                         Ok(installed)
                     })
                 });
@@ -302,11 +313,14 @@ impl SourceServiceApi for SourceService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let dirty_workspace_name = workspace_name.clone();
+            let dirty_source_name = source_name.clone();
             run_blocking_source_operation(move || {
                 sources.delete_source(&workspace_name, &source_name)
             })
             .await?;
             search_indexes.mark_catalog_dirty(&dirty_workspace_name);
+            search_indexes
+                .discard_source_observed_values(&dirty_workspace_name, &dirty_source_name);
             Ok(Response::new(DeleteSourceResponse {}))
         })
         .await
