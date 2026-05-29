@@ -1,0 +1,697 @@
+name: chargebee
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query customers, subscriptions, invoices, plans, and transactions from
+  Chargebee via the Chargebee REST API v2. Authenticate with an API key
+  over HTTP Basic Auth.
+base_url: "{{input.CHARGEBEE_SITE}}/api/v2"
+
+inputs:
+  CHARGEBEE_SITE:
+    kind: variable
+    hint: |
+      Your Chargebee site URL, e.g. https://yoursite.chargebee.com.
+      Found in your Chargebee dashboard under Settings → API Keys & Webhooks.
+  CHARGEBEE_API_KEY:
+    kind: secret
+    hint: |
+      Chargebee API key. Create one at Settings → API Keys & Webhooks in your
+      Chargebee dashboard. Use a read-only key where possible.
+      Sent as HTTP Basic Auth username with a blank password.
+
+auth:
+  type: BasicAuth
+  username:
+    from: input
+    input: CHARGEBEE_API_KEY
+  password:
+    from: literal
+    value: ""
+
+test_queries:
+  - SELECT id, email, created_at FROM chargebee.customers LIMIT 5
+  - SELECT id, status, customer_id FROM chargebee.subscriptions LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # customers — all customers in the Chargebee account
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: customers
+    description: >-
+      Customers in the Chargebee account. Each row is one customer.
+      Use id as the customer_id foreign key in subscriptions, invoices,
+      and transactions.
+    guide: |
+      No required filters. Use `status` to narrow to active or inactive
+      customers. Join with `chargebee.subscriptions` on `id = customer_id`
+      to see each customer's billing state. Join with `chargebee.invoices`
+      on `id = customer_id` to find outstanding balances.
+    request:
+      method: GET
+      path: /customers
+    response:
+      rows_path:
+        - list
+      row_path:
+        - customer
+    pagination:
+      mode: cursor
+      cursor_path:
+        - next_offset
+      cursor_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the customer.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Customer first name.
+        expr:
+          kind: path
+          path:
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Customer last name.
+        expr:
+          kind: path
+          path:
+            - last_name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Customer email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: company
+        type: Utf8
+        nullable: true
+        description: Company name associated with the customer.
+        expr:
+          kind: path
+          path:
+            - company
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Customer status: active, inactive."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: billing_address__city
+        type: Utf8
+        nullable: true
+        description: City from the customer billing address.
+        expr:
+          kind: path
+          path:
+            - billing_address
+            - city
+      - name: billing_address__country
+        type: Utf8
+        nullable: true
+        description: Country from the customer billing address (ISO 3166 alpha-2).
+        expr:
+          kind: path
+          path:
+            - billing_address
+            - country
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the customer was created.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the customer was last updated.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # subscriptions — all subscriptions in the Chargebee account
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: subscriptions
+    description: >-
+      Subscriptions in the Chargebee account. Each row is one subscription.
+      Join with customers on customer_id and with plans on plan_id to build
+      full billing views.
+    guide: |
+      No required filters. Filter locally on `status` to narrow to active,
+      cancelled, or paused subscriptions. Join with `chargebee.customers` on
+      `customer_id = id` and with `chargebee.plans` on `plan_id = id` for
+      full MRR and churn dashboards. Join with `chargebee.invoices` on
+      `id = subscription_id` to correlate billing events.
+    request:
+      method: GET
+      path: /subscriptions
+    response:
+      rows_path:
+        - list
+      row_path:
+        - subscription
+    pagination:
+      mode: cursor
+      cursor_path:
+        - next_offset
+      cursor_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the subscription.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: customer_id
+        type: Utf8
+        nullable: false
+        description: ID of the customer this subscription belongs to.
+        expr:
+          kind: path
+          path:
+            - customer_id
+      - name: plan_id
+        type: Utf8
+        nullable: true
+        description: ID of the plan associated with this subscription.
+        expr:
+          kind: path
+          path:
+            - plan_id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Subscription status: active, in_trial, non_renewing, paused, cancelled."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: billing_period
+        type: Int64
+        nullable: true
+        description: Length of each billing cycle expressed in billing_period_unit.
+        expr:
+          kind: path
+          path:
+            - billing_period
+      - name: billing_period_unit
+        type: Utf8
+        nullable: true
+        description: "Unit for billing_period: week, month, year."
+        expr:
+          kind: path
+          path:
+            - billing_period_unit
+      - name: current_term_start
+        type: Timestamp
+        nullable: true
+        description: Start timestamp of the current billing term.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - current_term_start
+      - name: current_term_end
+        type: Timestamp
+        nullable: true
+        description: End timestamp of the current billing term.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - current_term_end
+      - name: next_billing_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the next billing will occur.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - next_billing_at
+      - name: mrr
+        type: Int64
+        nullable: true
+        description: Monthly Recurring Revenue for this subscription in the smallest currency unit.
+        expr:
+          kind: path
+          path:
+            - mrr
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the subscription was created.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the subscription was last updated.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: cancelled_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the subscription was cancelled, if applicable.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - cancelled_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # invoices — all invoices in the Chargebee account
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: invoices
+    description: >-
+      Invoices in the Chargebee account. Each row is one invoice. Use
+      status to filter by payment state and join with customers or
+      subscriptions for full billing context.
+    guide: |
+      No required filters. Filter locally on `status` to find unpaid or
+      overdue invoices. Join with `chargebee.customers` on `customer_id = id`
+      to get contact details. Join with `chargebee.subscriptions` on
+      `subscription_id = id` for plan and MRR context. Note that
+      `subscription_id` is null when consolidated invoicing is enabled and
+      the invoice spans multiple subscriptions.
+    request:
+      method: GET
+      path: /invoices
+    response:
+      rows_path:
+        - list
+      row_path:
+        - invoice
+    pagination:
+      mode: cursor
+      cursor_path:
+        - next_offset
+      cursor_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the invoice.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: customer_id
+        type: Utf8
+        nullable: false
+        description: ID of the customer this invoice belongs to.
+        expr:
+          kind: path
+          path:
+            - customer_id
+      - name: subscription_id
+        type: Utf8
+        nullable: true
+        description: >-
+          ID of the subscription this invoice belongs to. Null when consolidated
+          invoicing is enabled and the invoice spans multiple subscriptions.
+        expr:
+          kind: path
+          path:
+            - subscription_id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Invoice status: paid, posted, payment_due, not_paid, voided, pending."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: amount_due
+        type: Int64
+        nullable: true
+        description: Amount due in the smallest currency unit (e.g. cents for USD).
+        expr:
+          kind: path
+          path:
+            - amount_due
+      - name: amount_paid
+        type: Int64
+        nullable: true
+        description: Amount paid in the smallest currency unit.
+        expr:
+          kind: path
+          path:
+            - amount_paid
+      - name: currency_code
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code for the invoice.
+        expr:
+          kind: path
+          path:
+            - currency_code
+      - name: date
+        type: Timestamp
+        nullable: true
+        description: Invoice document date.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - date
+      - name: due_date
+        type: Timestamp
+        nullable: true
+        description: Payment due date.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - due_date
+      - name: paid_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the invoice was paid.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - paid_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the invoice was created.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the invoice was last updated.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # plans — plans in the Chargebee account (Product Catalog v1)
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: plans
+    description: >-
+      Plans defined in the Chargebee account (Product Catalog v1). Each
+      row is one plan. Join with subscriptions on plan_id to see which
+      plans have active subscribers and aggregate MRR by plan.
+    guide: |
+      No required filters. Filter locally on `status` to see only active
+      plans. Join with `chargebee.subscriptions` on `id = plan_id` to
+      aggregate subscriber counts and MRR per plan. Note: this table uses
+      the Product Catalog v1 `/plans` endpoint. If your site uses Product
+      Catalog v2, use item_prices instead (not yet in this source).
+    request:
+      method: GET
+      path: /plans
+    response:
+      rows_path:
+        - list
+      row_path:
+        - plan
+    pagination:
+      mode: cursor
+      cursor_path:
+        - next_offset
+      cursor_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the plan.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the plan.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: price
+        type: Int64
+        nullable: true
+        description: Price of the plan in the smallest currency unit.
+        expr:
+          kind: path
+          path:
+            - price
+      - name: currency_code
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code for the plan price.
+        expr:
+          kind: path
+          path:
+            - currency_code
+      - name: period
+        type: Int64
+        nullable: true
+        description: Billing period length expressed in period_unit.
+        expr:
+          kind: path
+          path:
+            - period
+      - name: period_unit
+        type: Utf8
+        nullable: true
+        description: "Unit for period: week, month, year."
+        expr:
+          kind: path
+          path:
+            - period_unit
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Plan status: active, archived."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the plan was created.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the plan was last updated.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # transactions — payment transactions in the Chargebee account
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: transactions
+    description: >-
+      Payment transactions in the Chargebee account. Each row is one
+      transaction. Use type and status to filter by payment, refund, or
+      failure. Join with customers or invoices for full payment context.
+    guide: |
+      No required filters. Filter locally on `status = 'failure'` to surface
+      failed payments, or on `type = 'refund'` to audit refunds. Join with
+      `chargebee.customers` on `customer_id = id` for contact details. Join
+      with `chargebee.invoices` on `invoice_id = id` to link payments to
+      specific billing documents.
+    request:
+      method: GET
+      path: /transactions
+    response:
+      rows_path:
+        - list
+      row_path:
+        - transaction
+    pagination:
+      mode: cursor
+      cursor_path:
+        - next_offset
+      cursor_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the transaction.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: ID of the customer this transaction belongs to.
+        expr:
+          kind: path
+          path:
+            - customer_id
+      - name: subscription_id
+        type: Utf8
+        nullable: true
+        description: ID of the subscription this transaction belongs to.
+        expr:
+          kind: path
+          path:
+            - subscription_id
+      - name: invoice_id
+        type: Utf8
+        nullable: true
+        description: ID of the invoice this transaction is applied to.
+        expr:
+          kind: path
+          path:
+            - linked_invoices
+            - invoice_id
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Transaction type: authorization, payment, refund, payment_reversal."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Transaction status: in_progress, success, voided, failure, timeout, needs_attention."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Transaction amount in the smallest currency unit.
+        expr:
+          kind: path
+          path:
+            - amount
+      - name: currency_code
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code for the transaction.
+        expr:
+          kind: path
+          path:
+            - currency_code
+      - name: payment_method
+        type: Utf8
+        nullable: true
+        description: "Payment method used: card, cash, bank_transfer, etc."
+        expr:
+          kind: path
+          path:
+            - payment_method
+      - name: date
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the transaction occurred.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - date
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the transaction record was created.
+        expr:
+          kind: format_timestamp
+          input: unix
+          expr:
+            kind: path
+            path:
+              - created_at
