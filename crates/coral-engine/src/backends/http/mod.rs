@@ -15,7 +15,7 @@ use crate::backends::{
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names,
 };
-use crate::{QuerySource, RequestAuthenticator, SourceInputResolver};
+use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
@@ -42,9 +42,7 @@ pub(crate) use provider::HttpSourceTableProvider;
 #[derive(Debug, Clone)]
 struct HttpCompiledSource {
     manifest: HttpSourceManifest,
-    source: QuerySource,
-    source_secrets: std::collections::BTreeMap<String, String>,
-    source_variables: std::collections::BTreeMap<String, String>,
+    source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
@@ -52,18 +50,14 @@ struct HttpCompiledSource {
 
 pub(crate) fn compile_source(
     manifest: HttpSourceManifest,
-    source: QuerySource,
-    source_secrets: std::collections::BTreeMap<String, String>,
-    source_variables: std::collections::BTreeMap<String, String>,
+    source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
-        source,
-        source_secrets,
-        source_variables,
+        source_input_resolution,
         request_authenticators,
         body_capture_max_bytes,
         source_input_resolver,
@@ -76,9 +70,7 @@ pub(crate) fn compile_manifest(
 ) -> Box<dyn CompiledBackendSource> {
     compile_source(
         manifest.clone(),
-        request.source.clone(),
-        request.source_secrets.clone(),
-        request.source_variables.clone(),
+        SourceInputResolutionContext::from_query_source(request.source),
         request.request_authenticators.clone(),
         request.runtime_context.http_body_capture_max_bytes,
         request.source_input_resolver.clone(),
@@ -98,10 +90,10 @@ impl CompiledBackendSource for HttpCompiledSource {
     async fn register(&self, _ctx: &SessionContext) -> Result<BackendRegistration> {
         let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
             &self.manifest,
-            &self.source_secrets,
-            &self.source_variables,
+            self.source_input_resolution.secrets(),
+            self.source_input_resolution.variables(),
             &self.request_authenticators,
-            self.source.clone(),
+            self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
             self.body_capture_max_bytes,
         )?;
@@ -137,10 +129,15 @@ impl CompiledBackendSource for HttpCompiledSource {
             ));
         }
 
-        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let secret_keys = self
+            .source_input_resolution
+            .secrets()
+            .keys()
+            .cloned()
+            .collect();
         let inputs = build_registered_inputs(
-            &self.manifest.declared_inputs,
-            &self.source_variables,
+            self.source_input_resolution.declared_inputs(),
+            self.source_input_resolution.variables(),
             &secret_keys,
         );
 
