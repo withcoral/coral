@@ -1,8 +1,7 @@
 # CockroachDB Coral source
 
 Query CockroachDB Cluster API metadata with Coral. The source is read-only and
-targets DB Console inventory, schema, session, event, user, and health use
-cases.
+targets DB Console inventory, schema, session, event, and user use cases.
 
 ## Setup
 
@@ -13,7 +12,8 @@ coral source add --file sources/community/cockroachdb/manifest.yaml
 ```
 
 Create a session token with `cockroach auth-session login` or by calling
-`POST /api/v2/login/` and copying the returned `session` value.
+`POST /api/v2/login/` and copying the returned `session` value. Authenticated
+Cluster API access requires a user with the CockroachDB `admin` role.
 
 Run validation:
 
@@ -25,7 +25,6 @@ coral source test cockroachdb
 
 | Table | Description |
 | --- | --- |
-| `cockroachdb.health` | Cluster health response. |
 | `cockroachdb.nodes` | Cluster nodes and build metadata. |
 | `cockroachdb.databases` | Cluster databases. |
 | `cockroachdb.database_details` | Descriptor metadata for a required database. |
@@ -39,9 +38,22 @@ coral source test cockroachdb
 ## Example queries
 
 ```sql
-SELECT node_id, address, sql_address, build_info__tag, started_at
+SELECT node_id, address, sql_address, build_tag, started_at
 FROM cockroachdb.nodes
 ORDER BY node_id;
+```
+
+```sql
+SELECT database_name
+FROM cockroachdb.databases
+ORDER BY database_name;
+```
+
+```sql
+SELECT table_name
+FROM cockroachdb.database_tables
+WHERE database = 'defaultdb'
+ORDER BY table_name;
 ```
 
 ```sql
@@ -69,7 +81,31 @@ LIMIT 50;
 - This source does not execute arbitrary SQL.
 - The Cluster API uses `X-Cockroach-API-Session` session-token authentication
   for all endpoints except `/health` and `/login`.
+- `cockroachdb.databases` models the documented `databases: string[]`
+  response as one `database_name` column.
+- `cockroachdb.database_tables` models the documented `table_names: string[]`
+  response. Values are schema-qualified, for example `public.orders`.
+- `cockroachdb.nodes.started_at` is exposed as the raw Unix nanosecond integer
+  returned by the API.
+- The `/health/` endpoint is not exposed as a table because the published API
+  documents status codes, not a stable JSON response body.
 - Keep the base URL and session token scoped to a DB Console API endpoint.
+
+## Validation evidence
+
+Static validation run locally:
+
+```bash
+coral source lint sources/community/cockroachdb/manifest.yaml
+make lint-sources
+yamllint sources/community/cockroachdb/manifest.yaml
+git diff --check origin/main..HEAD
+gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
+```
+
+Credentialed `coral source add --file`, `coral source test cockroachdb`, and
+representative live queries require an admin-role CockroachDB session token and
+were not run in this workspace.
 
 ## API references
 

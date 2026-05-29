@@ -3,8 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query CockroachDB cluster health, nodes, databases, events, and statement
-  metadata from the DB Console API.
+  Query CockroachDB nodes, databases, events, and statement metadata from the
+  DB Console API.
 base_url: "{{input.COCKROACHDB_BASE_URL}}"
 
 inputs:
@@ -15,8 +15,8 @@ inputs:
   COCKROACHDB_SESSION_TOKEN:
     kind: secret
     hint: |
-      CockroachDB Cluster API session token. Create one with
-      `cockroach auth-session login` or POST `/api/v2/login/`.
+      CockroachDB Cluster API session token for a user with the admin role.
+      Create one with `cockroach auth-session login` or POST `/api/v2/login/`.
 
 auth:
   type: HeaderAuth
@@ -36,37 +36,6 @@ test_queries:
   - SELECT * FROM cockroachdb.users LIMIT 1
 
 tables:
-  - name: health
-    description: Cluster health endpoint response.
-    filters:
-      - name: ready
-    request:
-      method: GET
-      path: /api/v2/health/
-      query:
-        - name: ready
-          from: filter
-          key: ready
-    response:
-      row_strategy: direct
-      allow_404_empty: true
-    pagination:
-      mode: none
-    columns:
-      - name: status
-        type: Utf8
-        nullable: true
-        description: Health status.
-      - name: message
-        type: Utf8
-        nullable: true
-        description: Health message.
-      - name: raw_json
-        type: Json
-        nullable: true
-        description: Raw health response, if a body is returned.
-        expr: {kind: path, path: []}
-
   - name: nodes
     description: CockroachDB cluster nodes.
     fetch_limit_default: 100
@@ -77,10 +46,8 @@ tables:
       rows_path: [nodes]
       allow_404_empty: true
     pagination:
-      mode: cursor_query
-      cursor_param: offset
-      response_cursor_path:
-        - next
+      mode: offset
+      offset_param: offset
       page_size:
         default: 100
         max: 100
@@ -94,28 +61,22 @@ tables:
         type: Utf8
         nullable: true
         description: Node address.
+        expr: {kind: path, path: [address, address_field]}
       - name: sql_address
         type: Utf8
         nullable: true
         description: SQL listener address.
-      - name: build_info__tag
+        expr: {kind: path, path: [sql_address, address_field]}
+      - name: build_tag
         type: Utf8
         nullable: true
         description: CockroachDB build tag.
-        expr: {kind: path, path: [build_info, tag]}
-      - name: build_info__go_version
-        type: Utf8
-        nullable: true
-        description: Go version used to build the node binary.
-        expr: {kind: path, path: [build_info, go_version]}
+        expr: {kind: path, path: [build_tag]}
       - name: started_at
-        type: Timestamp
+        type: Int64
         nullable: true
-        description: Node start timestamp.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr: {kind: path, path: [started_at]}
+        description: Node start time as Unix nanoseconds from the API.
+        expr: {kind: path, path: [started_at]}
       - name: locality_json
         type: Json
         nullable: true
@@ -141,24 +102,17 @@ tables:
       rows_path: [databases]
       allow_404_empty: true
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
     columns:
       - name: database_name
         type: Utf8
         nullable: true
         description: Database name.
-      - name: name
-        type: Utf8
-        nullable: true
-        description: Database name when returned under the generic name field.
-      - name: table_count
-        type: Int64
-        nullable: true
-        description: Number of tables.
-      - name: raw_json
-        type: Json
-        nullable: true
-        description: Raw database object.
         expr: {kind: path, path: []}
 
   - name: database_details
@@ -257,7 +211,7 @@ tables:
       method: GET
       path: /api/v2/databases/{{filter.database}}/tables/
     response:
-      rows_path: [tables]
+      rows_path: [table_names]
       allow_404_empty: true
     pagination:
       mode: none
@@ -273,19 +227,12 @@ tables:
       - name: name
         type: Utf8
         nullable: true
-        description: Table name.
+        description: Schema-qualified table name returned by CockroachDB.
+        expr: {kind: path, path: []}
       - name: table_name
         type: Utf8
         nullable: true
-        description: Table name when returned as table_name.
-      - name: schema_name
-        type: Utf8
-        nullable: true
-        description: Table schema name.
-      - name: raw_json
-        type: Json
-        nullable: true
-        description: Raw table object.
+        description: Schema-qualified table name returned by CockroachDB.
         expr: {kind: path, path: []}
 
   - name: table_details
@@ -366,6 +313,7 @@ tables:
     fetch_limit_default: 100
     filters:
       - name: type
+      - name: target_id
     request:
       method: GET
       path: /api/v2/events/
@@ -373,11 +321,19 @@ tables:
         - name: type
           from: filter
           key: type
+        - name: targetID
+          from: filter
+          key: target_id
     response:
       rows_path: [events]
       allow_404_empty: true
     pagination:
-      mode: none
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
     columns:
       - name: timestamp
         type: Timestamp
@@ -392,17 +348,19 @@ tables:
         nullable: true
         description: Event type.
       - name: target_id
-        type: Utf8
+        type: Int64
         nullable: true
         description: Event target ID.
+        expr: {kind: path, path: [targetID]}
       - name: reporting_id
-        type: Utf8
+        type: Int64
         nullable: true
         description: Reporting node ID.
+        expr: {kind: path, path: [reportingID]}
       - name: info_json
-        type: Json
+        type: Utf8
         nullable: true
-        description: Raw event info.
+        description: Raw event info string.
         expr: {kind: path, path: [info]}
       - name: raw_json
         type: Json
