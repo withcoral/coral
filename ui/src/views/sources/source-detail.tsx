@@ -108,7 +108,7 @@ function SourceDetailDialogContent({
     }
     for (const s of source.secrets) {
       const draft = drafts[`sec:${s.key}`]
-      if (draft !== undefined && draft.length > 0) return true
+      if (draft !== undefined && draft.trim().length > 0) return true
     }
     return false
   }, [drafts, source])
@@ -124,8 +124,10 @@ function SourceDetailDialogContent({
       }))
       for (const s of source.secrets) {
         const draft = drafts[`sec:${s.key}`]
-        if (draft !== undefined && draft.length > 0) {
-          bindings.push({ key: s.key, value: draft, secret: true })
+        if (draft === undefined) continue
+        const trimmed = draft.trim()
+        if (trimmed.length > 0) {
+          bindings.push({ key: s.key, value: trimmed, secret: true })
         }
       }
       await createBundledSource(name, bindings)
