@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0
 **Backend:** HTTP
-**Tables:** 6
+**Tables:** 5
 **Base URL:** `https://services.nvd.nist.gov`
 
 Query CVE records, CVSS severity scores, and advisory references from the [NIST National Vulnerability Database](https://nvd.nist.gov/) — the U.S. government repository of standards-based vulnerability management data. No authentication required.
@@ -63,7 +63,24 @@ CVSS v3.1 scores. Each row is one CVE; metric columns are **null** when NVD has 
 
 ### `cvss_v3_0`
 
-CVSS v3.0 scores. Same columns as `cvss_v3_1`. Use this for CVEs that were scored before CVSS v3.1 was adopted.
+CVSS v3.0 scores. Same columns as `cvss_v3_1`. Use this for CVEs that were scored before CVSS v3.1 was adopted (typically CVEs published before 2019).
+
+| Column                   | Type      | Description                                  |
+| ------------------------ | --------- | -------------------------------------------- |
+| `cve_id`                 | `Utf8`    | CVE identifier                               |
+| `base_score`             | `Float64` | Base score (0.0 – 10.0), null if unscored    |
+| `base_severity`          | `Utf8`    | Severity label (LOW, MEDIUM, HIGH, CRITICAL) |
+| `exploitability_score`   | `Float64` | Exploitability sub-score                     |
+| `impact_score`           | `Float64` | Impact sub-score                             |
+| `vector_string`          | `Utf8`    | Full CVSS v3.0 vector string                 |
+| `attack_vector`          | `Utf8`    | NETWORK, ADJACENT_NETWORK, LOCAL, PHYSICAL   |
+| `attack_complexity`      | `Utf8`    | LOW or HIGH                                  |
+| `privileges_required`    | `Utf8`    | NONE, LOW, or HIGH                           |
+| `user_interaction`       | `Utf8`    | NONE or REQUIRED                             |
+| `scope`                  | `Utf8`    | UNCHANGED or CHANGED                         |
+| `confidentiality_impact` | `Utf8`    | NONE, LOW, or HIGH                           |
+| `integrity_impact`       | `Utf8`    | NONE, LOW, or HIGH                           |
+| `availability_impact`    | `Utf8`    | NONE, LOW, or HIGH                           |
 
 ### `cvss_v2`
 
