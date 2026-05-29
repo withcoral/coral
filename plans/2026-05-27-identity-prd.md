@@ -4,22 +4,40 @@
 
 Coral needs an identity model that is orthogonal to source specs. Sources define
 what can be queried. Identities define who or what Coral can act as. They meet
-only inside a workspace, where a workspace source assigns a workspace-owned
-identity to each source surface that needs one.
+inside a workspace, where each source surface that needs authority is bound to an
+identity.
+
+An identity has an owner:
+
+- **Workspace-owned** identities are shared by the whole workspace — every member
+  queries as the same identity. They fit org-tied authority: bots, service
+  accounts, trusted roles, OIDC.
+- **Member-owned** identities are user-scoped and private to one member. A
+  workspace declares a per-member slot, and each member binds their own identity
+  into it, so each member queries as themselves. They fit user-tied authority:
+  OAuth for Gmail or personal GitHub.
+
+A workspace is the shared curation and membership context: a tailored set of
+sources, projections, shared identity assignments, and open per-member slots.
 
 The model is:
 
 ```text
-Source spec       -> materialized source
-Identity spec     -> workspace identity
-Workspace source  -> a workspace's use of a materialized source
-Assignment        -> workspace source surface uses workspace identity
-Availability      -> who may query the workspace source
+Source spec        -> materialized source
+Identity spec      -> identity (workspace-owned or member-owned)
+Workspace source   -> a workspace's use of a materialized source
+Shared assignment  -> workspace source surface uses one workspace identity
+Per-member slot    -> workspace source surface needs each member's own identity
+Binding            -> a member fills a slot with one of their own identities
+Availability       -> who may query the workspace source
 ```
 
-There is no global `Connection` object, no source-owned identity, no query-time
-identity resolver, and no first-wave per-identity ACL. Those concepts either
-duplicate workspace source assignment or create a second permission model.
+There is no global `Connection` object, no source-owned identity, no global-pool
+identity selection at query time, and no first-wave per-identity ACL. Query-time
+identity resolution still happens, but only as a deterministic lookup of the
+surface binding for the current member — never as a policy that chooses among
+candidate identities. Those concepts either duplicate the surface binding or
+create a second permission model.
 
 Users should experience this as a simple authentication UX: source, connected
 as, available to, status, permissions needed, affected sources, and fix. Users
@@ -28,10 +46,13 @@ ordinary setup and recovery.
 
 ## Goals
 
-- Define identities as workspace-owned materialized objects.
+- Define identities as materialized objects owned by a workspace (shared) or a
+  member (user-scoped).
 - Define identity specs as the identity-side equivalent of source specs.
 - Add `identity_requirements` to DSL v4 surfaces.
-- Bind identities through workspace source surface assignments.
+- Bind identities through shared workspace assignments or per-member slots.
+- Let one workspace serve both org-tied (shared) and user-tied (per-member)
+  authority without changing access control.
 - Support private user workspaces, shared workspaces, and local CLI defaults.
 - Allow the same source surface to use different identities in different
   workspaces.
@@ -41,18 +62,32 @@ ordinary setup and recovery.
   audience.
 - Keep authority changes explicit, especially sharing, reuse, broader
   capabilities, principal changes, and audience changes.
+- Support multi-user workspace sharing through workspace-owned identities,
+  per-workspace-source availability, and the three-permission model. The user
+  authentication layer that identifies which member is querying is a separate
+  dependency, not defined here.
 
 ## Non-Goals
 
 - Redesign DSL v4 source IR, projections, OpenAPI import, or source
   materialization internals.
 - Make source specs own identity materialization.
-- Add query-time identity resolution policy.
-- Add cross-workspace identity reuse.
+- Select among multiple candidate identities at query time. Resolution is a
+  deterministic assignment lookup, not a policy.
+- Add cross-workspace reuse of workspace-owned (shared) identities. Member-owned
+  identities are the deliberate exception: they are user-scoped and reusable
+  across that member's own workspace slots.
 - Add a first-wave per-identity ACL model.
 - Normalize provider permissions into a universal Coral taxonomy.
 - Define every provider-specific identity spec in this PRD.
-- Ship full multi-user sharing in the first local implementation.
+- Define the user authentication / principal layer that identifies which member
+  is querying. This PRD assumes that layer and composes with it, but a later
+  effort builds it.
+- Apply to or migrate DSL v3 sources. This model is DSL v4-only; v3 sources keep
+  their existing source-scoped credentials.
+- Specify per-member query attribution, audit logging, or at-rest credential
+  encryption for shared identities. Storage will evolve to cover these
+  separately.
 
 ## Core Model
 
@@ -91,20 +126,28 @@ and supported non-interactive setup.
 
 ### Identity
 
-An identity is a workspace-owned, materialized authority created by running an
-identity spec inside a workspace.
+An identity is a materialized authority created by running an identity spec. It
+has an owner:
+
+- A **workspace-owned identity** is created in and owned by a workspace. It is
+  shared: any member querying through a surface assigned to it acts as that one
+  identity. It is strictly workspace-local and never reused by another workspace.
+- A **member-owned identity** is created and owned by a member and lives in that
+  member's user-scoped identity store. It is private to the member and reusable
+  across any of that member's workspace slots that it satisfies. No other member
+  can see, pick, or use it.
 
 Examples:
 
-- GitHub OAuth identity for `saul@work`
-- Slack bot identity for an Engineering Slack workspace
+- GitHub OAuth identity for `saul@work` (member-owned)
+- Slack bot identity for an Engineering Slack workspace (workspace-owned)
 - AWS STS identity for `arn:aws:sts::123456789012:assumed-role/ReadOnly/saul`
-- Google OAuth identity for a Google Workspace user
+- Google OAuth identity for a Google Workspace user (member-owned)
 
 An identity records non-secret metadata:
 
 - identity spec
-- owning workspace
+- owner: a workspace, or a member
 - issuer or authority service
 - connected principal
 - audience
@@ -116,6 +159,11 @@ An identity records non-secret metadata:
 Credential material is an implementation detail. Users should not manage it
 directly during normal use.
 
+In single-user local mode the member is the local user, so member-owned
+identities are simply that user's connected accounts, reusable across all their
+local workspaces. Multi-user mode adds more members on the same model; the
+member-identifying authentication layer is a separate dependency (see Non-Goals).
+
 ### Identity Requirements
 
 Identity requirements are declared by source surfaces. They describe what shape
@@ -126,51 +174,92 @@ of identity can be assigned to that surface:
 - **Capabilities:** provider-native permissions required by the surface, such
   as OAuth scopes, app permissions, IAM actions, or product permissions.
 - **Injection method:** how Coral adds the identity to provider requests, such
-  as bearer token, API key header, basic auth, or AWS SigV4.
+  as bearer token, API key header, basic auth, or AWS SigV4. Injection method is
+  an identity property, not a source property: one provider is often split across
+  several sources, so the identity — not the source — determines how its
+  credential is injected.
 - **Audience constraints:** where the identity must be valid, such as GitHub
   host, Slack workspace, AWS account, AWS partition, region set, Datadog site,
   Google Workspace domain, or provider base URL.
 
 ### Workspace
 
-A workspace is the execution and sharing context. It owns identities and
-workspace sources. Sources remain independent until a workspace creates a
-workspace source from them.
+A workspace is the shared curation and membership context. It is a tailored set
+of sources and projections for a use case, plus the members who can use it. It
+owns its workspace sources, its workspace-owned (shared) identities, the shared
+assignments and per-member slots on their surfaces, and availability.
+
+A workspace does not own member identities. Those live in each member's
+user-scoped store; the workspace only holds the slot declaration and a per-member
+binding reference. Deleting a workspace never deletes a member's identities, and a
+member leaving only drops that member's bindings.
+
+This expands the current Coral notion of a workspace — today an isolated local
+source collection — into a multi-user sharing context with members. The layer
+that authenticates members and tells Coral which member is querying is a separate
+dependency this PRD assumes but does not define.
 
 ### Workspace Source
 
 A workspace source is a workspace's use of a materialized source. It owns:
 
 - availability
-- surface identity assignments
-- readiness status for that workspace
+- per-surface binding: a shared assignment or a per-member slot
+- readiness status, which for slots is evaluated per member
 
-### Identity Assignment
+### Surface Binding: Shared Assignment or Per-Member Slot
 
-An identity assignment is:
+Each surface of a workspace source is bound one of two ways. The binding mode is
+a property of the surface in that workspace, set by whoever has Manage workspace
+source, and is often inferred from the issuer or archetype (human-tied issuers
+default to a slot; app/bot/service-account/trusted-role/OIDC default to shared).
+
+A **shared assignment** binds the surface to one workspace-owned identity:
 
 ```text
 workspace source + surface -> workspace identity
 ```
 
-An assignment is valid only when:
+Every member queries as that identity.
 
-- the identity belongs to the same workspace as the workspace source
+A **per-member slot** declares that the surface uses each member's own identity:
+
+```text
+workspace source + surface -> per-member slot (requirements only)
+```
+
+The slot carries the requirements but no concrete identity. Each member fills it
+with a **binding**:
+
+```text
+(workspace source + surface, member) -> that member's member-owned identity
+```
+
+A shared assignment is valid only when:
+
+- the identity is workspace-owned by the same workspace as the workspace source
 - the identity issuer matches an accepted issuer
 - the identity capabilities satisfy the surface requirements
 - the identity supports the required injection method
 - the identity audience satisfies the surface audience constraints
 
-Assignments, not identities, determine where an identity is used.
+A per-member binding is valid under the same issuer, capability, injection, and
+audience rules, except the identity must be member-owned by the binding member.
+
+Bindings and assignments, not identities, determine where an identity is used. A
+slot with no binding for a member is not an error; it is that member's "needs
+action" until they bind.
 
 ### Availability
 
 Availability describes who may query a workspace source. It belongs to the
 workspace source, not to the source spec or identity.
 
-Availability does not make identities directly reusable. A member uses an
-identity only by querying a workspace source whose surface is assigned to that
-identity.
+Authorization and identity are separate questions. Availability decides who may
+query; the surface binding decides whose credential runs the query. A shared
+assignment runs every member's query as the workspace identity; a per-member slot
+runs each member's query as their own bound identity. Binding mode adds nobody to
+the availability set and creates no per-identity ACL.
 
 ## Capability Matching
 
@@ -184,6 +273,11 @@ Matching rules:
 - An identity satisfies a requirement only when Coral can prove the identity has
   that capability or the provider's auth model makes it inherent.
 - Unknown, unvalidated, or ambiguous capabilities do not satisfy requirements.
+- Capabilities for manually supplied credentials come from one of two paths: the
+  user declares them explicitly at setup, or the identity spec extracts and
+  validates them from the credential when its format allows it, such as parsing
+  scopes or claims from a JWT. User-declared capabilities carry asserted-by-user
+  provenance, not provider-proven provenance.
 - A stronger capability satisfies a weaker requirement only when the identity
   spec explicitly models that provider-specific implication.
 - Requesting additional capabilities is an authority-broadening action and
@@ -201,6 +295,13 @@ capabilities:
 Compatibility uses `id` and provider semantics. UX uses `label`.
 
 ## DSL v4 Compatibility
+
+This PRD is authoritative for identity and credentials. DSL v4 did not model
+identity; its surface-level `auth:` block and source-scoped credential `inputs`
+are carryover from v3. For v4 sources, those are superseded by identity binding:
+a surface declares `identity_requirements`, and the bound identity — workspace-
+owned or member-owned — owns credential material and injection. DSL v3 sources
+are unaffected and keep their existing source-scoped credentials.
 
 DSL v4 keeps source specs focused on source materialization. Identity adds one
 surface-level contract: `identity_requirements`.
@@ -235,35 +336,41 @@ Contract:
 - `accepts` has OR semantics.
 - Capabilities inside one accepted shape have AND semantics.
 - Matching dimensions are issuer, audience, capabilities, and injection method.
-- A workspace source assignment chooses a compatible identity owned by the same
-  workspace.
+- A shared assignment binds a compatible workspace-owned identity; a per-member
+  slot is filled by each member's compatible member-owned identity. The surface's
+  `identity_requirements` are identical either way — only the binding's owner
+  differs.
 
 DSL v4 projections remain SQL exposure choices. They do not choose identities.
 
 ## Examples
 
-### Personal Data Source Across User Workspaces
+### Personal Data Source in One Shared Workspace
+
+A per-member slot lets one shared workspace serve user-tied data without sharing
+anyone's credential.
 
 ```text
 Materialized source: gmail
 Surface: gmail-api
 
-Workspace: saul-private
-Identity: google-saul
+Workspace: mail (shared; members: Saul, Andrea)
 Workspace source: gmail
-gmail.gmail-api -> google-saul
-Available to: Saul
+gmail.gmail-api -> per-member slot (issuer: google)
+Available to: Saul, Andrea
 
-Workspace: andrea-private
-Identity: google-andrea
-Workspace source: gmail
-gmail.gmail-api -> google-andrea
-Available to: Andrea
+Bindings (member-owned, user-scoped):
+  Saul   -> google-saul
+  Andrea -> google-andrea
 ```
 
-The same materialized Gmail source is reused. Each user sees their own data
-because each user's workspace source assigns the Gmail surface to that user's
-own identity. No query-time identity resolver is needed.
+The workspace, its curated source, and any projections are shared. The Gmail
+surface is a per-member slot, so each member binds their own Google identity.
+Saul's query resolves to `google-saul` and Andrea's to `google-andrea` — each
+sees only their own mail — through a deterministic per-member lookup, not a global
+resolver. Neither member can see or use the other's identity. (Earlier drafts
+modeled this as two separate private workspaces; the per-member slot removes that
+need and keeps the curation shareable.)
 
 ### Same Source, Different Workspace Identity
 
@@ -272,13 +379,14 @@ Materialized source: github
 Surface: github-rest
 
 Workspace: saul-private
-github.github-rest -> github-saul-work
+github.github-rest -> github-saul-work        (member-owned)
 
 Workspace: eng-shared
-github.github-rest -> github-coral-app-acme
+github.github-rest -> github-coral-app-acme   (workspace-owned, shared)
 ```
 
-The source and surface are the same. The workspace assignment is different.
+The source and surface are the same. The binding — its owner and identity —
+differs per workspace.
 
 ### One Source, Multiple Surfaces
 
@@ -286,12 +394,17 @@ The source and surface are the same. The workspace assignment is different.
 Workspace: eng-shared
 Workspace source: github
 
-github.github-rest    -> github-coral-app-acme
-github.github-graphql -> github-graphql-oauth-saul
+github.github-rest    -> github-coral-app-acme       (shared assignment)
+github.github-graphql -> per-member slot (issuer: github)
+                           Saul  -> github-graphql-saul
+                           Priya -> github-graphql-priya
 ```
 
-Each surface declares its own identity requirements. The workspace assigns a
-compatible identity per surface.
+Each surface declares its own identity requirements, and the workspace binds each
+independently: a shared workspace-owned app for REST, and a per-member slot for
+GraphQL so each member queries as their own GitHub identity. Mixed binding within
+one workspace source is exactly what lets a shared workspace serve org-tied and
+user-tied authority at once.
 
 ## Materialization and Setup
 
@@ -301,20 +414,25 @@ Source materialization follows DSL v4. Running a source spec produces or
 refreshes a materialized source with surfaces and projections. It does not
 create identities or decide which workspace will use the source.
 
-Identity materialization runs an identity spec inside a workspace. It creates
-or refreshes one workspace-owned identity and returns enough non-secret metadata
-for UX: connected label, audience, capabilities, status, and recovery action.
+Identity materialization runs an identity spec to create or refresh one identity
+— workspace-owned (into the workspace) or member-owned (into the acting member's
+user-scoped store) — and returns enough non-secret metadata for UX: connected
+label, audience, capabilities, status, and recovery action.
 
 Adding a source to a workspace composes the two:
 
 1. Ensure the materialized source exists.
 2. Create or select the workspace source.
 3. Read identity requirements for each required surface.
-4. Find compatible identities already owned by the workspace.
-5. Suggest safe reuse only when allowed.
-6. Materialize a new identity when needed or chosen.
-7. Assign each required surface to a compatible workspace identity.
-8. Validate and report ready, partially ready, or blocked.
+4. Decide each surface's binding mode: shared assignment or per-member slot
+   (default inferred from issuer/archetype, overridable by a workspace manager).
+5. For shared surfaces, find or materialize a compatible workspace-owned identity
+   and assign it; suggest safe reuse only when allowed.
+6. For per-member surfaces, declare the slot. The acting member binds one of
+   their compatible member-owned identities, or materializes a new one.
+7. Validate and report ready, partially ready, or blocked. Slot readiness is per
+   member: a workspace can be ready for one member and need action for another
+   who has not bound yet.
 
 Setup should use the smallest safe user-visible decision. Compact setup is fine
 when there is one obvious private identity path. Reuse, shared access, broader
@@ -346,33 +464,37 @@ Fix: run interactive identity setup for GitHub, then retry.
 
 ## Query Execution and Recovery
 
-At query time, Coral does not choose identities from a global pool. It uses the
-existing workspace source assignment:
+At query time, Coral does not choose identities from a global pool. It resolves
+the surface binding for the current member:
 
-1. Resolve the current workspace.
+1. Resolve the current workspace and the querying member.
 2. Resolve the workspace source for the queried source namespace.
 3. Resolve the surface needed by the table or function.
-4. Load the workspace identity assigned to that surface.
+4. Load the bound identity: for a shared assignment, the workspace identity; for
+   a per-member slot, the member's binding for that slot.
 5. Confirm the identity still satisfies the surface requirements.
 6. Inject the identity using the declared injection method.
 7. Execute the query.
 
-If no assignment exists, the query is blocked with setup guidance. If the
-assigned identity is unhealthy, Coral follows the identity spec recovery rules.
-If the identity lacks a required capability, Coral reports an authorization
-failure and does not silently request broader access.
+If no binding exists — no shared assignment, or no per-member binding for this
+member — the query is blocked with setup guidance for that member. If the bound
+identity is unhealthy, Coral follows the identity spec recovery rules. If it
+lacks a required capability, Coral reports an authorization failure and does not
+silently request broader access.
 
-Recovery messages should stay workspace-local and non-secret:
+Recovery messages stay non-secret, and their scope follows the identity's owner.
+A workspace-owned identity affects only its workspace, so its message is
+workspace-local. A member-owned identity can be bound in several of the member's
+workspaces, so its message is user-scoped and lists every affected workspace:
 
 ```text
 GitHub access expired.
 
-Workspace source: github
-Surface: github-rest
-Connected as: saul@work
-Used in this workspace:
-  github
-Fix: refresh the GitHub identity, then retry.
+Connected as: saul@work (your identity)
+Affected workspaces and sources:
+  mail-eng -> github
+  oncall   -> github
+Fix: refresh the GitHub identity once; all bindings recover.
 ```
 
 Authorization failures should distinguish access from source health:
@@ -392,11 +514,15 @@ Fix: grant message history access or assign an identity with that capability.
 Normal users should see:
 
 - **Source:** what they query.
-- **Connected as:** identity assigned in the current workspace.
+- **Connected as:** the bound identity in the current workspace — the shared
+  workspace identity, or, for a per-member slot, your own bound identity.
 - **Available to:** who may query the workspace source.
-- **Status:** ready, partially ready, blocked, or needs action.
+- **Status:** ready, partially ready, blocked, or needs action. For a per-member
+  slot this is evaluated for you specifically.
 - **Permissions needed:** missing access in provider language.
-- **Affected sources/surfaces:** what else in the workspace uses the identity.
+- **Affected sources/surfaces:** what else uses the identity — within the
+  workspace for a shared identity, or across your workspaces for your own
+  member-owned identity.
 - **Fix:** exact next action.
 
 Coral may act silently only when it preserves the same authority:
@@ -414,6 +540,8 @@ Coral must ask before:
 - requesting broader capabilities
 - changing injection method in a way that changes trust or credential handling
 - assigning an identity to another workspace source surface
+- changing a surface from a per-member slot to a shared assignment, so all
+  members query as one identity
 - sharing a workspace that contains identities or workspace sources
 - making a workspace source available to more users
 - switching from provider-managed auth to manual token entry
@@ -424,48 +552,55 @@ Safe defaults:
 
 - New workspaces default to private membership.
 - New workspace sources default to private availability.
-- New identities belong to the workspace where they are created.
-- New identities default to use only by the workspace source that created them.
-- Reusing an identity for another workspace source requires explicit selection
-  or an allowed suggestion policy.
+- A workspace-owned identity belongs to the workspace where it is created and is
+  never reused by another workspace.
+- A member-owned identity belongs to the member's user-scoped store and is
+  reusable across that member's own workspace slots that it satisfies.
+- Human-tied surfaces default to per-member slots, so each member uses their own
+  identity rather than sharing one.
 - Making a workspace source available to more users requires explicit
   confirmation.
-- Sharing a workspace requires previewing the workspace sources and identities
-  that new members could use.
-- Human-owned identities in shared workspace sources require a warning.
-- Provider app, bot, service account, trusted-role, or OIDC identities are
-  preferred for shared workspace sources.
+- Sharing a workspace previews what new members get: the shared sources and
+  projections, the workspace-owned identities they will query as, and the
+  per-member slots they must fill with their own identity.
+- A workspace-owned identity backed by a human principal requires a warning;
+  prefer app, bot, service account, trusted-role, or OIDC identities for shared
+  assignments, and per-member slots for human-tied access.
 
 The first-wave permission model has three permissions, not per-identity ACLs:
 
 - **Query workspace source:** run queries when availability includes the user.
   Query users may see non-secret status, missing permissions, and fix guidance.
-- **Manage workspace source:** add or remove a workspace source, create or
-  reuse identities for its surfaces, change assignments, recover assigned
-  identities, and change availability.
+- **Manage workspace source:** add or remove a workspace source, set each
+  surface's binding mode, create or assign workspace-owned identities for shared
+  surfaces, declare per-member slots, recover shared identities, and change
+  availability. Managers declare slots but cannot see or fill another member's
+  identities.
 - **Manage workspace:** add or remove members, share the workspace, delegate
   source management, and delete or archive the workspace.
 
-Identity reuse is workspace-local. Coral may suggest an existing identity for
-another compatible workspace source surface only when the identity satisfies the
-requirements, the audience matches, no broader capability is needed,
-availability does not change, and the identity is not limited to its current
-workspace source.
+Reuse follows ownership. A workspace-owned identity may be suggested for another
+compatible surface in the same workspace only when it satisfies the requirements,
+the audience matches, no broader capability is needed, and availability does not
+change. A member-owned identity may be suggested to its owner for any compatible
+slot across that member's workspaces, but only to that member; it is never offered
+to or usable by anyone else.
 
 Even then, reuse is a choice:
 
 ```text
-Use existing GitHub identity?
+Use your existing GitHub identity?
 
 > github-saul-work
   Connected as: saul@work
-  Already used by: github
+  Already bound in: oncall
   Access: repo read, org read
 
   Connect another identity
 ```
 
-If reuse changes blast radius, Coral must show affected workspace sources.
+If reuse changes blast radius, Coral must show the affected workspaces and
+workspace sources.
 
 ## Representative Identity Archetypes
 
@@ -478,6 +613,11 @@ The model should fit these archetypes:
   credential chain.
 - **Cloud trust identity:** AWS trusted role or AWS OIDC trust.
 
+User OAuth identities are typically member-owned and bound through per-member
+slots; app/bot, profile, and cloud-trust identities are typically workspace-owned
+and bound through shared assignments. Binding mode is the workspace's choice, so
+either archetype can be bound either way when a use case requires it.
+
 The first implementation does not need to ship all of them, but it must not
 choose concepts that break any of them.
 
@@ -485,28 +625,33 @@ choose concepts that break any of them.
 
 - DSL v4 surfaces declare `identity_requirements`; projections do not choose
   identities.
-- `coral source add gmail` in a local default workspace can materialize or
-  select a Google identity owned by that workspace, create a Gmail workspace
-  source, assign `gmail.gmail-api` to that identity, and keep availability
-  private.
-- The same materialized Gmail source can be used by Saul's and Andrea's private
-  workspaces with different workspace-owned Google identities and no query-time
-  resolver.
-- A shared Engineering workspace can use Slack or GitHub through a
-  workspace-owned app, bot, service account, trusted-role, or OIDC identity.
-- One workspace identity can be assigned to multiple compatible surfaces in the
-  same workspace only after compatibility checks pass and the user confirms any
+- A surface can be bound as a shared assignment or a per-member slot, with the
+  default inferred from the issuer/archetype and overridable by a manager.
+- `coral source add gmail` in a local default workspace can declare a per-member
+  slot on `gmail.gmail-api`, let the local user bind their own member-owned Google
+  identity, and keep availability private.
+- One shared workspace with a Gmail per-member slot resolves Saul's query to his
+  identity and Andrea's to hers — each seeing only their own data — through a
+  deterministic per-member lookup with no global resolver.
+- A member-owned identity is reusable across that member's own workspace slots and
+  is never visible or usable to another member.
+- A shared Engineering workspace can use Slack or GitHub through a workspace-owned
+  app, bot, service account, trusted-role, or OIDC identity shared by all members.
+- One workspace-owned identity can back multiple compatible surfaces in the same
+  workspace only after compatibility checks pass and the user confirms any
   increased blast radius.
 - Another workspace cannot silently reuse or inherit a workspace-owned identity.
-- New workspaces and workspace sources start private; sharing or broadening
-  availability previews affected workspace sources and identities.
+- New workspaces and workspace sources start private; sharing previews the shared
+  sources, projections, workspace-owned identities, and per-member slots new
+  members receive.
 - Provider-native capability facts drive matching; unknown or unvalidated
   capabilities do not satisfy requirements.
 - Background, MCP, CI, and sandboxed flows do not launch interactive auth. They
   use a supported non-interactive path or return a structured fix.
-- Expired, unhealthy, or under-permissioned identities produce non-secret,
-  workspace-local recovery messages with the workspace source, surface,
-  connected identity label, reason, affected scope, and fix.
+- Recovery messages are non-secret and scoped to the identity's owner:
+  workspace-local for workspace-owned identities, user-scoped (listing affected
+  workspaces) for member-owned identities, each with surface, connected label,
+  reason, affected scope, and fix.
 
 ## Open Questions
 
@@ -519,7 +664,16 @@ choose concepts that break any of them.
 - What is the CLI vocabulary: `coral identity`, `coral access`, or another
   surface?
 - Which first-wave identity specs support non-interactive materialization?
-- What is the minimal local implementation that preserves the workspace-first
-  model without shipping full multi-user sharing?
+- Should a surface's default binding mode (shared assignment vs per-member slot)
+  be declared by the identity spec archetype, inferred from the issuer, or always
+  an explicit workspace choice?
+- Where do member-owned identities and slot bindings live in app state, and how
+  does that storage key by member without a full principal layer in the first
+  local wave?
+- What is the minimal first implementation of the workspace-first model, given
+  that the user authentication / principal layer lands as a separate effort?
+- How does Coral detect or declare a non-interactive execution context, such as
+  CI, MCP, or a sandboxed agent, so it can choose a non-interactive path instead
+  of launching interactive auth?
 - How should server roles package query, manage workspace source, and manage
   workspace permissions?
