@@ -286,6 +286,76 @@ tables:
         description: Raw database metadata object.
         expr: {kind: path, path: []}
 
+  - name: database_info_legacy
+    description: Metadata for a CouchDB database on servers without /_dbs_info.
+    guide: |
+      Requires `db_path`, for example `WHERE db_path = 'users'`. Use a
+      URL path-safe value for database names that need escaping.
+    filters:
+      - name: db_path
+        required: true
+    request:
+      method: GET
+      path: /{{filter.db_path}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: db_path
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Database path segment supplied as a filter.
+        expr:
+          kind: from_filter
+          key: db_path
+      - name: db_name
+        type: Utf8
+        nullable: true
+        description: Database name.
+      - name: doc_count
+        type: Int64
+        nullable: true
+        description: Number of documents.
+      - name: doc_del_count
+        type: Int64
+        nullable: true
+        description: Number of deleted documents.
+      - name: update_seq
+        type: Utf8
+        nullable: true
+        description: Update sequence token.
+      - name: sizes__active
+        type: Int64
+        nullable: true
+        description: Active data size in bytes.
+        expr: {kind: path, path: [sizes, active]}
+      - name: sizes__external
+        type: Int64
+        nullable: true
+        description: External data size in bytes.
+        expr: {kind: path, path: [sizes, external]}
+      - name: sizes__file
+        type: Int64
+        nullable: true
+        description: File size in bytes.
+        expr: {kind: path, path: [sizes, file]}
+      - name: compact_running
+        type: Boolean
+        nullable: true
+        description: Whether compaction is running.
+      - name: cluster_json
+        type: Json
+        nullable: true
+        description: Cluster shard settings.
+        expr: {kind: path, path: [cluster]}
+      - name: raw_json
+        type: Json
+        nullable: true
+        description: Raw database metadata object.
+        expr: {kind: path, path: []}
+
   - name: scheduler_jobs
     description: Replication scheduler jobs.
     fetch_limit_default: 100

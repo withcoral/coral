@@ -27,6 +27,7 @@ coral source test couchdb
 | `couchdb.active_tasks` | Active compaction, indexing, and replication tasks. |
 | `couchdb.database_infos` | Paginated metadata for all databases. |
 | `couchdb.database_info` | Database metadata for a required `db`. |
+| `couchdb.database_info_legacy` | Database metadata fallback for CouchDB servers without `/_dbs_info`. |
 | `couchdb.scheduler_jobs` | Active replication scheduler jobs. |
 | `couchdb.scheduler_docs` | Replication document states, including completed and failed states. |
 
@@ -52,6 +53,12 @@ WHERE db = 'users';
 ```
 
 ```sql
+SELECT db_name, doc_count, sizes__active, sizes__external
+FROM couchdb.database_info_legacy
+WHERE db_path = 'users';
+```
+
+```sql
 SELECT id, database, doc_id, state, error_count, last_updated
 FROM couchdb.scheduler_docs
 WHERE state IN ('error', 'failed', 'crashing')
@@ -63,8 +70,8 @@ LIMIT 50;
 
 - This source does not expose arbitrary document scans in v1.
 - `couchdb.database_infos` uses the documented `GET /_dbs_info` endpoint added
-  in CouchDB 3.2. For older servers, use `couchdb.database_info` with a
-  database filter.
+  in CouchDB 3.2. For older servers, use `couchdb.database_info_legacy` with a
+  URL path-safe database name in `db_path`.
 - Use database-scoped filters for metadata that would otherwise require a
   path parameter.
 
