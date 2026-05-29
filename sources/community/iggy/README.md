@@ -44,7 +44,7 @@ Use the resulting JWT as `IGGY_ACCESS_TOKEN` when running `coral source add`.
 # Run Iggy with Docker (default credentials: iggy / iggy)
 docker run -d \
   --name iggy-server \
-  --cap-add NET_ADMIN \
+  --cap-add SYS_NICE \
   -p 3000:3000 \
   -p 8090:8090 \
   -p 8080:8080 \
