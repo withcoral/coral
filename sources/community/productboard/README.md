@@ -38,7 +38,7 @@ coral source test productboard
 ```sql
 SELECT name, status__name, owner__email, health__status, updated_at
 FROM productboard.features
-WHERE status_name = 'In Progress'
+WHERE status__name = 'In Progress'
 ORDER BY updated_at DESC
 LIMIT 20;
 ```

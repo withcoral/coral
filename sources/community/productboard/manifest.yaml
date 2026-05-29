@@ -81,9 +81,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns: &entity_columns
       - name: id
         type: Utf8
@@ -124,6 +122,11 @@ tables:
         nullable: true
         description: Whether the entity is archived.
         expr: {kind: path, path: [fields, archived]}
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent entity ID.
+        expr: {kind: path, path: [parent, id]}
       - name: health__status
         type: Utf8
         nullable: true
@@ -205,9 +208,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns: *entity_columns
 
   - name: initiatives
@@ -240,9 +241,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns: *entity_columns
 
   - name: companies
@@ -267,9 +266,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns: *entity_columns
 
   - name: users
@@ -294,9 +291,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns: *entity_columns
 
   - name: notes
@@ -358,9 +353,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns:
       - name: id
         type: Utf8
@@ -562,9 +555,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns:
       - name: id
         type: Utf8
@@ -628,9 +619,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns:
       - name: id
         type: Utf8
@@ -682,9 +671,7 @@ tables:
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: pageCursor
-      response_cursor_path: [links, next]
+      mode: none
     columns:
       - name: date
         type: Utf8
