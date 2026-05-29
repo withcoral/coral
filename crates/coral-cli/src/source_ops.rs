@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{IsTerminal, Read as _, Write as _, stdin, stdout};
+use std::io::{IsTerminal, Read as _, Write, stdin, stdout};
 use std::net::TcpStream;
 use std::path::Path;
 use std::sync::Arc;
@@ -25,6 +25,7 @@ use coral_spec::{
     parse_source_manifest_yaml,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use dialoguer::console::style;
 use dialoguer::{Input, Password, Select, theme::ColorfulTheme};
 use tonic::Request;
@@ -1238,21 +1239,78 @@ fn validate_oauth_redirect_url(
 }
 
 fn read_oauth_redirect_prompt(cancel: &AtomicBool) -> Result<Option<String>, anyhow::Error> {
+    let _raw_mode = RawModeGuard::enable()?;
+    let mut output = stdout();
     let mut value = String::new();
     while !cancel.load(Ordering::Relaxed) {
         if !event::poll(Duration::from_millis(100))? {
             continue;
         }
         if let Event::Key(key) = event::read()? {
+            let previous_len = value.len();
             match apply_redirect_prompt_key(key, &mut value) {
                 RedirectPromptAction::Continue => {}
-                RedirectPromptAction::Submit => return Ok(Some(value)),
-                RedirectPromptAction::Cancel => return Ok(None),
+                RedirectPromptAction::Submit => {
+                    finish_redirect_prompt_line(&mut output)?;
+                    return Ok(Some(value));
+                }
+                RedirectPromptAction::Cancel => {
+                    finish_redirect_prompt_line(&mut output)?;
+                    return Ok(None);
+                }
             }
+            render_redirect_prompt_key_echo(&mut output, key, previous_len, value.len())?;
         }
     }
-    println!();
+    finish_redirect_prompt_line(&mut output)?;
     Ok(None)
+}
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Result<Self, anyhow::Error> {
+        enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        if let Err(error) = disable_raw_mode() {
+            eprintln!("Could not restore terminal mode: {error}");
+        }
+    }
+}
+
+fn finish_redirect_prompt_line(output: &mut impl Write) -> Result<(), anyhow::Error> {
+    output.write_all(b"\r\n")?;
+    output.flush()?;
+    Ok(())
+}
+
+fn render_redirect_prompt_key_echo(
+    output: &mut impl Write,
+    key: KeyEvent,
+    previous_len: usize,
+    current_len: usize,
+) -> Result<(), anyhow::Error> {
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return Ok(());
+    }
+    match key.code {
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let mut buf = [0; 4];
+            output.write_all(ch.encode_utf8(&mut buf).as_bytes())?;
+            output.flush()?;
+        }
+        KeyCode::Backspace if current_len < previous_len => {
+            output.write_all(b"\x08 \x08")?;
+            output.flush()?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1467,8 +1525,8 @@ mod tests {
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, shell_quote_arg, source_name_arg, submit_oauth_redirect_url,
-        validate_oauth_redirect_url, validation_follow_up,
+        finalize_input_value, render_redirect_prompt_key_echo, shell_quote_arg, source_name_arg,
+        submit_oauth_redirect_url, validate_oauth_redirect_url, validation_follow_up,
     };
 
     #[test]
@@ -1825,6 +1883,35 @@ mod tests {
             RedirectPromptAction::Cancel
         );
         assert_eq!(value, "http://localhost/callback");
+    }
+
+    #[test]
+    fn redirect_prompt_key_echoes_visible_edits() {
+        let mut output = Vec::new();
+
+        render_redirect_prompt_key_echo(
+            &mut output,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+            0,
+            1,
+        )
+        .expect("echo char");
+        render_redirect_prompt_key_echo(
+            &mut output,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            1,
+            0,
+        )
+        .expect("echo backspace");
+        render_redirect_prompt_key_echo(
+            &mut output,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            0,
+            0,
+        )
+        .expect("skip control char");
+
+        assert_eq!(output, b"h\x08 \x08");
     }
 
     #[test]
