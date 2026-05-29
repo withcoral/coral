@@ -8,7 +8,8 @@ description: >-
 base_url: https://services.nvd.nist.gov
 test_queries:
   - SELECT cve_id, vuln_status FROM nvd.vulnerabilities WHERE cve_id = 'CVE-2021-44228' LIMIT 1
-  - SELECT cve_id, base_score, base_severity FROM nvd.cvss_v3 WHERE cve_id = 'CVE-2021-44228' LIMIT 1
+  - SELECT cve_id, base_score, base_severity FROM nvd.cvss_v3_1 WHERE cve_id = 'CVE-2021-44228' LIMIT 1
+  - SELECT cve_id, base_score, base_severity FROM nvd.cvss_v3_0 WHERE cve_id = 'CVE-2014-0160' LIMIT 1
   - SELECT cve_id, base_score, severity FROM nvd.cvss_v2 WHERE cve_id = 'CVE-2021-44228' LIMIT 1
   - SELECT cve_id, references FROM nvd.references WHERE cve_id = 'CVE-2021-44228' LIMIT 1
 tables:
@@ -16,13 +17,15 @@ tables:
     description: >-
       Core CVE records from the NVD. Each row is one CVE with its identifier,
       publication dates, status, and English description. Use cve_id to join
-      with nvd.cvss_v3, nvd.cvss_v2, and nvd.references.
+      with nvd.cvss_v3_1, nvd.cvss_v3_0, nvd.cvss_v2, and nvd.references.
     guide: >-
-      Filter by cve_id for a single record, or use pub_start_date and
-      pub_end_date to scope by publication window. Without filters the table
-      pages through all CVE in the NVD (350 000+ records); always add a LIMIT
-      or a date filter for interactive queries. Join to nvd.cvss_v3 on cve_id
-      to add severity scores.
+      Filter by cve_id for a single record. For date-scoped queries use
+      pub_start_date and pub_end_date together — NVD requires both and caps
+      the window at 120 consecutive days (e.g. pub_start_date =
+      '2024-01-01T00:00:00.000' and pub_end_date = '2024-04-30T23:59:59.999').
+      Without any filter the table pages through all 350 000+ CVE records;
+      always scope queries with cve_id, a date pair, or cvss_v3_severity.
+    fetch_limit_default: 100
     filters:
       - name: cve_id
         required: false
@@ -42,7 +45,7 @@ tables:
       method: GET
       path: /rest/json/cves/2.0
       query:
-        - name: cveId
+        - name: cveIds
           from: filter
           key: cve_id
         - name: pubStartDate
@@ -79,30 +82,29 @@ tables:
         type: Utf8
         description: CVE identifier (e.g. CVE-2021-44228).
         nullable: false
-        expr: { kind: path, path: [cve, id] }
+        expr: {kind: path, path: [cve, id]}
       - name: source_identifier
         type: Utf8
         description: Source organization that assigned the CVE.
         nullable: true
-        expr: { kind: path, path: [cve, sourceIdentifier] }
+        expr: {kind: path, path: [cve, sourceIdentifier]}
       - name: published
         type: Utf8
         description: Date and time the CVE was published (ISO 8601).
         nullable: true
-        expr: { kind: path, path: [cve, published] }
+        expr: {kind: path, path: [cve, published]}
       - name: last_modified
         type: Utf8
         description: Date and time the CVE record was last modified (ISO 8601).
         nullable: true
-        expr: { kind: path, path: [cve, lastModified] }
+        expr: {kind: path, path: [cve, lastModified]}
       - name: vuln_status
         type: Utf8
         description: >-
-          NVD analysis status of the CVE. Common values are Analyzed,
-          Awaiting Analysis, Undergoing Analysis, Modified, Deferred,
-          Rejected.
+          NVD analysis status. Common values are Analyzed, Awaiting Analysis,
+          Undergoing Analysis, Modified, Deferred, Rejected.
         nullable: true
-        expr: { kind: path, path: [cve, vulnStatus] }
+        expr: {kind: path, path: [cve, vulnStatus]}
       - name: description
         type: Utf8
         description: English-language description of the vulnerability.
@@ -118,48 +120,68 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Filter by a specific CVE identifier (e.g. CVE-2021-44228).
-        expr: { kind: from_filter, key: cve_id }
+        description: >-
+          Filter by one CVE identifier (e.g. CVE-2021-44228). Maps to the
+          cveIds NVD API parameter.
+        expr: {kind: from_filter, key: cve_id}
       - name: pub_start_date
         type: Utf8
         nullable: true
         virtual: true
         description: >-
-          Filter to CVEs published on or after this date (ISO 8601,
-          e.g. 2024-01-01T00:00:00.000).
-        expr: { kind: from_filter, key: pub_start_date }
+          Start of publication date window (ISO 8601, e.g.
+          2024-01-01T00:00:00.000). Must be paired with pub_end_date.
+          Window must be 120 days or fewer.
+        expr: {kind: from_filter, key: pub_start_date}
       - name: pub_end_date
         type: Utf8
         nullable: true
         virtual: true
         description: >-
-          Filter to CVEs published on or before this date (ISO 8601,
-          e.g. 2024-12-31T23:59:59.999).
-        expr: { kind: from_filter, key: pub_end_date }
-      - name: cvss_v3_severity
+          End of publication date window (ISO 8601, e.g.
+          2024-04-30T23:59:59.999). Must be paired with pub_start_date.
+          Window must be 120 days or fewer.
+        expr: {kind: from_filter, key: pub_end_date}
+      - name: last_mod_start_date
         type: Utf8
         nullable: true
         virtual: true
         description: >-
-          Filter by CVSS v3 severity label. Valid values are LOW, MEDIUM,
-          HIGH, CRITICAL.
-        expr: { kind: from_filter, key: cvss_v3_severity }
+          Start of last-modified date window (ISO 8601). Must be paired with
+          last_mod_end_date. Window must be 120 days or fewer.
+        expr: {kind: from_filter, key: last_mod_start_date}
+      - name: last_mod_end_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          End of last-modified date window (ISO 8601). Must be paired with
+          last_mod_start_date. Window must be 120 days or fewer.
+        expr: {kind: from_filter, key: last_mod_end_date}
+      - name: cvss_v3_severity
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by CVSS v3 severity label (LOW, MEDIUM, HIGH, CRITICAL).
+        expr: {kind: from_filter, key: cvss_v3_severity}
       - name: keyword_search
         type: Utf8
         nullable: true
         virtual: true
         description: Filter by keyword search across CVE descriptions and metadata.
-        expr: { kind: from_filter, key: keyword_search }
+        expr: {kind: from_filter, key: keyword_search}
 
-  - name: cvss_v3
+  - name: cvss_v3_1
     description: >-
-      CVSS v3.x severity scores for CVE records. Each row contains the primary
-      NVD scoring for one CVE. Rows are absent when NVD has not yet assigned a
-      CVSS v3 score. Join to nvd.vulnerabilities on cve_id.
+      CVSS v3.1 severity scores from the NVD. Each row is one CVE; metric
+      columns are null when NVD has not assigned CVSS v3.1 metrics. For CVEs
+      scored under CVSS v3.0 use nvd.cvss_v3_0. Join to nvd.vulnerabilities
+      on cve_id.
     guide: >-
       Filter by cve_id for a single record. Use cvss_v3_severity to scope to
-      a severity band (LOW, MEDIUM, HIGH, CRITICAL). base_score ranges from
-      0.0 to 10.0. vector_string encodes all sub-scores in a compact form.
+      a severity band. Metric columns are nullable — filter with
+      WHERE base_score IS NOT NULL to restrict to scored rows only.
+    fetch_limit_default: 100
     filters:
       - name: cve_id
         required: false
@@ -175,7 +197,7 @@ tables:
       method: GET
       path: /rest/json/cves/2.0
       query:
-        - name: cveId
+        - name: cveIds
           from: filter
           key: cve_id
         - name: pubStartDate
@@ -206,196 +228,134 @@ tables:
         type: Utf8
         description: CVE identifier linking to nvd.vulnerabilities.
         nullable: false
-        expr: { kind: path, path: [cve, id] }
+        expr: {kind: path, path: [cve, id]}
       - name: base_score
         type: Float64
-        description: CVSS v3 base score (0.0 – 10.0).
+        description: CVSS v3.1 base score (0.0 – 10.0). Null when not scored under v3.1.
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - baseScore
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, baseScore]
       - name: base_severity
         type: Utf8
-        description: CVSS v3 severity label (LOW, MEDIUM, HIGH, CRITICAL).
+        description: CVSS v3.1 severity label (LOW, MEDIUM, HIGH, CRITICAL). Null when not scored under v3.1.
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - baseSeverity
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, baseSeverity]
       - name: exploitability_score
         type: Float64
-        description: CVSS v3 exploitability sub-score.
+        description: CVSS v3.1 exploitability sub-score. Null when not scored under v3.1.
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - exploitabilityScore
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [exploitabilityScore]
       - name: impact_score
         type: Float64
-        description: CVSS v3 impact sub-score.
+        description: CVSS v3.1 impact sub-score. Null when not scored under v3.1.
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - impactScore
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [impactScore]
       - name: vector_string
         type: Utf8
-        description: Full CVSS v3 vector string (e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H).
+        description: Full CVSS v3.1 vector string (e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - vectorString
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, vectorString]
       - name: attack_vector
         type: Utf8
         description: Attack vector (NETWORK, ADJACENT_NETWORK, LOCAL, PHYSICAL).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - attackVector
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, attackVector]
       - name: attack_complexity
         type: Utf8
         description: Attack complexity (LOW, HIGH).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - attackComplexity
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, attackComplexity]
       - name: privileges_required
         type: Utf8
         description: Privileges required to exploit (NONE, LOW, HIGH).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - privilegesRequired
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, privilegesRequired]
       - name: user_interaction
         type: Utf8
         description: Whether user interaction is required (NONE, REQUIRED).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - userInteraction
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, userInteraction]
       - name: scope
         type: Utf8
-        description: Whether a successful exploit can affect resources beyond the vulnerable component (UNCHANGED, CHANGED).
+        description: Scope change (UNCHANGED, CHANGED).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - scope
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, scope]
       - name: confidentiality_impact
         type: Utf8
         description: Impact to confidentiality (NONE, LOW, HIGH).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - confidentialityImpact
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, confidentialityImpact]
       - name: integrity_impact
         type: Utf8
         description: Impact to integrity (NONE, LOW, HIGH).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - integrityImpact
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, integrityImpact]
       - name: availability_impact
         type: Utf8
         description: Impact to availability (NONE, LOW, HIGH).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV31
-          item_path:
-            - cvssData
-            - availabilityImpact
+          path: [cve, metrics, cvssMetricV31]
+          item_path: [cvssData, availabilityImpact]
       - name: cve_id_filter
         type: Utf8
         nullable: true
         virtual: true
         description: Filter by a specific CVE identifier.
-        expr: { kind: from_filter, key: cve_id }
+        expr: {kind: from_filter, key: cve_id}
       - name: cvss_v3_severity
         type: Utf8
         nullable: true
         virtual: true
         description: Filter by CVSS v3 severity label (LOW, MEDIUM, HIGH, CRITICAL).
-        expr: { kind: from_filter, key: cvss_v3_severity }
+        expr: {kind: from_filter, key: cvss_v3_severity}
 
-  - name: cvss_v2
+  - name: cvss_v3_0
     description: >-
-      CVSS v2 severity scores for CVE records. Provided as a fallback for
-      older CVEs that pre-date CVSS v3. Rows are absent when NVD has not
-      assigned a CVSS v2 score. Join to nvd.vulnerabilities on cve_id.
+      CVSS v3.0 severity scores from the NVD. Each row is one CVE; metric
+      columns are null when NVD has not assigned CVSS v3.0 metrics. Most CVEs
+      published after 2019 use v3.1 — use nvd.cvss_v3_1 for those.
+      Join to nvd.vulnerabilities on cve_id.
     guide: >-
-      Filter by cve_id for a single record. base_score ranges from 0.0 to
-      10.0. severity is a string label (LOW, MEDIUM, HIGH). For modern CVEs
-      prefer nvd.cvss_v3.
+      Filter by cve_id for a single record. Metric columns are nullable —
+      filter with WHERE base_score IS NOT NULL to restrict to scored rows only.
+    fetch_limit_default: 100
     filters:
       - name: cve_id
         required: false
@@ -409,7 +369,7 @@ tables:
       method: GET
       path: /rest/json/cves/2.0
       query:
-        - name: cveId
+        - name: cveIds
           from: filter
           key: cve_id
         - name: pubStartDate
@@ -437,75 +397,215 @@ tables:
         type: Utf8
         description: CVE identifier linking to nvd.vulnerabilities.
         nullable: false
-        expr: { kind: path, path: [cve, id] }
+        expr: {kind: path, path: [cve, id]}
       - name: base_score
         type: Float64
-        description: CVSS v2 base score (0.0 – 10.0).
+        description: CVSS v3.0 base score (0.0 – 10.0). Null when not scored under v3.0.
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV2
-          item_path:
-            - cvssData
-            - baseScore
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, baseScore]
+      - name: base_severity
+        type: Utf8
+        description: CVSS v3.0 severity label (LOW, MEDIUM, HIGH, CRITICAL). Null when not scored under v3.0.
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, baseSeverity]
+      - name: exploitability_score
+        type: Float64
+        description: CVSS v3.0 exploitability sub-score. Null when not scored under v3.0.
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [exploitabilityScore]
+      - name: impact_score
+        type: Float64
+        description: CVSS v3.0 impact sub-score. Null when not scored under v3.0.
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [impactScore]
+      - name: vector_string
+        type: Utf8
+        description: Full CVSS v3.0 vector string (e.g. CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, vectorString]
+      - name: attack_vector
+        type: Utf8
+        description: Attack vector (NETWORK, ADJACENT_NETWORK, LOCAL, PHYSICAL).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, attackVector]
+      - name: attack_complexity
+        type: Utf8
+        description: Attack complexity (LOW, HIGH).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, attackComplexity]
+      - name: privileges_required
+        type: Utf8
+        description: Privileges required to exploit (NONE, LOW, HIGH).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, privilegesRequired]
+      - name: user_interaction
+        type: Utf8
+        description: Whether user interaction is required (NONE, REQUIRED).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, userInteraction]
+      - name: scope
+        type: Utf8
+        description: Scope change (UNCHANGED, CHANGED).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, scope]
+      - name: confidentiality_impact
+        type: Utf8
+        description: Impact to confidentiality (NONE, LOW, HIGH).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, confidentialityImpact]
+      - name: integrity_impact
+        type: Utf8
+        description: Impact to integrity (NONE, LOW, HIGH).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, integrityImpact]
+      - name: availability_impact
+        type: Utf8
+        description: Impact to availability (NONE, LOW, HIGH).
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV30]
+          item_path: [cvssData, availabilityImpact]
+      - name: cve_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by a specific CVE identifier.
+        expr: {kind: from_filter, key: cve_id}
+
+  - name: cvss_v2
+    description: >-
+      CVSS v2 severity scores from the NVD. Each row is one CVE; metric
+      columns are null when NVD has not assigned CVSS v2 metrics. For modern
+      CVEs prefer nvd.cvss_v3_1. Join to nvd.vulnerabilities on cve_id.
+    guide: >-
+      Filter by cve_id for a single record. Metric columns are nullable —
+      filter with WHERE base_score IS NOT NULL to restrict to scored rows only.
+    fetch_limit_default: 100
+    filters:
+      - name: cve_id
+        required: false
+      - name: pub_start_date
+        required: false
+      - name: pub_end_date
+        required: false
+      - name: keyword_search
+        required: false
+    request:
+      method: GET
+      path: /rest/json/cves/2.0
+      query:
+        - name: cveIds
+          from: filter
+          key: cve_id
+        - name: pubStartDate
+          from: filter
+          key: pub_start_date
+        - name: pubEndDate
+          from: filter
+          key: pub_end_date
+        - name: keywordSearch
+          from: filter
+          key: keyword_search
+    response:
+      rows_path:
+        - vulnerabilities
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: startIndex
+      page_size:
+        default: 2000
+        max: 2000
+        query_param: resultsPerPage
+    columns:
+      - name: cve_id
+        type: Utf8
+        description: CVE identifier linking to nvd.vulnerabilities.
+        nullable: false
+        expr: {kind: path, path: [cve, id]}
+      - name: base_score
+        type: Float64
+        description: CVSS v2 base score (0.0 – 10.0). Null when not scored under v2.
+        nullable: true
+        expr:
+          kind: first_array_item_path
+          path: [cve, metrics, cvssMetricV2]
+          item_path: [cvssData, baseScore]
       - name: severity
         type: Utf8
-        description: CVSS v2 severity label (LOW, MEDIUM, HIGH).
+        description: CVSS v2 severity label (LOW, MEDIUM, HIGH). Null when not scored under v2.
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV2
-          item_path:
-            - baseSeverity
+          path: [cve, metrics, cvssMetricV2]
+          item_path: [baseSeverity]
       - name: vector_string
         type: Utf8
         description: Full CVSS v2 vector string (e.g. AV:N/AC:M/Au:N/C:C/I:C/A:C).
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV2
-          item_path:
-            - cvssData
-            - vectorString
+          path: [cve, metrics, cvssMetricV2]
+          item_path: [cvssData, vectorString]
       - name: exploitability_score
         type: Float64
-        description: CVSS v2 exploitability sub-score.
+        description: CVSS v2 exploitability sub-score. Null when not scored under v2.
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV2
-          item_path:
-            - exploitabilityScore
+          path: [cve, metrics, cvssMetricV2]
+          item_path: [exploitabilityScore]
       - name: impact_score
         type: Float64
-        description: CVSS v2 impact sub-score.
+        description: CVSS v2 impact sub-score. Null when not scored under v2.
         nullable: true
         expr:
           kind: first_array_item_path
-          path:
-            - cve
-            - metrics
-            - cvssMetricV2
-          item_path:
-            - impactScore
+          path: [cve, metrics, cvssMetricV2]
+          item_path: [impactScore]
       - name: cve_id_filter
         type: Utf8
         nullable: true
         virtual: true
         description: Filter by a specific CVE identifier.
-        expr: { kind: from_filter, key: cve_id }
+        expr: {kind: from_filter, key: cve_id}
 
   - name: references
     description: >-
@@ -515,9 +615,10 @@ tables:
       Join to nvd.vulnerabilities on cve_id.
     guide: >-
       Filter by cve_id to retrieve references for a specific CVE. Each row
-      contains a JSON array in the references column. Use json_get_str to
-      extract individual URLs. Tags classify links as Patch, Vendor Advisory,
-      Exploit, Third Party Advisory, Mailing List, and similar labels.
+      contains a JSON array in the references column. Use json_get to extract
+      individual reference objects, then json_get_str to read url, source, or
+      tags fields.
+    fetch_limit_default: 100
     filters:
       - name: cve_id
         required: false
@@ -531,7 +632,7 @@ tables:
       method: GET
       path: /rest/json/cves/2.0
       query:
-        - name: cveId
+        - name: cveIds
           from: filter
           key: cve_id
         - name: pubStartDate
@@ -559,17 +660,17 @@ tables:
         type: Utf8
         description: CVE identifier linking to nvd.vulnerabilities.
         nullable: false
-        expr: { kind: path, path: [cve, id] }
+        expr: {kind: path, path: [cve, id]}
       - name: references
         type: Json
         description: >-
           Full references array for the CVE. Each element contains url,
           source, and tags fields.
         nullable: true
-        expr: { kind: path, path: [cve, references] }
+        expr: {kind: path, path: [cve, references]}
       - name: cve_id_filter
         type: Utf8
         nullable: true
         virtual: true
         description: Filter by a specific CVE identifier.
-        expr: { kind: from_filter, key: cve_id }
+        expr: {kind: from_filter, key: cve_id}
