@@ -1,0 +1,118 @@
+name: github_issues
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query open GitHub issues for any public repository. No token required for public repos.
+base_url: https://api.github.com
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Accept
+      from: literal
+      value: "application/vnd.github.v3+json"
+    - name: X-GitHub-Api-Version
+      from: literal
+      value: "2022-11-28"
+
+test_queries:
+  - SELECT number, title, state FROM github_issues.issues WHERE owner = 'withcoral' AND repo = 'coral' LIMIT 5
+  - SELECT number, title, comments FROM github_issues.issues WHERE owner = 'rust-lang' AND repo = 'rust' LIMIT 3
+
+tables:
+  - name: issues
+    description: >
+      Open GitHub issues for a repository, most recently updated first.
+      Uses pagination mode none to fetch the first 100 issues only — avoids
+      timeouts on repositories with thousands of open issues (e.g. large OSS projects).
+      Requires owner and repo filters. No token needed for public repositories.
+    filters:
+      - name: owner
+        required: true
+      - name: repo
+        required: true
+    request:
+      method: GET
+      path: /repos/{{filter.owner}}/{{filter.repo}}/issues?state=open&per_page=100&page=1&sort=updated&direction=desc
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: number
+        type: Int64
+        nullable: false
+        description: Issue number within the repository.
+        expr:
+          kind: path
+          path: [number]
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Issue title.
+        expr:
+          kind: path
+          path: [title]
+      - name: state
+        type: Utf8
+        nullable: false
+        description: Issue state — "open" or "closed".
+        expr:
+          kind: path
+          path: [state]
+      - name: html_url
+        type: Utf8
+        nullable: true
+        description: Full URL to the issue on GitHub.
+        expr:
+          kind: path
+          path: [html_url]
+      - name: comments
+        type: Int64
+        nullable: true
+        description: Number of comments on the issue.
+        expr:
+          kind: path
+          path: [comments]
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Issue creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [updated_at]
+      - name: user_login
+        type: Utf8
+        nullable: true
+        description: GitHub username of the issue author.
+        expr:
+          kind: path
+          path: [user, login]
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Issue body text (Markdown).
+        expr:
+          kind: path
+          path: [body]
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Repository owner filter value.
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        nullable: true
+        description: Repository name filter value.
+        expr:
+          kind: from_filter
+          key: repo
