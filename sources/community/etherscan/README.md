@@ -45,13 +45,14 @@ ERC-20 token transfer events for a wallet address on a given EVM chain.
 | `chainid` | Int64 | Yes | EVM chain ID (1 = Ethereum, 8453 = Base, 10 = Optimism, 42161 = Arbitrum) |
 | `address` | Utf8 | Yes | Wallet address to query transfers for |
 | `contractaddress` | Utf8 | No | Token contract address to filter by (e.g. USDC: `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`) |
+| `sort` | Utf8 | No | Sort order: `asc` (oldest first, default) or `desc` (newest first) |
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `hash` | Utf8 | Transaction hash |
 | `from_address` | Utf8 | Sender address |
 | `to_address` | Utf8 | Recipient address |
-| `contract_address` | Utf8 | Token contract address |
+| `contract_address` | Utf8 | Token contract address (output column) |
 | `value` | Utf8 | Transfer value in token's smallest unit (cast to DOUBLE and divide by 10^decimals) |
 | `token_name` | Utf8 | Token name (e.g. 'USD Coin') |
 | `token_symbol` | Utf8 | Token symbol (e.g. 'USDC') |
@@ -60,6 +61,8 @@ ERC-20 token transfer events for a wallet address on a given EVM chain.
 | `block_time` | Utf8 | Block timestamp as Unix epoch string |
 | `gas_used` | Utf8 | Gas used by the transaction |
 | `gas_price` | Utf8 | Gas price in wei |
+
+**Note:** `contractaddress` is the request filter (pushed to the Etherscan API). `contract_address` is the output column returned in results. Use `contractaddress` in WHERE clauses for efficient API-side filtering.
 
 ---
 
@@ -72,11 +75,11 @@ SELECT hash, from_address, to_address, value, block_time
 FROM etherscan.token_transfers
 WHERE chainid = 1
   AND address = '0x464C71f6c2F760DdA6093dCB91C24c39e5d6e18c'
-ORDER BY block_time DESC
+  AND sort = 'desc'
 LIMIT 10;
 ```
 
-### USDC transfer volume (in USDC, not raw units)
+### USDC transfer volume (push token filter to API)
 
 ```sql
 SELECT
@@ -85,7 +88,7 @@ SELECT
 FROM etherscan.token_transfers
 WHERE chainid = 1
   AND address = '0x464C71f6c2F760DdA6093dCB91C24c39e5d6e18c'
-  AND contract_address = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+  AND contractaddress = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 ```
 
 ### Cross-source JOIN with a grantee registry
@@ -95,7 +98,7 @@ SELECT g.recipient_name, SUM(CAST(tx.value AS DOUBLE) / 1e6) AS usdc_received
 FROM grantees.registry g
 JOIN etherscan.token_transfers tx ON tx.to_address = g.wallet
 WHERE tx.chainid = 1
-  AND tx.contract_address = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+  AND tx.contractaddress = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
 GROUP BY g.recipient_name
 ORDER BY usdc_received DESC;
 ```
@@ -106,7 +109,7 @@ ORDER BY usdc_received DESC;
 
 ### Etherscan V2 API behavior
 
-- **Error responses are HTTP 200** — Etherscan signals errors as `{"status":"0","message":"NOTOK","result":"..."}` inside a successful HTTP response. Coral handles this via `ok_path`/`error_path`.
+- **Error responses are HTTP 200** — Etherscan signals errors as `{"status":"0","message":"NOTOK","result":"..."}` inside a successful HTTP response. Coral surfaces the `message` field via `error_path`.
 - **Rate limits** — Free tier: 3 calls/sec, Lite tier: 5 calls/sec. Use conservative page sizes and cache aggressively.
 - **Chain support** — Free API key supports Ethereum mainnet (chainid=1). Base (8453), Optimism (10), and Arbitrum (42161) may require a paid plan.
 - **Pagination** — Uses offset-based pagination (page/offset params). Default page size is 50, max 100.

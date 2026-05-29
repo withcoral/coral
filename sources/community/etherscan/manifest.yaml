@@ -35,6 +35,9 @@ tables:
       - name: contractaddress
         type: Utf8
         description: Token contract address to filter by (e.g. USDC: 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48).
+      - name: sort
+        type: Utf8
+        description: Sort order: 'asc' (oldest first, default) or 'desc' (newest first).
     request:
       method: GET
       path: /api
@@ -54,14 +57,15 @@ tables:
         - name: contractaddress
           from: filter
           key: contractaddress
+        - name: sort
+          from: filter
+          key: sort
         - name: apikey
           from: input
           key: ETHERSCAN_API_KEY
     response:
       rows_path:
         - result
-      ok_path:
-        - status
       error_path:
         - message
       row_strategy: direct
