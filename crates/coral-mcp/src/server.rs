@@ -3,11 +3,11 @@
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, PaginationRequest, SearchCatalogRequest, Source, SubmitFeedbackRequest,
+    ListSourcesRequest, PaginationRequest, SearchRequest, Source, SubmitFeedbackRequest,
     TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient,
+    AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient,
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
 };
 use rmcp::{
@@ -30,9 +30,9 @@ use crate::{
         describe_table_tool, describe_table_value, feedback_tool, guide_resource,
         guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
         list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        required_string_argument, search_arguments, search_tool, search_value, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -81,6 +81,7 @@ pub(crate) struct CoralMcpServer {
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
+    search: SearchClient,
     feedback: FeedbackClient,
     options: McpOptions,
 }
@@ -91,6 +92,7 @@ impl CoralMcpServer {
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
+            search: app.search_client(),
             feedback: app.feedback_client(),
             options,
         }
@@ -262,33 +264,27 @@ impl CoralMcpServer {
         })
     }
 
-    async fn search_catalog_tool_result(
+    async fn search_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = search_catalog_arguments(request_arguments)?;
-        let mut catalog_client = self.catalog.clone();
-        match catalog_client
-            .search_catalog(Request::new(SearchCatalogRequest {
+        let arguments = search_arguments(request_arguments)?;
+        let mut search_client = self.search.clone();
+        match search_client
+            .search(Request::new(SearchRequest {
                 workspace: Some(default_workspace()),
-                pattern: arguments.pattern,
-                ignore_case: arguments.ignore_case,
-                schema_name: arguments.schema.unwrap_or_default(),
-                kind: catalog_item_kind_from_tool(arguments.kind) as i32,
-                pagination: Some(PaginationRequest {
-                    limit: arguments.pagination.limit,
-                    offset: arguments.pagination.offset,
-                }),
+                query: arguments.query,
+                limit: 0,
             }))
             .await
-            .map(|response| search_catalog_value(&response.into_inner()))
+            .map(|response| search_value(&response.into_inner()))
         {
             Ok(value) => Ok(ToolCallOutcome::Success(value)),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
             Err(status) => Ok(ToolCallOutcome::ToolError {
-                operation: "Catalog search",
+                operation: "Search",
                 status,
             }),
         }
@@ -351,12 +347,9 @@ impl CoralMcpServer {
                     self.execute_sql_value(&sql).await,
                 ))
             }
+            "search" => self.search_tool_result(request.arguments.as_ref()).await,
             "list_catalog" => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
-                    .await
-            }
-            "search_catalog" => {
-                self.search_catalog_tool_result(request.arguments.as_ref())
                     .await
             }
             "describe_table" => {
@@ -478,8 +471,8 @@ impl ServerHandler for CoralMcpServer {
             );
             let mut tools = vec![
                 sql_tool(&tool_context),
+                search_tool(&tool_context),
                 list_catalog_tool(&tool_context),
-                search_catalog_tool(&tool_context),
                 describe_table_tool(),
                 list_columns_tool(),
             ];

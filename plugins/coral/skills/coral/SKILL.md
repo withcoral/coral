@@ -23,8 +23,8 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 ## Workflow
 
 1. Identify the needed source, entity, and scope from the user request.
-2. Discover tables and table functions with `list_catalog` or `search_catalog`; page large catalogs and narrow by schema or kind when useful.
-3. Read `list_catalog` or `search_catalog` for `sql_reference`, `sql_call_example`, and `required_filters`; use `coral://guide` for query patterns and `coral://tables` for table summaries.
+2. Route ambiguous clues with `search`, and discover tables and table functions with `list_catalog`; page large catalogs and narrow by schema or kind when useful.
+3. Read `search` or `list_catalog` for `sql_reference`, `sql_call_example`, and `required_filters`; use `coral://guide` for query patterns and `coral://tables` for table summaries.
 4. Inspect `coral.columns` for table columns, required filters, virtual columns, and descriptions.
 5. Inspect `coral.table_functions` for source-scoped function arguments and result columns.
 6. Inspect `coral.inputs` when source configuration affects the answer.

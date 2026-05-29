@@ -68,6 +68,7 @@ The local server and core orchestrator.
 | Feedback persistence | Workspace-scoped blocked-agent feedback reports (`feedback/`) |
 | Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
 | Catalog discovery | Lists/searches/describes query-visible tables and columns (`catalog/`) |
+| Universal Search | Routes clues to typed catalog, column, and native-search-path hints (`search/`) |
 
 This is the largest crate. It ties `coral-spec` and `coral-engine` together and manages all persistent local state.
 
@@ -103,7 +104,7 @@ The MCP stdio server.
 | --------------- | ------------------------------------------------------------------- |
 | MCP protocol    | Tool and resource handlers via the `rmcp` SDK (`server.rs`)         |
 | Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs`; discovery semantics come from `coral-app` |
-| Tools           | `sql`, `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, optional `feedback` |
+| Tools           | `sql`, `search`, `list_catalog`, `describe_table`, `list_columns`, optional `feedback` |
 | Resources       | `coral://guide`, `coral://tables`                                   |
 
 Uses `coral-client` to reach `coral-app`, same transport as the CLI.
@@ -114,7 +115,7 @@ The shared gRPC contract.
 
 | Owns                 | Details                                                                                |
 | -------------------- | -------------------------------------------------------------------------------------- |
-| Protobuf definitions | `proto/coral/v1/` — `query.proto`, `sources.proto`, `catalog.proto`, `resources.proto` |
+| Protobuf definitions | `proto/coral/v1/` — `query.proto`, `sources.proto`, `catalog.proto`, `search.proto`, `resources.proto` |
 | Generated bindings   | Tonic-generated Rust types and service traits                                          |
 
 All inter-crate communication between `coral-client` and `coral-app` goes through these generated types.

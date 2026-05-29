@@ -6,7 +6,8 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+use super::search::search_output_schema;
+use super::{Pagination, parse_pagination};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {
@@ -44,12 +45,8 @@ pub(crate) struct ListCatalogArguments {
     pub(crate) pagination: Pagination,
 }
 
-pub(crate) struct SearchCatalogArguments {
-    pub(crate) pattern: String,
-    pub(crate) schema: Option<String>,
-    pub(crate) kind: Option<CatalogToolKind>,
-    pub(crate) ignore_case: bool,
-    pub(crate) pagination: Pagination,
+pub(crate) struct SearchArguments {
+    pub(crate) query: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,58 +148,30 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     )
 }
 
-pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
+pub(crate) fn search_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
-        "search_catalog",
-        search_catalog_description(context),
+        "search",
+        format!(
+            "Search Coral discovery metadata with one plain-text keyword/identifier query. Use it before SQL when you know a domain concept, source name, table/function name, column/filter name, or native provider-search target but not the exact Coral surface. Good queries combine salient terms such as source, entity, action, and identifier names, for example `github deployment sha`, `notion page updated`, or `acme/repo pull author`. The search engine tokenizes common technical identifiers, including dotted, slashed, hyphenated, underscored, @, and # terms, and matches against schema names, table names, function names, qualified names, descriptions, guide text, required filters, column names/types/descriptions, table-function kind, arguments, allowed argument values, result columns, and native search table functions. It is not SQL, regex, wildcard, boolean, or structured provider/type/scope filtering syntax; this tool accepts only `query`. Current release searches catalog metadata. {} {} table(s) and {} table function(s) are currently visible. Results are ranked hints; verify them with list_catalog, describe_table, list_columns, and ordinary Coral SQL.",
+            context.connected_sources_sentence(),
+            context.visible_table_count,
+            context.visible_function_count
+        ),
         json_object_schema(&json!({
             "type": "object",
-            "required": ["pattern"],
+            "required": ["query"],
+            "additionalProperties": false,
             "properties": {
-                "pattern": {
+                "query": {
                     "type": "string",
-                    "description": "Rust regex pattern to match database catalog metadata."
-                },
-                "schema": {
-                    "type": "string",
-                    "description": "Optional exact SQL schema/source name to search."
-                },
-                "kind": {
-                    "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
-                    "anyOf": [
-                        {
-                            "type": "string",
-                            "enum": ["table", "table_function"]
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
-                },
-                "ignore_case": {
-                    "type": "boolean",
-                    "description": "Whether regex matching is case-insensitive. Defaults to true."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum catalog items to return, from 1 to 100. Defaults to 20.",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 20
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching catalog items to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
+                    "description": "Plain-text keywords, phrases, or technical identifiers to match against Coral catalog metadata. Use source/table/function/column/filter names and domain nouns; do not pass SQL, regex, wildcards, or provider/type/scope filters."
                 }
             }
         })),
     )
-    .with_raw_output_schema(search_catalog_output_schema())
+    .with_raw_output_schema(search_output_schema())
     .with_annotations(
-        ToolAnnotations::with_title("Search Catalog")
+        ToolAnnotations::with_title("Search")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -350,15 +319,11 @@ pub(crate) fn list_catalog_arguments(
     })
 }
 
-pub(crate) fn search_catalog_arguments(
+pub(crate) fn search_arguments(
     arguments: Option<&Map<String, Value>>,
-) -> Result<SearchCatalogArguments, ErrorData> {
-    Ok(SearchCatalogArguments {
-        pattern: required_string_argument(arguments, "pattern")?,
-        schema: optional_string_argument(arguments, "schema")?,
-        kind: optional_catalog_kind_argument(arguments)?,
-        ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
-        pagination: parse_pagination_with_limits(arguments, 20, 100)?,
+) -> Result<SearchArguments, ErrorData> {
+    Ok(SearchArguments {
+        query: required_string_argument(arguments, "query")?,
     })
 }
 
@@ -421,15 +386,6 @@ fn sql_tool_description(context: &ToolDescriptionContext) -> String {
             context.visible_table_count
         )
     }
-}
-
-fn search_catalog_description(context: &ToolDescriptionContext) -> String {
-    format!(
-        "Search database catalog metadata with a Rust regex across connected Coral sources/schemas. {} {} table(s) and {} table function(s) are currently visible.",
-        context.connected_sources_sentence(),
-        context.visible_table_count,
-        context.visible_function_count
-    )
 }
 
 fn connected_source_names_text(source_names: &[String]) -> Option<String> {
@@ -566,78 +522,6 @@ fn catalog_table_function_item_output_schema() -> Value {
     })
 }
 
-fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        catalog_search_item_output_schema(catalog_table_item_output_schema()),
-                        catalog_search_item_output_schema(catalog_table_function_item_output_schema())
-                    ]
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    }))
-}
-
-fn catalog_search_item_output_schema(mut schema: Value) -> Value {
-    let object = schema
-        .as_object_mut()
-        .expect("catalog item schema is an object");
-    object
-        .get_mut("required")
-        .and_then(Value::as_array_mut)
-        .expect("catalog item schema has required array")
-        .push(json!("matched_fields"));
-    object
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-        .expect("catalog item schema has properties object")
-        .insert(
-            "matched_fields".to_string(),
-            json!({
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "enum": [
-                        "schema_name",
-                        "table_name",
-                        "function_name",
-                        "name",
-                        "description",
-                        "guide",
-                        "required_filters",
-                        "arguments",
-                        "result_columns"
-                    ]
-                }
-            }),
-        );
-    schema
-}
-
 fn list_columns_output_schema() -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
@@ -750,7 +634,7 @@ fn missing_table_output_schema() -> Value {
                     "properties": {
                         "tool": {
                             "type": "string",
-                            "enum": ["search_catalog", "list_catalog"]
+                            "enum": ["list_catalog"]
                         },
                         "arguments": { "type": "object" }
                     }
@@ -848,7 +732,7 @@ mod tests {
 
     use super::{
         ToolDescriptionContext, build_tool_result, connected_source_names_text,
-        list_catalog_arguments, search_catalog_arguments, search_catalog_tool, sql_tool,
+        list_catalog_arguments, search_tool, sql_tool,
     };
 
     #[test]
@@ -889,10 +773,6 @@ mod tests {
         arguments.insert("kind".to_string(), Value::Null);
         let list = list_catalog_arguments(Some(&arguments)).expect("list arguments");
         assert_eq!(list.kind, None);
-
-        arguments.insert("pattern".to_string(), Value::String("issue".to_string()));
-        let search = search_catalog_arguments(Some(&arguments)).expect("search arguments");
-        assert_eq!(search.kind, None);
     }
 
     #[test]
@@ -916,7 +796,7 @@ mod tests {
             .expect("sql input description");
         assert!(sql_input_description.contains("connected source schemas"));
 
-        let search_description = search_catalog_tool(&context)
+        let search_description = search_tool(&context)
             .description
             .expect("search description");
         assert!(search_description.contains("Connected sources/schemas include: github, linear"));
