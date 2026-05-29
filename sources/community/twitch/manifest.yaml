@@ -31,7 +31,7 @@ request_headers:
     value: application/json
 
 test_queries:
-  - SELECT id, login, display_name FROM twitch.users LIMIT 1
+  - SELECT id, login, display_name FROM twitch.users WHERE login = 'twitch' LIMIT 1
   - SELECT id, user_name, game_name FROM twitch.streams LIMIT 1
   - SELECT id, name FROM twitch.top_games LIMIT 1
 
