@@ -226,8 +226,7 @@ impl EncoderFactory for JsonSafeNumbersFactory {
                 let options = FormatOptions::new().with_display_error(true);
                 let formatter = ArrayFormatter::try_new(array, &options)?;
                 let nulls = array.nulls().cloned();
-                let encoder: Box<dyn Encoder + 'a> =
-                    Box::new(QuotedFormatterEncoder { formatter });
+                let encoder: Box<dyn Encoder + 'a> = Box::new(QuotedFormatterEncoder { formatter });
                 Ok(Some(NullableEncoder::new(encoder, nulls)))
             }
             _ => Ok(None),
@@ -242,8 +241,7 @@ struct QuotedFormatterEncoder<'a> {
 impl Encoder for QuotedFormatterEncoder<'_> {
     fn encode(&mut self, idx: usize, out: &mut Vec<u8>) {
         out.push(b'"');
-        write!(out, "{}", self.formatter.value(idx))
-            .expect("writing into Vec<u8> is infallible");
+        write!(out, "{}", self.formatter.value(idx)).expect("writing into Vec<u8> is infallible");
         out.push(b'"');
     }
 }
@@ -360,7 +358,10 @@ mod tests {
 
         let rows = batches_to_json_rows_json_safe_numbers(&[batch]).expect("rows");
         let first = rows.first().expect("first row");
-        assert_eq!(first.get("user_id"), Some(&Value::String(HUGE_I64.to_string())));
+        assert_eq!(
+            first.get("user_id"),
+            Some(&Value::String(HUGE_I64.to_string()))
+        );
         assert_eq!(
             first.get("snowflake_id"),
             Some(&Value::String(HUGE_U64.to_string())),
@@ -488,10 +489,7 @@ mod tests {
 
         let rows = batches_to_json_rows_json_safe_numbers(&[batch]).expect("rows");
         let expected = HUGE_I64.to_string();
-        let ids: Vec<_> = rows
-            .iter()
-            .map(|row| row.get("id").cloned())
-            .collect();
+        let ids: Vec<_> = rows.iter().map(|row| row.get("id").cloned()).collect();
         assert_eq!(
             ids,
             vec![
@@ -517,8 +515,7 @@ mod tests {
             DataType::Decimal128(38, 9),
             false,
         )]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(array) as _]).expect("batch");
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(array) as _]).expect("batch");
 
         let rows = batches_to_json_rows_json_safe_numbers(&[batch]).expect("rows");
         assert_eq!(
