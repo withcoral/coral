@@ -20,8 +20,8 @@ inputs:
   AZURE_DEVOPS_PAT:
     kind: secret
     hint: |
-      Azure DevOps personal access token with read scopes for the projects,
-      code, builds, and work items you want to query.
+      Azure DevOps personal access token with the minimum read scopes needed
+      for this source: vso.project, vso.code, vso.build, and vso.work.
   AZURE_DEVOPS_API_VERSION:
     kind: variable
     default: "7.1"
@@ -46,8 +46,10 @@ test_queries:
 functions:
   - name: wiql
     description: >-
-      Run a read-only Work Item Query Language query in a project. Returns
-      matching work item IDs and URLs; use `azure_devops.work_item` for fields.
+      Run a read-only flat Work Item Query Language query in a project. Returns
+      matching work item IDs and URLs from `workItems`; use
+      `azure_devops.work_item` for fields. OneHop and Tree WIQL relation
+      results are not modeled by this function.
     args:
       - name: project
         required: true
@@ -121,8 +123,7 @@ tables:
       rows_path: [value]
       row_strategy: direct
     pagination:
-      mode: offset
-      offset_param: $skip
+      mode: none
       page_size:
         default: 100
         max: 1000
@@ -648,8 +649,7 @@ tables:
       rows_path: [value]
       row_strategy: direct
     pagination:
-      mode: offset
-      offset_param: continuationToken
+      mode: none
       page_size:
         default: 100
         max: 1000

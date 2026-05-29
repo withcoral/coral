@@ -5,8 +5,17 @@ pipelines, WIQL results, and work items from Coral SQL.
 
 ## Credentials
 
-Create a personal access token with read scopes for the Azure DevOps areas you
-want to query, then add the source:
+Create a personal access token with the read scopes for the Azure DevOps areas
+you want to query. The exposed tables use these minimum scopes:
+
+| Surface | Minimum PAT scope |
+| --- | --- |
+| Projects | `vso.project` |
+| Repositories, pull requests, commits | `vso.code` |
+| Builds, pipelines | `vso.build` |
+| WIQL, work items | `vso.work` |
+
+Then add the source:
 
 ```bash
 export AZURE_DEVOPS_ORGANIZATION="my-org"
@@ -44,6 +53,34 @@ WHERE project = 'MyProject'
 LIMIT 50;
 ```
 
+Inspect recent commits in a repository:
+
+```sql
+SELECT commit_id, author__name, comment, author__date
+FROM azure_devops.commits
+WHERE project = 'MyProject'
+  AND repository_id = 'repo-id-here'
+ORDER BY author__date DESC
+LIMIT 50;
+```
+
+Inspect builds and pipelines in a project:
+
+```sql
+SELECT id, build_number, status, result, queue_time
+FROM azure_devops.builds
+WHERE project = 'MyProject'
+ORDER BY queue_time DESC
+LIMIT 50;
+```
+
+```sql
+SELECT id, name, folder, revision
+FROM azure_devops.pipelines
+WHERE project = 'MyProject'
+LIMIT 50;
+```
+
 Run WIQL and fetch matching work item details:
 
 ```sql
@@ -64,10 +101,45 @@ WHERE id = 12345;
 ## Notes
 
 - The source is read-only and avoids mutation endpoints.
+- `azure_devops.wiql(...)` supports flat WIQL queries that return
+  `workItems`. OneHop and Tree queries return `workItemRelations`, which this
+  function does not model.
+- Projects, pull requests, and commits use documented offset pagination.
+  Builds and pipelines request a bounded first page because Azure DevOps uses
+  continuation tokens that are not numeric offsets.
 - Work item fields vary by process template, so the full field map is exposed
   as JSON in the `fields` column.
 - Nested columns use Coral's double-underscore convention, for example
   `project__name` and `created_by__display_name`.
+
+## Schema overview
+
+| Name | Required filters | Pagination notes |
+| --- | --- | --- |
+| `azure_devops.projects` | none | Offset pagination with `$skip` and `$top`. |
+| `azure_devops.repositories` | none | Single API response. |
+| `azure_devops.pull_requests` | `project` | Offset pagination with `$skip` and `$top`. |
+| `azure_devops.commits` | `project`, `repository_id` | Offset pagination with `searchCriteria.$skip` and `searchCriteria.$top`. |
+| `azure_devops.builds` | `project` | Bounded first page only; Azure uses continuation tokens. |
+| `azure_devops.pipelines` | `project` | Bounded first page only; Azure uses continuation tokens. |
+| `azure_devops.work_item` | `id` | Single work item lookup. |
+| `azure_devops.wiql(...)` | `project`, `query` args | Flat WIQL only. |
+
+## Validation evidence
+
+Static validation run locally:
+
+```bash
+coral source lint sources/community/azure_devops/manifest.yaml
+make lint-sources
+yamllint sources/community/azure_devops/manifest.yaml
+git diff --check origin/main..HEAD
+gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
+```
+
+Credentialed `coral source add --file`, `coral source test azure_devops`, and
+representative live queries require an Azure DevOps organization PAT and were
+not run in this workspace.
 
 ## References
 
