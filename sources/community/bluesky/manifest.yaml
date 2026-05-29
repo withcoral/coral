@@ -12,12 +12,58 @@ inputs:
     kind: variable
     default: https://api.bsky.app/xrpc
     hint: >-
-      Bluesky AppView XRPC base URL. Use https://public.api.bsky.app/xrpc when
-      it is reachable from your network.
+      Bluesky AppView XRPC base URL. The default host supports the full source
+      test suite, including post search.
 
 test_queries:
-  - SELECT uri, author__handle, text FROM bluesky.search_posts(q => 'bluesky') LIMIT 5
-  - SELECT did, handle FROM bluesky.profile(actor => 'bsky.app') LIMIT 1
+  - >-
+    SELECT uri, author__handle, text
+    FROM bluesky.search_posts(q => 'bluesky')
+    LIMIT 1
+  - >-
+    SELECT did, handle
+    FROM bluesky.search_actors(q => 'coral')
+    LIMIT 1
+  - >-
+    SELECT uri, author__handle, text
+    FROM bluesky.author_feed(actor => 'bsky.app')
+    LIMIT 1
+  - >-
+    SELECT uri, author__handle, text
+    FROM bluesky.list_feed(
+      list => 'at://did:plc:ragtjsm2j2vknwkz3zp4oxrd/app.bsky.graph.list/3kmokjyuflk2g'
+    )
+    LIMIT 1
+  - >-
+    SELECT uri, author__handle, text
+    FROM bluesky.feed(
+      feed => 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot'
+    )
+    LIMIT 1
+  - >-
+    SELECT uri, author__handle, text
+    FROM bluesky.quotes(
+      uri => 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3l6oveex3ii2l'
+    )
+    LIMIT 1
+  - >-
+    SELECT uri, author__handle, text
+    FROM bluesky.post_thread(
+      uri => 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3l6oveex3ii2l'
+    )
+    LIMIT 1
+  - >-
+    SELECT did, handle
+    FROM bluesky.profile(actor => 'bsky.app')
+    LIMIT 1
+  - >-
+    SELECT did, handle
+    FROM bluesky.followers(actor => 'bsky.app')
+    LIMIT 1
+  - >-
+    SELECT did, handle
+    FROM bluesky.follows(actor => 'bsky.app')
+    LIMIT 1
 
 functions:
   - name: search_posts
@@ -733,7 +779,7 @@ functions:
         type: Json
         nullable: true
         description: Threadgate metadata returned by the AppView.
-        expr: {kind: path, path: [threadgate]}
+        expr: {kind: path, path: [thread, threadgate]}
       - name: raw
         type: Json
         nullable: false

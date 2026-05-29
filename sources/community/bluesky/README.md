@@ -6,18 +6,11 @@ search.
 
 ## Setup
 
-No credentials are required for the public endpoints in this source. The default
-AppView base URL is `https://api.bsky.app/xrpc`:
+No credentials are required for the public endpoints in this source. The
+default AppView base URL is `https://api.bsky.app/xrpc` and supports the full
+source test suite, including `app.bsky.feed.searchPosts`:
 
 ```bash
-coral source add --file sources/community/bluesky/manifest.yaml
-```
-
-If `https://public.api.bsky.app/xrpc` is reachable from your network and you
-prefer the docs-recommended public AppView host, set:
-
-```bash
-export BLUESKY_BASE_URL=https://public.api.bsky.app/xrpc
 coral source add --file sources/community/bluesky/manifest.yaml
 ```
 
@@ -25,6 +18,37 @@ Run validation:
 
 ```bash
 coral source test bluesky
+```
+
+Live validation against the default no-auth host on 2026-05-29:
+
+```text
+$ coral source add --file sources/community/bluesky/manifest.yaml
+Added source bluesky (secrets: none)
+
+  ✓ bluesky connected successfully
+  Secrets: none
+    Query tests
+    10 declared · 10 passed · 0 failed
+```
+
+```text
+$ coral source test bluesky
+  ✓ bluesky connected successfully
+  Secrets: none
+    Query tests
+    10 declared · 10 passed · 0 failed
+
+    ✓ bluesky.search_posts(...)  1 row
+    ✓ bluesky.search_actors(...) 1 row
+    ✓ bluesky.author_feed(...)   1 row
+    ✓ bluesky.list_feed(...)     1 row
+    ✓ bluesky.feed(...)          1 row
+    ✓ bluesky.quotes(...)        1 row
+    ✓ bluesky.post_thread(...)   1 row
+    ✓ bluesky.profile(...)       1 row
+    ✓ bluesky.followers(...)     1 row
+    ✓ bluesky.follows(...)       1 row
 ```
 
 ## Functions
@@ -102,13 +126,16 @@ FROM bluesky.post_thread(
 - This source uses public unauthenticated AT Protocol endpoints.
 - `search_posts` is modeled as a `kind: search` table function because the
   provider ranks results.
+- The `search_posts` `tag` argument sends one tag value. Bluesky's API accepts
+  repeated tag parameters, but this source intentionally exposes the common
+  single-tag case.
 - Complex AT Protocol shapes such as labels, embeds, profile associations,
   thread replies, and raw feed views are exposed as `Json` columns so SQL can
   extract additional fields with Coral's JSON helpers.
-- Bluesky's current docs recommend `https://public.api.bsky.app/xrpc` for
-  public AppView reads. The default remains `https://api.bsky.app/xrpc` because
-  it is broadly compatible and returns public data without credentials; override
-  `BLUESKY_BASE_URL` if you want the dedicated public host.
+- `https://public.api.bsky.app/xrpc` is not recommended here because
+  `app.bsky.feed.searchPosts` can return 403 there; keep the default
+  `https://api.bsky.app/xrpc` unless you have verified all needed functions
+  against another AppView host.
 
 ## API references
 
