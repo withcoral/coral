@@ -211,10 +211,19 @@ tables:
       - name: db
         required: true
     request:
-      method: GET
-      path: /{{filter.db}}
+      method: POST
+      path: /_dbs_info
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        format: text
+        content:
+          from: template
+          template: '{"keys":["{{filter.db}}"]}'
     response:
-      row_strategy: direct
+      rows_path: []
     pagination:
       mode: none
     columns:
@@ -230,42 +239,47 @@ tables:
         type: Utf8
         nullable: true
         description: Database name.
+        expr: {kind: path, path: [info, db_name]}
       - name: doc_count
         type: Int64
         nullable: true
         description: Number of documents.
+        expr: {kind: path, path: [info, doc_count]}
       - name: doc_del_count
         type: Int64
         nullable: true
         description: Number of deleted documents.
+        expr: {kind: path, path: [info, doc_del_count]}
       - name: update_seq
         type: Utf8
         nullable: true
         description: Update sequence token.
+        expr: {kind: path, path: [info, update_seq]}
       - name: sizes__active
         type: Int64
         nullable: true
         description: Active data size in bytes.
-        expr: {kind: path, path: [sizes, active]}
+        expr: {kind: path, path: [info, sizes, active]}
       - name: sizes__external
         type: Int64
         nullable: true
         description: External data size in bytes.
-        expr: {kind: path, path: [sizes, external]}
+        expr: {kind: path, path: [info, sizes, external]}
       - name: sizes__file
         type: Int64
         nullable: true
         description: File size in bytes.
-        expr: {kind: path, path: [sizes, file]}
+        expr: {kind: path, path: [info, sizes, file]}
       - name: compact_running
         type: Boolean
         nullable: true
         description: Whether compaction is running.
+        expr: {kind: path, path: [info, compact_running]}
       - name: cluster_json
         type: Json
         nullable: true
         description: Cluster shard settings.
-        expr: {kind: path, path: [cluster]}
+        expr: {kind: path, path: [info, cluster]}
       - name: raw_json
         type: Json
         nullable: true
