@@ -71,7 +71,7 @@ LIMIT 10;
 ```
 
 ```sql
--- Upcoming contests in the next 7 days
+-- Upcoming contests (phase = BEFORE means not yet started)
 SELECT name, type, duration_seconds / 3600.0 AS duration_hours,
        start_time_seconds
 FROM codeforces.contests
