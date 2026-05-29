@@ -49,9 +49,6 @@ functions:
         - name: mode
           from: filter
           key: mode
-        - name: limit
-          from: filter_int
-          key: limit
     response:
       rows_path:
         - result
@@ -64,6 +61,10 @@ functions:
         - result
         - next
         - cursor
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
     filters:
       - name: author_fid
         type: Int64
@@ -74,9 +75,6 @@ functions:
       - name: mode
         type: Utf8
         description: Search mode: literal (default), semantic, or hybrid.
-      - name: limit
-        type: Int64
-        description: Number of results per page (1-100, default 25).
     columns:
       - name: hash
         type: Utf8

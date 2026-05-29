@@ -49,7 +49,6 @@ Provider-ranked Farcaster cast search. Returns casts matching a search query, or
 | `author_fid` | Int64 | No | FID of the user whose casts to search |
 | `channel_id` | Utf8 | No | Filter by channel ID |
 | `mode` | Utf8 | No | Search mode: `literal` (default), `semantic`, or `hybrid` |
-| `limit` | Int64 | No | Results per page (1-100, default 25) |
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -67,6 +66,7 @@ Provider-ranked Farcaster cast search. Returns casts matching a search query, or
 **Call syntax:**
 
 ```sql
+-- SQL LIMIT controls how many results the Neynar API returns (default 25, max 100)
 SELECT hash, text, author__username
 FROM neynar.search_casts(q => 'your search query')
 LIMIT 25;
@@ -133,7 +133,7 @@ This source uses `kind: search` — a provider-ranked retrieval pattern. The API
 
 ### Result limits
 
-Returns up to 100 results per query (one page). Use the `limit` parameter to control result count. The `mode` parameter controls search behavior: `literal` (exact words), `semantic` (meaning-based), or `hybrid` (both).
+SQL `LIMIT` controls how many results the Neynar API returns per page (default 25, max 100). This is mapped to the API's `limit` query parameter via Coral's pagination system. The `mode` parameter controls search behavior: `literal` (exact words), `semantic` (meaning-based), or `hybrid` (both).
 
 ### Rate limits
 
