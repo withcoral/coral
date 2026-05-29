@@ -1,9 +1,9 @@
-﻿---
-name: dbt-cloud
-description: Query dbt Cloud jobs, runs, and environments
+---
+name: coral-dbt-cloud
+description: Query dbt Cloud jobs, runs, and environments via Coral SQL
 ---
 
-# dbt Cloud Health Skill
+# Coral Dbt Cloud
 
 Use this skill to query dbt Cloud jobs, runs, and environments through Coral SQL.
 The dbt_cloud source exposes three tables: `dbt_cloud.jobs`, `dbt_cloud.runs`, and `dbt_cloud.environments`.
@@ -29,10 +29,10 @@ Before querying, ensure the dbt_cloud source is added:
 ## Query Rules
 
 - Filter runs by status=20 to find errors; status=10 for successes.
-- Use `job_id` filter to push filtering to the API — do not scan all runs unnecessarily.
-- `duration`, `queued_duration`, `run_duration` are strings (e.g. "00:01:23") — use for display, not arithmetic.
-- `raw` column contains the full JSON object — use it only when a specific field is not in named columns.
-- Virtual columns (job_id_filter, status_filter, etc.) echo applied filters — useful for verification.
+- Use `job_id` filter to push filtering to the API ? do not scan all runs unnecessarily.
+- `duration`, `queued_duration`, `run_duration` are strings (e.g. "00:01:23") ? use for display, not arithmetic.
+- `raw` column contains the full JSON object ? use it only when a specific field is not in named columns.
+- Virtual columns (job_id_filter, status_filter, etc.) echo applied filters ? useful for verification.
 - Secret inputs always return `value = NULL`; use `is_set` to check credentials.
 
 ## Common Queries
@@ -60,8 +60,8 @@ ORDER BY e.name;
 
 ## Boundaries
 
-- Do not scan all runs without a filter — use job_id or status to limit API calls.
-- Do not treat empty results as failures — the account may have no runs matching the filter.
+- Do not scan all runs without a filter ? use job_id or status to limit API calls.
+- Do not treat empty results as failures ? the account may have no runs matching the filter.
 
 ## Feedback
 

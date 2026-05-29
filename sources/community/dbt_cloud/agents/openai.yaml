@@ -1,4 +1,4 @@
 ﻿interface:
-  display_name: "dbt Cloud Health"
-  short_description: "Query dbt Cloud jobs, runs, and environments through Coral"
-  default_prompt: "Use $coral to query dbt Cloud job health, run failures, and environment status through Coral MCP."
+  display_name: "Coral Dbt Cloud"
+  short_description: "Query dbt Cloud jobs, runs, and environments"
+  default_prompt: "Use $coral-dbt-cloud to query dbt Cloud job health, run failures, and environment status."

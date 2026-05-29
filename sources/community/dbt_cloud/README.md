@@ -146,22 +146,52 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name FROM coral.columns
 - The Discovery API (GraphQL) is not used in this source. Models, tests,
   and sources metadata require the Discovery API and are out of scope for v1.
 
-  ## Agent Skill
+## Agent Skill
 
-This source includes an agent skill for querying dbt Cloud health.
+This source ships with a Coral agent skill at
+`plugins/coral/skills/coral-dbt-cloud/` that teaches agents how to query
+dbt Cloud intelligently.
 
-### Quick Queries
+Install it with:
+
+```sh
+npx skills add withcoral/skills
+```
+
+The skill covers:
+
+- Workflow for discovering jobs before querying runs
+- Filter push-down patterns for `job_id`, `status`, `project_id`, and `environment_id`
+- Status code reference (1=Queued, 2=Starting, 3=Running, 10=Success, 20=Error, 30=Cancelled)
+- Cross-source join patterns with GitHub and other Coral sources
+- Common query templates for failure triage and environment health
+
+### Quick queries
+
+Most frequently failing jobs:
 
 ```sql
--- Recent failed runs
-SELECT r.id, j.name as job_name, r.status, r.started_at
+SELECT job_id, count(*) AS failures
+FROM dbt_cloud.runs
+WHERE status = 20
+GROUP BY job_id
+ORDER BY failures DESC;
+```
+
+Recent failed runs with job names:
+
+```sql
+SELECT r.id, j.name AS job_name, r.status, r.started_at, r.duration
 FROM dbt_cloud.runs r
 JOIN dbt_cloud.jobs j ON j.id = r.job_id
 WHERE r.status = 20
 ORDER BY r.started_at DESC
 LIMIT 20;
+```
 
--- Environment overview
+Environment health overview:
+
+```sql
 SELECT name, type, deployment_type, state
 FROM dbt_cloud.environments
 ORDER BY name;
