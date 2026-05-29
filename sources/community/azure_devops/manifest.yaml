@@ -426,7 +426,7 @@ tables:
       row_strategy: direct
     pagination:
       mode: offset
-      offset_param: searchCriteria.skip
+      offset_param: searchCriteria.$skip
       page_size:
         default: 100
         max: 1000
