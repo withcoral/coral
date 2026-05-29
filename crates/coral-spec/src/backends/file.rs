@@ -17,11 +17,13 @@ use std::fmt;
 use url::Url;
 
 use crate::common::parse_manifest_data_type;
-use crate::inputs::collect_source_inputs_value;
+use crate::inputs::{
+    collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
+};
 use crate::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputKind, ManifestInputSpec,
-    ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
-    TemplatePart, validate_columns, validate_table_names, validate_test_queries,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec, ParsedTemplate,
+    Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace, TemplatePart,
+    validate_columns, validate_table_names, validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -33,16 +35,17 @@ pub struct FileSourceManifest {
 }
 
 impl FileSourceManifest {
+    /// Returns all source secrets declared by this manifest.
+    pub fn declared_secret_names(&self) -> BTreeSet<String> {
+        declared_secret_input_names(&self.declared_inputs)
+    }
+
     /// Returns the source secrets required by this manifest.
     ///
-    /// Every declared input with `kind: secret` is required; secrets cannot
-    /// carry defaults.
+    /// Required declared inputs with `kind: secret` must be available before a
+    /// source can compile or authenticate.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        self.declared_inputs
-            .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret)
-            .map(|input| input.key.clone())
-            .collect()
+        required_secret_input_names(&self.declared_inputs)
     }
 }
 
@@ -652,6 +655,7 @@ mod tests {
             "inputs": {
                 "api_token": { "kind": "secret" },
                 "signing_key": { "kind": "secret" },
+                "optional_token": { "kind": "secret", "required": false },
                 "region": { "kind": "variable", "default": "us-east-1" },
             },
             "tables": [{
@@ -667,6 +671,7 @@ mod tests {
         let required = manifest.required_secret_names();
         assert!(required.contains("api_token"));
         assert!(required.contains("signing_key"));
+        assert!(!required.contains("optional_token"));
         assert_eq!(required.len(), 2);
 
         let kinds: Vec<(&str, ManifestInputKind)> = manifest

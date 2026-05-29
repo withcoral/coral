@@ -348,7 +348,9 @@ message CredentialMetadata {
   string value = 2;
 }
 
-// Transient OAuth method input.
+// OAuth method input used during credential retrieval. These values are not
+// stored as source-visible configuration; Coral may store sensitive values as
+// internal credential metadata when needed to preserve the OAuth lifecycle.
 message OAuthCredentialInput {
   // Logical input key expected by the selected OAuth credential method.
   string key = 1;
