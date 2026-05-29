@@ -1,0 +1,418 @@
+name: leetcode
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query LeetCode programming problems, difficulty levels, acceptance rates,
+  topic tags, and full problem details via the public LeetCode GraphQL API.
+  No authentication required.
+
+base_url: "https://leetcode.com"
+
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+  - name: Referer
+    from: literal
+    value: https://leetcode.com
+
+  - name: Origin
+    from: literal
+    value: https://leetcode.com
+
+  - name: User-Agent
+    from: literal
+    value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+test_queries:
+  - SELECT frontend_id, title, difficulty FROM leetcode.problems LIMIT 5
+  - SELECT frontend_id, title, difficulty, ac_rate FROM leetcode.problems WHERE difficulty = 'EASY' LIMIT 5
+  - SELECT frontend_id, title, topic_tags FROM leetcode.problems LIMIT 3
+
+tables:
+  - name: problems
+    description: >-
+      LeetCode programming problems. Returns problem metadata including
+      the frontend problem number, title, difficulty (EASY/MEDIUM/HARD),
+      acceptance rate, paid-only flag, and topic tags. Pagination is handled
+      automatically; use LIMIT to control how many rows are returned.
+    guide: >
+      List all problems:
+        SELECT frontend_id, title, difficulty, ac_rate FROM leetcode.problems LIMIT 50.
+      Filter by difficulty:
+        SELECT frontend_id, title, ac_rate FROM leetcode.problems WHERE difficulty = 'MEDIUM' LIMIT 20.
+      Look up a specific problem by slug:
+        SELECT frontend_id, title, difficulty FROM leetcode.problems WHERE slug = 'two-sum'.
+      Find easy problems with high acceptance:
+        SELECT frontend_id, title, ac_rate FROM leetcode.problems WHERE difficulty = 'EASY' ORDER BY ac_rate DESC LIMIT 10.
+    request:
+      method: POST
+      path: /graphql
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query problemsetQuestionList($limit: Int, $skip: Int, $filters: QuestionFilterInput) {
+              problemsetQuestionListV2(
+                limit: $limit,
+                skip: $skip,
+                filters: $filters
+              ) {
+                questions {
+                  questionFrontendId
+                  title
+                  titleSlug
+                  difficulty
+                  acRate
+                  paidOnly
+                  topicTags {
+                    name
+                    slug
+                  }
+                  status
+                }
+              }
+            }
+        - path: [variables, limit]
+          from: state
+          key: page_size
+        - path: [variables, skip]
+          from: state
+          key: offset
+        - path: [variables, filters, filterCombineType]
+          from: literal
+          value: ALL
+    response:
+      rows_path:
+        - data
+        - problemsetQuestionListV2
+        - questions
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 150 # Increased default page size to pull more records per request
+        max: 200
+        query_param: limit
+    columns:
+      - name: frontend_id
+        type: Utf8
+        nullable: false
+        description: The human-readable problem number shown on LeetCode (e.g. "1", "42").
+        expr:
+          kind: path
+          path:
+            - questionFrontendId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: The display title of the problem (e.g. "Two Sum").
+        expr:
+          kind: path
+          path:
+            - title
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: >-
+          The URL slug for this problem (e.g. "two-sum"). Use this value
+          as the title_slug filter or as the argument to problem_detail().
+          Construct the problem URL as https://leetcode.com/problems/<slug>.
+        expr:
+          kind: path
+          path:
+            - titleSlug
+      - name: difficulty
+        type: Utf8
+        nullable: true
+        description: "Problem difficulty level: 'EASY', 'MEDIUM', or 'HARD'."
+        expr:
+          kind: path
+          path:
+            - difficulty
+      - name: ac_rate
+        type: Float64
+        nullable: true
+        description: >-
+          Acceptance rate as a percentage (e.g. 49.3 means 49.3%).
+          Computed as accepted submissions divided by total submissions.
+        expr:
+          kind: path
+          path:
+            - acRate
+      - name: is_paid_only
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the problem requires a LeetCode Premium subscription to
+          view the full description and submit solutions.
+        expr:
+          kind: path
+          path:
+            - paidOnly
+      - name: topic_tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of topic tags attached to this problem. Each element has
+          "name" (e.g. "Array", "Hash Table") and "slug" fields.
+          Query with json_get_str to extract individual values, for example:
+          json_get_str(topic_tags, '0', 'name').
+        expr:
+          kind: path
+          path:
+            - topicTags
+      - name: topic_tag_names
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-separated list of topic tag names for this problem
+          (e.g. "Array,Hash Table,Two Pointers"). Convenient for plain-text
+          display and LIKE filtering.
+        expr:
+          kind: join_array_path
+          path:
+            - topicTags
+          item_path:
+            - name
+          separator: ","
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Submission status for the authenticated user. Null when unauthenticated.
+          Values include 'ac' (accepted) or 'notac'.
+        expr:
+          kind: path
+          path:
+            - status
+
+functions:
+  - name: problem_detail
+    kind: table
+    description: >-
+      Fetch the full detail for a single LeetCode problem by its title slug.
+      Returns one row containing the full problem statement (HTML), hints,
+      a sample test case, similar problems, submission statistics, and starter
+      code templates for every supported language. Use this after discovering
+      a problem slug from the problems table.
+      Example: SELECT title, difficulty, content FROM leetcode.problem_detail(title_slug => 'two-sum').
+    args:
+      - name: title_slug
+        required: true
+        bind:
+          arg: title_slug
+    request:
+      method: POST
+      path: /graphql
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query questionDetail($titleSlug: String!) {
+              question(titleSlug: $titleSlug) {
+                questionId
+                questionFrontendId
+                title
+                titleSlug
+                content
+                difficulty
+                likes
+                dislikes
+                isPaidOnly
+                categoryTitle
+                hints
+                sampleTestCase
+                acRate
+                stats
+                similarQuestions
+                topicTags {
+                  name
+                  slug
+                }
+                codeSnippets {
+                  lang
+                  langSlug
+                  code
+                }
+              }
+            }
+        - path: [variables, titleSlug]
+          from: arg
+          key: title_slug
+    response:
+      rows_path:
+        - data
+        - question
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: question_id
+        type: Utf8
+        nullable: true
+        description: Internal LeetCode question ID (not the same as frontend_id).
+        expr:
+          kind: path
+          path:
+            - questionId
+      - name: frontend_id
+        type: Utf8
+        nullable: false
+        description: Human-readable problem number (e.g. "1").
+        expr:
+          kind: path
+          path:
+            - questionFrontendId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Problem title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL slug for this problem (e.g. "two-sum").
+        expr:
+          kind: path
+          path:
+            - titleSlug
+      - name: content
+        type: Utf8
+        nullable: true
+        description: >-
+          Full problem statement as HTML. Strip or parse tags for plain-text
+          display. This field is null for paid-only problems when not
+          authenticated with a Premium account.
+        expr:
+          kind: path
+          path:
+            - content
+      - name: difficulty
+        type: Utf8
+        nullable: true
+        description: "Difficulty level: 'EASY', 'MEDIUM', or 'HARD'."
+        expr:
+          kind: path
+          path:
+            - difficulty
+      - name: likes
+        type: Int64
+        nullable: true
+        description: Total number of upvotes this problem has received.
+        expr:
+          kind: path
+          path:
+            - likes
+      - name: dislikes
+        type: Int64
+        nullable: true
+        description: Total number of downvotes this problem has received.
+        expr:
+          kind: path
+          path:
+            - dislikes
+      - name: is_paid_only
+        type: Boolean
+        nullable: true
+        description: Whether the problem requires a LeetCode Premium subscription.
+        expr:
+          kind: path
+          path:
+            - isPaidOnly
+      - name: category
+        type: Utf8
+        nullable: true
+        description: "Top-level category (e.g. 'Algorithms', 'Database')."
+        expr:
+          kind: path
+          path:
+            - categoryTitle
+      - name: hints
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of hint strings for this problem. Use json_get_str(hints, '0')
+          to get the first hint.
+        expr:
+          kind: path
+          path:
+            - hints
+      - name: sample_test_case
+        type: Utf8
+        nullable: true
+        description: A representative sample input for the problem.
+        expr:
+          kind: path
+          path:
+            - sampleTestCase
+      - name: ac_rate
+        type: Float64
+        nullable: true
+        description: Acceptance rate as a percentage.
+        expr:
+          kind: path
+          path:
+            - acRate
+      - name: stats
+        type: Json
+        nullable: true
+        description: >-
+          JSON object with submission statistics. Contains fields such as
+          totalAccepted, totalSubmission, totalAcceptedRaw, totalSubmissionRaw,
+          and acRate. Query with json_get_str(stats, 'totalAccepted').
+        expr:
+          kind: path
+          path:
+            - stats
+      - name: similar_questions
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of similar problems. Each element has title, titleSlug,
+          and difficulty. Useful for discovering related practice problems.
+          Query with json_get_str(similar_questions, '0', 'title').
+        expr:
+          kind: path
+          path:
+            - similarQuestions
+      - name: topic_tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of topic tags, each with "name" and "slug" fields.
+        expr:
+          kind: path
+          path:
+            - topicTags
+      - name: topic_tag_names
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-separated list of topic tag names (e.g. "Array,Hash Table").
+        expr:
+          kind: join_array_path
+          path:
+            - topicTags
+          item_path:
+            - name
+          separator: ","
+      - name: code_snippets
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of starter code templates. Each element has "lang"
+          (display name e.g. "Python3"), "langSlug" (e.g. "python3"), and
+          "code" (the template to fill in). Query with
+          json_get_str(code_snippets, '0', 'lang') to inspect available languages.
+        expr:
+          kind: path
+          path:
+            - codeSnippets
