@@ -23,7 +23,8 @@ In Pipedrive, navigate to:
 
 Copy your personal API token.
 
-> **Note:** this source currently supports API token authentication only.
+> **Note:** this source uses personal API token authentication only.
+> OAuth access tokens are not supported in this version.
 
 ### 2. Set your credentials
 
@@ -34,13 +35,19 @@ export PIPEDRIVE_API_TOKEN="<your-pipedrive-api-token>"
 ### 3. Add the source
 
 ```sh
-cargo run -p coral-cli -- source add --file sources/community/pipedrive/manifest.yaml
+coral source add --file sources/community/pipedrive/manifest.yaml
+```
+
+Or interactively:
+
+```sh
+coral source add --interactive --file sources/community/pipedrive/manifest.yaml
 ```
 
 ### 4. Verify
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
+coral sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
 ```
 
 You should see your available sales pipelines.
@@ -82,14 +89,16 @@ search APIs and are ideal for discovery workflows before querying tables.
 
 # Authentication
 
-This source authenticates using:
+This source authenticates using the `x-api-token` header:
 
 ```http
-Authorization: Bearer <PIPEDRIVE_API_TOKEN>
+x-api-token: <PIPEDRIVE_API_TOKEN>
 ```
 
 The API token inherits the permissions and visibility scope of the authenticated
-Pipedrive user.
+Pipedrive user. Bearer / OAuth tokens are not supported in this version; the
+`x-api-token` header is required for personal API token auth per the
+[Pipedrive authentication docs](https://pipedrive.readme.io/docs/core-api-concepts-authentication).
 
 ---
 
@@ -276,7 +285,7 @@ Meetings, calls, tasks, emails, lunches, and other scheduled CRM activities.
 
 Supports filtering by:
 
-* `done`
+* `done` (0 = not done, 1 = done)
 * `user_id`
 * `type`
 
@@ -411,7 +420,7 @@ Example:
 
 ```sql
 SELECT *
-FROM search_deals(
+FROM pipedrive.search_deals(
   term => 'enterprise renewal'
 );
 ```
@@ -420,7 +429,7 @@ Exact match search:
 
 ```sql
 SELECT *
-FROM search_deals(
+FROM pipedrive.search_deals(
   term => 'Acme Corp Renewal',
   exact_match => true
 );
@@ -436,7 +445,7 @@ Example:
 
 ```sql
 SELECT *
-FROM search_persons(
+FROM pipedrive.search_persons(
   term => 'john'
 );
 ```
@@ -445,7 +454,7 @@ Search persons within an organization:
 
 ```sql
 SELECT *
-FROM search_persons(
+FROM pipedrive.search_persons(
   term => 'sarah',
   org_id => 42
 );
@@ -461,7 +470,7 @@ Example:
 
 ```sql
 SELECT *
-FROM search_organizations(
+FROM pipedrive.search_organizations(
   term => 'acme'
 );
 ```
@@ -554,18 +563,14 @@ LIMIT 20;
 
 # Pagination and filtering
 
-All tables use offset pagination:
+All tables use Pipedrive v1 offset pagination with `start` and `limit` query
+parameters.
 
-* `start`
-* `limit`
+Default page size is `100`. Maximum page size is `500`.
 
-Default page size is `100`.
-Maximum page size is `500`.
-
-Use `LIMIT` in SQL queries when exploring large CRM datasets.
-
-Many filters are pushed down directly to the Pipedrive API for better
-performance and reduced network usage.
+Use `LIMIT` in SQL queries when exploring large CRM datasets. Filters push
+down directly to the Pipedrive API as query parameters for better performance
+and reduced network usage.
 
 ---
 
@@ -574,80 +579,57 @@ performance and reduced network usage.
 Lint the manifest:
 
 ```sh
-cargo run -p coral-cli -- source lint sources/community/pipedrive/manifest.yaml
+coral source lint sources/community/pipedrive/manifest.yaml
 ```
 
 Add the source:
 
 ```sh
 export PIPEDRIVE_API_TOKEN="<your-pipedrive-api-token>"
-
-cargo run -p coral-cli -- source add --file sources/community/pipedrive/manifest.yaml
+coral source add --file sources/community/pipedrive/manifest.yaml
 ```
 
 Validate core tables:
 
 ```sh
-# pipelines
-cargo run -p coral-cli -- sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
-
-# stages
-cargo run -p coral-cli -- sql "SELECT id, name, pipeline_name FROM pipedrive.stages LIMIT 5"
-
-# deals
-cargo run -p coral-cli -- sql "SELECT id, title, status, value FROM pipedrive.deals LIMIT 5"
-
-# persons
-cargo run -p coral-cli -- sql "SELECT id, name, org_name FROM pipedrive.persons LIMIT 5"
-
-# organizations
-cargo run -p coral-cli -- sql "SELECT id, name, people_count FROM pipedrive.organizations LIMIT 5"
-
-# activities
-cargo run -p coral-cli -- sql "SELECT id, subject, type, done FROM pipedrive.activities LIMIT 5"
-
-# notes
-cargo run -p coral-cli -- sql "SELECT id, deal_id, user_id__name FROM pipedrive.notes LIMIT 5"
-
-# leads
-cargo run -p coral-cli -- sql "SELECT id, title, source_name FROM pipedrive.leads LIMIT 5"
-
-# products
-cargo run -p coral-cli -- sql "SELECT id, name, code FROM pipedrive.products LIMIT 5"
-
-# users
-cargo run -p coral-cli -- sql "SELECT id, name, email FROM pipedrive.users LIMIT 5"
+coral sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
+coral sql "SELECT id, name, pipeline_name FROM pipedrive.stages LIMIT 5"
+coral sql "SELECT id, title, status, value FROM pipedrive.deals LIMIT 5"
+coral sql "SELECT id, name, org_name FROM pipedrive.persons LIMIT 5"
+coral sql "SELECT id, name, people_count FROM pipedrive.organizations LIMIT 5"
+coral sql "SELECT id, subject, type, done FROM pipedrive.activities LIMIT 5"
+coral sql "SELECT id, deal_id, user_id__name FROM pipedrive.notes LIMIT 5"
+coral sql "SELECT id, title, source_name FROM pipedrive.leads LIMIT 5"
+coral sql "SELECT id, name, code FROM pipedrive.products LIMIT 5"
+coral sql "SELECT id, name, email FROM pipedrive.users LIMIT 5"
 ```
 
 Validate search functions:
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT * FROM search_deals(term => 'enterprise') LIMIT 5"
-
-cargo run -p coral-cli -- sql "SELECT * FROM search_persons(term => 'john') LIMIT 5"
-
-cargo run -p coral-cli -- sql "SELECT * FROM search_organizations(term => 'acme') LIMIT 5"
+coral sql "SELECT * FROM pipedrive.search_deals(term => 'enterprise') LIMIT 5"
+coral sql "SELECT * FROM pipedrive.search_persons(term => 'john') LIMIT 5"
+coral sql "SELECT * FROM pipedrive.search_organizations(term => 'acme') LIMIT 5"
 ```
 
 Inspect registered tables and columns:
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'pipedrive'"
-
-cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'pipedrive' ORDER BY table_name, ordinal_position"
+coral sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'pipedrive'"
+coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'pipedrive' ORDER BY table_name, ordinal_position"
 ```
 
 ---
 
 # Notes
 
-* Uses the Pipedrive REST API v1
-* Authentication currently supports personal API tokens only
+* Uses Pipedrive REST API v1 (`https://api.pipedrive.com/v1`)
+* Authenticates with `x-api-token` header (personal API token only)
 * API permissions and visibility depend on the authenticated user
 * All tables are read-only
-* Offset pagination is used for all resources
+* Offset pagination (`start` / `limit`) used for all resources
 * Search functions use provider-native ranking from Pipedrive
-* Many nested API fields are flattened into SQL-friendly column names
+* Nested API fields are flattened using double-underscore naming (`owner_id__name`)
 * Timestamp fields are returned as ISO 8601 strings
 * Some entities may be hidden depending on company visibility rules
 * Large CRM accounts should always query with `LIMIT`

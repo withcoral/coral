@@ -18,9 +18,9 @@ base_url: "https://api.pipedrive.com/v1"
 auth:
   type: HeaderAuth
   headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.PIPEDRIVE_API_TOKEN}}
+    - name: x-api-token
+      from: input
+      key: PIPEDRIVE_API_TOKEN
 
 test_queries:
   - SELECT id, name FROM pipedrive.pipelines LIMIT 1
@@ -28,7 +28,7 @@ test_queries:
 
 tables:
   # ──────────────────────────────────────────────
-  # PIPELINES  (no filters required — good anchor)
+  # PIPELINES
   # ──────────────────────────────────────────────
   - name: pipelines
     description: >
@@ -42,15 +42,12 @@ tables:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     columns:
       - name: id
         type: Int64
@@ -90,26 +87,26 @@ tables:
     request:
       method: GET
       path: /stages
+      query:
+        - name: pipeline_id
+          from: filter
+          key: pipeline_id
+          required: false
     response:
       rows_path:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     filters:
       - name: pipeline_id
         type: Int64
         description: Filter stages by pipeline ID
-        required: false
-        query_param: pipeline_id
     columns:
       - name: id
         type: Int64
@@ -156,43 +153,49 @@ tables:
     request:
       method: GET
       path: /deals
+      query:
+        - name: status
+          from: filter
+          key: status
+          required: false
+        - name: pipeline_id
+          from: filter_int
+          key: pipeline_id
+          required: false
+        - name: stage_id
+          from: filter_int
+          key: stage_id
+          required: false
+        - name: user_id
+          from: filter_int
+          key: user_id
+          required: false
     response:
       rows_path:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     filters:
       - name: status
         type: Utf8
         description: >
           Filter by deal status. One of: open, won, lost, deleted, all_not_deleted.
           Defaults to all_not_deleted.
-        required: false
-        query_param: status
       - name: pipeline_id
         type: Int64
         description: Filter deals by pipeline ID
-        required: false
-        query_param: pipeline_id
       - name: stage_id
         type: Int64
         description: Filter deals by stage ID
-        required: false
-        query_param: stage_id
       - name: user_id
         type: Int64
         description: Filter deals by owner user ID
-        required: false
-        query_param: user_id
     columns:
       - name: id
         type: Int64
@@ -316,26 +319,26 @@ tables:
     request:
       method: GET
       path: /persons
+      query:
+        - name: user_id
+          from: filter_int
+          key: user_id
+          required: false
     response:
       rows_path:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     filters:
       - name: user_id
         type: Int64
         description: Filter persons by owner user ID
-        required: false
-        query_param: user_id
     columns:
       - name: id
         type: Int64
@@ -417,26 +420,26 @@ tables:
     request:
       method: GET
       path: /organizations
+      query:
+        - name: user_id
+          from: filter_int
+          key: user_id
+          required: false
     response:
       rows_path:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     filters:
       - name: user_id
         type: Int64
         description: Filter organizations by owner user ID
-        required: false
-        query_param: user_id
     columns:
       - name: id
         type: Int64
@@ -536,39 +539,43 @@ tables:
     request:
       method: GET
       path: /activities
+      query:
+        - name: done
+          from: filter_int
+          key: done
+          required: false
+        - name: user_id
+          from: filter_int
+          key: user_id
+          required: false
+        - name: type
+          from: filter
+          key: type
+          required: false
     response:
       rows_path:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     filters:
       - name: done
         type: Int64
         description: >
           Filter by completion status. 0 = not done, 1 = done.
           Omit to return all activities.
-        required: false
-        query_param: done
       - name: user_id
         type: Int64
         description: Filter activities by owner user ID
-        required: false
-        query_param: user_id
       - name: type
         type: Utf8
         description: >
           Filter by activity type key (e.g. call, meeting, task, email, lunch).
-        required: false
-        query_param: type
     columns:
       - name: id
         type: Int64
@@ -653,41 +660,47 @@ tables:
     request:
       method: GET
       path: /notes
+      query:
+        - name: deal_id
+          from: filter_int
+          key: deal_id
+          required: false
+        - name: person_id
+          from: filter_int
+          key: person_id
+          required: false
+        - name: org_id
+          from: filter_int
+          key: org_id
+          required: false
+        - name: user_id
+          from: filter_int
+          key: user_id
+          required: false
     response:
       rows_path:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     filters:
       - name: deal_id
         type: Int64
         description: Filter notes by deal ID
-        required: false
-        query_param: deal_id
       - name: person_id
         type: Int64
         description: Filter notes by person ID
-        required: false
-        query_param: person_id
       - name: org_id
         type: Int64
         description: Filter notes by organization ID
-        required: false
-        query_param: org_id
       - name: user_id
         type: Int64
         description: Filter notes by author user ID
-        required: false
-        query_param: user_id
     columns:
       - name: id
         type: Int64
@@ -747,15 +760,12 @@ tables:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     columns:
       - name: id
         type: Utf8
@@ -815,15 +825,12 @@ tables:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     columns:
       - name: id
         type: Int64
@@ -892,15 +899,12 @@ tables:
         - data
     pagination:
       mode: offset
+      offset_param: start
+      offset_start: 0
       page_size:
         default: 100
         max: 500
         query_param: limit
-      offset_param: start
-      rows_path:
-        - additional_data
-        - pagination
-        - more_items_in_collection
     columns:
       - name: id
         type: Int64
@@ -951,11 +955,10 @@ tables:
         type: Utf8
         description: Last modification timestamp (ISO 8601)
 
+functions:
   # ──────────────────────────────────────────────
   # SEARCH FUNCTIONS
   # ──────────────────────────────────────────────
-
-functions:
   - name: search_deals
     description: >
       Search deals by term across title, notes, and custom fields.
@@ -963,29 +966,35 @@ functions:
       the deals table.
     kind: search
     search_limits:
-      default: 10
-      max: 100
+      default_top_k: 10
+      max_top_k: 100
     request:
       method: GET
       path: /deals/search
+      query:
+        - name: term
+          from: arg
+          key: term
+        - name: exact_match
+          from: arg_bool
+          key: exact_match
+          required: false
     response:
       rows_path:
         - data
         - items
-    arguments:
+    args:
       - name: term
         type: Utf8
         description: >
           Search term (minimum 2 characters). Matched against deal titles,
           notes, and custom fields.
         required: true
-        query_param: term
       - name: exact_match
         type: Boolean
         description: >
           When true, only exact full-string matches are returned. Case-insensitive.
         required: false
-        query_param: exact_match
     columns:
       - name: result_score
         type: Float64
@@ -1018,33 +1027,42 @@ functions:
       Returns provider-ranked results.
     kind: search
     search_limits:
-      default: 10
-      max: 100
+      default_top_k: 10
+      max_top_k: 100
     request:
       method: GET
       path: /persons/search
+      query:
+        - name: term
+          from: arg
+          key: term
+        - name: exact_match
+          from: arg_bool
+          key: exact_match
+          required: false
+        - name: org_id
+          from: arg_int
+          key: org_id
+          required: false
     response:
       rows_path:
         - data
         - items
-    arguments:
+    args:
       - name: term
         type: Utf8
         description: >
           Search term (minimum 2 characters). Matched against name, email,
           phone, and notes.
         required: true
-        query_param: term
       - name: exact_match
         type: Boolean
         description: When true, only exact full-string matches are returned.
         required: false
-        query_param: exact_match
       - name: org_id
         type: Int64
         description: Limit results to persons belonging to this organization ID.
         required: false
-        query_param: org_id
     columns:
       - name: result_score
         type: Float64
@@ -1071,28 +1089,34 @@ functions:
       Returns provider-ranked results.
     kind: search
     search_limits:
-      default: 10
-      max: 100
+      default_top_k: 10
+      max_top_k: 100
     request:
       method: GET
       path: /organizations/search
+      query:
+        - name: term
+          from: arg
+          key: term
+        - name: exact_match
+          from: arg_bool
+          key: exact_match
+          required: false
     response:
       rows_path:
         - data
         - items
-    arguments:
+    args:
       - name: term
         type: Utf8
         description: >
           Search term (minimum 2 characters). Matched against name, address,
           and notes.
         required: true
-        query_param: term
       - name: exact_match
         type: Boolean
         description: When true, only exact full-string matches are returned.
         required: false
-        query_param: exact_match
     columns:
       - name: result_score
         type: Float64
