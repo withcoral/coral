@@ -1146,6 +1146,7 @@
           ]
         },
         "page_size": { "$ref": "#/$defs/page_size" },
+        "parallel": { "$ref": "#/$defs/pagination_parallel" },
         "cursor_param": { "type": "string", "minLength": 1 },
         "cursor_body_path": {
           "type": "array",
@@ -1163,6 +1164,21 @@
         "offset_step": { "type": "integer", "minimum": 1 },
         "link_header_require_results": { "type": "boolean" },
         "max_pages": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "pagination_parallel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy"],
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["independent_pages", "independent_offsets"]
+        },
+        "max_concurrency": { "type": "integer", "minimum": 1 },
+        "page_param": { "type": "string", "minLength": 1 },
+        "page_start": { "type": "integer" },
+        "page_step": { "type": "integer", "minimum": 1 }
       }
     },
     "page_size": {

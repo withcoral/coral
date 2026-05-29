@@ -544,6 +544,8 @@ pub struct PaginationSpec {
     #[serde(default)]
     pub page_size: Option<PageSizeSpec>,
     #[serde(default)]
+    pub parallel: Option<PaginationParallelSpec>,
+    #[serde(default)]
     pub cursor_param: Option<String>,
     #[serde(default)]
     pub cursor_body_path: Vec<String>,
@@ -572,6 +574,7 @@ impl Default for PaginationSpec {
         Self {
             mode: PaginationMode::default(),
             page_size: None,
+            parallel: None,
             cursor_param: None,
             cursor_body_path: Vec::new(),
             response_cursor_path: Vec::new(),
@@ -592,6 +595,7 @@ impl Default for PaginationSpec {
 pub struct ValidatedPagination {
     pub mode: ValidatedPaginationMode,
     pub page_size: Option<PageSizeSpec>,
+    pub parallel: Option<ValidatedPaginationParallel>,
     pub link_header_require_results: bool,
 }
 
@@ -615,6 +619,45 @@ pub struct OffsetPagination {
     step: OffsetStep,
 }
 
+/// Declarative opt-in for pagination that can construct later pages without
+/// reading earlier responses.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct PaginationParallelSpec {
+    pub strategy: PaginationParallelStrategy,
+    #[serde(default = "default_parallel_max_concurrency")]
+    pub max_concurrency: usize,
+    #[serde(default)]
+    pub page_param: Option<String>,
+    #[serde(default)]
+    pub page_start: Option<i64>,
+    #[serde(default)]
+    pub page_step: Option<i64>,
+}
+
+/// Parallel pagination strategies supported by the source-spec DSL.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaginationParallelStrategy {
+    IndependentPages,
+    IndependentOffsets,
+}
+
+/// Fully validated parallel pagination settings ready for engine use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidatedPaginationParallel {
+    IndependentPages(IndependentPagePagination),
+    IndependentOffsets { max_concurrency: usize },
+}
+
+/// Validated independently addressable page-number settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndependentPagePagination {
+    pub param: String,
+    pub start: i64,
+    pub step: i64,
+    pub max_concurrency: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OffsetStep {
     Explicit(i64),
@@ -630,9 +673,11 @@ impl PaginationSpec {
     pub fn validated(&self, schema: &str, table: &str) -> Result<ValidatedPagination> {
         let page_size = self.validated_page_size(schema, table)?;
         let mode = self.validated_mode(schema, table, page_size.is_some())?;
+        let parallel = self.validated_parallel(schema, table, &mode, page_size.as_ref())?;
         Ok(ValidatedPagination {
             mode,
             page_size,
+            parallel,
             link_header_require_results: self.link_header_require_results,
         })
     }
@@ -738,6 +783,89 @@ impl PaginationSpec {
 
         Ok(Some(page_size.clone()))
     }
+
+    fn validated_parallel(
+        &self,
+        schema: &str,
+        table: &str,
+        mode: &ValidatedPaginationMode,
+        page_size: Option<&PageSizeSpec>,
+    ) -> Result<Option<ValidatedPaginationParallel>> {
+        let Some(parallel) = &self.parallel else {
+            return Ok(None);
+        };
+        if parallel.max_concurrency == 0 {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.parallel.max_concurrency must be > 0"
+            )));
+        }
+        if page_size.is_none() {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.parallel requires page_size"
+            )));
+        }
+
+        match parallel.strategy {
+            PaginationParallelStrategy::IndependentPages => {
+                let (param, start, step) = match mode {
+                    ValidatedPaginationMode::Page => {
+                        let param = self.page_param.clone().ok_or_else(|| {
+                            ManifestError::validation(format!(
+                                "{schema}.{table} pagination.parallel.strategy=independent_pages requires page_param"
+                            ))
+                        })?;
+                        (param, self.page_start, self.page_step)
+                    }
+                    ValidatedPaginationMode::LinkHeader => {
+                        let param = parallel.page_param.clone().ok_or_else(|| {
+                            ManifestError::validation(format!(
+                                "{schema}.{table} pagination.parallel.strategy=independent_pages with mode=link_header requires parallel.page_param"
+                            ))
+                        })?;
+                        let start = parallel.page_start.ok_or_else(|| {
+                            ManifestError::validation(format!(
+                                "{schema}.{table} pagination.parallel.strategy=independent_pages with mode=link_header requires parallel.page_start"
+                            ))
+                        })?;
+                        let step = parallel.page_step.ok_or_else(|| {
+                            ManifestError::validation(format!(
+                                "{schema}.{table} pagination.parallel.strategy=independent_pages with mode=link_header requires parallel.page_step"
+                            ))
+                        })?;
+                        (param, start, step)
+                    }
+                    _ => {
+                        return Err(ManifestError::validation(format!(
+                            "{schema}.{table} pagination.parallel.strategy=independent_pages requires pagination.mode=page or link_header"
+                        )));
+                    }
+                };
+                if step <= 0 {
+                    return Err(ManifestError::validation(format!(
+                        "{schema}.{table} pagination.parallel.page_step must be > 0"
+                    )));
+                }
+                Ok(Some(ValidatedPaginationParallel::IndependentPages(
+                    IndependentPagePagination {
+                        param,
+                        start,
+                        step,
+                        max_concurrency: parallel.max_concurrency,
+                    },
+                )))
+            }
+            PaginationParallelStrategy::IndependentOffsets => match mode {
+                ValidatedPaginationMode::Offset(_) => {
+                    Ok(Some(ValidatedPaginationParallel::IndependentOffsets {
+                        max_concurrency: parallel.max_concurrency,
+                    }))
+                }
+                _ => Err(ManifestError::validation(format!(
+                    "{schema}.{table} pagination.parallel.strategy=independent_offsets requires pagination.mode=offset"
+                ))),
+            },
+        }
+    }
 }
 
 impl OffsetPagination {
@@ -760,6 +888,10 @@ impl OffsetPagination {
 
 fn default_page_step() -> i64 {
     1
+}
+
+fn default_parallel_max_concurrency() -> usize {
+    4
 }
 
 /// Supported pagination modes in the source-spec DSL.
@@ -1263,6 +1395,161 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("demo.items pagination.mode=offset requires offset_step or page_size")
+        );
+    }
+
+    #[test]
+    fn pagination_parallel_accepts_independent_page_mode() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::Page,
+            page_param: Some("page".to_string()),
+            page_start: 1,
+            page_size: Some(PageSizeSpec {
+                default: 50,
+                max: 100,
+                query_param: Some("per_page".to_string()),
+                body_path: vec![],
+            }),
+            parallel: Some(PaginationParallelSpec {
+                strategy: PaginationParallelStrategy::IndependentPages,
+                max_concurrency: 3,
+                page_param: None,
+                page_start: None,
+                page_step: None,
+            }),
+            ..PaginationSpec::default()
+        };
+
+        let validated = pagination.validated("demo", "items").unwrap();
+
+        assert_eq!(
+            validated.parallel,
+            Some(ValidatedPaginationParallel::IndependentPages(
+                IndependentPagePagination {
+                    param: "page".to_string(),
+                    start: 1,
+                    step: 1,
+                    max_concurrency: 3,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn pagination_parallel_accepts_link_header_with_explicit_page_coordinates() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::LinkHeader,
+            page_size: Some(PageSizeSpec {
+                default: 50,
+                max: 100,
+                query_param: Some("per_page".to_string()),
+                body_path: vec![],
+            }),
+            parallel: Some(PaginationParallelSpec {
+                strategy: PaginationParallelStrategy::IndependentPages,
+                max_concurrency: 2,
+                page_param: Some("page".to_string()),
+                page_start: Some(1),
+                page_step: Some(1),
+            }),
+            ..PaginationSpec::default()
+        };
+
+        let validated = pagination.validated("demo", "items").unwrap();
+
+        assert_eq!(
+            validated.parallel,
+            Some(ValidatedPaginationParallel::IndependentPages(
+                IndependentPagePagination {
+                    param: "page".to_string(),
+                    start: 1,
+                    step: 1,
+                    max_concurrency: 2,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn pagination_parallel_rejects_cursor_mode() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::CursorQuery,
+            cursor_param: Some("cursor".to_string()),
+            response_cursor_path: vec!["next".to_string()],
+            page_size: Some(PageSizeSpec {
+                default: 50,
+                max: 100,
+                query_param: Some("limit".to_string()),
+                body_path: vec![],
+            }),
+            parallel: Some(PaginationParallelSpec {
+                strategy: PaginationParallelStrategy::IndependentPages,
+                max_concurrency: 2,
+                page_param: None,
+                page_start: None,
+                page_step: None,
+            }),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+
+        assert!(
+            err.to_string().contains(
+                "demo.items pagination.parallel.strategy=independent_pages requires pagination.mode=page or link_header"
+            )
+        );
+    }
+
+    #[test]
+    fn pagination_parallel_rejects_missing_page_size() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::Page,
+            page_param: Some("page".to_string()),
+            parallel: Some(PaginationParallelSpec {
+                strategy: PaginationParallelStrategy::IndependentPages,
+                max_concurrency: 2,
+                page_param: None,
+                page_start: None,
+                page_step: None,
+            }),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.parallel requires page_size")
+        );
+    }
+
+    #[test]
+    fn pagination_parallel_rejects_zero_concurrency() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::Page,
+            page_param: Some("page".to_string()),
+            page_size: Some(PageSizeSpec {
+                default: 50,
+                max: 100,
+                query_param: Some("per_page".to_string()),
+                body_path: vec![],
+            }),
+            parallel: Some(PaginationParallelSpec {
+                strategy: PaginationParallelStrategy::IndependentPages,
+                max_concurrency: 0,
+                page_param: None,
+                page_start: None,
+                page_step: None,
+            }),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.parallel.max_concurrency must be > 0")
         );
     }
 }

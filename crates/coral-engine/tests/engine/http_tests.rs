@@ -1154,6 +1154,100 @@ async fn pagination_page_mode() {
 }
 
 #[tokio::test]
+async fn pagination_parallel_page_mode_preserves_order_and_limit() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[..2] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "2"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_parallel_page", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "page",
+        "page_param": "page",
+        "page_start": 1,
+        "page_size": {
+            "default": 2,
+            "max": 2,
+            "query_param": "per_page"
+        },
+        "parallel": {
+            "strategy": "independent_pages",
+            "max_concurrency": 2
+        }
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_parallel_page.users LIMIT 3",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
+async fn pagination_parallel_short_first_page_does_not_fetch_later_pages() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[..1] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_parallel_short", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "page",
+        "page_param": "page",
+        "page_start": 1,
+        "page_size": {
+            "default": 2,
+            "max": 2,
+            "query_param": "per_page"
+        },
+        "parallel": {
+            "strategy": "independent_pages",
+            "max_concurrency": 2
+        }
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_parallel_short.users LIMIT 3",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![users_rows()[0].clone()]);
+}
+
+#[tokio::test]
 async fn pagination_offset_mode() {
     let server = MockServer::start().await;
     let rows = users_rows();
@@ -1198,6 +1292,57 @@ async fn pagination_offset_mode() {
 }
 
 #[tokio::test]
+async fn pagination_parallel_offset_mode() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("offset", "0"))
+        .and(query_param("limit", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[..2] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("offset", "2"))
+        .and(query_param("limit", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_parallel_offset", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "offset",
+        "offset_param": "offset",
+        "offset_start": 0,
+        "page_size": {
+            "default": 2,
+            "max": 2,
+            "query_param": "limit"
+        },
+        "parallel": {
+            "strategy": "independent_offsets",
+            "max_concurrency": 2
+        }
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_parallel_offset.users LIMIT 3",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
 async fn pagination_link_header() {
     let server = MockServer::start().await;
     let rows = users_rows();
@@ -1229,6 +1374,58 @@ async fn pagination_link_header() {
             &[source],
             test_runtime(),
             "SELECT id, name, email FROM http_link.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+#[tokio::test]
+async fn pagination_parallel_link_header_with_independent_page_param() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[..2] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("page", "2"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_parallel_link", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "link_header",
+        "page_size": {
+            "default": 2,
+            "max": 2,
+            "query_param": "per_page"
+        },
+        "parallel": {
+            "strategy": "independent_pages",
+            "page_param": "page",
+            "page_start": 1,
+            "page_step": 1,
+            "max_concurrency": 2
+        }
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_parallel_link.users LIMIT 3",
         )
         .await
         .expect("query should succeed"),

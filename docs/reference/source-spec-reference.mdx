@@ -815,13 +815,26 @@ The `pagination` object controls how Coral fetches additional pages of results.
 | `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                      |
 | `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                 |
 | `page_start`                  | integer         | `0`     | Starting page number                                                                                   |
+| `page_step`                   | integer         | `1`     | Amount to add to the page number after each fetched page                                               |
 | `offset_param`                | string          | —       | Query parameter name for the offset (`offset` mode)                                                    |
 | `offset_start`                | integer         | `0`     | Starting offset value                                                                                  |
+| `offset_step`                 | integer         | —       | Amount to add to the offset after each fetched page; defaults to page size when `page_size` is present |
 | `page_size.default`           | integer         | —       | Default page size                                                                                      |
 | `page_size.max`               | integer         | —       | Maximum page size                                                                                      |
 | `page_size.query_param`       | string          | —       | Query parameter name for the page size                                                                 |
+| `parallel.strategy`           | string          | —       | Optional parallel pagination opt-in: `independent_pages` or `independent_offsets`                      |
+| `parallel.max_concurrency`    | integer         | `4`     | Maximum number of later pages to fetch concurrently                                                    |
+| `parallel.page_param`         | string          | —       | Explicit page query parameter for `link_header` endpoints that also accept independent page numbers    |
+| `parallel.page_start`         | integer         | —       | Explicit first page number for `link_header` parallel pagination                                       |
+| `parallel.page_step`          | integer         | —       | Explicit page step for `link_header` parallel pagination                                               |
 | `max_pages`                   | integer         | —       | Maximum number of pages to fetch                                                                       |
 | `link_header_require_results` | boolean         | `false` | For `link_header` mode, require non-empty results to continue                                          |
+
+By default Coral fetches pages sequentially. Add `parallel` only when the API
+can construct page N without reading the response for page N-1. Cursor
+pagination is sequential because the next cursor comes from the previous
+response. Parallel pagination is only used for finite SQL `LIMIT` queries;
+unbounded queries keep the sequential path.
 
 Example using cursor-based pagination:
 
@@ -862,6 +875,40 @@ pagination:
     default: 30
     max: 100
     query_param: per_page
+```
+
+Example using independently addressable page numbers:
+
+```yaml
+pagination:
+  mode: page
+  page_param: page
+  page_start: 1
+  page_size:
+    default: 100
+    max: 100
+    query_param: per_page
+  parallel:
+    strategy: independent_pages
+    max_concurrency: 4
+```
+
+Example using link headers for sequential pagination while declaring the
+explicit page parameter Coral may use for finite-limit parallel fetches:
+
+```yaml
+pagination:
+  mode: link_header
+  page_size:
+    default: 30
+    max: 100
+    query_param: per_page
+  parallel:
+    strategy: independent_pages
+    page_param: page
+    page_start: 1
+    page_step: 1
+    max_concurrency: 4
 ```
 
 ## Source inputs

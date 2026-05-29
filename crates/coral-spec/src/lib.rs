@@ -94,11 +94,13 @@ pub use backends::mcp::{
 pub(crate) use common::validate_test_queries;
 pub use common::{
     BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,
-    FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode,
+    FunctionArgBinding, HeaderSpec, HttpMethod, IndependentPagePagination, ManifestDataType,
+    PageSizeSpec, PaginationMode, PaginationParallelSpec, PaginationParallelStrategy,
     PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat,
     ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
     SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
-    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValidatedPaginationParallel,
+    ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
 pub use inputs::{
