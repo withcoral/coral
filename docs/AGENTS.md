@@ -28,6 +28,20 @@
   `docs/reference/community-sources.mdx`; any PR may leave that generated page
   stale so unrelated changes do not fail on aggregate community catalog drift.
 
+## Publishing (which branch Mintlify deploys)
+- The live docs site deploys from the long-lived `docs` branch, not `main`.
+  `docs` lags `main` and only advances to states that match a shipped release,
+  so the bundled-sources catalog never advertises a source the latest released
+  binary cannot run.
+- `main` still owns docs freshness: keep `docs/` aligned with the code as today,
+  and `make docs-check` still guards bundled-source/changelog freshness on `main`.
+  Merging to `main` no longer publishes to the live site by itself.
+- The release workflow force-resets `docs` to the released commit after the
+  binary actually ships from the `publish-version` job in
+  `.github/workflows/release.yml`. This reset is intentional and content-safe.
+- There is no separate immediate-publish path for doc-only fixes in this flow.
+  They reach the live site when the next release advances `docs`.
+
 ## Maintaining these instructions
 - Keep docs-specific agent rules here; keep repo-wide agent and contributor
   rules in the root `AGENTS.md`

@@ -38,6 +38,7 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
+use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
@@ -48,7 +49,7 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -244,11 +245,7 @@ impl ServerBuilder {
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
-        let layout = AppStateLayout::discover(
-            self.config
-                .config_dir
-                .or_else(|| env.coral_config_dir_override()),
-        )?;
+        let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
@@ -261,7 +258,9 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
+        let credential_config = CredentialStorageConfig::load(&layout)?;
+        let credential_store =
+            CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let source_manager = SourceManager::new(
             config_store.clone(),

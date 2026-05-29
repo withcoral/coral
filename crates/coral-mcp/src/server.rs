@@ -127,15 +127,8 @@ impl CoralMcpServer {
     }
 
     async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
-        self.load_table_summaries(None).await
-    }
-
-    async fn load_table_summaries(
-        &self,
-        schema_name: Option<&str>,
-    ) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         self.load_catalog(
-            schema_name,
+            None,
             CATALOG_KIND_TABLE,
             PaginationRequest {
                 limit: LIST_CATALOG_UNBOUNDED_LIMIT,

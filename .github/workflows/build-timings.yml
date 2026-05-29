@@ -6,7 +6,7 @@ on:
     - cron: "0 6 * * *"
 
 permissions:
-  actions: write
+  actions: read
   contents: read
 
 env:
@@ -45,7 +45,7 @@ jobs:
         with:
           shared-key: coral-build-${{ runner.os }}
           cache-on-failure: true
-          save-if: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build with timings
         run: |

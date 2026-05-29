@@ -1,0 +1,58 @@
+name: xkcd
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query webcomics from xkcd.com, including the latest comic and historical
+  comics by ID.
+base_url: "https://xkcd.com"
+test_queries:
+  - "SELECT * FROM xkcd.comics LIMIT 1"
+  - "SELECT * FROM xkcd.comics WHERE comic_id = 614 LIMIT 1"
+
+tables:
+  - name: comics
+    description: xkcd webcomics.
+    filters:
+      - name: comic_id
+        required: false
+    request:
+      method: GET
+      path: /info.0.json
+    requests:
+      - when_filters:
+          - comic_id
+        method: GET
+        path: /{{filter.comic_id}}/info.0.json
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: comic_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - num
+      - name: title
+        type: Utf8
+      - name: safe_title
+        type: Utf8
+      - name: alt
+        type: Utf8
+      - name: transcript
+        type: Utf8
+      - name: img
+        type: Utf8
+      - name: year
+        type: Utf8
+      - name: month
+        type: Utf8
+      - name: day
+        type: Utf8
+      - name: link
+        type: Utf8
+      - name: news
+        type: Utf8
