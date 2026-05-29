@@ -30,6 +30,20 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Check out skills distribution
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: withcoral/skills
+          ref: main
+          path: skills-dist
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Export skills
+        run: |
+          set -euo pipefail
+          cargo run --locked -p xtask -- export-skills --dest skills-dist
+
       - name: Create GitHub App token
         id: github-app-token
         uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
@@ -39,21 +53,6 @@ jobs:
           permission-contents: write
           repositories: |
             skills
-
-      - name: Check out skills distribution
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          repository: withcoral/skills
-          ref: main
-          path: skills-dist
-          token: ${{ steps.github-app-token.outputs.token }}
-          persist-credentials: true
-          fetch-depth: 0
-
-      - name: Export skills
-        run: |
-          set -euo pipefail
-          cargo run --locked -p xtask -- export-skills --dest skills-dist
 
       - name: Commit and publish changes
         run: |
@@ -70,4 +69,4 @@ jobs:
           git commit \
             -m "chore: sync skills from coral" \
             -m "Source: withcoral/coral@${GITHUB_SHA}"
-          git push origin HEAD:main
+          git push "https://x-access-token:${{ steps.github-app-token.outputs.token }}@github.com/withcoral/skills.git" HEAD:main

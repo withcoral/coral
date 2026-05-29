@@ -67,8 +67,14 @@ export function Container({
       style={{ height: maxHeight ? undefined : height, maxHeight, width, ...style }}
       {...rest}
     >
-      <BaseScrollArea.Viewport className={classNames(styles.viewport, styles.viewportFade[fade])} ref={viewportRef}>
-        <BaseScrollArea.Content className={styles.content} style={constrainWidth ? { minWidth: 0 } : undefined}>
+      <BaseScrollArea.Viewport
+        className={classNames(styles.viewport, styles.viewportFade[fade])}
+        ref={viewportRef}
+      >
+        <BaseScrollArea.Content
+          className={styles.content}
+          style={constrainWidth ? { minWidth: 0 } : undefined}
+        >
           {children}
         </BaseScrollArea.Content>
       </BaseScrollArea.Viewport>

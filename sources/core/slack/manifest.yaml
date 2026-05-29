@@ -7,17 +7,54 @@ description: >-
 inputs:
   SLACK_TOKEN:
     kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Slack
+          description: Authorize Slack with OAuth and store a user token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://localhost:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://slack.com/oauth/v2_user/authorize
+              token_url: https://slack.com/api/oauth.v2.user.access
+            client:
+              id:
+                input: SLACK_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: comma
+                values:
+                  - channels:read
+                  - groups:read
+                  - channels:history
+                  - groups:history
+                  - users:read
+                  - users:read.email
+        - type: source_config
+          label: Paste Slack OAuth Token
+          description: Paste an existing Slack OAuth token with the required scopes.
     hint: |
       Slack doesn't provide a general-purpose API for reading messages.
-      Instead, you need a Slack app with a Bot User OAuth Token.
+      Instead, you need a Slack app with an OAuth token.
 
       If you already have a Slack app with the required scopes, you can
-      find your Bot User OAuth Token on its OAuth & Permissions page. The
+      find your OAuth token on its OAuth & Permissions page. The
       required scopes are: channels:read, channels:history, groups:read,
       groups:history, users:read, users:read.email.
 
-      If you don't have a Slack app, you can
-      [create one with the required scopes pre-filled](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D).
+      If you don't have a Slack app, create one with the required
+      scopes pre-filled:
+
+      - [User token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback%22%5D%2C%22scopes%22%3A%7B%22user%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Aread%22%2C%22channels%3Aread%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%2C%22pkce_enabled%22%3Atrue%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D)
+        — works with the "Connect with Slack" OAuth flow. Reads the
+        channels the authorizing user belongs to.
+      - [Bot token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D)
+        — install it, then paste the bot token. Reads the channels the
+        bot has been added to.
 
       For more details, see the [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
 base_url: https://slack.com
@@ -29,6 +66,216 @@ auth:
       template: Bearer {{input.SLACK_TOKEN}}
 test_queries:
   - SELECT * FROM slack.channels LIMIT 1
+functions:
+  - name: messages
+    description: Messages in a Slack channel.
+    args:
+      - name: channel
+        required: true
+        bind:
+          arg: channel
+      - name: oldest
+        bind:
+          arg: oldest
+      - name: latest
+        bind:
+          arg: latest
+    request:
+      method: GET
+      path: /api/conversations.history
+      query:
+        - name: channel
+          from: arg
+          key: channel
+        - name: oldest
+          from: arg
+          key: oldest
+        - name: latest
+          from: arg
+          key: latest
+    response:
+      ok_path:
+        - ok
+      error_path:
+        - error
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path:
+        - response_metadata
+        - next_cursor
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID of the message author
+        expr:
+          kind: path
+          path:
+            - user
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Message text content
+        expr:
+          kind: path
+          path:
+            - text
+      - name: ts
+        type: Timestamp
+        nullable: false
+        description: Message time from Slack `ts`, exposed as a UTC Timestamp
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - ts
+      - name: thread_ts
+        type: Utf8
+        nullable: true
+        description: Thread parent timestamp (null if not in a thread)
+        expr:
+          kind: path
+          path:
+            - thread_ts
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Number of replies in thread
+        expr:
+          kind: path
+          path:
+            - reply_count
+      - name: subtype
+        type: Utf8
+        nullable: true
+        description: Message subtype
+        expr:
+          kind: path
+          path:
+            - subtype
+  - name: thread_replies
+    description: Slack thread replies for a specific channel and parent message.
+    args:
+      - name: channel
+        required: true
+        bind:
+          arg: channel
+      - name: thread_ts
+        required: true
+        bind:
+          arg: thread_ts
+      - name: oldest
+        bind:
+          arg: oldest
+      - name: latest
+        bind:
+          arg: latest
+      - name: inclusive
+        bind:
+          arg: inclusive
+      - name: include_all_metadata
+        bind:
+          arg: include_all_metadata
+    request:
+      method: GET
+      path: /api/conversations.replies
+      query:
+        - name: channel
+          from: arg
+          key: channel
+        - name: ts
+          from: arg
+          key: thread_ts
+        - name: oldest
+          from: arg
+          key: oldest
+        - name: latest
+          from: arg
+          key: latest
+        - name: inclusive
+          from: arg
+          key: inclusive
+        - name: include_all_metadata
+          from: arg
+          key: include_all_metadata
+    response:
+      ok_path:
+        - ok
+      error_path:
+        - error
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+      cursor_param: cursor
+      response_cursor_path:
+        - response_metadata
+        - next_cursor
+    columns:
+      - name: thread_ts
+        type: Utf8
+        nullable: true
+        description: Thread parent timestamp
+        expr:
+          kind: path
+          path:
+            - thread_ts
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID of the reply author
+        expr:
+          kind: path
+          path:
+            - user
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Reply text content
+        expr:
+          kind: path
+          path:
+            - text
+      - name: ts
+        type: Timestamp
+        nullable: false
+        description: Reply time from Slack `ts`, exposed as a UTC Timestamp
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - ts
+      - name: reply_count
+        type: Int64
+        nullable: true
+        description: Number of replies in thread (present on parent messages)
+        expr:
+          kind: path
+          path:
+            - reply_count
+      - name: subtype
+        type: Utf8
+        nullable: true
+        description: Message subtype
+        expr:
+          kind: path
+          path:
+            - subtype
 tables:
   - name: channels
     description: Slack channels with topic, purpose, and member count
@@ -118,310 +365,6 @@ tables:
           kind: path
           path:
             - created
-  - name: messages
-    description: Messages in a Slack channel (requires channel filter)
-    guide: |
-      Use this table for Messages in a Slack channel (requires channel
-      filter). Requires `channel` from `slack.channels`. `oldest` and
-      `latest` are Slack API timestamp filters: pass raw Slack timestamp
-      strings such as `1777593600.000000`, not ISO-8601 timestamps. The
-      returned `ts` column is a normal UTC `Timestamp`, so use SQL
-      predicates such as `ts >= CAST('2026-05-01T00:00:00Z' AS TIMESTAMP)`
-      when you want ISO-style filtering after the channel history is fetched.
-    request:
-      method: GET
-      path: /api/conversations.history
-      query:
-        - name: channel
-          from: filter
-          key: channel
-        - name: oldest
-          from: filter
-          key: oldest
-        - name: latest
-          from: filter
-          key: latest
-    response:
-      ok_path:
-        - ok
-      error_path:
-        - error
-      rows_path:
-        - messages
-    pagination:
-      mode: cursor_query
-      page_size:
-        default: 200
-        max: 200
-        query_param: limit
-      cursor_param: cursor
-      response_cursor_path:
-        - response_metadata
-        - next_cursor
-    columns:
-      - name: channel
-        type: Utf8
-        nullable: false
-        description: Channel ID (required filter to specify which channel)
-        expr:
-          kind: from_filter
-          key: channel
-      - name: user_id
-        type: Utf8
-        nullable: true
-        description: User ID of the message author
-        expr:
-          kind: path
-          path:
-            - user
-      - name: text
-        type: Utf8
-        nullable: true
-        description: Message text content
-        expr:
-          kind: path
-          path:
-            - text
-      - name: ts
-        type: Timestamp
-        nullable: false
-        description: Message time from Slack `ts`, exposed as a UTC Timestamp
-        expr:
-          kind: format_timestamp
-          input: seconds
-          expr:
-            kind: path
-            path:
-              - ts
-      - name: permalink
-        type: Utf8
-        nullable: false
-        description: Deep link to the message in Slack
-        expr:
-          kind: template
-          template: "https://slack.com/archives/{{filter.channel}}/p{{expr.ts_id}}"
-          values:
-            ts_id:
-              kind: replace
-              expr:
-                kind: path
-                path:
-                  - ts
-              from: "."
-              to: ""
-      - name: thread_ts
-        type: Utf8
-        nullable: true
-        description: Thread parent timestamp (null if not in a thread)
-        expr:
-          kind: path
-          path:
-            - thread_ts
-      - name: reply_count
-        type: Int64
-        nullable: true
-        description: Number of replies in thread
-        expr:
-          kind: path
-          path:
-            - reply_count
-      - name: subtype
-        type: Utf8
-        nullable: true
-        description: Message subtype
-        expr:
-          kind: path
-          path:
-            - subtype
-      - name: oldest
-        type: Utf8
-        nullable: true
-        description: Oldest Slack raw `ts` filter such as `1777593600.000000`; not ISO-8601 (virtual)
-        expr:
-          kind: "null"
-        virtual: true
-      - name: latest
-        type: Utf8
-        nullable: true
-        description: Latest Slack raw `ts` filter such as `1777593600.000000`; not ISO-8601 (virtual)
-        expr:
-          kind: "null"
-        virtual: true
-    filters:
-      - name: channel
-        required: true
-      - name: oldest
-      - name: latest
-  - name: thread_replies
-    description: Slack thread replies for a specific channel and parent message
-    guide: |
-      Requires both `channel` and raw `thread_ts`. Start from
-      `slack.messages` with a channel filter, find a parent message with
-      `reply_count > 0`, then pass that row's `thread_ts` when present or
-      its raw Slack message timestamp as `thread_ts`. The `oldest` and
-      `latest` filters also expect raw Slack timestamp strings such as
-      `1777593600.000000`, not ISO-8601 timestamps.
-    request:
-      method: GET
-      path: /api/conversations.replies
-      query:
-        - name: channel
-          from: filter
-          key: channel
-        - name: ts
-          from: filter
-          key: thread_ts
-        - name: oldest
-          from: filter
-          key: oldest
-        - name: latest
-          from: filter
-          key: latest
-        - name: inclusive
-          from: filter
-          key: inclusive
-        - name: include_all_metadata
-          from: filter
-          key: include_all_metadata
-    response:
-      ok_path:
-        - ok
-      error_path:
-        - error
-      rows_path:
-        - messages
-    pagination:
-      mode: cursor_query
-      page_size:
-        default: 200
-        max: 200
-        query_param: limit
-      cursor_param: cursor
-      response_cursor_path:
-        - response_metadata
-        - next_cursor
-    columns:
-      - name: channel
-        type: Utf8
-        nullable: false
-        description: Channel ID (required filter to specify which channel)
-        expr:
-          kind: from_filter
-          key: channel
-      - name: thread_ts
-        type: Utf8
-        nullable: false
-        description: Thread parent timestamp (required filter)
-        expr:
-          kind: from_filter
-          key: thread_ts
-      - name: user_id
-        type: Utf8
-        nullable: true
-        description: User ID of the reply author
-        expr:
-          kind: path
-          path:
-            - user
-      - name: text
-        type: Utf8
-        nullable: true
-        description: Reply text content
-        expr:
-          kind: path
-          path:
-            - text
-      - name: ts
-        type: Timestamp
-        nullable: false
-        description: Reply time from Slack `ts`, exposed as a UTC Timestamp
-        expr:
-          kind: format_timestamp
-          input: seconds
-          expr:
-            kind: path
-            path:
-              - ts
-      - name: permalink
-        type: Utf8
-        nullable: false
-        description: Deep link to the thread reply in Slack
-        expr:
-          kind: template
-          template: "https://slack.com/archives/{{filter.channel}}/p{{expr.ts_id}}?thread_ts={{expr.thread_ts}}&cid={{filter.channel}}"
-          values:
-            ts_id:
-              kind: replace
-              expr:
-                kind: path
-                path:
-                  - ts
-              from: "."
-              to: ""
-            thread_ts:
-              kind: coalesce
-              exprs:
-                - kind: path
-                  path:
-                    - thread_ts
-                - kind: path
-                  path:
-                    - ts
-      - name: reply_count
-        type: Int64
-        nullable: true
-        description: Number of replies in thread (present on parent messages)
-        expr:
-          kind: path
-          path:
-            - reply_count
-      - name: subtype
-        type: Utf8
-        nullable: true
-        description: Message subtype
-        expr:
-          kind: path
-          path:
-            - subtype
-      - name: oldest
-        type: Utf8
-        nullable: true
-        description: Oldest Slack raw `ts` filter such as `1777593600.000000`; not ISO-8601 (virtual)
-        expr:
-          kind: "null"
-        virtual: true
-      - name: latest
-        type: Utf8
-        nullable: true
-        description: Latest Slack raw `ts` filter such as `1777593600.000000`; not ISO-8601 (virtual)
-        expr:
-          kind: "null"
-        virtual: true
-      - name: inclusive
-        type: Utf8
-        nullable: true
-        description: Include messages matching oldest or latest timestamps, as true or false (virtual)
-        expr:
-          kind: from_filter
-          key: inclusive
-        virtual: true
-      - name: include_all_metadata
-        type: Utf8
-        nullable: true
-        description: Return all metadata associated with thread messages, as true or false (virtual)
-        expr:
-          kind: from_filter
-          key: include_all_metadata
-        virtual: true
-    filters:
-      - name: channel
-        required: true
-      - name: thread_ts
-        required: true
-      - name: oldest
-      - name: latest
-      - name: inclusive
-      - name: include_all_metadata
   - name: users
     description: Slack workspace users with profile info (email requires users:read.email scope)
     guide: |

@@ -6,18 +6,30 @@ export interface PaletteValues {
   BlackAlpha: ColorScale
   Blue: ColorScale
   BlueAlpha: ColorScale
+  CoralGreen: ColorScale
+  CoralGreenAlpha: ColorScale
   Gray: ColorScale
   GrayAlpha: ColorScale
   Green: ColorScale
   GreenAlpha: ColorScale
   Orange: ColorScale
   OrangeAlpha: ColorScale
-  PhoebeGreen: ColorScale
-  PhoebeGreenAlpha: ColorScale
   Purple: ColorScale
   PurpleAlpha: ColorScale
   Red: ColorScale
   RedAlpha: ColorScale
 }
 
-export type Scale = '01' | '02' | '03' | '04' | '05' | '06' | '07' | '08' | '09' | '10' | '11' | '12'
+export type Scale =
+  | '01'
+  | '02'
+  | '03'
+  | '04'
+  | '05'
+  | '06'
+  | '07'
+  | '08'
+  | '09'
+  | '10'
+  | '11'
+  | '12'

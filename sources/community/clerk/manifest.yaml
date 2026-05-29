@@ -1,0 +1,829 @@
+name: clerk
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query users, organizations, memberships, invitations, and sessions
+  from Clerk.
+base_url: https://api.clerk.com/v1
+
+inputs:
+  CLERK_SECRET_KEY:
+    kind: secret
+    hint: >-
+      Clerk Secret Key (starts with sk_live_ or sk_test_). Find it in the
+      Clerk Dashboard at https://dashboard.clerk.com → API Keys.
+      Requires at minimum the default Backend API read permissions.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.CLERK_SECRET_KEY}}"
+
+test_queries:
+  - SELECT id, first_name, last_name FROM clerk.users LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # users — list all users
+  # ──────────────────────────────────────────────────────────────────────
+  - name: users
+    description: >
+      Lists all users for the Clerk application. Returns profile data,
+      authentication settings, metadata, and account status. This is the
+      primary discovery table for user-related queries.
+    guide: >
+      Start with `SELECT id, first_name, last_name, username,
+      created_at FROM clerk.users LIMIT 10`. Use the id value to
+      filter sessions or organization memberships.
+    request:
+      method: GET
+      path: /users
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique user identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: User ID in your external system.
+        expr:
+          kind: path
+          path:
+            - external_id
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User's first name.
+        expr:
+          kind: path
+          path:
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User's last name.
+        expr:
+          kind: path
+          path:
+            - last_name
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username (if enabled in instance settings).
+        expr:
+          kind: path
+          path:
+            - username
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: URL of the user's profile image.
+        expr:
+          kind: path
+          path:
+            - image_url
+      - name: has_image
+        type: Boolean
+        nullable: true
+        description: Whether the user has uploaded a profile image.
+        expr:
+          kind: path
+          path:
+            - has_image
+      - name: primary_email_address_id
+        type: Utf8
+        nullable: true
+        description: ID of the user's primary email address.
+        expr:
+          kind: path
+          path:
+            - primary_email_address_id
+      - name: primary_phone_number_id
+        type: Utf8
+        nullable: true
+        description: ID of the user's primary phone number.
+        expr:
+          kind: path
+          path:
+            - primary_phone_number_id
+      - name: primary_web3_wallet_id
+        type: Utf8
+        nullable: true
+        description: ID of the user's primary Web3 wallet.
+        expr:
+          kind: path
+          path:
+            - primary_web3_wallet_id
+      - name: email_addresses
+        type: Json
+        nullable: true
+        description: Array of email address objects associated with the user.
+        expr:
+          kind: path
+          path:
+            - email_addresses
+      - name: phone_numbers
+        type: Json
+        nullable: true
+        description: Array of phone number objects associated with the user.
+        expr:
+          kind: path
+          path:
+            - phone_numbers
+      - name: web3_wallets
+        type: Json
+        nullable: true
+        description: Array of Web3 wallet objects associated with the user.
+        expr:
+          kind: path
+          path:
+            - web3_wallets
+      - name: external_accounts
+        type: Json
+        nullable: true
+        description: >-
+          Array of external OAuth account objects (verified and
+          unverified) linked to the user.
+        expr:
+          kind: path
+          path:
+            - external_accounts
+      - name: password_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the user has a password set.
+        expr:
+          kind: path
+          path:
+            - password_enabled
+      - name: two_factor_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the user has two-factor authentication enabled.
+        expr:
+          kind: path
+          path:
+            - two_factor_enabled
+      - name: totp_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the user has TOTP-based 2FA enabled.
+        expr:
+          kind: path
+          path:
+            - totp_enabled
+      - name: backup_code_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the user has backup codes enabled.
+        expr:
+          kind: path
+          path:
+            - backup_code_enabled
+      - name: banned
+        type: Boolean
+        nullable: true
+        description: Whether the user is currently banned.
+        expr:
+          kind: path
+          path:
+            - banned
+      - name: locked
+        type: Boolean
+        nullable: true
+        description: Whether the user is currently locked out.
+        expr:
+          kind: path
+          path:
+            - locked
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: >-
+          Metadata readable from Frontend and Backend APIs, writable
+          only from the Backend API.
+        expr:
+          kind: path
+          path:
+            - public_metadata
+      - name: private_metadata
+        type: Json
+        nullable: true
+        description: >-
+          Metadata accessible only from the Backend API.
+        expr:
+          kind: path
+          path:
+            - private_metadata
+      - name: unsafe_metadata
+        type: Json
+        nullable: true
+        description: >-
+          Metadata readable and writable from the Frontend API.
+          Use with caution.
+        expr:
+          kind: path
+          path:
+            - unsafe_metadata
+      - name: last_sign_in_at
+        type: Timestamp
+        nullable: true
+        description: When the user last signed in.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - last_sign_in_at
+      - name: last_active_at
+        type: Timestamp
+        nullable: true
+        description: When the user was last active.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - last_active_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the user account was created.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the user account was last updated.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # organizations — list all organizations
+  # ──────────────────────────────────────────────────────────────────────
+  - name: organizations
+    description: >
+      Lists all organizations for the Clerk application. Returns
+      organization profile data, membership limits, and metadata.
+    guide: >
+      Start with `SELECT id, name, slug, members_count,
+      created_at FROM clerk.organizations LIMIT 10`. Use the id
+      value to query organization_memberships.
+    request:
+      method: GET
+      path: /organizations
+      query:
+        - name: include_members_count
+          from: literal
+          value: "true"
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique organization identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Organization display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL-friendly organization identifier.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: URL of the organization's logo.
+        expr:
+          kind: path
+          path:
+            - image_url
+      - name: has_image
+        type: Boolean
+        nullable: true
+        description: Whether the organization has an uploaded logo.
+        expr:
+          kind: path
+          path:
+            - has_image
+      - name: members_count
+        type: Int64
+        nullable: true
+        description: Total number of members in the organization.
+        expr:
+          kind: path
+          path:
+            - members_count
+      - name: max_allowed_memberships
+        type: Int64
+        nullable: true
+        description: Maximum number of memberships allowed.
+        expr:
+          kind: path
+          path:
+            - max_allowed_memberships
+      - name: admin_delete_enabled
+        type: Boolean
+        nullable: true
+        description: Whether admins can delete the organization.
+        expr:
+          kind: path
+          path:
+            - admin_delete_enabled
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User ID of the organization creator.
+        expr:
+          kind: path
+          path:
+            - created_by
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: >-
+          Metadata readable from Frontend and Backend APIs, writable
+          only from the Backend API.
+        expr:
+          kind: path
+          path:
+            - public_metadata
+      - name: private_metadata
+        type: Json
+        nullable: true
+        description: >-
+          Metadata accessible only from the Backend API.
+        expr:
+          kind: path
+          path:
+            - private_metadata
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the organization was created.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the organization was last updated.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # organization_memberships — members of an organization
+  # ──────────────────────────────────────────────────────────────────────
+  - name: organization_memberships
+    description: >
+      Lists all memberships for a specific organization. Returns member
+      roles, permissions, and public user data. Requires the
+      organization_id filter obtained from the organizations table.
+    guide: >
+      Always filter by organization_id: `SELECT id, role,
+      created_at FROM clerk.organization_memberships
+      WHERE organization_id = '<org_id>'`. Get org IDs from
+      clerk.organizations first.
+    filters:
+      - name: organization_id
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.organization_id}}/memberships
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: organization_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Organization ID (from URL filter).
+        expr:
+          kind: from_filter
+          key: organization_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique membership identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: role
+        type: Utf8
+        nullable: true
+        description: >-
+          Role of the member (e.g. org:admin, org:member).
+        expr:
+          kind: path
+          path:
+            - role
+      - name: permissions
+        type: Json
+        nullable: true
+        description: Array of permissions granted to the member.
+        expr:
+          kind: path
+          path:
+            - permissions
+      - name: public_user_data
+        type: Json
+        nullable: true
+        description: >-
+          Public data about the member including user_id,
+          first_name, last_name, image_url, and identifier.
+        expr:
+          kind: path
+          path:
+            - public_user_data
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: >-
+          Metadata readable from Frontend and Backend APIs.
+        expr:
+          kind: path
+          path:
+            - public_metadata
+      - name: private_metadata
+        type: Json
+        nullable: true
+        description: >-
+          Metadata accessible only from the Backend API.
+        expr:
+          kind: path
+          path:
+            - private_metadata
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the membership was created.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the membership was last updated.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # invitations — list all invitations
+  # ──────────────────────────────────────────────────────────────────────
+  - name: invitations
+    description: >
+      Lists all invitations for the Clerk application. Returns
+      invitation status, email address, and metadata. Invitations are
+      returned sorted by descending creation date.
+    guide: >
+      Start with `SELECT id, email_address, status,
+      created_at FROM clerk.invitations LIMIT 10`. Filter by
+      status to find pending or revoked invitations.
+    filters:
+      - name: status
+        required: false
+    request:
+      method: GET
+      path: /invitations
+      query:
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique invitation identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email_address
+        type: Utf8
+        nullable: false
+        description: Email address the invitation was sent to.
+        expr:
+          kind: path
+          path:
+            - email_address
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Invitation status: pending, accepted, revoked, or expired.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: revoked
+        type: Boolean
+        nullable: true
+        description: Whether the invitation has been revoked.
+        expr:
+          kind: path
+          path:
+            - revoked
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL for accepting the invitation.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: When the invitation expires.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - expires_at
+      - name: public_metadata
+        type: Json
+        nullable: true
+        description: >-
+          Metadata readable from Frontend and Backend APIs.
+        expr:
+          kind: path
+          path:
+            - public_metadata
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the invitation was created.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the invitation was last updated.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────
+  # sessions — list all sessions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: sessions
+    description: >
+      Lists all sessions for the Clerk application. Returns session
+      status, associated user and client IDs, and activity timestamps.
+    guide: >
+      This table queries sessions by user_id. Use client_id and status
+      as optional filters to narrow results. Example:
+      `SELECT id, status, last_active_at
+      FROM clerk.sessions WHERE user_id = 'user_abc123'`.
+    filters:
+      - name: user_id
+        required: true
+      - name: client_id
+        required: false
+      - name: status
+        required: false
+    request:
+      method: GET
+      path: /sessions
+      query:
+        - name: user_id
+          from: filter
+          key: user_id
+        - name: client_id
+          from: filter
+          key: client_id
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique session identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: ID of the user who owns this session.
+        expr:
+          kind: path
+          path:
+            - user_id
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: ID of the client associated with this session.
+        expr:
+          kind: path
+          path:
+            - client_id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Session status: active, pending, abandoned, ended, expired,
+          removed, replaced, or revoked.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: last_active_organization_id
+        type: Utf8
+        nullable: true
+        description: ID of the organization the user was last active in.
+        expr:
+          kind: path
+          path:
+            - last_active_organization_id
+      - name: actor
+        type: Json
+        nullable: true
+        description: >-
+          Actor object if the session is impersonated, null otherwise.
+        expr:
+          kind: path
+          path:
+            - actor
+      - name: latest_activity
+        type: Json
+        nullable: true
+        description: Latest session activity metadata.
+        expr:
+          kind: path
+          path:
+            - latest_activity
+      - name: last_active_at
+        type: Timestamp
+        nullable: true
+        description: When the session was last active.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - last_active_at
+      - name: expire_at
+        type: Timestamp
+        nullable: true
+        description: When the session will expire.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - expire_at
+      - name: abandon_at
+        type: Timestamp
+        nullable: true
+        description: When the session will be abandoned.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - abandon_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the session was created.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the session was last updated.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: tasks
+        type: Json
+        nullable: true
+        description: Session tasks associated with the session.
+        expr:
+          kind: path
+          path:
+            - tasks

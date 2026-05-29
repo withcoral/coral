@@ -21,13 +21,14 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CoreError, QueryExecution, QueryPlan, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QuerySource, TableInfo,
+    CatalogInfo, CoreError, QueryExecution, QueryPlan, QueryResultObserver,
+    QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     tables: Vec<TableInfo>,
+    table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
@@ -36,7 +37,10 @@ pub(crate) async fn build_runtime(
     sources: &[QuerySource],
     runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
-    let session_config = SessionConfig::new().with_information_schema(true);
+    let session_config = SessionConfig::new().with_information_schema(true).set_bool(
+        "datafusion.execution.listing_table_ignore_subdirectory",
+        false,
+    );
     let runtime_env = Arc::new(
         RuntimeEnvBuilder::new()
             .with_object_list_cache_limit(0)
@@ -72,7 +76,12 @@ pub(crate) async fn build_runtime(
     } = runtime;
     let mut source_candidates = Vec::new();
     for source in sources {
-        match compile_query_source(source, &runtime_context, &extensions.request_authenticators) {
+        match compile_query_source(
+            source,
+            &runtime_context,
+            &extensions.request_authenticators,
+            extensions.source_input_resolver.clone(),
+        ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {
@@ -96,6 +105,7 @@ pub(crate) async fn build_runtime(
     catalog::register(&ctx, &registration.active_sources)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
+    let table_functions = catalog::collect_table_functions(&registration.active_sources);
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources
@@ -117,6 +127,7 @@ pub(crate) async fn build_runtime(
     Ok(QueryRuntimeAdapter {
         ctx,
         tables,
+        table_functions,
         failures: registration.failures,
         query_result_observers: extensions.query_result_observers,
     })
@@ -134,6 +145,26 @@ impl QueryRuntimeAdapter {
             .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
             .cloned()
             .collect()
+    }
+
+    fn list_table_functions(
+        &self,
+        source_filter: Option<&str>,
+        function_filter: Option<&str>,
+    ) -> Vec<TableFunctionInfo> {
+        self.table_functions
+            .iter()
+            .filter(|function| source_filter.is_none_or(|value| function.schema_name == value))
+            .filter(|function| function_filter.is_none_or(|value| function.function_name == value))
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn catalog_info(&self, source_filter: Option<&str>) -> CatalogInfo {
+        CatalogInfo {
+            tables: self.list_tables(source_filter, None),
+            table_functions: self.list_table_functions(source_filter, None),
+        }
     }
 
     pub(crate) fn registration_failure(

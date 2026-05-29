@@ -5,6 +5,8 @@ fn main() {
     let mut config = tonic_prost_build::Config::new();
     config.protoc_executable(protoc);
     config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
+    // Keep the generated oneof enum small enough for workspace clippy.
+    config.boxed(".coral.v1.SourceCredentialMethod.method.oauth");
 
     tonic_prost_build::configure()
         .build_server(true)

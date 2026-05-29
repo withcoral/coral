@@ -5,6 +5,7 @@
 //! - endpoint dialing into the generated gRPC transport surface
 //! - lightweight shared Arrow IPC decoding helpers
 //! - lightweight shared result-format rendering used by CLI and MCP
+//! - lightweight client-side decoding helpers for shared transport DTOs
 //!
 //! It does **not** currently try to present a richer domain SDK. Callers that
 //! need more abstraction should add it above this crate rather than widening
@@ -19,6 +20,7 @@ mod error;
 mod grpc;
 pub mod local;
 mod propagation;
+mod sources;
 mod status_error;
 
 use std::io::Cursor;
@@ -32,9 +34,11 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient, default_workspace,
+    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient,
+    default_workspace,
 };
 pub use error::{ClientError, QueryResultError};
+pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,
 };

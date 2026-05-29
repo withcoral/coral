@@ -2,13 +2,13 @@
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
-use crate::state::CredentialsError;
+use crate::credentials::CredentialsError;
 
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
@@ -22,6 +22,9 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// Provider-managed credential refresh failed during active source use.
+    #[error("credential refresh failed: {0}")]
+    CredentialRefresh(String),
     /// Filesystem access failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -31,6 +34,9 @@ pub enum AppError {
     /// `config.toml` decoding failed.
     #[error(transparent)]
     TomlDecode(#[from] toml::de::Error),
+    /// `config.toml` parsing failed while preserving raw TOML structure.
+    #[error(transparent)]
+    TomlEditDecode(#[from] toml_edit::TomlError),
     /// `config.toml` encoding failed.
     #[error(transparent)]
     TomlEncode(#[from] toml::ser::Error),
@@ -43,7 +49,7 @@ pub enum AppError {
     /// Background server task failed to join cleanly.
     #[error(transparent)]
     TaskJoin(#[from] tokio::task::JoinError),
-    /// Secret-store access failed.
+    /// Credential material access failed.
     #[error(transparent)]
     Credentials(#[from] CredentialsError),
     /// The Coral config directory could not be discovered from defaults.
@@ -88,6 +94,25 @@ fn truncate_status_detail(detail: String) -> String {
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn app_status(error: AppError) -> Status {
+    if matches!(error, AppError::SourceNotFound(_)) {
+        // The `reason` alone discriminates `SOURCE_NOT_FOUND` from other
+        // `Code::NotFound` causes (e.g. `io::ErrorKind::NotFound` raised
+        // when a manifest file is missing). The qualified name already
+        // appears in the truncated status message; we deliberately do
+        // not duplicate it into structured metadata so unbounded
+        // identifiers cannot push the `grpc-status-details-bin` trailer
+        // past the h2 `MAX_HEADER_LIST_SIZE` budget.
+        let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+            CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+            CORAL_ERROR_DOMAIN,
+            std::collections::HashMap::new(),
+        ))];
+        return Status::with_error_details_vec(
+            Code::NotFound,
+            truncate_status_detail(error.to_string()),
+            details,
+        );
+    }
     Status::new(app_code(&error), truncate_status_detail(error.to_string()))
 }
 
@@ -159,12 +184,16 @@ fn app_code(error: &AppError) -> Code {
         AppError::SourceNotFound(_) => Code::NotFound,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
-        | AppError::Credentials(CredentialsError::Parse(_)) => Code::FailedPrecondition,
+        | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
+            Code::FailedPrecondition
+        }
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Io(_)
         | AppError::Yaml(_)
         | AppError::TomlDecode(_)
+        | AppError::TomlEditDecode(_)
         | AppError::TomlEncode(_)
         | AppError::Json(_)
         | AppError::Transport(_)
@@ -189,6 +218,44 @@ mod tests {
         let out = truncate_status_detail(detail);
         assert!(out.len() <= MAX_STATUS_DETAIL_BYTES);
         assert!(out.ends_with("… (truncated)"), "missing marker: {out:?}");
+    }
+
+    #[test]
+    fn app_status_attaches_structured_reason_for_source_not_found() {
+        let status = app_status(AppError::SourceNotFound("default:hn".to_string()));
+        assert_eq!(status.code(), Code::NotFound);
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("source-not-found status must carry an ErrorInfo detail");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_SOURCE_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        // The reason alone is the discriminator; we intentionally do
+        // not echo unbounded identifiers into structured metadata.
+        assert!(
+            info.metadata.is_empty(),
+            "SOURCE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
+            info.metadata
+        );
+    }
+
+    #[test]
+    fn app_status_does_not_attach_structured_reason_for_io_not_found() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "manifest missing");
+        let status = app_status(AppError::Io(io_error));
+        // Same gRPC code as SourceNotFound — but no Coral ErrorInfo, so
+        // clients can't confuse a broken local manifest for a missing
+        // catalog entry.
+        assert_eq!(status.code(), Code::NotFound);
+        assert!(
+            status.get_error_details_vec().is_empty(),
+            "io::NotFound must not carry SOURCE_NOT_FOUND details"
+        );
     }
 
     #[test]

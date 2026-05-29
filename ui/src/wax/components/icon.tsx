@@ -1,11 +1,34 @@
 import classnames from 'classnames'
-import { Activity, ArrowDown, ArrowUp, ChevronDown, ChevronRight, CircleAlert, Columns3, Database, Loader, PanelLeft, Play, Plus, RefreshCw, Search, Table2, X } from 'lucide-react'
+import { Activity, Loader } from 'lucide-react'
 
-import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
+import { customIcons, isCustomIcon } from '@/wax/components/icon/custom-icons/custom-icons'
 import { iconContainer } from '@/wax/components/icon.css'
 
-export type IconColor = 'disabled' | 'error' | 'info' | 'inherit' | 'orange' | 'placeholder' | 'primary' | 'secondary' | 'success' | 'tertiary' | 'warning'
-export type IconName = 'Coral' | 'PanelLeft' | 'Database' | 'Search' | 'X' | 'ChevronDown' | 'ChevronRight' | 'ArrowUp' | 'ArrowDown' | 'Table2' | 'Columns3' | 'Plus' | 'Play' | 'Loader' | 'RefreshCw' | 'CircleAlert' | 'Activity'
+export type IconColor =
+  | 'disabled'
+  | 'error'
+  | 'info'
+  | 'inherit'
+  | 'orange'
+  | 'placeholder'
+  | 'primary'
+  | 'secondary'
+  | 'success'
+  | 'tertiary'
+  | 'warning'
+export type IconName =
+  | 'Activity'
+  | 'ArrowDown'
+  | 'ArrowUp'
+  | 'ChevronDown'
+  | 'ChevronRight'
+  | 'CircleAlert'
+  | 'Coral'
+  | 'Loader'
+  | 'PanelLeft'
+  | 'Search'
+  | 'X'
+
 export interface IconProps {
   className?: string
   color?: IconColor
@@ -14,27 +37,13 @@ export interface IconProps {
 }
 export type IconSize = '14' | '16' | '18' | '20' | '24' | '30'
 
-const iconMap = {
+const lucideIcons = {
   Activity,
-  PanelLeft,
-  Database,
-  Search,
-  X,
-  ChevronDown,
-  ChevronRight,
-  ArrowUp,
-  ArrowDown,
-  Table2,
-  Columns3,
-  Plus,
-  Play,
   Loader,
-  RefreshCw,
-  CircleAlert,
 } as const
 
 export function Icon({ className, color = 'primary', name, size = '20' }: IconProps) {
-  const IconComponent = name === 'Coral' ? CoralIcon : iconMap[name]
+  const IconComponent = isCustomIcon(name) ? customIcons[name] : lucideIcons[name]
   return (
     <span className={classnames(iconContainer({ color, size: normalizeSize(size) }), className)}>
       <IconComponent color="currentColor" size={Number(size)} />

@@ -17,7 +17,8 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceCredentialStorage,
+    SourceInfo, SourceOrigin,
 };
 use tonic::Code;
 
@@ -95,10 +96,10 @@ async fn source_list_renders_configured_sources() {
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
-            "Source  Version  Origin",
-            "------  -------  --------",
-            "github  1.0.0    bundled",
-            "jira    2.0.0    imported",
+            "Source  Version  Origin    Secrets",
+            "------  -------  --------  ----------------",
+            "github  1.0.0    bundled   file (plaintext)",
+            "jira    2.0.0    imported  file (plaintext)",
         ],
         "expected configured source list"
     );
@@ -747,6 +748,10 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
         stderr.contains("GITHUB_TOKEN"),
         "expected missing env var to name GITHUB_TOKEN: {stderr}"
     );
+    assert!(
+        stderr.contains("coral source add --interactive github"),
+        "expected exact interactive recovery command: {stderr}"
+    );
 
     server.shutdown().await;
 }
@@ -774,7 +779,7 @@ async fn source_add_interactive_requires_tty() {
 async fn source_test_suggests_add_for_uninstalled_bundled_source() {
     let server = MockServer::start_with_config(
         MockServerConfig::default()
-            .with_validate_source_error(Code::NotFound, "source 'default:demo_bundled' not found")
+            .with_validate_source_not_found("default:demo_bundled")
             .with_discover_sources(DiscoverSourcesResponse {
                 sources: vec![SourceInfo {
                     name: "demo_bundled".to_string(),
@@ -783,6 +788,7 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
                     inputs: Vec::new(),
                     installed: false,
                     origin: SourceOrigin::Bundled as i32,
+                    credential_storage: SourceCredentialStorage::Unspecified as i32,
                 }],
             }),
     )
@@ -804,10 +810,6 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
         "expected add suggestion in stderr: {stderr}"
     );
     assert!(
-        stderr.contains("coral source test demo_bundled"),
-        "expected retry suggestion in stderr: {stderr}"
-    );
-    assert!(
         !stderr.contains("default:demo_bundled"),
         "should not expose workspace-qualified source name: {stderr}"
     );
@@ -819,10 +821,7 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
 async fn source_test_normalizes_error_for_unknown_source() {
     let server = MockServer::start_with_config(
         MockServerConfig::default()
-            .with_validate_source_error(
-                Code::NotFound,
-                "source 'default:totally_unknown' not found",
-            )
+            .with_validate_source_not_found("default:totally_unknown")
             .with_discover_sources(DiscoverSourcesResponse {
                 sources: Vec::new(),
             }),
@@ -841,10 +840,6 @@ async fn source_test_normalizes_error_for_unknown_source() {
         "expected normalized not-found error in stderr: {stderr}"
     );
     assert!(
-        stderr.contains("coral source list"),
-        "expected list suggestion in stderr: {stderr}"
-    );
-    assert!(
         stderr.contains("coral source discover"),
         "expected discover suggestion in stderr: {stderr}"
     );
@@ -852,9 +847,66 @@ async fn source_test_normalizes_error_for_unknown_source() {
         !stderr.contains("default:totally_unknown"),
         "should not expose workspace-qualified source name: {stderr}"
     );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_remove_normalizes_error_for_unknown_source() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_delete_source_not_found("default:unknown_source"),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "remove", "unknown_source"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
-        !stderr.contains("coral source add"),
-        "should not contain add suggestion for unknown source: {stderr}"
+        stderr.contains("source 'unknown_source' was not found"),
+        "expected normalized not-found error in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("coral source list"),
+        "expected list suggestion in stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("default:unknown_source"),
+        "should not expose workspace-qualified source name: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_remove_preserves_unrelated_not_found_errors() {
+    // Server can return Code::NotFound for reasons other than a missing
+    // catalog entry (e.g. a missing manifest file mapped from
+    // io::ErrorKind::NotFound). The CLI must not rewrite those into the
+    // friendly "source was not found" message.
+    let raw_message = "manifest file missing: No such file or directory (os error 2)";
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_delete_source_error(Code::NotFound, raw_message),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "remove", "broken_source"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains(raw_message),
+        "expected raw server error to surface unchanged: {stderr}"
+    );
+    assert!(
+        !stderr.contains("source 'broken_source' was not found"),
+        "should not rewrite non-source-missing NotFound: {stderr}"
     );
 
     server.shutdown().await;

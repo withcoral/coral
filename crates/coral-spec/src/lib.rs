@@ -49,10 +49,11 @@
 //! name: demo
 //! version: 0.1.0
 //! dsl_version: 3
-//! backend: jsonl
+//! backend: file
 //! tables:
 //!   - name: events
 //!     description: Demo events
+//!     format: jsonl
 //!     source:
 //!       location: file:///tmp/demo/
 //!     columns:
@@ -62,7 +63,7 @@
 //! )?;
 //!
 //! assert_eq!(manifest.schema_name(), "demo");
-//! assert!(manifest.as_jsonl().is_some());
+//! assert!(manifest.as_file().is_some());
 //! let _inputs = manifest.declared_inputs();
 //! # Ok::<(), coral_spec::ManifestError>(())
 //! ```
@@ -86,23 +87,36 @@ mod template;
 mod validate;
 
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
+pub use backends::mcp::{
+    McpEnvSpec, McpLimitBinding, McpServerSpec, McpSourceManifest, McpTableFilterBinding,
+    McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
+};
 pub(crate) use common::validate_test_queries;
 pub use common::{
-    BodyFieldSpec, BodySpec, ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
-    HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec,
-    QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat, ResponseSpec, RowStrategy,
-    SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
-    TableFunctionArgSpec, TimestampInput, ValidatedPagination, ValidatedPaginationMode,
-    ValueSourceSpec,
+    BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,
+    FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode,
+    PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat,
+    ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
+    SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
+    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
-pub use inputs::{ManifestInputKind, ManifestInputSpec, resolve_inputs};
+pub use inputs::{
+    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
+    ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
+    ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
+    ManifestOAuthEndpointUrls, ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
+    ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+    ManifestOAuthScopeSpec, ManifestOAuthScopesSpec, resolve_inputs,
+};
 pub use loader::load_manifest_path;
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub(crate) use validate::{
-    validate_columns, validate_filters_and_column_exprs, validate_http_function,
-    validate_http_function_names, validate_http_table, validate_table_names,
+    DetailHintDeclaringSurface, DetailHintTargetTable, validate_columns,
+    validate_detail_hint_references, validate_filters_and_column_exprs, validate_http_function,
+    validate_http_function_names, validate_http_table, validate_identifier, validate_table_names,
+    validate_unique_values,
 };

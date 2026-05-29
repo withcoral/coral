@@ -13,8 +13,8 @@ use std::process::Command;
 
 #[cfg(feature = "cli-test-server")]
 use coral_api::v1::{
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, SourceOrigin,
-    ValidateSourceResponse, Workspace, query_test_result,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, SourceCredentialStorage,
+    SourceOrigin, ValidateSourceResponse, Workspace, query_test_result,
 };
 #[cfg(feature = "cli-test-server")]
 use harness::MockServer;
@@ -100,8 +100,10 @@ async fn source_test_exits_non_zero_when_query_tests_fail() {
             secrets: Vec::new(),
             variables: Vec::new(),
             origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
         }),
         tables: Vec::new(),
+        table_functions: Vec::new(),
         query_tests: vec![QueryTestResult {
             sql: "SELECT * FROM local_messages.missing".to_string(),
             outcome: Some(query_test_result::Outcome::Failure(QueryTestFailure {
@@ -149,8 +151,10 @@ async fn source_test_succeeds_when_query_tests_pass() {
             secrets: Vec::new(),
             variables: Vec::new(),
             origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
         }),
         tables: Vec::new(),
+        table_functions: Vec::new(),
         query_tests: vec![QueryTestResult {
             sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
             outcome: Some(query_test_result::Outcome::Success(QueryTestSuccess {

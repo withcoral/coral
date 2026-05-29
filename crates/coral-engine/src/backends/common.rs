@@ -2,14 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use crate::{QueryRuntimeContext, RequestAuthenticator};
+use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
 use async_trait::async_trait;
-use coral_spec::backends::file::PartitionColumnSpec;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::TableFunctionImpl;
@@ -26,6 +25,7 @@ pub(crate) struct RegisteredColumn {
     pub(crate) nullable: bool,
     pub(crate) is_virtual: bool,
     pub(crate) is_required_filter: bool,
+    pub(crate) filter_mode: Option<String>,
     pub(crate) description: String,
 }
 
@@ -35,7 +35,9 @@ pub(crate) struct RegisteredTable {
     pub(crate) description: String,
     pub(crate) guide: String,
     pub(crate) columns: Vec<RegisteredColumn>,
+    pub(crate) filters: Vec<RegisteredFilter>,
     pub(crate) required_filters: Vec<String>,
+    pub(crate) search_limits_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,10 +45,36 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) internal_name: String,
+    pub(crate) kind: String,
     pub(crate) description: String,
-    pub(crate) arguments_json: String,
-    pub(crate) result_columns_json: String,
+    pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
+    pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
     pub(crate) arg_names: Vec<String>,
+    pub(crate) search_limits_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredFilter {
+    pub(crate) name: String,
+    pub(crate) mode: String,
+    pub(crate) required: bool,
+    pub(crate) data_type: String,
+    pub(crate) description: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredTableFunctionArgument {
+    pub(crate) name: String,
+    pub(crate) required: bool,
+    pub(crate) values: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisteredTableFunctionResultColumn {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) nullable: bool,
+    pub(crate) description: String,
 }
 
 #[derive(Debug, Clone)]
@@ -99,10 +127,35 @@ fn hex_encode(value: &str) -> String {
 }
 
 pub(crate) struct BackendCompileRequest<'a> {
+    pub(crate) source: &'a QuerySource,
     pub(crate) runtime_context: &'a QueryRuntimeContext,
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+}
+
+/// Shared resources available while registering one batch of compiled sources.
+///
+/// Every backend receives this context. Most backends ignore it today; HTTP uses
+/// it to share default transport setup across sources registered in the same
+/// runtime build.
+#[derive(Default)]
+pub(crate) struct BackendRegistrationContext {
+    default_http_client: OnceLock<Result<reqwest::Client, String>>,
+}
+
+impl BackendRegistrationContext {
+    pub(crate) fn default_http_client(
+        &self,
+        build_client: impl FnOnce() -> Result<reqwest::Client, String>,
+    ) -> Result<reqwest::Client, String> {
+        self.default_http_client
+            .get_or_init(build_client)
+            .as_ref()
+            .cloned()
+            .map_err(Clone::clone)
+    }
 }
 
 #[async_trait]
@@ -111,9 +164,15 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
 
     fn source_name(&self) -> &str;
 
+    /// Register this compiled source into a `DataFusion` session.
+    ///
+    /// The registration context is batch-scoped and backend-agnostic. Backends
+    /// should use it only for resources that are safe to share across sources in
+    /// the same registration pass.
     async fn register(
         &self,
         ctx: &SessionContext,
+        registration: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration>;
 }
 
@@ -125,37 +184,62 @@ pub(crate) fn required_filter_names(filters: &[FilterSpec]) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn registered_filters_from_specs(filters: &[FilterSpec]) -> Vec<RegisteredFilter> {
+    filters
+        .iter()
+        .map(|filter| RegisteredFilter {
+            name: filter.name.clone(),
+            mode: filter.mode.as_str().to_string(),
+            required: filter.required,
+            data_type: filter.data_type.clone(),
+            description: filter.description.clone(),
+        })
+        .collect()
+}
+
 pub(crate) fn registered_columns_from_specs(
     columns: &[ColumnSpec],
-    required_filters: &[String],
+    filters: &[FilterSpec],
 ) -> Vec<RegisteredColumn> {
     columns
         .iter()
-        .map(|column| RegisteredColumn {
-            name: column.name.clone(),
-            data_type: column.data_type.clone(),
-            nullable: column.nullable,
-            is_virtual: column.r#virtual,
-            is_required_filter: required_filters.iter().any(|filter| filter == &column.name),
-            description: column.description.clone(),
+        .map(|column| {
+            let filter = filters
+                .iter()
+                .find(|filter| filter.name == column.name.as_str());
+            RegisteredColumn {
+                name: column.name.clone(),
+                data_type: column.data_type.clone(),
+                nullable: column.nullable,
+                is_virtual: column.r#virtual,
+                is_required_filter: filter.is_some_and(|filter| filter.required),
+                filter_mode: filter.map(|filter| filter.mode.as_str().to_string()),
+                description: column.description.clone(),
+            }
         })
         .collect()
 }
 
 pub(crate) fn registered_columns_from_schema(
     schema: &SchemaRef,
-    required_filters: &[String],
+    filters: &[FilterSpec],
 ) -> Vec<RegisteredColumn> {
     schema
         .fields()
         .iter()
-        .map(|field| RegisteredColumn {
-            name: field.name().clone(),
-            data_type: field.data_type().to_string(),
-            nullable: field.is_nullable(),
-            is_virtual: false,
-            is_required_filter: required_filters.iter().any(|filter| filter == field.name()),
-            description: String::new(),
+        .map(|field| {
+            let filter = filters
+                .iter()
+                .find(|filter| filter.name == field.name().as_str());
+            RegisteredColumn {
+                name: field.name().clone(),
+                data_type: field.data_type().to_string(),
+                nullable: field.is_nullable(),
+                is_virtual: false,
+                is_required_filter: filter.is_some_and(|filter| filter.required),
+                filter_mode: filter.map(|filter| filter.mode.as_str().to_string()),
+                description: String::new(),
+            }
         })
         .collect()
 }
@@ -218,7 +302,9 @@ pub(crate) fn build_registered_table(
         description: common.description.clone(),
         guide: common.guide.clone(),
         columns,
+        filters: registered_filters_from_specs(&common.filters),
         required_filters,
+        search_limits_json: common.search_limits.as_ref().map(serialize_search_limits),
     }
 }
 
@@ -230,23 +316,19 @@ pub(crate) fn build_registered_table_function(
     let arguments = function
         .args
         .iter()
-        .map(|arg| {
-            serde_json::json!({
-                "name": arg.name,
-                "required": arg.required,
-                "values": arg.values,
-            })
+        .map(|arg| RegisteredTableFunctionArgument {
+            name: arg.name.clone(),
+            required: arg.required,
+            values: arg.values.clone(),
         })
         .collect::<Vec<_>>();
     let result_columns = registered_columns_from_specs(&function.columns, &[])
         .into_iter()
-        .map(|column| {
-            serde_json::json!({
-                "name": column.name,
-                "type": column.data_type,
-                "nullable": column.nullable,
-                "description": column.description,
-            })
+        .map(|column| RegisteredTableFunctionResultColumn {
+            name: column.name,
+            data_type: column.data_type,
+            nullable: column.nullable,
+            description: column.description,
         })
         .collect::<Vec<_>>();
 
@@ -254,11 +336,17 @@ pub(crate) fn build_registered_table_function(
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
         internal_name,
+        kind: function.kind.as_str().to_string(),
         description: function.description.clone(),
-        arguments_json: serde_json::to_string(&arguments).expect("arguments json"),
-        result_columns_json: serde_json::to_string(&result_columns).expect("result columns json"),
+        arguments,
+        result_columns,
         arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
+        search_limits_json: function.search_limits.as_ref().map(serialize_search_limits),
     }
+}
+
+fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {
+    serde_json::to_string(limits).expect("search limits json")
 }
 
 pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {
@@ -301,24 +389,46 @@ pub(crate) fn schema_from_columns(
     }
     Ok(Arc::new(Schema::new(fields)))
 }
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub(crate) fn partition_columns_to_arrow(
-    partitions: &[PartitionColumnSpec],
-) -> datafusion::error::Result<Vec<(String, DataType)>> {
-    partitions
-        .iter()
-        .map(|partition: &PartitionColumnSpec| {
-            partition
-                .manifest_data_type()
-                .map(|data_type| {
-                    (
-                        partition.name.clone(),
-                        manifest_data_type_to_arrow(data_type),
-                    )
-                })
-                .map_err(|error: coral_spec::ManifestError| {
-                    DataFusionError::Execution(error.to_string())
-                })
-        })
-        .collect()
+    use super::*;
+
+    #[test]
+    fn default_http_client_is_shared_only_within_registration_context() {
+        let build_count = AtomicUsize::new(0);
+        let first_context = BackendRegistrationContext::default();
+
+        first_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("first context should build a client");
+        first_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("first context should reuse its client");
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "one registration context should build one default HTTP client"
+        );
+
+        let second_context = BackendRegistrationContext::default();
+        second_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("new context should build its own client");
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            2,
+            "default HTTP clients should not be process-global"
+        );
+    }
+
+    fn build_counted_client(build_count: &AtomicUsize) -> Result<reqwest::Client, String> {
+        build_count.fetch_add(1, Ordering::SeqCst);
+        reqwest::Client::builder()
+            .build()
+            .map_err(|error| error.to_string())
+    }
 }

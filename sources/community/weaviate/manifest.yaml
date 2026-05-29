@@ -1,0 +1,275 @@
+name: weaviate
+version: 0.1.1
+dsl_version: 3
+backend: http
+description: >-
+  Query Weaviate server metadata, collection (class) schema, and per-node
+  cluster health and object counts from a self-hosted or Weaviate Cloud
+  vector database.
+base_url: "{{input.WEAVIATE_URL}}"
+inputs:
+  WEAVIATE_URL:
+    kind: variable
+    default: http://localhost:8080
+    hint: |
+      Base URL of the Weaviate REST endpoint, including scheme and port.
+      The default `http://localhost:8080` matches a local Weaviate. For
+      Weaviate Cloud use the cluster URL, e.g.
+      `https://my-cluster.weaviate.network`. Do not include a trailing
+      slash.
+  WEAVIATE_API_KEY:
+    kind: secret
+    hint: |
+      Weaviate API key sent as `Authorization: Bearer <key>`. Use the
+      cluster's admin or read API key for API-key-protected clusters and
+      Weaviate Cloud.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.WEAVIATE_API_KEY}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM weaviate.meta LIMIT 1
+  - SELECT * FROM weaviate.collections LIMIT 1
+tables:
+  - name: meta
+    description: Server metadata from the /v1/meta endpoint
+    guide: |
+      Returns a single row describing the Weaviate server. `modules` is a
+      JSON object of enabled modules and their configuration; it is `{}`
+      when no modules are enabled. Use this table to confirm connectivity
+      and report the running server version.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /v1/meta
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Hostname the server reports for itself
+        expr:
+          kind: path
+          path:
+            - hostname
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Weaviate server version
+        expr:
+          kind: path
+          path:
+            - version
+      - name: modules
+        type: Json
+        nullable: true
+        description: Enabled modules and their configuration, as a JSON object
+        expr:
+          kind: path
+          path:
+            - modules
+
+  - name: collections
+    description: Collection (class) schema from the /v1/schema endpoint
+    guide: |
+      Returns one row per Weaviate collection (called a class in the REST
+      API). `vectorizer` is `none` for bring-your-own-vector collections.
+      `properties` is the full property definition list as a JSON array —
+      use `json_length(properties)` for a property count or JSON accessors
+      to inspect individual properties. `vector_distance` is the configured
+      similarity metric (e.g. `cosine`, `dot`, `l2-squared`).
+    request:
+      method: GET
+      path: /v1/schema
+    response:
+      rows_path:
+        - classes
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Collection name (the class name)
+        expr:
+          kind: path
+          path:
+            - class
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Collection description, when set
+        expr:
+          kind: path
+          path:
+            - description
+      - name: vectorizer
+        type: Utf8
+        nullable: true
+        description: "Configured vectorizer module, or `none` for self-supplied vectors"
+        expr:
+          kind: path
+          path:
+            - vectorizer
+      - name: vector_index_type
+        type: Utf8
+        nullable: true
+        description: "Vector index type, e.g. hnsw or flat"
+        expr:
+          kind: path
+          path:
+            - vectorIndexType
+      - name: vector_distance
+        type: Utf8
+        nullable: true
+        description: "Distance metric, e.g. cosine, dot, l2-squared"
+        expr:
+          kind: path
+          path:
+            - vectorIndexConfig
+            - distance
+      - name: replication_factor
+        type: Int64
+        nullable: true
+        description: Configured replication factor for the collection
+        expr:
+          kind: path
+          path:
+            - replicationConfig
+            - factor
+      - name: shard_count
+        type: Int64
+        nullable: true
+        description: Actual number of physical shards for the collection
+        expr:
+          kind: path
+          path:
+            - shardingConfig
+            - actualCount
+      - name: multi_tenancy_enabled
+        type: Boolean
+        nullable: true
+        description: Whether multi-tenancy is enabled for the collection
+        expr:
+          kind: path
+          path:
+            - multiTenancyConfig
+            - enabled
+      - name: properties
+        type: Json
+        nullable: true
+        description: Property definitions for the collection, as a JSON array
+        expr:
+          kind: path
+          path:
+            - properties
+
+  - name: nodes
+    description: Per-node cluster health and object counts from /v1/nodes
+    guide: |
+      Returns one row per Weaviate node (verbose output). `status` is
+      `HEALTHY` on a healthy node. `object_count` and `shard_count` are
+      cluster-wide totals reported by that node. `shards` is a JSON array
+      with per-shard detail including each shard's class, object count, and
+      `vectorIndexingStatus` (`READY` when indexing is caught up). Use this
+      to monitor ingestion progress and node health.
+    request:
+      method: GET
+      path: /v1/nodes
+      query:
+        - name: output
+          from: literal
+          value: verbose
+    response:
+      rows_path:
+        - nodes
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Node name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Node status, e.g. HEALTHY or UNHEALTHY"
+        expr:
+          kind: path
+          path:
+            - status
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Weaviate version running on the node
+        expr:
+          kind: path
+          path:
+            - version
+      - name: git_hash
+        type: Utf8
+        nullable: true
+        description: Git commit hash of the running build
+        expr:
+          kind: path
+          path:
+            - gitHash
+      - name: object_count
+        type: Int64
+        nullable: true
+        description: Total object count reported by this node
+        expr:
+          kind: path
+          path:
+            - stats
+            - objectCount
+      - name: shard_count
+        type: Int64
+        nullable: true
+        description: Total shard count reported by this node
+        expr:
+          kind: path
+          path:
+            - stats
+            - shardCount
+      - name: batch_queue_length
+        type: Int64
+        nullable: true
+        description: Current batch indexing queue length on the node
+        expr:
+          kind: path
+          path:
+            - batchStats
+            - queueLength
+      - name: batch_rate_per_second
+        type: Int64
+        nullable: true
+        description: Current batch indexing rate per second on the node
+        expr:
+          kind: path
+          path:
+            - batchStats
+            - ratePerSecond
+      - name: shards
+        type: Json
+        nullable: true
+        description: Per-shard detail (class, object count, indexing status) as a JSON array
+        expr:
+          kind: path
+          path:
+            - shards
