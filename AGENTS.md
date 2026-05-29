@@ -19,6 +19,9 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
+- Run `make rust-perf-smoke` before submitting PRs that intentionally change
+  MCP catalog-discovery latency, backend registration cost, or the CI perf
+  smoke itself.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.

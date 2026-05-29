@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check
+.PHONY: install ui-build rust-checks rust-perf-smoke license-check lint-proto lint-sources fix-sources docs-generate docs-check
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -13,6 +13,9 @@ rust-checks:
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 	cargo nextest run --workspace --all-targets --all-features --locked --no-fail-fast
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+
+rust-perf-smoke:
+	cargo test --release --locked -p coral-cli --no-default-features --test mcp_perf_smoke -- --ignored --nocapture
 
 # ----------------------------------------------------------------------------
 # Dependency license scan
