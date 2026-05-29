@@ -62,7 +62,7 @@ impl McpSourceInputs {
     }
 
     #[cfg(test)]
-    fn static_inputs(fallback: Arc<BTreeMap<String, String>>) -> Self {
+    pub(super) fn static_inputs(fallback: Arc<BTreeMap<String, String>>) -> Self {
         Self {
             fallback,
             source: None,
@@ -108,7 +108,7 @@ pub(crate) fn compile_manifest(
         McpServerSpec::StreamableHttp { .. } => Arc::new(StreamableHttpMcpToolCaller {
             source_name: manifest.common.name.clone(),
             server: manifest.server.clone(),
-            resolved_inputs: Arc::clone(&resolved_inputs),
+            source_inputs: Arc::clone(&source_inputs),
             body_capture,
         }),
     };

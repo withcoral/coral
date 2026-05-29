@@ -12,7 +12,7 @@
 //! custom HTTP headers so an instrumented MCP server can continue the
 //! trace.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -186,8 +186,29 @@ impl StdioMcpToolCaller {
 pub(super) struct StreamableHttpMcpToolCaller {
     pub(super) source_name: String,
     pub(super) server: McpServerSpec,
-    pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
+    pub(super) source_inputs: Arc<McpSourceInputs>,
     pub(super) body_capture: McpBodyCapture,
+}
+
+impl StreamableHttpMcpToolCaller {
+    /// Resolve the configured bearer token through the source-input
+    /// resolver, picking up any refreshed OAuth access token before each
+    /// `tools/call`. Returns `None` when no auth is configured or when the
+    /// `auth_token` value source resolves to an empty value.
+    pub(super) async fn resolved_bearer_token(&self) -> Result<Option<String>> {
+        let McpServerSpec::StreamableHttp { auth, .. } = &self.server else {
+            return Ok(None);
+        };
+        let Some(auth) = auth else {
+            return Ok(None);
+        };
+        let resolved_inputs = self.source_inputs.resolve_for_request().await?;
+        let render_context = RenderContext::source_scoped(&resolved_inputs);
+        let Some(token) = resolve_value_source(auth.bearer_token(), &render_context)? else {
+            return Ok(None);
+        };
+        Ok(Some(value_to_env_string(token)))
+    }
 }
 
 #[async_trait]
@@ -198,7 +219,7 @@ impl McpToolCaller for StreamableHttpMcpToolCaller {
         tool_name: &str,
         arguments: JsonObject,
     ) -> Result<Value> {
-        let McpServerSpec::StreamableHttp { url, auth } = &self.server else {
+        let McpServerSpec::StreamableHttp { url, .. } = &self.server else {
             unreachable!("StreamableHttpMcpToolCaller requires a Streamable HTTP MCP server spec");
         };
 
@@ -230,14 +251,7 @@ impl McpToolCaller for StreamableHttpMcpToolCaller {
         record_trace_http_endpoint(&request_span, &endpoint);
 
         let result = self
-            .call_tool_inner(
-                url,
-                auth.as_ref(),
-                relation,
-                tool_name,
-                arguments,
-                request_id,
-            )
+            .call_tool_inner(url, relation, tool_name, arguments, request_id)
             .instrument(request_span.clone())
             .await;
         if let Err(error) = &result {
@@ -273,7 +287,6 @@ impl StreamableHttpMcpToolCaller {
     async fn call_tool_inner(
         &self,
         url: &str,
-        auth: Option<&coral_spec::backends::mcp::McpHttpAuthSpec>,
         relation: &str,
         tool_name: &str,
         arguments: JsonObject,
@@ -284,13 +297,8 @@ impl StreamableHttpMcpToolCaller {
 
         let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_string())
             .reinit_on_expired_session(true);
-        if let Some(auth) = auth
-            && let Some(token) = resolve_value_source(
-                auth.bearer_token(),
-                &RenderContext::source_scoped(&self.resolved_inputs),
-            )?
-        {
-            config = config.auth_header(value_to_env_string(token));
+        if let Some(token) = self.resolved_bearer_token().await? {
+            config = config.auth_header(token);
         }
 
         // Propagate the current span's W3C trace context to the MCP server
@@ -730,10 +738,11 @@ mod tests {
             &secrets,
             &BTreeMap::new(),
         ));
+        let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
         let caller = StreamableHttpMcpToolCaller {
             source_name: manifest.common.name,
             server: manifest.server,
-            resolved_inputs,
+            source_inputs,
             body_capture: McpBodyCapture::default(),
         };
         let mut arguments = JsonObject::new();
@@ -793,10 +802,11 @@ mod tests {
             &secrets,
             &BTreeMap::new(),
         ));
+        let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
         StreamableHttpMcpToolCaller {
             source_name: manifest.common.name,
             server: manifest.server,
-            resolved_inputs,
+            source_inputs,
             body_capture,
         }
     }
@@ -1040,5 +1050,96 @@ mod tests {
             Some("MCP_HTTP_SSE_DECODE_FAILED")
         );
         capture.provider.shutdown().expect("shutdown");
+    }
+
+    /// Each `tools/call` re-resolves the bearer token through the source
+    /// input resolver, so a fresh OAuth access token is picked up between
+    /// calls without recompiling the source.
+    #[tokio::test]
+    async fn streamable_http_caller_re_resolves_bearer_token_for_each_tool_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use async_trait::async_trait;
+
+        use crate::{QuerySource, SourceInputResolver, SourceInputResolverError};
+
+        #[derive(Debug)]
+        struct RotatingResolver {
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl SourceInputResolver for RotatingResolver {
+            async fn resolve_inputs(
+                &self,
+                _source: &QuerySource,
+            ) -> std::result::Result<BTreeMap<String, String>, SourceInputResolverError>
+            {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+                Ok(BTreeMap::from([(
+                    "MCP_ACCESS_TOKEN".to_string(),
+                    format!("fresh-token-{call}"),
+                )]))
+            }
+        }
+
+        let validated = coral_spec::parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "remote_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "inputs": { "MCP_ACCESS_TOKEN": { "kind": "secret" } },
+            "server": {
+                "transport": "streamable_http",
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "type": "bearer",
+                    "from": "input",
+                    "key": "MCP_ACCESS_TOKEN"
+                }
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "title", "type": "Utf8" }]
+            }]
+        }))
+        .expect("manifest should parse");
+        let manifest = validated.as_mcp().expect("mcp manifest").clone();
+        let variables = BTreeMap::new();
+        let secrets = BTreeMap::from([("MCP_ACCESS_TOKEN".to_string(), "stale-token".to_string())]);
+        let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
+            &manifest.declared_inputs,
+            &secrets,
+            &variables,
+        ));
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let source = QuerySource::new(validated, variables, secrets);
+        let source_inputs = Arc::new(McpSourceInputs::new(
+            resolved_inputs,
+            source,
+            Some(Arc::new(RotatingResolver {
+                calls: Arc::clone(&resolver_calls),
+            })),
+        ));
+        let caller = StreamableHttpMcpToolCaller {
+            source_name: manifest.common.name,
+            server: manifest.server,
+            source_inputs,
+            body_capture: McpBodyCapture::default(),
+        };
+
+        let first = caller
+            .resolved_bearer_token()
+            .await
+            .expect("first token resolve");
+        let second = caller
+            .resolved_bearer_token()
+            .await
+            .expect("second token resolve");
+
+        assert_eq!(first.as_deref(), Some("fresh-token-1"));
+        assert_eq!(second.as_deref(), Some("fresh-token-2"));
+        assert_eq!(resolver_calls.load(Ordering::SeqCst), 2);
     }
 }
