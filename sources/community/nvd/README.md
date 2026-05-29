@@ -7,6 +7,8 @@
 
 Query CVE records, CVSS severity scores, and advisory references from the [NIST National Vulnerability Database](https://nvd.nist.gov/) — the U.S. government repository of standards-based vulnerability management data. No authentication required.
 
+> **CVSS v4.0 out of scope:** This source covers CVSS v2, v3.0, and v3.1 metrics only. CVSS v4.0 metrics are not yet included.
+
 ```bash
 coral source add --file sources/community/nvd/manifest.yaml
 ```
@@ -17,13 +19,13 @@ Without an API key: 5 requests per 30 seconds. With an API key: 50 requests per 
 
 ## Tables
 
-| Table             | Description                                                              |
-| ----------------- | ------------------------------------------------------------------------ |
-| `vulnerabilities` | Core CVE records — id, status, published date, description               |
-| `cvss_v3_1`       | CVSS v3.1 scores and metrics (most CVEs published after 2019)            |
-| `cvss_v3_0`       | CVSS v3.0 scores and metrics (CVEs scored before v3.1 was adopted)       |
-| `cvss_v2`         | CVSS v2 fallback scores for older CVEs                                   |
-| `references`      | Advisory and patch links as a JSON array per CVE                         |
+| Table                  | Description                                                              |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `vulnerabilities`      | Core CVE records — id, status, published date, description               |
+| `cvss_v3_1_metrics`    | CVSS v3.1 metric array as JSON (most CVEs published after 2019)          |
+| `cvss_v3_0_metrics`    | CVSS v3.0 metric array as JSON (CVEs scored before v3.1 was adopted)     |
+| `cvss_v2_metrics`      | CVSS v2 metric array as JSON for older CVEs                              |
+| `references`           | Advisory and patch links as a JSON array per CVE                         |
 
 ---
 
@@ -40,60 +42,32 @@ Core CVE records. Each row is one CVE.
 | `vuln_status`       | `Utf8` | Analysis status (Analyzed, Awaiting Analysis...) |
 | `description`       | `Utf8` | English-language vulnerability description       |
 
-### `cvss_v3_1`
+### `cvss_v3_1_metrics`
 
-CVSS v3.1 scores. Each row is one CVE; metric columns are **null** when NVD has not assigned v3.1 metrics. Use `WHERE base_score IS NOT NULL` to restrict to scored rows.
+CVSS v3.1 metric array per CVE. The `metrics` column is the full `cvssMetricV31` array from NVD as JSON. Each array element contains `source`, `type`, `cvssData` (baseScore, baseSeverity, vectorString, and sub-metrics), `exploitabilityScore`, and `impactScore`. Filter to `type = 'Primary'` and `source = 'nvd@nist.gov'` for the authoritative NVD score. Column is **null** when NVD has not assigned v3.1 metrics.
 
-| Column                   | Type      | Description                                  |
-| ------------------------ | --------- | -------------------------------------------- |
-| `cve_id`                 | `Utf8`    | CVE identifier                               |
-| `base_score`             | `Float64` | Base score (0.0 – 10.0), null if unscored    |
-| `base_severity`          | `Utf8`    | Severity label (LOW, MEDIUM, HIGH, CRITICAL) |
-| `exploitability_score`   | `Float64` | Exploitability sub-score                     |
-| `impact_score`           | `Float64` | Impact sub-score                             |
-| `vector_string`          | `Utf8`    | Full CVSS v3.1 vector string                 |
-| `attack_vector`          | `Utf8`    | NETWORK, ADJACENT_NETWORK, LOCAL, PHYSICAL   |
-| `attack_complexity`      | `Utf8`    | LOW or HIGH                                  |
-| `privileges_required`    | `Utf8`    | NONE, LOW, or HIGH                           |
-| `user_interaction`       | `Utf8`    | NONE or REQUIRED                             |
-| `scope`                  | `Utf8`    | UNCHANGED or CHANGED                         |
-| `confidentiality_impact` | `Utf8`    | NONE, LOW, or HIGH                           |
-| `integrity_impact`       | `Utf8`    | NONE, LOW, or HIGH                           |
-| `availability_impact`    | `Utf8`    | NONE, LOW, or HIGH                           |
+| Column    | Type   | Description                                                  |
+| --------- | ------ | ------------------------------------------------------------ |
+| `cve_id`  | `Utf8` | CVE identifier                                               |
+| `metrics` | `Json` | Full cvssMetricV31 array; null when no v3.1 metrics assigned |
 
-### `cvss_v3_0`
+### `cvss_v3_0_metrics`
 
-CVSS v3.0 scores. Same columns as `cvss_v3_1`. Use this for CVEs that were scored before CVSS v3.1 was adopted (typically CVEs published before 2019).
+CVSS v3.0 metric array per CVE. Same structure as `cvss_v3_1_metrics`. Use this for CVEs that were scored before CVSS v3.1 was adopted (typically CVEs published before 2019).
 
-| Column                   | Type      | Description                                  |
-| ------------------------ | --------- | -------------------------------------------- |
-| `cve_id`                 | `Utf8`    | CVE identifier                               |
-| `base_score`             | `Float64` | Base score (0.0 – 10.0), null if unscored    |
-| `base_severity`          | `Utf8`    | Severity label (LOW, MEDIUM, HIGH, CRITICAL) |
-| `exploitability_score`   | `Float64` | Exploitability sub-score                     |
-| `impact_score`           | `Float64` | Impact sub-score                             |
-| `vector_string`          | `Utf8`    | Full CVSS v3.0 vector string                 |
-| `attack_vector`          | `Utf8`    | NETWORK, ADJACENT_NETWORK, LOCAL, PHYSICAL   |
-| `attack_complexity`      | `Utf8`    | LOW or HIGH                                  |
-| `privileges_required`    | `Utf8`    | NONE, LOW, or HIGH                           |
-| `user_interaction`       | `Utf8`    | NONE or REQUIRED                             |
-| `scope`                  | `Utf8`    | UNCHANGED or CHANGED                         |
-| `confidentiality_impact` | `Utf8`    | NONE, LOW, or HIGH                           |
-| `integrity_impact`       | `Utf8`    | NONE, LOW, or HIGH                           |
-| `availability_impact`    | `Utf8`    | NONE, LOW, or HIGH                           |
+| Column    | Type   | Description                                                  |
+| --------- | ------ | ------------------------------------------------------------ |
+| `cve_id`  | `Utf8` | CVE identifier                                               |
+| `metrics` | `Json` | Full cvssMetricV30 array; null when no v3.0 metrics assigned |
 
-### `cvss_v2`
+### `cvss_v2_metrics`
 
-CVSS v2 scores for older CVEs. Metric columns are null when not scored under v2.
+CVSS v2 metric array per CVE. Each array element contains `source`, `type`, `cvssData` (baseScore, vectorString), `baseSeverity`, `exploitabilityScore`, and `impactScore`.
 
-| Column                 | Type      | Description                        |
-| ---------------------- | --------- | ---------------------------------- |
-| `cve_id`               | `Utf8`    | CVE identifier                     |
-| `base_score`           | `Float64` | Base score (0.0 – 10.0)            |
-| `severity`             | `Utf8`    | LOW, MEDIUM, or HIGH               |
-| `vector_string`        | `Utf8`    | Full CVSS v2 vector string         |
-| `exploitability_score` | `Float64` | Exploitability sub-score           |
-| `impact_score`         | `Float64` | Impact sub-score                   |
+| Column    | Type   | Description                                                 |
+| --------- | ------ | ----------------------------------------------------------- |
+| `cve_id`  | `Utf8` | CVE identifier                                              |
+| `metrics` | `Json` | Full cvssMetricV2 array; null when no v2 metrics assigned   |
 
 ### `references`
 
@@ -123,15 +97,22 @@ WHERE cve_id = 'CVE-2021-44228'
 LIMIT 1;
 ```
 
-Critical CVEs with CVSS v3.1 scores:
+Critical CVEs pushed server-side via the `cvss_v3_severity` filter:
 
 ```sql
-SELECT v.cve_id, v.description, c.base_score, c.base_severity
-FROM nvd.vulnerabilities v
-JOIN nvd.cvss_v3_1 c ON c.cve_id = v.cve_id
-WHERE c.base_severity = 'CRITICAL'
-AND c.base_score IS NOT NULL
+SELECT cve_id, description
+FROM nvd.vulnerabilities
+WHERE cvss_v3_severity = 'CRITICAL'
 LIMIT 10;
+```
+
+Inspect the raw CVSS v3.1 metric array for a specific CVE:
+
+```sql
+SELECT cve_id, metrics
+FROM nvd.cvss_v3_1_metrics
+WHERE cve_id = 'CVE-2021-44228'
+LIMIT 1;
 ```
 
 CVEs published in a 30-day window (use pub_start_date + pub_end_date together, max 120 days):
@@ -155,15 +136,17 @@ AND last_mod_end_date = '2024-05-07T23:59:59.999'
 LIMIT 20;
 ```
 
-CVE with all scoring details:
+CVE with all metric arrays:
 
 ```sql
 SELECT v.cve_id, v.description,
-       c3.base_score AS cvss_v3_score, c3.base_severity,
-       c2.base_score AS cvss_v2_score
+       m31.metrics AS cvss_v3_1,
+       m30.metrics AS cvss_v3_0,
+       m2.metrics  AS cvss_v2
 FROM nvd.vulnerabilities v
-LEFT JOIN nvd.cvss_v3_1 c3 ON c3.cve_id = v.cve_id
-LEFT JOIN nvd.cvss_v2 c2 ON c2.cve_id = v.cve_id
+LEFT JOIN nvd.cvss_v3_1_metrics m31 ON m31.cve_id = v.cve_id
+LEFT JOIN nvd.cvss_v3_0_metrics m30 ON m30.cve_id = v.cve_id
+LEFT JOIN nvd.cvss_v2_metrics   m2  ON m2.cve_id  = v.cve_id
 WHERE v.cve_id = 'CVE-2021-44228';
 ```
 
@@ -172,7 +155,9 @@ WHERE v.cve_id = 'CVE-2021-44228';
 - The NVD contains 350,000+ CVE records. Always scope queries with `cve_id`, a `pub_start_date`/`pub_end_date` pair, or `cvss_v3_severity`. Unscoped queries page through the full corpus.
 - Date filters (`pub_start_date`/`pub_end_date` and `last_mod_start_date`/`last_mod_end_date`) must be supplied in pairs. NVD caps any date window at 120 consecutive days.
 - Date values use ISO 8601 format: `2024-01-01T00:00:00.000`.
-- CVSS metric columns are nullable — a row is returned for every fetched CVE, but score fields are null when NVD has not assigned that metric version. Use `WHERE base_score IS NOT NULL` to filter to scored rows.
-- Most CVEs published after 2019 use CVSS v3.1 (`cvss_v3_1`). Older CVEs may only have CVSS v3.0 (`cvss_v3_0`) or v2 (`cvss_v2`) scores.
+- CVSS metric columns are nullable — a row is returned for every fetched CVE, but the `metrics` column is null when NVD has not assigned that metric version.
+- Most CVEs published after 2019 use CVSS v3.1 (`cvss_v3_1_metrics`). Older CVEs may only have CVSS v3.0 (`cvss_v3_0_metrics`) or v2 (`cvss_v2_metrics`) scores.
+- The `metrics` column is a JSON array. Use `json_get(metrics, 0)` to get the first element, then `json_get_str(...)` to extract individual fields. Filter to `type = 'Primary'` and `source = 'nvd@nist.gov'` for the authoritative NVD score.
 - The `references` column is a JSON array. Use `json_get(references, 0)` to get the first reference object, then `json_get_str(json_get(references, 0), 'url')` to extract the URL.
 - No authentication is required. The NVD API key is not wired into this source.
+- **CVSS v4.0 is out of scope for this version.** Only CVSS v2, v3.0, and v3.1 metrics are covered.
