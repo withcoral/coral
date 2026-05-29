@@ -66,10 +66,40 @@ LIMIT 20;
 ```
 
 ```sql
-SELECT slice_name, viz_type
+SELECT slice_name, changed_on, slice_url
 FROM superset.dashboard_charts
 WHERE dashboard_id_or_slug = 'sales-overview';
 ```
+
+## Notes
+
+- Superset list endpoints accept pagination inside the `q` parameter. The
+  current Coral HTTP pagination DSL cannot safely synthesize that Rison/JSON
+  shape, so list tables expose the provider's default page instead of claiming
+  complete pagination.
+- `superset.queries` is kept conservative with a default fetch limit because it
+  represents SQL Lab audit history.
+- Query history timestamps use Superset's numeric `start_time` and `end_time`
+  fields. Dashboard, chart, and dataset list timestamps use the documented
+  UTC changed fields.
+- `superset.dashboard_charts` follows the chart-definitions response shape:
+  `id`, `slice_name`, `changed_on`, and `slice_url`.
+
+## Validation evidence
+
+Static validation run locally:
+
+```bash
+coral source lint sources/community/superset/manifest.yaml
+make lint-sources
+yamllint sources/community/superset/manifest.yaml
+git diff --check origin/main..HEAD
+gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
+```
+
+Credentialed `coral source add --file`, `coral source test superset`, and
+representative live queries require a Superset instance access token and were
+not run in this workspace.
 
 ## API references
 

@@ -49,14 +49,7 @@ tables:
     response:
       rows_path: [result]
     pagination:
-      mode: page
-      page_param: page
-      page_start: 0
-      page_step: 1
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -81,7 +74,7 @@ tables:
         expr:
           kind: format_timestamp
           input: iso8601
-          expr: {kind: path, path: [changed_on]}
+          expr: {kind: path, path: [changed_on_utc]}
       - name: url
         type: Utf8
         nullable: true
@@ -110,14 +103,7 @@ tables:
     response:
       rows_path: [result]
     pagination:
-      mode: page
-      page_param: page
-      page_start: 0
-      page_step: 1
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -142,7 +128,7 @@ tables:
         expr:
           kind: format_timestamp
           input: iso8601
-          expr: {kind: path, path: [changed_on]}
+          expr: {kind: path, path: [changed_on_utc]}
       - name: datasource_id
         type: Int64
         nullable: true
@@ -170,14 +156,7 @@ tables:
     response:
       rows_path: [result]
     pagination:
-      mode: page
-      page_param: page
-      page_start: 0
-      page_step: 1
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -207,7 +186,7 @@ tables:
         expr:
           kind: format_timestamp
           input: iso8601
-          expr: {kind: path, path: [changed_on]}
+          expr: {kind: path, path: [changed_on_utc]}
       - name: owners_json
         type: Json
         nullable: true
@@ -227,14 +206,7 @@ tables:
     response:
       rows_path: [result]
     pagination:
-      mode: page
-      page_param: page
-      page_start: 0
-      page_step: 1
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -282,14 +254,7 @@ tables:
     response:
       rows_path: [result]
     pagination:
-      mode: page
-      page_param: page
-      page_start: 0
-      page_step: 1
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -333,20 +298,14 @@ tables:
 
   - name: queries
     description: Superset SQL Lab query history.
+    fetch_limit_default: 100
     request:
       method: GET
       path: /api/v1/query/
     response:
       rows_path: [result]
     pagination:
-      mode: page
-      page_param: page
-      page_start: 0
-      page_step: 1
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -360,6 +319,7 @@ tables:
         type: Utf8
         nullable: true
         description: Database display name.
+        expr: {kind: path, path: [database, database_name]}
       - name: schema
         type: Utf8
         nullable: true
@@ -376,13 +336,14 @@ tables:
         type: Utf8
         nullable: true
         description: Query user.
+        expr: {kind: path, path: [user, username]}
       - name: start_time
         type: Timestamp
         nullable: true
         description: Query start time.
         expr:
           kind: format_timestamp
-          input: iso8601
+          input: seconds
           expr: {kind: path, path: [start_time]}
       - name: end_time
         type: Timestamp
@@ -390,7 +351,7 @@ tables:
         description: Query end time.
         expr:
           kind: format_timestamp
-          input: iso8601
+          input: seconds
           expr: {kind: path, path: [end_time]}
       - name: rows
         type: Int64
@@ -414,14 +375,7 @@ tables:
     response:
       rows_path: [result]
     pagination:
-      mode: page
-      page_param: page
-      page_start: 0
-      page_step: 1
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -466,14 +420,7 @@ tables:
     response:
       rows_path: [result]
     pagination:
-      mode: page
-      page_param: page
-      page_start: 0
-      page_step: 1
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -526,10 +473,18 @@ tables:
         type: Utf8
         nullable: true
         description: Chart name.
-      - name: viz_type
+      - name: changed_on
+        type: Timestamp
+        nullable: true
+        description: Last changed timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [changed_on]}
+      - name: slice_url
         type: Utf8
         nullable: true
-        description: Visualization type.
+        description: Chart URL returned by the dashboard chart-definitions endpoint.
       - name: raw_json
         type: Json
         nullable: true
@@ -572,7 +527,7 @@ tables:
         type: Utf8
         nullable: true
         description: Database name.
-        expr: {kind: path, path: [database, database_name]}
+        expr: {kind: path, path: [database, name]}
       - name: raw_json
         type: Json
         nullable: true
