@@ -1,0 +1,566 @@
+name: contentful
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query published or preview Contentful content types, entries, assets,
+  locales, and tags from the Content Delivery API as SQL.
+base_url: "{{input.CONTENTFUL_API_BASE}}"
+
+inputs:
+  CONTENTFUL_API_BASE:
+    kind: variable
+    default: https://cdn.contentful.com
+    hint: |
+      Contentful API base URL. Use https://cdn.contentful.com for published
+      Delivery API content or https://preview.contentful.com for Preview API.
+  CONTENTFUL_SPACE_ID:
+    kind: variable
+    hint: Contentful space ID.
+  CONTENTFUL_ENVIRONMENT_ID:
+    kind: variable
+    default: master
+    hint: Contentful environment ID, usually `master`.
+  CONTENTFUL_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Contentful Delivery API or Preview API access token for the configured
+      space and environment. Paste only the token value.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.CONTENTFUL_ACCESS_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM contentful.content_types LIMIT 1
+
+functions:
+  - name: search_entries
+    kind: search
+    description: >-
+      Search Contentful entries using the Delivery API full-text `query`
+      parameter, with optional content type, locale, and ordering filters.
+    fetch_limit_default: 20
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: content_type
+        bind:
+          arg: content_type
+      - name: locale
+        bind:
+          arg: locale
+      - name: order
+        bind:
+          arg: order
+      - name: include
+        bind:
+          arg: include
+    request:
+      method: GET
+      path: /spaces/{{input.CONTENTFUL_SPACE_ID}}/environments/{{input.CONTENTFUL_ENVIRONMENT_ID}}/entries
+      query:
+        - name: query
+          from: arg
+          key: query
+        - name: content_type
+          from: arg
+          key: content_type
+        - name: locale
+          from: arg
+          key: locale
+        - name: order
+          from: arg
+          key: order
+        - name: include
+          from: arg
+          key: include
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Entry ID.
+        expr: {kind: path, path: [sys, id]}
+      - name: content_type_id
+        type: Utf8
+        nullable: true
+        description: Content type ID for the entry.
+        expr: {kind: path, path: [sys, contentType, sys, id]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Entry creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [sys, createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Entry update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [sys, updatedAt]}
+      - name: fields
+        type: Json
+        nullable: true
+        description: Localized entry fields.
+        expr: {kind: path, path: [fields]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Contentful entry object.
+        expr: {kind: current_row}
+
+  - name: search_assets
+    kind: search
+    description: >-
+      Search Contentful assets using the Delivery API full-text `query`
+      parameter, with optional locale, MIME group, and ordering filters.
+    fetch_limit_default: 20
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: locale
+        bind:
+          arg: locale
+      - name: mimetype_group
+        bind:
+          arg: mimetype_group
+      - name: order
+        bind:
+          arg: order
+    request:
+      method: GET
+      path: /spaces/{{input.CONTENTFUL_SPACE_ID}}/environments/{{input.CONTENTFUL_ENVIRONMENT_ID}}/assets
+      query:
+        - name: query
+          from: arg
+          key: query
+        - name: locale
+          from: arg
+          key: locale
+        - name: mimetype_group
+          from: arg
+          key: mimetype_group
+        - name: order
+          from: arg
+          key: order
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Asset ID.
+        expr: {kind: path, path: [sys, id]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Asset title for the selected/default locale.
+        expr: {kind: path, path: [fields, title]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Asset description for the selected/default locale.
+        expr: {kind: path, path: [fields, description]}
+      - name: file
+        type: Json
+        nullable: true
+        description: Localized file metadata and URLs.
+        expr: {kind: path, path: [fields, file]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Contentful asset object.
+        expr: {kind: current_row}
+
+tables:
+  - name: content_types
+    description: Content model definitions in the configured Contentful environment.
+    request:
+      method: GET
+      path: /spaces/{{input.CONTENTFUL_SPACE_ID}}/environments/{{input.CONTENTFUL_ENVIRONMENT_ID}}/content_types
+      query: []
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Content type ID.
+        expr: {kind: path, path: [sys, id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Content type display name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Content type description.
+        expr: {kind: path, path: [description]}
+      - name: display_field
+        type: Utf8
+        nullable: true
+        description: Field used as the display title in Contentful.
+        expr: {kind: path, path: [displayField]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Content type creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [sys, createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Content type update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [sys, updatedAt]}
+      - name: fields
+        type: Json
+        nullable: true
+        description: Field definitions and validations.
+        expr: {kind: path, path: [fields]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Contentful content type object.
+        expr: {kind: current_row}
+
+  - name: entries
+    description: Entries from the configured Contentful space and environment.
+    guide: |
+      Use `content_type` to scope to one model. Use `query` for full-text
+      search, `locale` for localized fields, and `include` to resolve linked
+      entries/assets. Content fields remain in the `fields` JSON column because
+      each Contentful space has its own schema.
+    filters:
+      - name: content_type
+        required: false
+      - name: query
+        required: false
+      - name: locale
+        required: false
+      - name: include
+        required: false
+      - name: select
+        required: false
+      - name: order
+        required: false
+      - name: sys_id
+        required: false
+      - name: links_to_entry
+        required: false
+      - name: links_to_asset
+        required: false
+    request:
+      method: GET
+      path: /spaces/{{input.CONTENTFUL_SPACE_ID}}/environments/{{input.CONTENTFUL_ENVIRONMENT_ID}}/entries
+      query:
+        - name: content_type
+          from: filter
+          key: content_type
+        - name: query
+          from: filter
+          key: query
+        - name: locale
+          from: filter
+          key: locale
+        - name: include
+          from: filter
+          key: include
+        - name: select
+          from: filter
+          key: select
+        - name: order
+          from: filter
+          key: order
+        - name: sys.id
+          from: filter
+          key: sys_id
+        - name: links_to_entry
+          from: filter
+          key: links_to_entry
+        - name: links_to_asset
+          from: filter
+          key: links_to_asset
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Entry ID.
+        expr: {kind: path, path: [sys, id]}
+      - name: content_type_id
+        type: Utf8
+        nullable: true
+        description: Content type ID for the entry.
+        expr: {kind: path, path: [sys, contentType, sys, id]}
+      - name: revision
+        type: Int64
+        nullable: true
+        description: Entry revision number.
+        expr: {kind: path, path: [sys, revision]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Entry creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [sys, createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Entry update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [sys, updatedAt]}
+      - name: fields
+        type: Json
+        nullable: true
+        description: Entry fields, localized according to the query.
+        expr: {kind: path, path: [fields]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Contentful entry object.
+        expr: {kind: current_row}
+
+  - name: assets
+    description: Assets from the configured Contentful space and environment.
+    filters:
+      - name: query
+        required: false
+      - name: locale
+        required: false
+      - name: select
+        required: false
+      - name: order
+        required: false
+      - name: sys_id
+        required: false
+      - name: mimetype_group
+        required: false
+    request:
+      method: GET
+      path: /spaces/{{input.CONTENTFUL_SPACE_ID}}/environments/{{input.CONTENTFUL_ENVIRONMENT_ID}}/assets
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: locale
+          from: filter
+          key: locale
+        - name: select
+          from: filter
+          key: select
+        - name: order
+          from: filter
+          key: order
+        - name: sys.id
+          from: filter
+          key: sys_id
+        - name: mimetype_group
+          from: filter
+          key: mimetype_group
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Asset ID.
+        expr: {kind: path, path: [sys, id]}
+      - name: revision
+        type: Int64
+        nullable: true
+        description: Asset revision number.
+        expr: {kind: path, path: [sys, revision]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Asset creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [sys, createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Asset update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [sys, updatedAt]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Asset title for the selected/default locale.
+        expr: {kind: path, path: [fields, title]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Asset description for the selected/default locale.
+        expr: {kind: path, path: [fields, description]}
+      - name: file
+        type: Json
+        nullable: true
+        description: Localized file metadata and URLs.
+        expr: {kind: path, path: [fields, file]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Contentful asset object.
+        expr: {kind: current_row}
+
+  - name: locales
+    description: Locales configured for the Contentful environment.
+    request:
+      method: GET
+      path: /spaces/{{input.CONTENTFUL_SPACE_ID}}/environments/{{input.CONTENTFUL_ENVIRONMENT_ID}}/locales
+      query: []
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Locale ID.
+        expr: {kind: path, path: [sys, id]}
+      - name: code
+        type: Utf8
+        nullable: true
+        description: Locale code, such as en-US.
+        expr: {kind: path, path: [code]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Locale display name.
+        expr: {kind: path, path: [name]}
+      - name: default
+        type: Boolean
+        nullable: true
+        description: Whether this is the default locale.
+        expr: {kind: path, path: [default]}
+      - name: fallback_code
+        type: Utf8
+        nullable: true
+        description: Locale fallback code, if set.
+        expr: {kind: path, path: [fallbackCode]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Contentful locale object.
+        expr: {kind: current_row}
+
+  - name: tags
+    description: Tags configured for the Contentful environment.
+    request:
+      method: GET
+      path: /spaces/{{input.CONTENTFUL_SPACE_ID}}/environments/{{input.CONTENTFUL_ENVIRONMENT_ID}}/tags
+      query: []
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tag ID.
+        expr: {kind: path, path: [sys, id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tag display name.
+        expr: {kind: path, path: [name]}
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Tag visibility.
+        expr: {kind: path, path: [sys, visibility]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Contentful tag object.
+        expr: {kind: current_row}
