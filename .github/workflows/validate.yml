@@ -209,13 +209,36 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve latest Coral release
+        id: coral-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version="$(
+            curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "User-Agent: withcoral-install-ci" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/latest" |
+              sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
+              head -n 1
+          )"
+
+          if [ -z "$version" ]; then
+            echo "Could not determine latest Coral release version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Run install script
         env:
-          # Note: the install script generally runs fine without a GITHUB_TOKEN set, and we don't advise users to set
-          # one during installation, but in CI it often fails. See https://github.com/orgs/community/discussions/42748
-          # for the discussion.
-          # Do not expose even a read-scoped token to PR-controlled install script changes.
-          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.token || '' }}
+          # Keep tokens out of PR-controlled installer code; pass only the resolved release version.
+          CORAL_VERSION: ${{ steps.coral-release.outputs.version }}
+          GITHUB_TOKEN: ""
         run: |
           install_dir="$RUNNER_TEMP/coral-bin"
           CORAL_INSTALL_DIR="$install_dir" sh < scripts/install.sh
