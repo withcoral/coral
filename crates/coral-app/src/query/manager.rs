@@ -422,7 +422,10 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use coral_engine::{EngineExtensions, SourceInputResolver, SourceInputResolverError};
+    use coral_engine::{
+        EngineExtensions, SourceInputResolutionContext, SourceInputResolver,
+        SourceInputResolverError,
+    };
     use coral_spec::parse_source_manifest_yaml;
     use tempfile::TempDir;
 
@@ -619,7 +622,7 @@ tables:
     impl SourceInputResolver for DelegatingInputResolver {
         async fn resolve_inputs(
             &self,
-            source: &QuerySource,
+            source: &SourceInputResolutionContext,
         ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.observed_token.lock().expect("observed token lock") =
@@ -723,7 +726,7 @@ tables:
             .expect("runtime installs input resolver");
 
         let resolved_inputs = input_resolver
-            .resolve_inputs(&source)
+            .resolve_inputs(&SourceInputResolutionContext::from_query_source(&source))
             .await
             .expect("resolve source inputs");
 

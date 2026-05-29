@@ -1061,7 +1061,10 @@ mod tests {
 
         use async_trait::async_trait;
 
-        use crate::{QuerySource, SourceInputResolver, SourceInputResolverError};
+        use crate::{
+            QuerySource, SourceInputResolutionContext, SourceInputResolver,
+            SourceInputResolverError,
+        };
 
         #[derive(Debug)]
         struct RotatingResolver {
@@ -1072,7 +1075,7 @@ mod tests {
         impl SourceInputResolver for RotatingResolver {
             async fn resolve_inputs(
                 &self,
-                _source: &QuerySource,
+                _source: &SourceInputResolutionContext,
             ) -> std::result::Result<BTreeMap<String, String>, SourceInputResolverError>
             {
                 let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1115,12 +1118,13 @@ mod tests {
         ));
         let resolver_calls = Arc::new(AtomicUsize::new(0));
         let source = QuerySource::new(validated, variables, secrets);
-        let source_inputs = Arc::new(McpSourceInputs::new(
+        let source_input_resolution = SourceInputResolutionContext::from_query_source(&source);
+        let source_inputs = Arc::new(McpSourceInputs::with_resolver(
             resolved_inputs,
-            source,
-            Some(Arc::new(RotatingResolver {
+            source_input_resolution,
+            Arc::new(RotatingResolver {
                 calls: Arc::clone(&resolver_calls),
-            })),
+            }),
         ));
         let caller = StreamableHttpMcpToolCaller {
             source_name: manifest.common.name,
