@@ -27,17 +27,17 @@ SELECT id, name, status, active_replica_count, instance_type_name
 FROM baseten.deployments
 WHERE model_id = 'YOUR_MODEL_ID';
 
--- Find scaled-to-zero deployments
+-- Find scaled-to-zero deployments (get model_id from baseten.models first)
 SELECT id, name, status, min_replicas, max_replicas
 FROM baseten.deployments
-WHERE model_id = 'YOUR_MODEL_ID'
+WHERE model_id = '<model_id from baseten.models>'
   AND status = 'SCALED_TO_ZERO';
 
 -- List all registered secrets (names only, no values)
 SELECT name, created_at, team_name
 FROM baseten.secrets;
 
--- Cross-source: models + their deployment details
+-- Models with their production deployment details
 SELECT m.name AS model_name, d.status, d.active_replica_count, d.instance_type_name
 FROM baseten.models m
 JOIN baseten.deployments d ON d.model_id = m.id
@@ -59,5 +59,5 @@ Get your API key from **app.baseten.co → Settings → API Keys**.
 ## Notes
 
 - `deployments` requires the `model_id` filter — get IDs from `baseten.models`
-- `autoscaling_settings` fields (`min_replicas`, `max_replicas`, `target_concurrency`) are flattened into the `deployments` table using nested `expr` paths
+- `autoscaling_settings` fields are flattened into the `deployments` table as `min_replicas`, `max_replicas`, `target_concurrency` (mapped from Baseten's `min_replica`, `max_replica`, `concurrency_target` fields)
 - Secret values are never returned by the API for security reasons

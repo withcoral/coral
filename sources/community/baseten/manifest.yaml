@@ -20,7 +20,6 @@ auth:
 test_queries:
   - SELECT id, name, instance_type_name, deployments_count FROM baseten.models LIMIT 5
   - SELECT name, created_at, team_name FROM baseten.secrets LIMIT 10
-  - SELECT id, status, active_replica_count, instance_type_name FROM baseten.deployments WHERE model_id = 'YOUR_MODEL_ID' LIMIT 5
 
 tables:
   - name: models
@@ -51,12 +50,15 @@ tables:
           kind: path
           path: [name]
       - name: created_at
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: Model creation timestamp (ISO 8601).
         expr:
-          kind: path
-          path: [created_at]
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
       - name: deployments_count
         type: Int64
         nullable: true
@@ -132,12 +134,15 @@ tables:
           kind: path
           path: [model_id]
       - name: created_at
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: Deployment creation timestamp (ISO 8601).
         expr:
-          kind: path
-          path: [created_at]
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
       - name: is_production
         type: Boolean
         nullable: true
@@ -186,21 +191,21 @@ tables:
         description: Autoscaling minimum replica count.
         expr:
           kind: path
-          path: [autoscaling_settings, min_replicas]
+          path: [autoscaling_settings, min_replica]
       - name: max_replicas
         type: Int64
         nullable: true
         description: Autoscaling maximum replica count.
         expr:
           kind: path
-          path: [autoscaling_settings, max_replicas]
+          path: [autoscaling_settings, max_replica]
       - name: target_concurrency
         type: Int64
         nullable: true
         description: Target request concurrency per replica for autoscaling.
         expr:
           kind: path
-          path: [autoscaling_settings, target_concurrency]
+          path: [autoscaling_settings, concurrency_target]
       - name: model_id_filter
         type: Utf8
         nullable: true
@@ -230,12 +235,15 @@ tables:
           kind: path
           path: [name]
       - name: created_at
-        type: Utf8
+        type: Timestamp
         nullable: true
         description: Secret creation timestamp (ISO 8601).
         expr:
-          kind: path
-          path: [created_at]
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
       - name: team_name
         type: Utf8
         nullable: true
