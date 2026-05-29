@@ -65,7 +65,7 @@ impl CatalogServiceApi for CatalogService {
                     .items
                     .into_iter()
                     .map(|item| catalog_item_to_proto(&workspace_name, item))
-                    .collect(),
+                    .collect::<Result<Vec<_>, _>>()?,
                 pagination: Some(pagination),
                 counts: Some(ProtoCatalogCounts {
                     table_count: catalog_page.counts.table_count,
@@ -112,7 +112,7 @@ impl CatalogServiceApi for CatalogService {
                     .items
                     .into_iter()
                     .map(|result| catalog_search_result_to_proto(&workspace_name, result))
-                    .collect(),
+                    .collect::<Result<Vec<_>, _>>()?,
                 pagination: Some(pagination),
             }))
         })

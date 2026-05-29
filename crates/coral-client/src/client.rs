@@ -4,9 +4,11 @@ use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
+use coral_api::v1::search_service_client::SearchServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
+    SEARCH_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
@@ -38,6 +40,9 @@ pub type CatalogClient = CatalogServiceClient<GrpcService>;
 /// Public SQL query gRPC client.
 pub type QueryClient = QueryServiceClient<GrpcService>;
 
+/// Public Universal Search gRPC client.
+pub type SearchClient = SearchServiceClient<GrpcService>;
+
 /// Public feedback-submission gRPC client.
 pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 
@@ -49,6 +54,7 @@ pub struct AppClient {
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
+    search: SearchClient,
     feedback: FeedbackClient,
 }
 
@@ -72,11 +78,14 @@ impl AppClient {
             .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);
         let query_client = QueryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
+        let search_client = SearchClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE);
         let feedback_client = FeedbackClient::new(grpc_service(channel, &grpc_endpoint));
         Ok(Self {
             source: source_client,
             catalog: catalog_client,
             query: query_client,
+            search: search_client,
             feedback: feedback_client,
         })
     }
@@ -97,6 +106,12 @@ impl AppClient {
     /// Returns a cloned query client.
     pub fn query_client(&self) -> QueryClient {
         self.query.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned Universal Search client.
+    pub fn search_client(&self) -> SearchClient {
+        self.search.clone()
     }
 
     #[must_use]

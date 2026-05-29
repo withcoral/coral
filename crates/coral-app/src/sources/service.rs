@@ -313,7 +313,7 @@ impl SourceServiceApi for SourceService {
                 source,
                 &workspace_name,
                 report,
-            )))
+            )?))
         })
         .await
     }

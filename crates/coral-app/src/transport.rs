@@ -8,9 +8,9 @@ use coral_api::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
         DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, Source, Table, TableFunction, TableFunctionArgument,
-        TableFunctionResultColumn, TableSummary, ValidateSourceResponse, Workspace, catalog_item,
-        query_test_result,
+        QueryTestResult, QueryTestSuccess, SearchLimits, Source, Table, TableFunction,
+        TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
+        ValidateSourceResponse, Workspace, catalog_item, query_test_result,
     },
 };
 use opentelemetry::propagation::Extractor;
@@ -31,6 +31,13 @@ use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
+
+#[derive(serde::Deserialize)]
+struct SearchLimitsDocument {
+    default_top_k: u32,
+    max_top_k: u32,
+    max_calls_per_query: u32,
+}
 
 impl Extractor for MetadataExtractor<'_> {
     fn get(&self, key: &str) -> Option<&str> {
@@ -304,8 +311,8 @@ pub(crate) fn table_summary_to_proto(
 pub(crate) fn catalog_item_to_proto(
     workspace_name: &WorkspaceName,
     item: CatalogItem,
-) -> ProtoCatalogItem {
-    match item {
+) -> Result<ProtoCatalogItem, Status> {
+    Ok(match item {
         CatalogItem::Table(table) => ProtoCatalogItem {
             item: Some(catalog_item::Item::Table(table_summary_to_proto(
                 workspace_name,
@@ -316,34 +323,39 @@ pub(crate) fn catalog_item_to_proto(
             item: Some(catalog_item::Item::TableFunction(table_function_to_proto(
                 workspace_name,
                 function,
-            ))),
+            )?)),
         },
-    }
+    })
 }
 
 pub(crate) fn catalog_search_result_to_proto(
     workspace_name: &WorkspaceName,
     result: CatalogSearchResult,
-) -> ProtoCatalogSearchResult {
-    ProtoCatalogSearchResult {
-        item: Some(catalog_item_to_proto(workspace_name, result.item)),
+) -> Result<ProtoCatalogSearchResult, Status> {
+    Ok(ProtoCatalogSearchResult {
+        item: Some(catalog_item_to_proto(workspace_name, result.item)?),
         matched_fields: result
             .matched_fields
             .into_iter()
             .map(CatalogMetadataField::as_proto_name)
             .map(str::to_string)
             .collect(),
-    }
+    })
 }
 
 pub(crate) fn table_function_to_proto(
     workspace_name: &WorkspaceName,
     function: coral_engine::TableFunctionInfo,
-) -> TableFunction {
-    TableFunction {
+) -> Result<TableFunction, Status> {
+    let schema_name = function.schema_name;
+    let function_name = function.function_name;
+    let search_limits =
+        search_limits_json_to_proto(&schema_name, &function_name, function.search_limits_json)?;
+
+    Ok(TableFunction {
         workspace: Some(workspace_to_proto(workspace_name)),
-        schema_name: function.schema_name,
-        name: function.function_name,
+        schema_name,
+        name: function_name,
         description: function.description,
         arguments: function
             .arguments
@@ -364,7 +376,62 @@ pub(crate) fn table_function_to_proto(
                 description: column.description,
             })
             .collect(),
+        kind: table_function_kind_to_proto(&function.kind) as i32,
+        search_limits,
+    })
+}
+
+fn table_function_kind_to_proto(kind: &str) -> TableFunctionKind {
+    match kind {
+        "table" => TableFunctionKind::Table,
+        "search" => TableFunctionKind::Search,
+        _ => TableFunctionKind::Unspecified,
     }
+}
+
+fn search_limits_json_to_proto(
+    schema_name: &str,
+    function_name: &str,
+    search_limits_json: Option<String>,
+) -> Result<Option<SearchLimits>, Status> {
+    search_limits_json
+        .map(|json| {
+            let document: SearchLimitsDocument = serde_json::from_str(&json).map_err(|error| {
+                Status::internal(format!(
+                    "invalid search limits JSON for table function {schema_name}.{function_name}: {error}"
+                ))
+            })?;
+            Ok(SearchLimits {
+                default_top_k: document.default_top_k,
+                max_top_k: document.max_top_k,
+                max_calls_per_query: document.max_calls_per_query,
+            })
+        })
+        .transpose()
+}
+
+pub(crate) fn validate_source_response_to_proto(
+    source: Source,
+    workspace_name: &WorkspaceName,
+    report: coral_engine::SourceValidationReport,
+) -> Result<ValidateSourceResponse, Status> {
+    let coral_engine::SourceValidationReport {
+        tables,
+        table_functions,
+        query_tests,
+    } = report;
+    Ok(ValidateSourceResponse {
+        source: Some(source),
+        tables: tables
+            .into_iter()
+            .map(|table| table_to_proto(workspace_name, table))
+            .collect(),
+        query_tests: query_tests.iter().map(query_test_result_to_proto).collect(),
+        table_functions: table_functions
+            .into_iter()
+            .map(|function| table_function_to_proto(workspace_name, function))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
 }
 
 pub(crate) fn describe_table_response_to_proto(
@@ -452,30 +519,6 @@ pub(crate) fn query_test_result_to_proto(
     }
 }
 
-pub(crate) fn validate_source_response_to_proto(
-    source: Source,
-    workspace_name: &WorkspaceName,
-    report: coral_engine::SourceValidationReport,
-) -> ValidateSourceResponse {
-    let coral_engine::SourceValidationReport {
-        tables,
-        table_functions,
-        query_tests,
-    } = report;
-    ValidateSourceResponse {
-        source: Some(source),
-        tables: tables
-            .into_iter()
-            .map(|table| table_to_proto(workspace_name, table))
-            .collect(),
-        query_tests: query_tests.iter().map(query_test_result_to_proto).collect(),
-        table_functions: table_functions
-            .into_iter()
-            .map(|function| table_function_to_proto(workspace_name, function))
-            .collect(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -485,20 +528,21 @@ mod tests {
 
     use coral_api::{
         grpc_response_status_code,
-        v1::{QueryTestFailure, Workspace, query_test_result},
+        v1::{QueryTestFailure, TableFunctionKind, Workspace, query_test_result},
     };
     use tonic::{Code, Request};
 
     use super::{
         GrpcMethodMetadata, GrpcServerMethod, episode_id_from_metadata, grpc_method, query_status,
-        query_test_result_to_proto, table_summary_to_proto, table_to_proto,
-        workspace_name_from_proto, workspace_to_proto,
+        query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
+        table_to_proto, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
-        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
+        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionArgumentInfo,
+        TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
     };
 
     #[test]
@@ -675,6 +719,70 @@ mod tests {
         assert_eq!(proto.description, "User records");
         assert_eq!(proto.guide, "Filter by org_id.");
         assert_eq!(proto.required_filters, vec!["org_id"]);
+    }
+
+    #[test]
+    fn table_function_to_proto_preserves_search_limits_presence() {
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let mut function = TableFunctionInfo {
+            schema_name: "github".to_string(),
+            function_name: "search_issues".to_string(),
+            description: "Search issues".to_string(),
+            kind: "search".to_string(),
+            arguments: vec![TableFunctionArgumentInfo {
+                name: "q".to_string(),
+                required: true,
+                values: Vec::new(),
+            }],
+            result_columns: vec![TableFunctionResultColumnInfo {
+                name: "title".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: false,
+                description: "Issue title".to_string(),
+            }],
+            search_limits_json: None,
+        };
+
+        let proto = table_function_to_proto(&workspace_name, function.clone()).expect("proto");
+        assert_eq!(proto.workspace, Some(workspace_to_proto(&workspace_name)));
+        assert_eq!(proto.name, "search_issues");
+        assert_eq!(proto.kind(), TableFunctionKind::Search);
+        assert_eq!(proto.search_limits, None);
+
+        function.search_limits_json =
+            Some(r#"{"default_top_k":10,"max_top_k":100,"max_calls_per_query":5}"#.to_string());
+        let proto = table_function_to_proto(&workspace_name, function).expect("proto");
+        let search_limits = proto.search_limits.expect("search limits");
+        assert_eq!(search_limits.default_top_k, 10);
+        assert_eq!(search_limits.max_top_k, 100);
+        assert_eq!(search_limits.max_calls_per_query, 5);
+    }
+
+    #[test]
+    fn table_function_to_proto_rejects_malformed_search_limits() {
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let function = TableFunctionInfo {
+            schema_name: "github".to_string(),
+            function_name: "search_issues".to_string(),
+            description: "Search issues".to_string(),
+            kind: "search".to_string(),
+            arguments: vec![TableFunctionArgumentInfo {
+                name: "q".to_string(),
+                required: true,
+                values: Vec::new(),
+            }],
+            result_columns: Vec::new(),
+            search_limits_json: Some("{not-json".to_string()),
+        };
+
+        let status = table_function_to_proto(&workspace_name, function).expect_err("invalid JSON");
+
+        assert_eq!(status.code(), Code::Internal);
+        assert!(
+            status
+                .message()
+                .contains("invalid search limits JSON for table function github.search_issues")
+        );
     }
 
     #[test]

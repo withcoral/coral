@@ -345,6 +345,8 @@ mod tests {
             description: String::new(),
             arguments: vec![],
             result_columns: vec![],
+            kind: "table".to_string(),
+            search_limits_json: None,
         }
     }
 

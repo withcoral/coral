@@ -102,6 +102,26 @@ message TableFunctionResultColumn {
   string description = 4;
 }
 
+// Query-visible table-function semantic class.
+enum TableFunctionKind {
+  // Unknown function role.
+  TABLE_FUNCTION_KIND_UNSPECIFIED = 0;
+  // Generic row-returning provider operation.
+  TABLE_FUNCTION_KIND_TABLE = 1;
+  // Provider-native retrieval/search operation that returns ranked candidates.
+  TABLE_FUNCTION_KIND_SEARCH = 2;
+}
+
+// Bounded retrieval settings for search-like provider surfaces.
+message SearchLimits {
+  // Default candidate count used when the SQL call does not specify a limit.
+  uint32 default_top_k = 1;
+  // Maximum candidate count for one provider search call.
+  uint32 max_top_k = 2;
+  // Maximum number of provider search calls a single query may make.
+  uint32 max_calls_per_query = 3;
+}
+
 // A query-visible table function in one workspace.
 message TableFunction {
   // Workspace whose query catalog makes this function visible.
@@ -116,6 +136,10 @@ message TableFunction {
   repeated TableFunctionArgument arguments = 5;
   // Columns returned by the function.
   repeated TableFunctionResultColumn result_columns = 6;
+  // Function role. Search marks provider-native retrieval.
+  TableFunctionKind kind = 7;
+  // Provider search limit metadata, when declared by the source.
+  SearchLimits search_limits = 8;
 }
 
 // Catalog item kind filter for unified discovery.
