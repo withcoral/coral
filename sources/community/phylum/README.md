@@ -21,6 +21,11 @@ The source defaults to `https://api.phylum.io/api/v0`. Override
 `PHYLUM_API_BASE` only if Phylum documents a different API host for your
 environment.
 
+## Provider docs
+
+- [Phylum OpenAPI document](https://api.phylum.io/api/v0/openapi.json)
+- [Phylum API token docs](https://docs.phylum.io/knowledge_base/api-keys)
+
 ## Tables
 
 | Table | Required filters | Description |
@@ -86,10 +91,21 @@ WHERE package_registry = 'npm'
 LIMIT 1;
 ```
 
+Query a scoped npm package by URL-encoding the scope separator in
+`package_name`. For example, pass `%40babel%2Fcore` for `@babel/core`:
+
+```sql
+SELECT version, total_risk_score, published_date
+FROM phylum.package_versions
+WHERE package_registry = 'npm'
+  AND package_name = '%40babel%2Fcore'
+LIMIT 20;
+```
+
 ## Notes
 
-- Scoped package names, such as npm packages under an organization scope, may
-  need URL encoding according to Phylum API behavior.
+- Scoped npm package names are interpolated into the Phylum package URL path.
+  Use URL-encoded values such as `%40scope%2Fname` rather than `@scope/name`.
 - `issues`, `dependencies`, `versions`, `maintainers`, and `contributors` are
   JSON columns because the upstream payloads are nested collections.
 - The Phylum threat feed uses a separate host (`https://threats.phylum.io`).

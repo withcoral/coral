@@ -12,7 +12,8 @@ inputs:
     hint: |
       Base URL for the Phylum API. Keep the default for Phylum Cloud.
       Do not include a trailing slash.
-      See https://swagger.phylum.io for the current API reference.
+      See https://api.phylum.io/api/v0/openapi.json for the current API
+      reference.
   PHYLUM_API_KEY:
     kind: secret
     hint: |
