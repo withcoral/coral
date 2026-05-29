@@ -14,8 +14,13 @@ inputs:
       Shortcut API token. Generate one at
       https://app.shortcut.com/settings/account/api-tokens.
 
-      Shortcut API tokens inherit the permissions of the user who created
-      them and may access all workspace data visible to that user.
+      Shortcut API tokens inherit the full permissions of the user who
+      created them and may allow read or write access to all workspace
+      data visible to that user outside Coral.
+
+      This source is read-only, but the token itself may still be used
+      for write operations against the Shortcut API depending on the
+      user role associated with the token.
 
       The token is sent as the Shortcut-Token request header.
 
@@ -300,7 +305,8 @@ tables:
     description: >-
       Stories (work items) in the Shortcut workspace discovered via the
       Shortcut search API. Each row is one story. Requires a `query`
-      filter using Shortcut search syntax.
+      filter using Shortcut search syntax. Currently returns only the
+      first page of Shortcut search results.
     guide: |
       Required `query` filter pushes down directly to the Shortcut
       search API. Use Shortcut search operators such as `is:started`,
@@ -312,6 +318,10 @@ tables:
       Examples:
       WHERE query = 'is:started'
       WHERE query = 'type:bug state:unstarted'
+
+      Current limitation: only the first page of Shortcut search results
+      is returned because cursor pagination is not yet implemented in
+      this source.
     filters:
       - name: query
         required: true

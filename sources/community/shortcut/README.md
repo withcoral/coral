@@ -17,12 +17,15 @@ bundled **Linear**, **GitHub**, and **Jira** sources.
 1. Go to https://app.shortcut.com/settings/account/api-tokens
 2. Click **Generate Token**, give it a name, and copy the token.
 
-Shortcut API tokens inherit the permissions of the user who created them.
-They are workspace-level tokens and may grant broad read access across your
-Shortcut workspace depending on that user's role and permissions.
+Shortcut API tokens inherit the full permissions of the user who created
+them. Depending on the associated Shortcut role, the token may allow read
+or write access across the workspace outside Coral.
 
-For security, create a dedicated read-only or least-privileged Shortcut user
-when possible.
+This source itself is read-only and never performs write operations, but
+the token can still be used independently against the Shortcut API.
+
+For least-privilege access, consider creating a dedicated Shortcut Observer
+(read-only) user for Coral integrations when possible.
 
 ### 2. Set your token
 
@@ -104,8 +107,9 @@ LIMIT 20;
 
 `cycle_time` is returned in seconds from story start to completion.
 
-The underlying Shortcut search API supports cursor-based pagination and
-allows `page_size` values up to 250.
+Current limitation: this source currently returns only the first page of
+Shortcut search results because cursor pagination is not yet implemented.
+Use restrictive search queries to reduce result size.
 
 ### `iterations`
 
@@ -253,9 +257,9 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
   https://app.shortcut.com/settings/account/api-tokens.
 - **`email` field:** sourced from `profile.email_address` in the API
   response, not a top-level field.
-- **`stories` pagination:** the Shortcut search API uses cursor-based
-  pagination and supports `page_size` values up to 250. Always use
-  `LIMIT` for large workspaces.
+- **`stories` pagination:** this source currently returns only the first
+  page of Shortcut search results because cursor pagination is not yet
+  implemented in Coral for this endpoint.
 - **`query` filter on stories:** required for `shortcut.stories` because
   the underlying Shortcut `/search/stories` endpoint requires a search
   query. The filter accepts Shortcut search operators. See
