@@ -206,10 +206,11 @@ tables:
   # Maps to: GET /api/user.status?handle={handle}
   #
   # WHY this table exists:
-  #   This is the most powerful table — every submission the user
-  #   has ever made. Filter by verdict='OK' to count solved
-  #   problems. Filter by problem rating to see difficulty trends.
-  #   GROUP BY tags to see which topics are strongest.
+  #   This is the most powerful table — up to 500 most recent
+  #   submissions for the user. Filter by verdict='OK' to count
+  #   solved problems. Filter by problem rating to see difficulty
+  #   trends. GROUP BY tags to see which topics are strongest.
+  #   Note: capped at 500 rows; heavy users may have more history.
   #
   # USAGE:
   #   -- Count unique solved problems
@@ -225,9 +226,10 @@ tables:
   # ──────────────────────────────────────────────────────────
   - name: submissions
     description: >
-      Full submission history for the configured user handle.
+      Up to 500 most recent submissions for the configured user handle.
       Includes verdict, problem details, language, and timestamps.
       Filter WHERE verdict = 'OK' to get accepted solutions only.
+      Note: capped at 500 rows by the Codeforces API count parameter.
     request:
       method: GET
       path: /api/user.status
