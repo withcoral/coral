@@ -18,7 +18,9 @@ inputs:
     hint: CouchDB username.
   COUCHDB_PASSWORD:
     kind: secret
-    hint: CouchDB password.
+    hint: |
+      CouchDB password. Server-level tables such as active tasks and scheduler
+      metadata typically require an admin/server-operator account.
 
 auth:
   type: BasicAuth
@@ -33,7 +35,7 @@ request_headers:
 test_queries:
   - SELECT couchdb, version FROM couchdb.server LIMIT 1
   - SELECT db_name, doc_count FROM couchdb.database_infos LIMIT 1
-  - SELECT id, database, state FROM couchdb.scheduler_jobs LIMIT 1
+  - SELECT id, database, start_time FROM couchdb.scheduler_jobs LIMIT 1
 
 tables:
   - name: server
@@ -384,10 +386,6 @@ tables:
         type: Utf8
         nullable: true
         description: Source database.
-      - name: state
-        type: Utf8
-        nullable: true
-        description: Scheduler state.
       - name: node
         type: Utf8
         nullable: true
@@ -408,6 +406,10 @@ tables:
         type: Timestamp
         nullable: true
         description: When the replication job started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [start_time]}
       - name: user
         type: Utf8
         nullable: true
@@ -479,14 +481,14 @@ tables:
         type: Utf8
         nullable: true
         description: Replication target.
-      - name: start_time
-        type: Timestamp
-        nullable: true
-        description: When the replication started.
       - name: last_updated
         type: Timestamp
         nullable: true
         description: Last scheduler state update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_updated]}
       - name: info_json
         type: Json
         nullable: true

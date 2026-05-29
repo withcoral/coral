@@ -6,6 +6,11 @@ observability-focused.
 
 ## Setup
 
+Use credentials for a CouchDB admin or server-operator account when querying
+server-level observability surfaces such as `/_active_tasks`,
+`/_scheduler/jobs`, and `/_scheduler/docs`. Lower-privilege database users may
+only be able to query narrower database metadata.
+
 ```bash
 COUCHDB_BASE_URL=http://localhost:5984 \
 COUCHDB_USERNAME=admin \
@@ -69,6 +74,9 @@ LIMIT 50;
 ## Notes
 
 - This source does not expose arbitrary document scans in v1.
+- Several tables query server-level/admin observability endpoints. Use an
+  account with sufficient privileges for active tasks, scheduler jobs, and
+  scheduler docs.
 - `couchdb.database_infos` uses the documented `GET /_dbs_info` endpoint added
   in CouchDB 3.2. For older servers, use `couchdb.database_info_legacy` with a
   URL path-safe database name in `db_path`.
