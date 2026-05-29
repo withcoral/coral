@@ -33,7 +33,7 @@
             'coral_roles': coral_roles | default([]),
             'coral_expected_services': coral_expected_services | default([])
           } | to_nice_json }}
-        dest: "{{ raw_facts_dir }}/{{ inventory_hostname }}.json"
+        dest: "{{ raw_facts_dir }}/{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
         mode: "0600"
       delegate_to: localhost
       become: false

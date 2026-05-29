@@ -6,7 +6,7 @@
 
 **Tables:** `7`
 
-**Default data directory:** `/tmp/coral-ansible-facts/`
+**Default data directory:** `~/.coral/ansible-facts/`
 
 Query sanitized, normalized Ansible fact exports with Coral SQL.
 
@@ -69,7 +69,7 @@ flowchart TD
   Schema --> Security["ansible.security"]
   Schema --> Roles["ansible.roles"]
 
-  DataDir["/tmp/coral-ansible-facts/*.jsonl"] --> Hosts
+  DataDir["~/.coral/ansible-facts/*.jsonl"] --> Hosts
   DataDir --> Services
   DataDir --> Packages
   DataDir --> Mounts
@@ -179,7 +179,7 @@ SECURITY_NOTES.md
 The committed manifest expects JSONL files in:
 
 ```text
-/tmp/coral-ansible-facts/
+~/.coral/ansible-facts/
 ```
 
 Expected files:
@@ -201,8 +201,8 @@ The included fixture files are synthetic and can be used for a smoke test.
 From the Coral repo root:
 
 ```bash
-mkdir -p /tmp/coral-ansible-facts
-cp sources/community/ansible/fixtures/*.jsonl /tmp/coral-ansible-facts/
+mkdir -p ~/.coral/ansible-facts
+cp sources/community/ansible/fixtures/*.jsonl ~/.coral/ansible-facts/
 ```
 
 Lint and add the source:
@@ -237,13 +237,13 @@ coral sql "
 The committed manifest uses a Unix-style path:
 
 ```yaml
-location: file:///tmp/coral-ansible-facts/
+location: file://~/.coral/ansible-facts/
 ```
 
-On Windows, create a local ignored manifest copy and use a Windows file URL:
+On Windows, the same home-directory location is used by the Coral CLI:
 
 ```yaml
-location: file:///C:/tmp/coral-ansible-facts/
+location: file://~/.coral/ansible-facts/
 ```
 
 Example PowerShell workflow:
@@ -254,11 +254,11 @@ Copy-Item `
   sources\community\ansible\manifest.windows.local.yaml `
   -Force
 
-$manifest = "C:\coral\sources\community\ansible\manifest.windows.local.yaml"
+$manifest = Join-Path (Get-Location) "sources\community\ansible\manifest.windows.local.yaml"
 $text = [System.IO.File]::ReadAllText($manifest)
 $text = $text.Replace(
-  "file:///tmp/coral-ansible-facts/",
-  "file:///C:/tmp/coral-ansible-facts/"
+  "file://~/.coral/ansible-facts/",
+  "file://~/.coral/ansible-facts/"
 )
 $text = $text -replace "`r`n", "`n"
 [System.IO.File]::WriteAllText(
@@ -305,8 +305,8 @@ python scripts/normalize-ansible-facts.py \
   --input raw-facts \
   --output normalized-facts
 
-mkdir -p /tmp/coral-ansible-facts
-cp normalized-facts/*.jsonl /tmp/coral-ansible-facts/
+mkdir -p ~/.coral/ansible-facts
+cp normalized-facts/*.jsonl ~/.coral/ansible-facts/
 ```
 
 Then test:
@@ -492,13 +492,13 @@ The path in `source.location` must match your operating system.
 Linux/macOS:
 
 ```yaml
-location: file:///tmp/coral-ansible-facts/
+location: file://~/.coral/ansible-facts/
 ```
 
 Windows:
 
 ```yaml
-location: file:///C:/tmp/coral-ansible-facts/
+location: file://~/.coral/ansible-facts/
 ```
 
 Use a local ignored manifest for Windows testing.
@@ -524,7 +524,7 @@ Then re-add the source after fixing the data path.
 Check:
 
 ```bash
-ls /tmp/coral-ansible-facts
+ls ~/.coral/ansible-facts
 ```
 
 Windows:

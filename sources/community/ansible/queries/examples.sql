@@ -1,4 +1,4 @@
-## -- ansible Coral source example SQL
+-- ansible Coral source example SQL
 
 -- These examples are organized from basic to advanced.
 -- They are intentionally focused on the tables exposed by the ansible source:

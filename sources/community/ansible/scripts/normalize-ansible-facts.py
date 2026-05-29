@@ -168,7 +168,7 @@ def normalize_security(hostname: str, facts: dict[str, Any]) -> dict[str, Any]:
         "hostname": hostname,
         "selinux_status": as_str(selinux.get("status")),
         "selinux_mode": as_str(selinux.get("mode")),
-        "selinux_policy": as_str(selinux.get("policyvers") or selinux.get("type")),
+        "selinux_policy": as_str(selinux.get("type")),
         "apparmor_status": as_str(apparmor.get("status")),
         "fips": bool(facts.get("fips")) if facts.get("fips") is not None else None,
         "ssh_host_keys_collected": any(str(k).startswith("ssh_host_key") for k in facts.keys()),
@@ -206,7 +206,7 @@ def normalize_roles(hostname: str, payload: dict[str, Any]) -> Iterable[dict[str
                     "role": as_str(item.get("role") or "unknown"),
                     "environment": as_str(item.get("environment")),
                     "source_file": as_str(item.get("source_file")),
-                    "expected_service": as_str(item.get("service")),
+                    "expected_service": as_str(item.get("expected_service") or item.get("service")),
                 })
     return [row for row in rows if row.get("role")]
 

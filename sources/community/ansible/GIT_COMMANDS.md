@@ -127,8 +127,8 @@ py sources\community\ansible\tests\validate-fixtures.py sources\community\ansibl
 Linux/macOS:
 
 ```bash
-mkdir -p /tmp/coral-ansible-facts
-cp sources/community/ansible/fixtures/*.jsonl /tmp/coral-ansible-facts/
+mkdir -p ~/.coral/ansible-facts
+cp sources/community/ansible/fixtures/*.jsonl ~/.coral/ansible-facts/
 ```
 
 Windows PowerShell:
@@ -143,10 +143,10 @@ Copy-Item sources\community\ansible\fixtures\*.jsonl C:\tmp\coral-ansible-facts\
 The committed manifest uses:
 
 ```yaml
-location: file:///tmp/coral-ansible-facts/
+location: file://~/.coral/ansible-facts/
 ```
 
-On Windows, create a local ignored copy:
+On Windows, the same home-directory location is used by the Coral CLI:
 
 ```powershell
 Copy-Item `
@@ -154,11 +154,11 @@ Copy-Item `
   sources\community\ansible\manifest.windows.local.yaml `
   -Force
 
-$manifest = "C:\coral\sources\community\ansible\manifest.windows.local.yaml"
+$manifest = Join-Path (Get-Location) "sources\community\ansible\manifest.windows.local.yaml"
 $text = [System.IO.File]::ReadAllText($manifest)
 $text = $text.Replace(
-  "file:///tmp/coral-ansible-facts/",
-  "file:///C:/tmp/coral-ansible-facts/"
+  "file://~/.coral/ansible-facts/",
+  "file://~/.coral/ansible-facts/"
 )
 $text = $text -replace "`r`n", "`n"
 [System.IO.File]::WriteAllText(
@@ -174,7 +174,7 @@ Verify it is ignored:
 
 ```powershell
 git status --ignored
-git ls-files sources/community/ansible/manifest.windows.local.yaml
+git check-ignore -v sources/community/ansible/manifest.windows.local.yaml
 ```
 
 `git ls-files` should print nothing.

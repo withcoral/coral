@@ -13,13 +13,15 @@ test_queries:
   - SELECT hostname, name, version, source FROM ansible.packages LIMIT 5
   - SELECT hostname, mount, size_available, size_total FROM ansible.mounts LIMIT 5
   - SELECT hostname, selinux_status, selinux_mode, apparmor_status FROM ansible.security LIMIT 5
+  - SELECT hostname, interface, ipv4_address, active FROM ansible.interfaces LIMIT 5
+  - SELECT hostname, role, expected_service FROM ansible.roles LIMIT 5
 
 tables:
   - name: hosts
     description: Host-level facts gathered from ansible.builtin.setup and normalized into safe inventory columns.
     format: jsonl
     source:
-      location: file:///tmp/coral-ansible-facts/
+      location: file://~/.coral/ansible-facts/
       glob: hosts.jsonl
     columns:
       - name: hostname
@@ -85,7 +87,7 @@ tables:
     description: Service state facts gathered from ansible.builtin.service_facts and flattened to one row per service per host.
     format: jsonl
     source:
-      location: file:///tmp/coral-ansible-facts/
+      location: file://~/.coral/ansible-facts/
       glob: services.jsonl
     columns:
       - name: hostname
@@ -110,7 +112,7 @@ tables:
     description: Installed package facts gathered from ansible.builtin.package_facts and flattened to one row per installed package version.
     format: jsonl
     source:
-      location: file:///tmp/coral-ansible-facts/
+      location: file://~/.coral/ansible-facts/
       glob: packages.jsonl
     columns:
       - name: hostname
@@ -144,7 +146,7 @@ tables:
     description: Filesystem mount facts gathered from setup facts and flattened to one row per mount.
     format: jsonl
     source:
-      location: file:///tmp/coral-ansible-facts/
+      location: file://~/.coral/ansible-facts/
       glob: mounts.jsonl
     columns:
       - name: hostname
@@ -174,7 +176,7 @@ tables:
     description: Network interface facts gathered from setup facts and flattened to one row per interface.
     format: jsonl
     source:
-      location: file:///tmp/coral-ansible-facts/
+      location: file://~/.coral/ansible-facts/
       glob: interfaces.jsonl
     columns:
       - name: hostname
@@ -208,7 +210,7 @@ tables:
     description: Safe, coarse security posture facts. This intentionally avoids raw policy dumps, key material, users, and environment variables.
     format: jsonl
     source:
-      location: file:///tmp/coral-ansible-facts/
+      location: file://~/.coral/ansible-facts/
       glob: security.jsonl
     columns:
       - name: hostname
@@ -241,7 +243,7 @@ tables:
     description: Optional intended role assignment metadata exported from inventory, group_vars, host_vars, or a curated mapping file.
     format: jsonl
     source:
-      location: file:///tmp/coral-ansible-facts/
+      location: file://~/.coral/ansible-facts/
       glob: roles.jsonl
     columns:
       - name: hostname
