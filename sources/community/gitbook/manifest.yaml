@@ -1,0 +1,975 @@
+name: gitbook
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query GitBook organizations, spaces, collections, sites, members, teams,
+  pages, files, and provider-ranked content search from the GitBook API.
+base_url: https://api.gitbook.com/v1
+
+inputs:
+  GITBOOK_TOKEN:
+    kind: secret
+    hint: |
+      GitBook API bearer token with read access to the organizations,
+      spaces, and sites you want to query. Create or manage API credentials
+      from GitBook, then paste only the token value.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GITBOOK_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, title FROM gitbook.organizations LIMIT 1
+
+functions:
+  - name: search_org_content
+    kind: search
+    description: >-
+      Search provider-ranked content across a GitBook organization.
+      Returns matching spaces with nested matching pages in `pages`.
+    fetch_limit_default: 20
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: organization_id
+        required: true
+        bind:
+          arg: organization_id
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /orgs/{{arg.organization_id}}/search
+      query:
+        - name: query
+          from: arg
+          key: query
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Matching space ID.
+        expr: {kind: path, path: [id]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Matching space title.
+        expr: {kind: path, path: [title]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Result type, usually `space`.
+        expr: {kind: path, path: [type]}
+      - name: score
+        type: Float64
+        nullable: true
+        description: Provider-ranked relevance score.
+        expr: {kind: path, path: [score]}
+      - name: pages
+        type: Json
+        nullable: true
+        description: Matching page results within the space.
+        expr: {kind: path, path: [pages]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook organization search result.
+        expr: {kind: current_row}
+
+  - name: search_space_content
+    kind: search
+    description: Search provider-ranked content within one GitBook space.
+    fetch_limit_default: 20
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: space_id
+        required: true
+        bind:
+          arg: space_id
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /spaces/{{arg.space_id}}/search
+      query:
+        - name: query
+          from: arg
+          key: query
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Matching page or section ID.
+        expr: {kind: path, path: [id]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Matching page or section title.
+        expr: {kind: path, path: [title]}
+      - name: path
+        type: Utf8
+        nullable: true
+        description: Content path in the space.
+        expr: {kind: path, path: [path]}
+      - name: score
+        type: Float64
+        nullable: true
+        description: Provider-ranked relevance score.
+        expr: {kind: path, path: [score]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: GitBook app URL for the result.
+        expr: {kind: path, path: [urls, app]}
+      - name: sections
+        type: Json
+        nullable: true
+        description: Matching sections returned by GitBook search.
+        expr: {kind: path, path: [sections]}
+      - name: ancestors
+        type: Json
+        nullable: true
+        description: Ancestor page titles for the result.
+        expr: {kind: path, path: [ancestors]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook space search result.
+        expr: {kind: current_row}
+
+tables:
+  - name: organizations
+    description: Organizations visible to the authenticated GitBook token.
+    guide: |
+      Start here. Use `id` as `organization_id` for spaces, collections,
+      sites, members, teams, and organization-level search.
+    request:
+      method: GET
+      path: /orgs
+      query: []
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization ID.
+        expr: {kind: path, path: [id]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Organization title.
+        expr: {kind: path, path: [title]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Organization account type.
+        expr: {kind: path, path: [type]}
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Organization hostname.
+        expr: {kind: path, path: [hostname]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Organization creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: plan
+        type: Utf8
+        nullable: true
+        description: Billing plan name or identifier when returned.
+        expr: {kind: path, path: [plan, name]}
+      - name: sso
+        type: Boolean
+        nullable: true
+        description: Whether SSO is enforced organization-wide.
+        expr: {kind: path, path: [sso]}
+      - name: ai
+        type: Boolean
+        nullable: true
+        description: Whether GitBook AI features are enabled.
+        expr: {kind: path, path: [ai]}
+      - name: app_url
+        type: Utf8
+        nullable: true
+        description: GitBook app URL for the organization.
+        expr: {kind: path, path: [urls, app]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook organization object.
+        expr: {kind: current_row}
+
+  - name: spaces
+    description: Spaces in a GitBook organization.
+    guide: |
+      Requires `organization_id` from `gitbook.organizations.id`. Use `id`
+      as `space_id` for pages, files, and space search.
+    filters:
+      - name: organization_id
+        required: true
+    request:
+      method: GET
+      path: /orgs/{{filter.organization_id}}/spaces
+      query: []
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Space ID.
+        expr: {kind: path, path: [id]}
+      - name: organization_id
+        type: Utf8
+        nullable: false
+        description: Parent organization ID.
+        expr: {kind: path, path: [organization]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Space title.
+        expr: {kind: path, path: [title]}
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Space visibility.
+        expr: {kind: path, path: [visibility]}
+      - name: parent_collection_id
+        type: Utf8
+        nullable: true
+        description: Parent collection ID, when set.
+        expr: {kind: path, path: [parent]}
+      - name: revision_id
+        type: Utf8
+        nullable: true
+        description: Active revision ID.
+        expr: {kind: path, path: [revision]}
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Space language.
+        expr: {kind: path, path: [language]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Space creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Space update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updatedAt]}
+      - name: app_url
+        type: Utf8
+        nullable: true
+        description: GitBook app URL for the space.
+        expr: {kind: path, path: [urls, app]}
+      - name: published_url
+        type: Utf8
+        nullable: true
+        description: Published URL for non-private spaces.
+        expr: {kind: path, path: [urls, published]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook space object.
+        expr: {kind: current_row}
+
+  - name: collections
+    description: Collections in a GitBook organization.
+    filters:
+      - name: organization_id
+        required: true
+      - name: nested
+        required: false
+    request:
+      method: GET
+      path: /orgs/{{filter.organization_id}}/collections
+      query:
+        - name: nested
+          from: filter
+          key: nested
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Collection ID.
+        expr: {kind: path, path: [id]}
+      - name: organization_id
+        type: Utf8
+        nullable: false
+        description: Parent organization ID.
+        expr: {kind: path, path: [organization]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Collection title.
+        expr: {kind: path, path: [title]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Collection description.
+        expr: {kind: path, path: [description]}
+      - name: parent_collection_id
+        type: Utf8
+        nullable: true
+        description: Parent collection ID, if nested.
+        expr: {kind: path, path: [parent]}
+      - name: app_url
+        type: Utf8
+        nullable: true
+        description: GitBook app URL for the collection.
+        expr: {kind: path, path: [urls, app]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook collection object.
+        expr: {kind: current_row}
+
+  - name: collection_spaces
+    description: Spaces inside a GitBook collection.
+    filters:
+      - name: collection_id
+        required: true
+    request:
+      method: GET
+      path: /collections/{{filter.collection_id}}/spaces
+      query: []
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Space ID.
+        expr: {kind: path, path: [id]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Space title.
+        expr: {kind: path, path: [title]}
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: Parent organization ID.
+        expr: {kind: path, path: [organization]}
+      - name: collection_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Collection ID supplied as a filter.
+        expr: {kind: from_filter, key: collection_id}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook space object.
+        expr: {kind: current_row}
+
+  - name: sites
+    description: Docs sites in a GitBook organization.
+    filters:
+      - name: organization_id
+        required: true
+      - name: space_id
+        required: false
+      - name: title
+        required: false
+      - name: published
+        required: false
+    request:
+      method: GET
+      path: /orgs/{{filter.organization_id}}/sites
+      query:
+        - name: space
+          from: filter
+          key: space_id
+        - name: title
+          from: filter
+          key: title
+        - name: published
+          from: filter
+          key: published
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Site ID.
+        expr: {kind: path, path: [id]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Site title.
+        expr: {kind: path, path: [title]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Site type.
+        expr: {kind: path, path: [type]}
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Site visibility.
+        expr: {kind: path, path: [visibility]}
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Site hostname.
+        expr: {kind: path, path: [hostname]}
+      - name: published
+        type: Boolean
+        nullable: true
+        description: Whether the site is live.
+        expr: {kind: path, path: [published]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Site creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: app_url
+        type: Utf8
+        nullable: true
+        description: GitBook app URL for the site.
+        expr: {kind: path, path: [urls, app]}
+      - name: published_url
+        type: Utf8
+        nullable: true
+        description: Published URL for the site.
+        expr: {kind: path, path: [urls, published]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook site object.
+        expr: {kind: current_row}
+
+  - name: members
+    description: Members in a GitBook organization.
+    filters:
+      - name: organization_id
+        required: true
+      - name: role
+        required: false
+      - name: search
+        required: false
+      - name: sort
+        required: false
+      - name: order
+        required: false
+    request:
+      method: GET
+      path: /orgs/{{filter.organization_id}}/members
+      query:
+        - name: role
+          from: filter
+          key: role
+        - name: search
+          from: filter
+          key: search
+        - name: sort
+          from: filter
+          key: sort
+        - name: order
+          from: filter
+          key: order
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Membership ID.
+        expr: {kind: path, path: [id]}
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Member role.
+        expr: {kind: path, path: [role]}
+      - name: disabled
+        type: Boolean
+        nullable: true
+        description: Whether the membership is disabled.
+        expr: {kind: path, path: [disabled]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID.
+        expr: {kind: path, path: [user, id]}
+      - name: user__display_name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr: {kind: path, path: [user, displayName]}
+      - name: user__email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [user, email]}
+      - name: joined_at
+        type: Timestamp
+        nullable: true
+        description: When the user joined the organization.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [joinedAt]}
+      - name: last_seen_at
+        type: Timestamp
+        nullable: true
+        description: When the user was last active in the organization.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastSeenAt]}
+      - name: spaces
+        type: Int64
+        nullable: true
+        description: Count of spaces the member can access.
+        expr: {kind: path, path: [spaces]}
+      - name: teams
+        type: Int64
+        nullable: true
+        description: Count of teams the member belongs to.
+        expr: {kind: path, path: [teams]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook organization member object.
+        expr: {kind: current_row}
+
+  - name: teams
+    description: Teams in a GitBook organization.
+    filters:
+      - name: organization_id
+        required: true
+      - name: owner
+        required: false
+      - name: title
+        required: false
+    request:
+      method: GET
+      path: /orgs/{{filter.organization_id}}/teams
+      query:
+        - name: owner
+          from: filter
+          key: owner
+        - name: title
+          from: filter
+          key: title
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team ID.
+        expr: {kind: path, path: [id]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Team title.
+        expr: {kind: path, path: [title]}
+      - name: members
+        type: Int64
+        nullable: true
+        description: Number of members in the team.
+        expr: {kind: path, path: [members]}
+      - name: spaces
+        type: Int64
+        nullable: true
+        description: Number of spaces this team can access.
+        expr: {kind: path, path: [spaces]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Team creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook team object.
+        expr: {kind: current_row}
+
+  - name: pages
+    description: Pages in a GitBook space content revision.
+    guide: |
+      Requires `space_id` from `gitbook.spaces.id`. This returns the page tree
+      from `/spaces/{spaceId}/content/pages`; use `gitbook.page` for a single
+      page with document-format options.
+    filters:
+      - name: space_id
+        required: true
+      - name: metadata
+        required: false
+      - name: computed
+        required: false
+    request:
+      method: GET
+      path: /spaces/{{filter.space_id}}/content/pages
+      query:
+        - name: metadata
+          from: filter
+          key: metadata
+        - name: computed
+          from: filter
+          key: computed
+    response:
+      rows_path: [pages]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Page ID.
+        expr: {kind: path, path: [id]}
+      - name: space_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Space ID supplied as a filter.
+        expr: {kind: from_filter, key: space_id}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Page title.
+        expr: {kind: path, path: [title]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Page type, such as document, group, link, or computed.
+        expr: {kind: path, path: [type]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Page slug.
+        expr: {kind: path, path: [slug]}
+      - name: path
+        type: Utf8
+        nullable: true
+        description: Complete path to access the page in the revision.
+        expr: {kind: path, path: [path]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Page description.
+        expr: {kind: path, path: [description]}
+      - name: hidden
+        type: Boolean
+        nullable: true
+        description: Whether the page is hidden from navigation.
+        expr: {kind: path, path: [hidden]}
+      - name: no_index
+        type: Boolean
+        nullable: true
+        description: Whether the page is excluded from GitBook search and ask.
+        expr: {kind: path, path: [noIndex]}
+      - name: child_pages
+        type: Json
+        nullable: true
+        description: Nested child pages.
+        expr: {kind: path, path: [pages]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook page object.
+        expr: {kind: current_row}
+
+  - name: page
+    description: Single GitBook page by space ID and page ID.
+    filters:
+      - name: space_id
+        required: true
+      - name: page_id
+        required: true
+      - name: format
+        required: false
+      - name: markdown_refs
+        required: false
+      - name: evaluated
+        required: false
+      - name: dereferenced
+        required: false
+      - name: metadata
+        required: false
+      - name: computed
+        required: false
+    request:
+      method: GET
+      path: /spaces/{{filter.space_id}}/content/page/{{filter.page_id}}
+      query:
+        - name: format
+          from: filter
+          key: format
+        - name: markdownRefs
+          from: filter
+          key: markdown_refs
+        - name: evaluated
+          from: filter
+          key: evaluated
+        - name: dereferenced
+          from: filter
+          key: dereferenced
+        - name: metadata
+          from: filter
+          key: metadata
+        - name: computed
+          from: filter
+          key: computed
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Page ID.
+        expr: {kind: path, path: [id]}
+      - name: space_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Space ID supplied as a filter.
+        expr: {kind: from_filter, key: space_id}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Page title.
+        expr: {kind: path, path: [title]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Page type.
+        expr: {kind: path, path: [type]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Page slug.
+        expr: {kind: path, path: [slug]}
+      - name: path
+        type: Utf8
+        nullable: true
+        description: Complete path to access the page in the revision.
+        expr: {kind: path, path: [path]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Page description.
+        expr: {kind: path, path: [description]}
+      - name: markdown
+        type: Utf8
+        nullable: true
+        description: Markdown document body when requested with `format`.
+        expr: {kind: path, path: [markdown]}
+      - name: document
+        type: Json
+        nullable: true
+        description: Structured document content when returned by GitBook.
+        expr: {kind: path, path: [document]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook page object.
+        expr: {kind: current_row}
+
+  - name: files
+    description: Files in a GitBook space content revision.
+    filters:
+      - name: space_id
+        required: true
+      - name: metadata
+        required: false
+      - name: computed
+        required: false
+    request:
+      method: GET
+      path: /spaces/{{filter.space_id}}/content/files
+      query:
+        - name: metadata
+          from: filter
+          key: metadata
+        - name: computed
+          from: filter
+          key: computed
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page
+      response_cursor_path: [next, page]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: File ID.
+        expr: {kind: path, path: [id]}
+      - name: space_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Space ID supplied as a filter.
+        expr: {kind: from_filter, key: space_id}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: File name.
+        expr: {kind: path, path: [name]}
+      - name: content_type
+        type: Utf8
+        nullable: true
+        description: File content type.
+        expr: {kind: path, path: [contentType]}
+      - name: download_url
+        type: Utf8
+        nullable: true
+        description: Download URL for the file.
+        expr: {kind: path, path: [downloadURL]}
+      - name: size
+        type: Int64
+        nullable: true
+        description: File size in bytes.
+        expr: {kind: path, path: [size]}
+      - name: dimensions__width
+        type: Int64
+        nullable: true
+        description: Image width when the file is an image.
+        expr: {kind: path, path: [dimensions, width]}
+      - name: dimensions__height
+        type: Int64
+        nullable: true
+        description: Image height when the file is an image.
+        expr: {kind: path, path: [dimensions, height]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw GitBook file object.
+        expr: {kind: current_row}
