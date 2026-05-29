@@ -196,6 +196,10 @@ tables:
           kind: path
           path: lastOnlineTimeSeconds
 
+      - name: avatar
+        type: Utf8
+        description: URL of the user's profile picture
+
   # ──────────────────────────────────────────────────────────
   # TABLE 2: submissions
   # ──────────────────────────────────────────────────────────
@@ -233,7 +237,7 @@ tables:
         - name: from
           value: "1"
         - name: count
-          value: "100"
+          value: "500"
     response:
       rows_path: [result]
     columns:
