@@ -131,6 +131,20 @@ impl QueryManager {
             .map_err(QueryManagerError::Core)
     }
 
+    pub(crate) async fn list_stored_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_filter: Option<&str>,
+    ) -> Result<CatalogInfo, QueryManagerError> {
+        let sources = self
+            .load_stored_query_sources(workspace_name)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self.metadata_runtime_config(&sources);
+        CoralQuery::list_catalog(&sources, runtime, schema_filter)
+            .await
+            .map_err(QueryManagerError::Core)
+    }
+
     pub(crate) async fn execute_sql(
         &self,
         workspace_name: &WorkspaceName,
@@ -336,6 +350,36 @@ impl QueryManager {
         Ok((query_source, installed.candidate.version))
     }
 
+    fn load_stored_query_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<QuerySource>, AppError> {
+        let catalog = self.config_store.load_catalog()?;
+        let mut query_sources = Vec::new();
+        for source in catalog.workspace_sources(workspace_name) {
+            match self.load_stored_query_source(workspace_name, &source) {
+                Ok(query_source) => query_sources.push(query_source),
+                Err(error) => {
+                    tracing::warn!(
+                        source = %source.name,
+                        detail = %error,
+                        "skipping source during stored catalog load"
+                    );
+                }
+            }
+        }
+        Ok(query_sources)
+    }
+
+    fn load_stored_query_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<QuerySource, AppError> {
+        let (query_source, _version) = self.load_query_source(workspace_name, source)?;
+        Ok(query_source)
+    }
+
     fn runtime_config(
         &self,
         workspace_name: &WorkspaceName,
@@ -360,6 +404,12 @@ impl QueryManager {
             .collect::<Vec<_>>();
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
+    }
+
+    fn metadata_runtime_config(&self, selected_sources: &[QuerySource]) -> QueryRuntimeConfig {
+        let extensions =
+            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+        QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
 

@@ -7,7 +7,7 @@ use coral_api::v1::{
     ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
-    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
+    AppClient, CatalogClient, QueryClient, SearchClient, SourceClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
@@ -75,6 +75,10 @@ impl GrpcHarness {
 
     pub(crate) fn query_client(&self) -> QueryClient {
         self.app.query_client()
+    }
+
+    pub(crate) fn search_client(&self) -> SearchClient {
+        self.app.search_client()
     }
 
     pub(crate) async fn import_source(
@@ -322,6 +326,121 @@ pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
     }))
 }
 
+pub(crate) fn fixture_manifest_with_column_preview_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "preview_source",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "records",
+            "description": "Preview records",
+            "request": {
+                "method": "GET",
+                "path": "/records",
+                "query": [
+                    { "name": "owner", "from": "filter", "key": "owner" },
+                    { "name": "repo", "from": "filter", "key": "repo" },
+                ],
+            },
+            "response": {},
+            "columns": [
+                { "name": "owner", "type": "Utf8", "description": "Owner filter" },
+                { "name": "repo", "type": "Utf8", "description": "Repository filter" },
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "status", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" },
+                { "name": "html_url", "type": "Utf8" },
+                { "name": "user_login", "type": "Utf8" },
+                { "name": "created_at", "type": "Timestamp" },
+                { "name": "body", "type": "Utf8", "description": "Needle text body" },
+                { "name": "updated_at", "type": "Timestamp" },
+            ],
+            "filters": [
+                { "name": "owner", "required": true },
+                { "name": "repo", "required": true },
+            ],
+        }],
+    }))
+}
+
+pub(crate) fn fixture_manifest_with_canonical_table_ranking_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "github",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [
+            {
+                "name": "aaa_review_events",
+                "description": "Review events",
+                "request": {
+                    "method": "GET",
+                    "path": "/reviews",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "pull_request_id", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "private_properties",
+                "description": "Private repository properties",
+                "request": {
+                    "method": "GET",
+                    "path": "/private-properties",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "pull_request_comments",
+                "description": "Pull request comments",
+                "request": {
+                    "method": "GET",
+                    "path": "/pull-request-comments",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "body", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "pulls",
+                "description": "Pull requests",
+                "request": {
+                    "method": "GET",
+                    "path": "/pulls",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "title", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "zzz_pr_checks",
+                "description": "PR checks",
+                "request": {
+                    "method": "GET",
+                    "path": "/pr-checks",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                ],
+            },
+        ],
+    }))
+}
+
 pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
     manifest_yaml(&json!({
         "name": "searchy",
@@ -362,6 +481,12 @@ pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
             },
             {
                 "name": "search_issues",
+                "kind": "search",
+                "search_limits": {
+                    "default_top_k": 10,
+                    "max_top_k": 100,
+                    "max_calls_per_query": 1,
+                },
                 "description": "Search issues",
                 "args": [
                     {
