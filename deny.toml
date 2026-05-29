@@ -24,6 +24,9 @@ allow = [
     "ISC",
     "MIT",
     "MIT-0",
+    # Accepted for AWS-LC (`aws-lc-sys`) when using rustls' default
+    # crypto provider through reqwest/rmcp.
+    "OpenSSL",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",

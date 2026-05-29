@@ -261,28 +261,6 @@ impl McpToolCaller for StreamableHttpMcpToolCaller {
     }
 }
 
-/// Install the `ring` `rustls::CryptoProvider` as the process-wide
-/// default for rustls 0.23. rmcp's reqwest 0.13 is configured with the
-/// `rustls-no-provider` feature so it does not pull `aws-lc-rs` (whose
-/// `aws-lc-sys` carries an `OpenSSL` license clause our workspace
-/// rejects). reqwest 0.12 in the same workspace links `ring` already;
-/// this just registers it as the rustls default. Idempotent — a second
-/// call is a no-op and any error from a competing initializer is
-/// ignored.
-fn ensure_default_crypto_provider() {
-    static PROVIDER_INIT: std::sync::Once = std::sync::Once::new();
-    PROVIDER_INIT.call_once(|| {
-        // `install_default` returns `Err` if a provider is already
-        // installed by another part of the workspace (for example,
-        // reqwest 0.12 elsewhere in the process). Either way the rustls
-        // 0.23 default is now set; ignore the Result deliberately rather
-        // than panic.
-        match rustls::crypto::ring::default_provider().install_default() {
-            Ok(()) | Err(_) => {}
-        }
-    });
-}
-
 impl StreamableHttpMcpToolCaller {
     async fn call_tool_inner(
         &self,
@@ -292,7 +270,6 @@ impl StreamableHttpMcpToolCaller {
         arguments: JsonObject,
         request_id: u64,
     ) -> Result<Value> {
-        ensure_default_crypto_provider();
         let span = tracing::Span::current();
 
         let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_string())
@@ -401,68 +378,79 @@ fn mcp_http_tool_call_error(
     classify_streamable_http_error(source_schema, Some((relation, tool)), error)
 }
 
-/// Walk the rmcp error chain looking for a `StreamableHttpError` and map
-/// its variants to the matching `McpProviderQueryError`. Falls back to the
-/// generic Initialize/ToolCall variants when the chain doesn't expose a
-/// typed transport error we recognize.
 /// Classify an rmcp `ClientInitializeError` / `ServiceError` raised by the
 /// Streamable HTTP transport into a structured `McpProviderQueryError`.
 ///
-/// rmcp wraps the underlying `StreamableHttpError` in a `DynamicTransportError`
-/// whose inner `Box<dyn Error>` we cannot typed-downcast: rmcp parameterizes
-/// the box with its own `reqwest::Error` (rmcp 1.6 pulls reqwest 0.13) while
-/// coral-engine uses reqwest 0.12, so the `StreamableHttpError<reqwest::Error>`
-/// `TypeId`s do not match across the crate boundary. Instead we match on the
-/// inner error's stable `#[error("...")]` display prefix from
-/// `rmcp::transport::streamable_http_client::StreamableHttpError`.
+/// rmcp wraps the underlying transport error in a `DynamicTransportError`
+/// whose inner `Box<dyn Error>` is typed-downcast back to
+/// `StreamableHttpError<reqwest::Error>`. Unrecognized errors fall back to
+/// the generic `Initialize`/`ToolCall` variants.
 fn classify_streamable_http_error(
     source_schema: &str,
     relation_and_tool: Option<(&str, &str)>,
     error: &(dyn std::error::Error + 'static),
 ) -> McpProviderQueryError {
-    let inner_detail = match error.downcast_ref::<rmcp::service::ClientInitializeError>() {
+    let dyn_err = match error.downcast_ref::<rmcp::service::ClientInitializeError>() {
         Some(rmcp::service::ClientInitializeError::TransportError { error: dyn_err, .. }) => {
-            Some(dyn_err.error.to_string())
+            Some(dyn_err)
         }
         _ => None,
     }
     .or_else(
         || match error.downcast_ref::<rmcp::service::ServiceError>() {
-            Some(rmcp::service::ServiceError::TransportSend(dyn_err)) => {
-                Some(dyn_err.error.to_string())
-            }
+            Some(rmcp::service::ServiceError::TransportSend(dyn_err)) => Some(dyn_err),
             _ => None,
         },
     );
 
     let full_detail = error.to_string();
 
-    if let Some(inner) = inner_detail.as_deref()
-        && let Some(variant) = classify_streamable_http_inner(inner)
+    if let Some(dyn_err) = dyn_err
+        && let Some(streamable_err) = dyn_err
+            .error
+            .downcast_ref::<rmcp::transport::streamable_http_client::StreamableHttpError<
+            reqwest::Error,
+        >>()
     {
-        return match variant {
-            StreamableVariant::AuthRequired => McpProviderQueryError::AuthRequired {
+        use rmcp::transport::streamable_http_client::StreamableHttpError as SHE;
+        return match streamable_err {
+            SHE::AuthRequired(_) => McpProviderQueryError::AuthRequired {
                 source_schema: source_schema.to_string(),
                 detail: full_detail,
             },
-            StreamableVariant::AuthFailed => McpProviderQueryError::AuthFailed {
+            SHE::InsufficientScope(_) => McpProviderQueryError::AuthFailed {
                 source_schema: source_schema.to_string(),
                 detail: full_detail,
             },
-            StreamableVariant::SessionExpired => McpProviderQueryError::SessionExpired {
+            SHE::SessionExpired => McpProviderQueryError::SessionExpired {
                 source_schema: source_schema.to_string(),
             },
-            StreamableVariant::HttpStatusFailed => McpProviderQueryError::HttpStatusFailed {
+            SHE::UnexpectedServerResponse(_) => McpProviderQueryError::HttpStatusFailed {
                 source_schema: source_schema.to_string(),
                 detail: full_detail,
             },
-            StreamableVariant::HttpSseDecodeFailed => McpProviderQueryError::HttpSseDecodeFailed {
+            SHE::Sse(_)
+            | SHE::UnexpectedContentType(_)
+            | SHE::Deserialize(_)
+            | SHE::ServerDoesNotSupportSse => McpProviderQueryError::HttpSseDecodeFailed {
                 source_schema: source_schema.to_string(),
                 detail: full_detail,
             },
-            StreamableVariant::HttpRequestFailed => McpProviderQueryError::HttpRequestFailed {
+            SHE::Client(_) | SHE::Io(_) => McpProviderQueryError::HttpRequestFailed {
                 source_schema: source_schema.to_string(),
                 detail: full_detail,
+            },
+            _ => match relation_and_tool {
+                Some((relation, tool)) => McpProviderQueryError::ToolCall {
+                    source_schema: source_schema.to_string(),
+                    relation: relation.to_string(),
+                    tool: tool.to_string(),
+                    detail: full_detail,
+                },
+                None => McpProviderQueryError::Initialize {
+                    source_schema: source_schema.to_string(),
+                    detail: full_detail,
+                },
             },
         };
     }
@@ -481,42 +469,6 @@ fn classify_streamable_http_error(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamableVariant {
-    AuthRequired,
-    AuthFailed,
-    SessionExpired,
-    HttpStatusFailed,
-    HttpSseDecodeFailed,
-    HttpRequestFailed,
-}
-
-/// Match the `Display` output of an `rmcp::transport::streamable_http_client::
-/// StreamableHttpError` to one of our structured variants. Prefixes come from
-/// the `#[error("...")]` thiserror derives on each enum variant and are stable
-/// per rmcp 1.6.
-fn classify_streamable_http_inner(detail: &str) -> Option<StreamableVariant> {
-    if detail.starts_with("Auth required") {
-        Some(StreamableVariant::AuthRequired)
-    } else if detail.starts_with("Insufficient scope") {
-        Some(StreamableVariant::AuthFailed)
-    } else if detail.starts_with("Session expired") {
-        Some(StreamableVariant::SessionExpired)
-    } else if detail.starts_with("unexpected server response") {
-        Some(StreamableVariant::HttpStatusFailed)
-    } else if detail.starts_with("SSE error")
-        || detail.starts_with("Unexpected content type")
-        || detail.starts_with("Deserialize error")
-        || detail.starts_with("Server does not support SSE")
-    {
-        Some(StreamableVariant::HttpSseDecodeFailed)
-    } else if detail.starts_with("Client error") || detail.starts_with("Io error") {
-        Some(StreamableVariant::HttpRequestFailed)
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -529,60 +481,6 @@ mod tests {
     use serde_json::{Value, json};
     use tracing::subscriber::DefaultGuard;
 
-    use super::{StreamableVariant, classify_streamable_http_inner};
-
-    #[test]
-    fn classify_streamable_http_inner_matches_known_prefixes() {
-        // Pin the prefix→variant map against the rmcp 1.6 `#[error("...")]`
-        // strings. If rmcp bumps and renames a variant's display message,
-        // this test fails — we'd update both this table and
-        // `classify_streamable_http_inner` together.
-        let cases = &[
-            ("Auth required", Some(StreamableVariant::AuthRequired)),
-            ("Insufficient scope", Some(StreamableVariant::AuthFailed)),
-            (
-                "Session expired (HTTP 404)",
-                Some(StreamableVariant::SessionExpired),
-            ),
-            (
-                "unexpected server response: HTTP 502",
-                Some(StreamableVariant::HttpStatusFailed),
-            ),
-            (
-                "Unexpected content type: \"text/plain\"",
-                Some(StreamableVariant::HttpSseDecodeFailed),
-            ),
-            (
-                "SSE error: invalid frame",
-                Some(StreamableVariant::HttpSseDecodeFailed),
-            ),
-            (
-                "Deserialize error: expected value",
-                Some(StreamableVariant::HttpSseDecodeFailed),
-            ),
-            (
-                "Server does not support SSE",
-                Some(StreamableVariant::HttpSseDecodeFailed),
-            ),
-            (
-                "Client error: connection refused",
-                Some(StreamableVariant::HttpRequestFailed),
-            ),
-            (
-                "Io error: broken pipe",
-                Some(StreamableVariant::HttpRequestFailed),
-            ),
-            ("Transport channel closed", None),
-            ("Missing session id in HTTP response", None),
-        ];
-        for (detail, expected) in cases {
-            assert_eq!(
-                classify_streamable_http_inner(detail),
-                *expected,
-                "unexpected classification for `{detail}`"
-            );
-        }
-    }
     use tracing_subscriber::layer::SubscriberExt;
     use wiremock::matchers::{body_partial_json, header, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1052,6 +950,60 @@ mod tests {
         capture.provider.shutdown().expect("shutdown");
     }
 
+    #[derive(Debug)]
+    struct RotatingResolver {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::SourceInputResolver for RotatingResolver {
+        async fn resolve_inputs(
+            &self,
+            _source: &crate::SourceInputResolutionContext,
+        ) -> std::result::Result<BTreeMap<String, String>, crate::SourceInputResolverError>
+        {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            Ok(BTreeMap::from([(
+                "MCP_ACCESS_TOKEN".to_string(),
+                format!("fresh-token-{call}"),
+            )]))
+        }
+    }
+
+    async fn mount_token_rotation_mocks(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({ "method": "initialize" })))
+            .respond_with(initialize_response())
+            .expect(2)
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({ "method": "notifications/initialized" }),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(2)
+            .mount(server)
+            .await;
+        for token in ["fresh-token-1", "fresh-token-2"] {
+            Mock::given(method("POST"))
+                .and(header("authorization", format!("Bearer {token}")))
+                .and(body_partial_json(json!({ "method": "tools/call" })))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .append_header("Content-Type", "application/json")
+                        .set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "result": { "structuredContent": { "issues": [] } }
+                        })),
+                )
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+    }
+
     /// Each `tools/call` re-resolves the bearer token through the source
     /// input resolver, so a fresh OAuth access token is picked up between
     /// calls without recompiling the source.
@@ -1059,32 +1011,8 @@ mod tests {
     async fn streamable_http_caller_re_resolves_bearer_token_for_each_tool_call() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        use async_trait::async_trait;
-
-        use crate::{
-            QuerySource, SourceInputResolutionContext, SourceInputResolver,
-            SourceInputResolverError,
-        };
-
-        #[derive(Debug)]
-        struct RotatingResolver {
-            calls: Arc<AtomicUsize>,
-        }
-
-        #[async_trait]
-        impl SourceInputResolver for RotatingResolver {
-            async fn resolve_inputs(
-                &self,
-                _source: &SourceInputResolutionContext,
-            ) -> std::result::Result<BTreeMap<String, String>, SourceInputResolverError>
-            {
-                let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-                Ok(BTreeMap::from([(
-                    "MCP_ACCESS_TOKEN".to_string(),
-                    format!("fresh-token-{call}"),
-                )]))
-            }
-        }
+        let server = MockServer::start().await;
+        mount_token_rotation_mocks(&server).await;
 
         let validated = coral_spec::parse_source_manifest_value(json!({
             "dsl_version": 3,
@@ -1094,12 +1022,8 @@ mod tests {
             "inputs": { "MCP_ACCESS_TOKEN": { "kind": "secret" } },
             "server": {
                 "transport": "streamable_http",
-                "url": "https://mcp.example.com/mcp",
-                "auth": {
-                    "type": "bearer",
-                    "from": "input",
-                    "key": "MCP_ACCESS_TOKEN"
-                }
+                "url": server.uri(),
+                "auth": { "type": "bearer", "from": "input", "key": "MCP_ACCESS_TOKEN" }
             },
             "tables": [{
                 "name": "issues",
@@ -1117,8 +1041,9 @@ mod tests {
             &variables,
         ));
         let resolver_calls = Arc::new(AtomicUsize::new(0));
-        let source = QuerySource::new(validated, variables, secrets);
-        let source_input_resolution = SourceInputResolutionContext::from_query_source(&source);
+        let source = crate::QuerySource::new(validated, variables, secrets);
+        let source_input_resolution =
+            crate::SourceInputResolutionContext::from_query_source(&source);
         let source_inputs = Arc::new(McpSourceInputs::with_resolver(
             resolved_inputs,
             source_input_resolution,
@@ -1133,17 +1058,18 @@ mod tests {
             body_capture: McpBodyCapture::default(),
         };
 
-        let first = caller
-            .resolved_bearer_token()
+        caller
+            .call_tool("issues", "list_issues", JsonObject::new())
             .await
-            .expect("first token resolve");
-        let second = caller
-            .resolved_bearer_token()
+            .expect("first call_tool should succeed");
+        caller
+            .call_tool("issues", "list_issues", JsonObject::new())
             .await
-            .expect("second token resolve");
+            .expect("second call_tool should succeed");
 
-        assert_eq!(first.as_deref(), Some("fresh-token-1"));
-        assert_eq!(second.as_deref(), Some("fresh-token-2"));
         assert_eq!(resolver_calls.load(Ordering::SeqCst), 2);
+        // wiremock verifies on drop: each `.expect(1)` mock above must have
+        // matched exactly once, which fails the test if either call sent
+        // the wrong Authorization header.
     }
 }
