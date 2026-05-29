@@ -12,9 +12,11 @@ inputs:
   PRODUCTBOARD_API_TOKEN:
     kind: secret
     hint: |
-      Productboard API token or OAuth access token with read scopes such as
-      entities:read, notes:read, members:read, teams:read, and analytics:read.
-      Paste only the token value, without a `Bearer` prefix.
+      Productboard REST API token or OAuth access token. Create REST API tokens
+      in Productboard integrations settings, or provide an OAuth access token
+      with read scopes such as entities:read, notes:read, members:read,
+      teams:read, and analytics:read. Paste only the token value, without a
+      `Bearer` prefix.
 
 auth:
   type: HeaderAuth
@@ -411,7 +413,7 @@ tables:
         expr:
           kind: format_timestamp
           input: iso8601
-          expr: {kind: path, path: [fields, createdAt]}
+          expr: {kind: path, path: [createdAt]}
       - name: updated_at
         type: Timestamp
         nullable: true
@@ -419,7 +421,15 @@ tables:
         expr:
           kind: format_timestamp
           input: iso8601
-          expr: {kind: path, path: [fields, updatedAt]}
+          expr: {kind: path, path: [updatedAt]}
+      - name: source_system
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Source system supplied as a filter.
+        expr:
+          kind: from_filter
+          key: source_system
       - name: links__self
         type: Utf8
         nullable: true
@@ -565,31 +575,37 @@ tables:
         type: Utf8
         nullable: true
         description: Member name, redacted without PII scope.
+        expr: {kind: path, path: [fields, name]}
       - name: username
         type: Utf8
         nullable: true
         description: Member username, redacted without PII scope.
+        expr: {kind: path, path: [fields, username]}
       - name: email
         type: Utf8
         nullable: true
         description: Member email, redacted without PII scope.
+        expr: {kind: path, path: [fields, email]}
       - name: role
         type: Utf8
         nullable: true
         description: Workspace role.
+        expr: {kind: path, path: [fields, role]}
       - name: disabled
         type: Boolean
         nullable: true
         description: Whether the member is disabled.
+        expr: {kind: path, path: [fields, disabled]}
       - name: invitation_pending
         type: Boolean
         nullable: true
         description: Whether the member invitation is pending.
+        expr: {kind: path, path: [fields, invitationPending]}
       - name: teams_json
         type: Json
         nullable: true
         description: Team assignments.
-        expr: {kind: path, path: [teams]}
+        expr: {kind: path, path: [fields, teams]}
       - name: raw_json
         type: Json
         nullable: true
@@ -629,18 +645,22 @@ tables:
         type: Utf8
         nullable: true
         description: Team name.
+        expr: {kind: path, path: [fields, name]}
       - name: handle
         type: Utf8
         nullable: true
         description: Team handle.
+        expr: {kind: path, path: [fields, handle]}
       - name: description
         type: Utf8
         nullable: true
         description: Team description.
+        expr: {kind: path, path: [fields, description]}
       - name: avatar_url
         type: Utf8
         nullable: true
         description: Team avatar URL.
+        expr: {kind: path, path: [fields, avatarUrl]}
       - name: links__self
         type: Utf8
         nullable: true

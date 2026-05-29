@@ -6,6 +6,12 @@ members, teams, configuration metadata, and member activity analytics.
 
 ## Setup
 
+Create a Productboard REST API token in Productboard integrations settings, or
+use an OAuth access token. The token needs read scopes for the surfaces you
+query, for example `entities:read`, `notes:read`, `members:read`,
+`teams:read`, and `analytics:read`. Owner/member email fields require the
+appropriate PII read permission; otherwise Productboard may redact them.
+
 ```bash
 PRODUCTBOARD_API_TOKEN=... \
 coral source add --file sources/community/productboard/manifest.yaml
@@ -67,6 +73,10 @@ WHERE date_from = '2025-10-01' AND date_to = '2025-10-31';
 
 - This source targets Productboard REST API v2 under
   `https://api.productboard.com/v2`.
+- Productboard list endpoints are cursor-paginated with `links.next` URLs and
+  `pageCursor`. The current Coral HTTP DSL cannot safely extract `pageCursor`
+  from a full JSON URL, so list tables expose a bounded first page instead of
+  claiming complete table-wide pagination.
 - Productboard entities and notes are configuration-driven. Standard fields are
   exposed as columns where stable, and dynamic/custom fields are preserved in
   `fields_json` and `raw_json`.
@@ -74,6 +84,25 @@ WHERE date_from = '2025-10-01' AND date_to = '2025-10-31';
   `notes:read`, `members:read`, `teams:read`, and `analytics:read`.
 - Some PII fields, including owner/member emails, are returned as `[redacted]`
   unless the token has the required PII read scope.
+- Notes expose `created_at` and `updated_at` from Productboard's top-level
+  note timestamps. Members and teams read stable values from their nested
+  `fields` objects.
+
+## Validation evidence
+
+Static validation run locally:
+
+```bash
+coral source lint sources/community/productboard/manifest.yaml
+make lint-sources
+yamllint sources/community/productboard/manifest.yaml
+git diff --check origin/main..HEAD
+gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
+```
+
+Credentialed `coral source add --file`, `coral source test productboard`, and
+representative live queries require a Productboard token and were not run in
+this workspace.
 
 ## API references
 
