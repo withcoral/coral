@@ -24,8 +24,8 @@ use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
 use self::transport::StdioMcpToolCaller;
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    SourceTableFunctions, build_registered_inputs, build_registered_table,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
+    RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names,
 };
@@ -137,6 +137,7 @@ impl CompiledBackendSource for McpCompiledSource {
     async fn register(
         &self,
         _ctx: &datafusion::prelude::SessionContext,
+        _registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
         let mut table_functions =
             SourceTableFunctions::with_capacity(self.manifest.functions.len());

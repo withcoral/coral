@@ -7,6 +7,7 @@ use std::time::Duration;
 use datafusion::error::{DataFusionError, Result};
 use serde_json::Value;
 
+use crate::backends::BackendRegistrationContext;
 use crate::backends::http::fetch::fetch_rows;
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
@@ -37,6 +38,39 @@ pub(crate) struct HttpSourceClient {
     pub(super) body_capture: HttpBodyCapture,
 }
 
+pub(crate) struct HttpSourceClientRuntime {
+    source_input_resolution_context: Option<SourceInputResolutionContext>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    body_capture_max_bytes: Option<usize>,
+    http: reqwest::Client,
+}
+
+impl HttpSourceClientRuntime {
+    pub(crate) fn new(
+        source_input_resolution_context: SourceInputResolutionContext,
+        source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+        body_capture_max_bytes: Option<usize>,
+        http: reqwest::Client,
+    ) -> Self {
+        Self {
+            source_input_resolution_context: Some(source_input_resolution_context),
+            source_input_resolver,
+            body_capture_max_bytes,
+            http,
+        }
+    }
+
+    #[cfg(test)]
+    fn static_inputs(body_capture_max_bytes: Option<usize>, http: reqwest::Client) -> Self {
+        Self {
+            source_input_resolution_context: None,
+            source_input_resolver: None,
+            body_capture_max_bytes,
+            http,
+        }
+    }
+}
+
 impl std::fmt::Debug for HttpSourceClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpSourceClient")
@@ -48,6 +82,25 @@ impl std::fmt::Debug for HttpSourceClient {
             .field("body_capture", &self.body_capture)
             .finish_non_exhaustive()
     }
+}
+
+pub(super) fn default_http_client(
+    registration: &BackendRegistrationContext,
+    source_name: &str,
+) -> Result<reqwest::Client> {
+    registration
+        .default_http_client(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS))
+                .user_agent(DEFAULT_HTTP_USER_AGENT)
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .map_err(|error| {
+            DataFusionError::Execution(format!(
+                "failed to build HTTP client for source '{source_name}': {error}"
+            ))
+        })
 }
 
 impl HttpSourceClient {
@@ -64,15 +117,14 @@ impl HttpSourceClient {
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
         body_capture_max_bytes: Option<usize>,
+        http: reqwest::Client,
     ) -> Result<Self> {
         Self::build(
             manifest,
             source_secrets,
             source_variables,
             request_authenticators,
-            None,
-            None,
-            body_capture_max_bytes,
+            HttpSourceClientRuntime::static_inputs(body_capture_max_bytes, http),
         )
     }
 
@@ -81,18 +133,14 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-        source_input_resolution_context: SourceInputResolutionContext,
-        source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-        body_capture_max_bytes: Option<usize>,
+        runtime: HttpSourceClientRuntime,
     ) -> Result<Self> {
         Self::build(
             manifest,
             source_secrets,
             source_variables,
             request_authenticators,
-            Some(source_input_resolution_context),
-            source_input_resolver,
-            body_capture_max_bytes,
+            runtime,
         )
     }
 
@@ -101,39 +149,27 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-        source_input_resolution_context: Option<SourceInputResolutionContext>,
-        source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-        body_capture_max_bytes: Option<usize>,
+        runtime: HttpSourceClientRuntime,
     ) -> Result<Self> {
         let resolved_inputs =
             coral_spec::resolve_inputs(&manifest.declared_inputs, source_secrets, source_variables);
         validate_source_scoped_http_config(manifest, request_authenticators, &resolved_inputs)?;
 
         let request_timeout = Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS);
-        let http = reqwest::Client::builder()
-            .timeout(request_timeout)
-            .user_agent(DEFAULT_HTTP_USER_AGENT)
-            .build()
-            .map_err(|error| {
-                DataFusionError::Execution(format!(
-                    "failed to build HTTP client for source '{}': {error}",
-                    manifest.common.name
-                ))
-            })?;
 
         Ok(Self {
-            http,
+            http: runtime.http,
             request_timeout,
             source_schema: manifest.common.name.clone(),
             base_url: manifest.base_url.clone(),
             auth: manifest.auth.clone(),
             request_headers: manifest.request_headers.clone(),
             request_authenticators: request_authenticators.clone(),
-            source_input_resolution_context,
-            source_input_resolver,
+            source_input_resolution_context: runtime.source_input_resolution_context,
+            source_input_resolver: runtime.source_input_resolver,
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
-            body_capture: HttpBodyCapture::new(body_capture_max_bytes),
+            body_capture: HttpBodyCapture::new(runtime.body_capture_max_bytes),
         })
     }
 
