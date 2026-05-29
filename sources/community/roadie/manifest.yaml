@@ -1,0 +1,82 @@
+name: roadie
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Software Catalog entities including components, APIs, systems,
+  and teams from Roadie (SaaS Backstage platform) via the Backstage REST API.
+base_url: "https://{{input.ROADIE_TENANT}}.roadie.so/api/catalog"
+
+inputs:
+  ROADIE_TENANT:
+    kind: variable
+    hint: |
+      Your Roadie organization tenant sub-domain prefix. For example,
+      if your URL is `https://acme.roadie.so`, the tenant is `acme`.
+  ROADIE_API_TOKEN:
+    kind: secret
+    hint: |
+      An API token authorized to access the Backstage Software Catalog API.
+      Returned entities are scoped by the permissions associated with this token.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.ROADIE_API_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT name, kind FROM roadie.entities LIMIT 1
+
+tables:
+  - name: entities
+    description: Software catalog entities (Components, APIs, Resources, Systems, Users, Groups).
+    request:
+      method: GET
+      path: /entities
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Metadata name identifier of the software catalog entity.
+        expr: {kind: path, path: [metadata, name]}
+      - name: kind
+        type: Utf8
+        nullable: false
+        description: The structural type class of the entity (Component, API, User, Group).
+        expr: {kind: path, path: [kind]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Sub-category definition qualification type string (service, website, library).
+        expr: {kind: path, path: [spec, type]}
+      - name: lifecycle
+        type: Utf8
+        nullable: true
+        description: Operational context life tier categorization status string (production, experimental).
+        expr: {kind: path, path: [spec, lifecycle]}
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Group or Team entity string designation handling ownership parameters.
+        expr: {kind: path, path: [spec, owner]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Contextual detailed summary block text describing the catalog resource.
+        expr: {kind: path, path: [metadata, description]}
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: Boundary scope structural group clustering designation.
+        expr: {kind: path, path: [metadata, namespace]}
