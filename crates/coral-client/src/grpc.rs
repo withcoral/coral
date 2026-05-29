@@ -256,29 +256,26 @@ fn record_grpc_status_from_headers(span: &tracing::Span, headers: &http::HeaderM
     let Some(status) = Status::from_header_map(headers) else {
         return false;
     };
-    record_grpc_status(span, status.code(), Some(&status));
+    record_grpc_status(span, status.code(), &status);
     true
 }
 
-fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>) {
-    let response_status_code = record_grpc_status_attributes(span, code);
+fn record_grpc_status(span: &tracing::Span, code: Code, status: &Status) {
+    record_grpc_status_attributes(span, code);
     if code == Code::Ok {
         span.record("status", "ok");
         span.set_status(OtelStatus::Ok);
-    } else if let Some(status) = status {
+    } else {
         let error = decode_grpc_client_error(status);
         record_error(span, error.error_type.as_str(), error.message);
-    } else {
-        record_error(span, response_status_code, response_status_code);
     }
 }
 
-fn record_grpc_status_attributes(span: &tracing::Span, code: Code) -> &'static str {
+fn record_grpc_status_attributes(span: &tracing::Span, code: Code) {
     let response_status_code = grpc_response_status_code(code);
     span.record("grpc.status_code", code as i64);
     span.record("grpc.code", response_status_code);
     span.record("rpc.response.status_code", response_status_code);
-    response_status_code
 }
 
 fn record_missing_grpc_status(span: &tracing::Span) {
