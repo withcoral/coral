@@ -348,7 +348,7 @@ async fn concurrent_servers_share_one_expired_oauth_refresh() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_credential_replacement_waits_for_in_flight_refresh() {
     let fixture = RefreshingHttpFixture::new_blocked_token_response().await;
     let harness = GrpcHarness::new().await;
