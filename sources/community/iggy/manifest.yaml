@@ -14,12 +14,25 @@ inputs:
       Base URL of your Iggy HTTP API.
       Default is http://localhost:3000 for a local instance.
       Change this if your server runs on a different host or port.
-  IGGY_PAT:
+  IGGY_ACCESS_TOKEN:
     kind: secret
     hint: |
-      Personal Access Token from your Iggy server.
-      Create one with: iggy personal-access-token create my-coral-token
-      Or via the Iggy CLI/SDK.
+      Iggy JWT access token. Iggy's PAT cannot be used directly as a Bearer token —
+      it must first be exchanged for a JWT via POST /personal-access-tokens/login.
+
+      Option A — exchange a Personal Access Token:
+        curl -s -X POST http://localhost:3000/personal-access-tokens/login \
+          -H "Content-Type: application/json" \
+          -d '{"token":"<your-PAT>"}' | jq -r '.access_token.token'
+
+      Option B — login with username/password:
+        curl -s -X POST http://localhost:3000/users/login \
+          -H "Content-Type: application/json" \
+          -d '{"username":"iggy","password":"iggy"}' | jq -r '.access_token.token'
+
+      Note: JWT tokens expire (default 1 hour). Re-run the exchange command
+      to refresh. For persistent access, create a long-lived PAT and exchange it
+      each time: iggy -u iggy -p iggy pat create coral 365d
 
 base_url: "{{input.IGGY_URL}}"
 
@@ -28,7 +41,7 @@ auth:
   headers:
     - name: Authorization
       from: template
-      template: "Bearer {{input.IGGY_PAT}}"
+      template: "Bearer {{input.IGGY_ACCESS_TOKEN}}"
 
 test_queries:
   - SELECT id, name, topics_count, messages_count FROM iggy.streams LIMIT 10
@@ -89,6 +102,7 @@ tables:
       Returns one row per topic. Topics are partitioned message queues within
       a stream. Use the id column as the topic_id filter in consumer_groups.
       compression_algorithm is "none" or "gzip".
+      Requires read permission on the stream.
     filters:
       - name: stream_id
         required: true
@@ -156,6 +170,7 @@ tables:
       Returns one row per consumer group. Consumer groups coordinate message
       consumption across multiple clients. members_count shows how many
       active consumers are in the group.
+      Requires read permission on the stream and topic.
     filters:
       - name: stream_id
         required: true
@@ -206,9 +221,9 @@ tables:
   - name: users
     description: Users registered on the Iggy server.
     guide: >
-      Returns one row per user. Requires admin privileges.
-      status is "active" or "inactive". id can be used to correlate
-      with the user_id field in iggy.clients.
+      Returns one row per user. Requires ManageUsers or ReadUsers global permission
+      (root bypasses permission checks). status is "active" or "inactive".
+      id can be used to correlate with the user_id field in iggy.clients.
     request:
       method: GET
       path: /users
@@ -245,7 +260,8 @@ tables:
       Returns one row per connected client. transport is one of "http",
       "tcp", or "quic". address is the client IP and port.
       user_id links to iggy.users (null for unauthenticated clients).
-      consumer_groups_count shows how many groups the client has joined.
+      Requires ManageClients or ReadClients global permission
+      (root bypasses permission checks).
     request:
       method: GET
       path: /clients
@@ -289,6 +305,7 @@ tables:
       Timestamps (start_time) are microseconds since epoch.
       run_time is server uptime in microseconds.
       cpu_usage is the percentage for the Iggy process only.
+      No special permissions required — available to all authenticated users.
     request:
       method: GET
       path: /stats
