@@ -1,0 +1,334 @@
+name: geeksforgeeks
+version: 0.2.0
+dsl_version: 3
+backend: http
+description: >-
+  Query DSA coding problems from GeeksForGeeks. Filter by difficulty, topic
+  category, company tags, and solved status. Returns problem metadata including
+  accuracy, submission counts, marks, topic tags, and direct problem URLs.
+  Covers 10,000+ problems across Easy, Medium, Hard, and Basic levels.
+base_url: https://practiceapi.geeksforgeeks.org/api/latest
+
+test_queries:
+  - SELECT id, problem_name, difficulty, accuracy FROM geeksforgeeks.problems LIMIT 10
+  - SELECT id, problem_name, difficulty, marks FROM geeksforgeeks.problems WHERE difficulty_level = 1 LIMIT 5
+  - SELECT id, problem_name, accuracy, all_submissions FROM geeksforgeeks.problems WHERE difficulty_level = 0 AND category = 'Arrays' LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # geeksforgeeks.problems — problem listing with full filter support
+  # GET /problems/?pageMode=explore&...
+  # Response: { previous, next, count, total, solved, unsolved, results[] }
+  # Pagination: page mode via "page" param, 20 results per page by default
+  # ──────────────────────────────────────────────────────────────────────
+  - name: problems
+    description: >-
+      DSA coding problems on GeeksForGeeks with metadata. Each row is one
+      problem including its difficulty, accuracy rate, total submissions,
+      marks, topic tags, company tags, and URL. Supports filtering by
+      difficulty level, topic category, company, solved status, and sort order.
+    guide: >-
+      Fetch problems with optional filters. All filters are optional.
+
+        -- All problems sorted by submissions (default)
+        SELECT id, problem_name, difficulty, accuracy
+        FROM geeksforgeeks.problems LIMIT 20
+
+        -- Filter by difficulty_level (integer — sent as API param)
+        --   -1 = Basic, 0 = Easy, 1 = Medium, 2 = Hard
+        SELECT id, problem_name, difficulty, marks
+        FROM geeksforgeeks.problems
+        WHERE difficulty_level = 1 LIMIT 10
+
+        -- Filter by topic category (comma-separated string)
+        SELECT id, problem_name, difficulty
+        FROM geeksforgeeks.problems
+        WHERE category = 'Arrays,Strings' LIMIT 10
+
+        -- Filter by company (comma-separated string)
+        SELECT id, problem_name, difficulty
+        FROM geeksforgeeks.problems
+        WHERE company = 'Amazon,Google' LIMIT 10
+
+        -- Filter by solved status (comma-separated: 'solved', 'unsolved')
+        SELECT id, problem_name, difficulty
+        FROM geeksforgeeks.problems
+        WHERE status = 'unsolved' AND difficulty_level = 1 LIMIT 10
+
+        -- Combine multiple filters
+        SELECT id, problem_name, difficulty, accuracy
+        FROM geeksforgeeks.problems
+        WHERE difficulty_level = 1
+          AND category = 'Arrays'
+          AND company = 'Amazon,Microsoft'
+          AND sort_by = 'accuracy'
+        LIMIT 10
+
+      Filter reference:
+        difficulty_level : Int64  — -1=Basic, 0=Easy, 1=Medium, 2=Hard
+        category         : Utf8   — comma-separated topic names
+                                    e.g. 'Arrays', 'Arrays,Strings,Trees'
+        company          : Utf8   — comma-separated company names
+                                    e.g. 'Amazon', 'Amazon,Google,Microsoft'
+        status           : Utf8   — 'solved', 'unsolved', or 'solved,unsolved'
+        sort_by          : Utf8   — 'submissions' (default), 'difficulty',
+                                    'accuracy', 'name'
+
+      The `difficulty` column returns the human-readable string ("Easy", "Medium", etc.).
+      Use `difficulty_level` (Int64) as the filter — NOT the `difficulty` column.
+      `accuracy` is returned as a percentage string (e.g. "36.28%").
+      `tags` is a JSON object with `company_tags` (array) and `topic_tags` (array).
+    fetch_limit_default: 20
+    filters:
+      - name: difficulty_level
+      - name: category
+      - name: company
+      - name: status
+      - name: sort_by
+    request:
+      method: GET
+      path: /problems/
+      query:
+        - name: pageMode
+          from: literal
+          value: explore
+        - name: sortBy
+          from: filter
+          key: sort_by
+          default: submissions
+        - name: difficulty
+          from: filter
+          key: difficulty_level
+        - name: category
+          from: filter
+          key: category
+        - name: company
+          from: filter
+          key: company
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - results
+      allow_404_empty: true
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 500
+      page_size:
+        default: 20
+        max: 20
+        query_param: count
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique numeric identifier for the problem.
+
+      - name: problem_name
+        type: Utf8
+        nullable: false
+        description: Display name of the problem (e.g. "Kadane's Algorithm").
+        expr:
+          kind: path
+          path:
+            - problem_name
+
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: >-
+          URL-friendly slug for the problem. Build the full URL as:
+          https://www.geeksforgeeks.org/problems/{slug}/1
+
+      - name: difficulty
+        type: Utf8
+        nullable: true
+        description: >-
+          Human-readable difficulty label returned by the API.
+          One of: "Basic", "Easy", "Medium", "Hard".
+          To filter by difficulty use the difficulty_level filter (Int64),
+          not this column.
+
+      - name: accuracy
+        type: Utf8
+        nullable: true
+        description: >-
+          Acceptance rate as a percentage string (e.g. "36.28%"). Represents
+          accepted submissions divided by total attempts.
+
+      - name: all_submissions
+        type: Int64
+        nullable: true
+        description: Total number of submissions across all users.
+        expr:
+          kind: path
+          path:
+            - all_submissions
+
+      - name: marks
+        type: Int64
+        nullable: true
+        description: >-
+          Points awarded for a correct solution.
+          Typically 2 for Easy/Basic, 4 for Medium, 8 for Hard.
+
+      - name: problem_level
+        type: Int64
+        nullable: true
+        description: >-
+          Numeric encoding of the difficulty returned by the API.
+          -1 = Basic, 0 = Easy, 1 = Medium, 2 = Hard.
+          This is the value that should be passed as difficulty_level filter.
+        expr:
+          kind: path
+          path:
+            - problem_level
+
+      - name: problem_type
+        type: Int64
+        nullable: true
+        description: Numeric problem type identifier (1 = standard coding problem).
+        expr:
+          kind: path
+          path:
+            - problem_type
+
+      - name: content_type
+        type: Int64
+        nullable: true
+        description: Numeric content type identifier returned by the API.
+        expr:
+          kind: path
+          path:
+            - content_type
+
+      - name: visibility_type
+        type: Int64
+        nullable: true
+        description: Visibility flag (1 = publicly visible).
+        expr:
+          kind: path
+          path:
+            - visibility_type
+
+      - name: solved_status
+        type: Int64
+        nullable: true
+        description: >-
+          Whether the authenticated user has solved this problem.
+          0 = unsolved, 1 = solved. Always 0 when not logged in.
+        expr:
+          kind: path
+          path:
+            - solved_status
+
+      - name: problem_url
+        type: Utf8
+        nullable: true
+        description: Direct URL to the problem on GeeksForGeeks.
+        expr:
+          kind: path
+          path:
+            - problem_url
+
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON object with two arrays:
+            company_tags: companies that have asked this problem in interviews
+                          (e.g. ["Amazon", "Google", "Microsoft"]).
+            topic_tags:   DSA topic labels for this problem
+                          (e.g. ["Arrays", "Dynamic Programming", "Greedy"]).
+
+      - name: topic_order
+        type: Int64
+        nullable: true
+        description: Ordering index within a topic or track. Null for most problems.
+        expr:
+          kind: path
+          path:
+            - topic_order
+
+      - name: batch_slug
+        type: Utf8
+        nullable: true
+        description: Batch slug if the problem belongs to a batch. Null otherwise.
+        expr:
+          kind: path
+          path:
+            - batch_slug
+
+      - name: track_slug
+        type: Utf8
+        nullable: true
+        description: Track slug if the problem belongs to a learning track. Null otherwise.
+        expr:
+          kind: path
+          path:
+            - track_slug
+
+      # ── Filter-echo columns ─────────────────────────────────────────
+      # These expose the query filters as columns so they can be used in
+      # WHERE clauses. Pattern mirrors world_bank (mrv, mrnev, country,
+      # indicator). Each echoes the filter value sent to the API.
+
+      - name: difficulty_level
+        type: Int64
+        nullable: true
+        description: >-
+          Filter column — pass an integer to filter by difficulty:
+          -1 = Basic, 0 = Easy, 1 = Medium, 2 = Hard.
+          Sent to the API as the `difficulty` query param.
+          Example: WHERE difficulty_level = 1
+        expr:
+          kind: from_filter
+          key: difficulty_level
+
+      - name: category
+        type: Utf8
+        nullable: true
+        description: >-
+          Filter column — comma-separated topic category names used to filter
+          results. Example: WHERE category = 'Arrays,Strings'
+          Valid values include: Arrays, Strings, Trees, Linked List, Graphs,
+          Dynamic Programming, Greedy, Sorting, Searching, Recursion, etc.
+        expr:
+          kind: from_filter
+          key: category
+
+      - name: company
+        type: Utf8
+        nullable: true
+        description: >-
+          Filter column — comma-separated company names to filter problems
+          tagged with those companies.
+          Example: WHERE company = 'Amazon,Google,Microsoft'
+        expr:
+          kind: from_filter
+          key: company
+
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Filter column — filter by solved status for the authenticated user.
+          Values: 'solved', 'unsolved', or 'solved,unsolved'.
+          Example: WHERE status = 'unsolved'
+        expr:
+          kind: from_filter
+          key: status
+
+      - name: sort_by
+        type: Utf8
+        nullable: true
+        description: >-
+          Filter column — controls the sort order of returned problems.
+          Values: 'submissions' (default), 'difficulty', 'accuracy', 'name'.
+          Example: WHERE sort_by = 'accuracy'
+        expr:
+          kind: from_filter
+          key: sort_by
