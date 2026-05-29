@@ -425,10 +425,12 @@ fn classify_streamable_http_error(
             SHE::SessionExpired => McpProviderQueryError::SessionExpired {
                 source_schema: source_schema.to_string(),
             },
-            SHE::UnexpectedServerResponse(_) => McpProviderQueryError::HttpStatusFailed {
-                source_schema: source_schema.to_string(),
-                detail: full_detail,
-            },
+            SHE::UnexpectedServerResponse(detail) if is_http_status_response(detail) => {
+                McpProviderQueryError::HttpStatusFailed {
+                    source_schema: source_schema.to_string(),
+                    detail: full_detail,
+                }
+            }
             SHE::Sse(_)
             | SHE::UnexpectedContentType(_)
             | SHE::Deserialize(_)
@@ -469,6 +471,11 @@ fn classify_streamable_http_error(
     }
 }
 
+fn is_http_status_response(detail: &str) -> bool {
+    let detail = detail.trim_start();
+    detail.starts_with("HTTP ") || detail.starts_with("unexpected status")
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -486,6 +493,40 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+
+    fn unexpected_server_response_error(detail: &'static str) -> rmcp::service::ServiceError {
+        let error = rmcp::transport::streamable_http_client::StreamableHttpError::<
+            reqwest::Error,
+        >::UnexpectedServerResponse(detail.into());
+        rmcp::service::ServiceError::TransportSend(
+            rmcp::transport::DynamicTransportError::from_parts(
+                "test-streamable-http",
+                std::any::TypeId::of::<()>(),
+                Box::new(error),
+            ),
+        )
+    }
+
+    #[test]
+    fn classify_unexpected_server_response_keeps_http_status_errors_specific() {
+        let error = unexpected_server_response_error("HTTP 502 Bad Gateway: bad gateway");
+        let classified =
+            classify_streamable_http_error("remote_mcp", Some(("issues", "list_issues")), &error);
+
+        assert!(matches!(
+            classified,
+            McpProviderQueryError::HttpStatusFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn classify_unexpected_server_response_does_not_treat_protocol_errors_as_status_failures() {
+        let error = unexpected_server_response_error("empty sse stream");
+        let classified =
+            classify_streamable_http_error("remote_mcp", Some(("issues", "list_issues")), &error);
+
+        assert!(matches!(classified, McpProviderQueryError::ToolCall { .. }));
+    }
 
     struct TraceCapture {
         memory: InMemorySpanExporter,
