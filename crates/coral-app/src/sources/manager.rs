@@ -722,7 +722,7 @@ impl SourceManager {
         bindings: &SourceBindings,
         stored_material: &BTreeMap<String, String>,
         oauth_credential_retrievals: &[SourceOAuthCredentialRetrieval],
-    ) -> Result<(), AppError> {
+    ) -> Result<ValidatedBindings, AppError> {
         let mut seen = BTreeSet::new();
         for retrieval in oauth_credential_retrievals {
             if !seen.insert(retrieval.input_key.clone()) {
@@ -731,6 +731,11 @@ impl SourceManager {
                     retrieval.input_key
                 )));
             }
+            source_oauth_config(candidate, &retrieval.input_key, retrieval.method_index)?;
+        }
+
+        let bindings = validate_bindings(candidate, bindings, stored_material, &seen)?;
+        for retrieval in oauth_credential_retrievals {
             let config =
                 source_oauth_config(candidate, &retrieval.input_key, retrieval.method_index)?;
             let credential_inputs = retrieval
@@ -738,10 +743,12 @@ impl SourceManager {
                 .iter()
                 .map(|input| (input.key.clone(), input.value.clone()))
                 .collect();
-            OAuthCredentialService::validate_credential_inputs(config.oauth, credential_inputs)?;
+            OAuthCredentialService::validate_credential_inputs(
+                config.oauth,
+                &bindings.variables,
+                credential_inputs,
+            )?;
         }
-
-        let bindings = validate_bindings(candidate, bindings, stored_material, &seen)?;
         for input_key in &seen {
             if bindings.secrets.contains_key(input_key) {
                 return Err(AppError::InvalidInput(format!(
@@ -749,12 +756,13 @@ impl SourceManager {
                 )));
             }
         }
-        Ok(())
+        Ok(bindings)
     }
 
     async fn retrieve_oauth_material(
         &self,
         candidate: &CandidateSource,
+        source_inputs: &BTreeMap<String, String>,
         oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: ImportSourceEventSender,
     ) -> Result<Vec<OAuthCredentialMaterial>, AppError> {
@@ -783,6 +791,7 @@ impl SourceManager {
                     StartOAuthCredentialRequest {
                         input_key: &input_key,
                         oauth: config.oauth,
+                        source_inputs,
                         credential_inputs,
                     },
                     move |authorization| {
@@ -826,14 +835,19 @@ impl SourceManager {
         oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: ImportSourceEventSender,
     ) -> Result<ValidatedBindings, AppError> {
-        Self::validate_oauth_import_preflight(
+        let preflight_bindings = Self::validate_oauth_import_preflight(
             candidate,
             bindings,
             &stored_material,
             &oauth_credential_retrievals,
         )?;
         let oauth_material = self
-            .retrieve_oauth_material(candidate, oauth_credential_retrievals, events)
+            .retrieve_oauth_material(
+                candidate,
+                &preflight_bindings.variables,
+                oauth_credential_retrievals,
+                events,
+            )
             .await?;
         let mut validation_material = stored_material;
         for material in &oauth_material {
@@ -1403,6 +1417,61 @@ tables:
         )
     }
 
+    fn manifest_with_oauth_one_of_auth_secret(token_url: &str, redirect_port: u16) -> String {
+        format!(
+            r#"
+name: secured_messages
+version: 0.4.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+    required: false
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          description: Use OAuth.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:{redirect_port}/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: {token_url}
+            client:
+              id:
+                default: default-client
+  API_KEY:
+    kind: secret
+    required: false
+base_url: "https://example.com"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: bearer
+          key: API_TOKEN
+        - from: input
+          key: API_KEY
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {{}}
+    columns:
+      - name: id
+        type: Utf8
+"#
+        )
+    }
+
     fn manifest_with_alternative_auth_secrets() -> String {
         r#"
 name: secured_messages
@@ -1439,6 +1508,40 @@ tables:
         type: Utf8
 "#
         .to_string()
+    }
+
+    fn manifest_with_templated_oauth_endpoints(
+        token_url: &str,
+        redirect_port: u16,
+    ) -> (String, String) {
+        let token_url_template = token_url.replace("/token", "/{{input.OUTLOOK_TENANT_ID}}/token");
+        let rendered_token_url = token_url.replace("/token", "/organizations/token");
+        let manifest = manifest_with_oauth_secret(&token_url_template, redirect_port)
+            .replace(
+                "base_url: \"{{input.API_BASE}}\"",
+                "  OUTLOOK_TENANT_ID:\n    kind: variable\nbase_url: \"{{input.API_BASE}}\"",
+            )
+            .replace(
+                "authorization_url: https://provider.example.com/oauth/authorize",
+                "authorization_url: https://provider.example.com/{{input.OUTLOOK_TENANT_ID}}/oauth/authorize",
+            );
+        (manifest, rendered_token_url)
+    }
+
+    fn oauth_import_bindings_with_tenant() -> SourceBindings {
+        SourceBindings {
+            variables: vec![
+                SourceBinding {
+                    key: "API_BASE".to_string(),
+                    value: "https://api.example.test".to_string(),
+                },
+                SourceBinding {
+                    key: "OUTLOOK_TENANT_ID".to_string(),
+                    value: "organizations".to_string(),
+                },
+            ],
+            secrets: Vec::new(),
+        }
     }
 
     #[test]
@@ -2157,19 +2260,22 @@ tables:
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let fixture = OAuthFixture::new();
         let redirect_port = free_loopback_port();
+        let (manifest_yaml, rendered_token_url) =
+            manifest_with_templated_oauth_endpoints(&fixture.token_url, redirect_port);
+        assert!(
+            manifest_yaml.find("  API_TOKEN:").expect("API_TOKEN input")
+                < manifest_yaml
+                    .find("  OUTLOOK_TENANT_ID:")
+                    .expect("tenant input"),
+            "tenant variable should exercise manifest order after the OAuth secret"
+        );
         let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();
         let import = manager.import_source_with_credentials(
             &workspace_name,
             ImportSourceWithCredentialsCommand {
-                manifest_yaml: manifest_with_oauth_secret(&fixture.token_url, redirect_port),
-                bindings: SourceBindings {
-                    variables: vec![SourceBinding {
-                        key: "API_BASE".to_string(),
-                        value: "https://api.example.test".to_string(),
-                    }],
-                    secrets: Vec::new(),
-                },
+                manifest_yaml,
+                bindings: oauth_import_bindings_with_tenant(),
                 oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
                     input_key: "API_TOKEN".to_string(),
                     method_index: 0,
@@ -2193,6 +2299,8 @@ tables:
                 panic!("unexpected import event");
             };
             assert_eq!(input_key, "API_TOKEN");
+            let parsed = Url::parse(&authorization_url).expect("authorization url");
+            assert_eq!(parsed.path(), "/organizations/oauth/authorize");
             callback(&authorization_url, redirect_port).await;
             let event = event_rx
                 .recv()
@@ -2229,6 +2337,87 @@ tables:
                 .get("__coral_oauth.QVBJX1RPS0VO.method")
                 .map(String::as_str),
             Some("oauth")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.token_url")
+                .map(String::as_str),
+            Some(rendered_token_url.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn import_with_oauth_satisfies_auth_one_of_secret_requirement() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let fixture = OAuthFixture::new();
+        let redirect_port = free_loopback_port();
+        let (event_tx, mut event_rx) = import_event_channel();
+        let workspace_name = default_workspace();
+        let import = manager.import_source_with_credentials(
+            &workspace_name,
+            ImportSourceWithCredentialsCommand {
+                manifest_yaml: manifest_with_oauth_one_of_auth_secret(
+                    &fixture.token_url,
+                    redirect_port,
+                ),
+                bindings: SourceBindings::default(),
+                oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
+                    input_key: "API_TOKEN".to_string(),
+                    method_index: 0,
+                    credential_inputs: Vec::new(),
+                }],
+            },
+            event_tx,
+        );
+        let callback = async {
+            let event = event_rx
+                .recv()
+                .await
+                .expect("authorization event")
+                .into_event();
+            let ImportSourceWithCredentialsEvent::OAuthAuthorization {
+                input_key,
+                authorization_url,
+                ..
+            } = event
+            else {
+                panic!("unexpected import event");
+            };
+            assert_eq!(input_key, "API_TOKEN");
+            callback(&authorization_url, redirect_port).await;
+            let event = event_rx
+                .recv()
+                .await
+                .expect("completion event")
+                .into_event();
+            let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
+                panic!("unexpected import event");
+            };
+            assert_eq!(input_key, "API_TOKEN");
+        };
+
+        let (source, ()) = tokio::join!(import, callback);
+        let source = source.expect("OAuth import should satisfy one_of auth");
+        assert_eq!(source.secrets, vec!["API_TOKEN"]);
+        let material = credential_manager
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("access-token")
         );
     }
 

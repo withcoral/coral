@@ -75,11 +75,11 @@ use coral_spec::ValidatedSourceManifest;
 
 pub(crate) mod common;
 pub(crate) use common::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, RegisteredTableFunction, SourceTableFunctions, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
+    RegisteredSource, RegisteredTable, RegisteredTableFunction, SourceTableFunctions,
+    build_registered_inputs, build_registered_table, build_registered_table_function,
+    internal_table_function_name, registered_columns_from_schema, registered_columns_from_specs,
+    required_filter_names, schema_from_columns,
 };
 
 pub(crate) mod file;
