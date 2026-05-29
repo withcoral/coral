@@ -71,8 +71,8 @@ You'll be prompted for three inputs:
   - `common` — both
 - **`OUTLOOK_OAUTH_CLIENT_ID`** — the Application (client) ID from Step 1.
 - **`OUTLOOK_ACCESS_TOKEN`** — choose **Sign in with Microsoft**. Coral opens a
-  browser window for you to authenticate and consent; the token is then stored
-  and refreshed automatically.
+  browser window for you to authenticate and consent; the token is then stored.
+  (Coral does not auto-refresh expired tokens yet — see Limitations.)
 
 > If `OUTLOOK_TENANT_ID` doesn't match the app's supported account types, sign-in
 > fails — e.g. a "Personal Microsoft accounts only" app used with `common` returns
@@ -132,19 +132,20 @@ Well-known folder names usable as `folder_id` without looking up an ID:
 
 ### `outlook.messages`
 
-All messages across the entire mailbox, ordered by `received_date_time`
-descending. Use this table for cross-folder queries.
+The most recent messages across all folders (a single page, ~50), ordered by
+`received_date_time` descending. Use this table for cross-folder reads.
 
-For queries scoped to a specific folder (e.g. only Inbox), use
-`outlook.folder_messages` instead — it uses the folder-scoped API endpoint
-which is more efficient.
+**Result scope:** this table returns only the first page from Microsoft Graph.
+Graph paginates mail by following the `@odata.nextLink` URL it returns, which
+this source does not follow yet, so messages beyond the most-recent page are
+not returned. Column predicates (e.g. `is_read`, `has_attachments`,
+`from_address`) are applied by Coral over that page only — they are **not**
+pushed to Graph and do not search the whole mailbox. To read a specific folder,
+use `outlook.folder_messages`.
 
 `body_preview` contains the first 255 characters of the message body.
 `to_recipients` and `cc_recipients` are JSON arrays — each element has
 `emailAddress.address` and `emailAddress.name` fields.
-
-**Default fetch limit:** 50 rows. Always use a `WHERE` clause or an explicit
-`LIMIT` — large mailboxes accumulate thousands of messages.
 
 | Column | Type | Description |
 |---|---|---|
@@ -236,8 +237,12 @@ convenience. `business_phones` is a JSON array of phone number strings.
 
 ## Example Queries
 
+> `messages` and `folder_messages` return a single most-recent page (~50).
+> Predicates other than `folder_id` filter within that page (client-side) —
+> they don't search the whole mailbox.
+
 ```sql
--- Unread inbox messages
+-- Unread messages within the most recent page of the Inbox
 SELECT subject, from_address, received_date_time, body_preview
 FROM outlook.folder_messages
 WHERE folder_id = 'Inbox'
@@ -245,7 +250,7 @@ WHERE folder_id = 'Inbox'
 ORDER BY received_date_time DESC
 LIMIT 20;
 
--- Messages with attachments across all folders
+-- Attachment-bearing messages within the most recent page
 SELECT subject, from_address, received_date_time, parent_folder_id
 FROM outlook.messages
 WHERE has_attachments = true
@@ -280,21 +285,23 @@ LIMIT 20;
 
 - **Read-only.** This source does not send, move, or modify any messages,
   contacts, or folders.
-- **Token expiry.** Access tokens expire after approximately 1 hour. The
-  guided OAuth flow stores a refresh token and renews automatically. If you
-  used the paste-token method, reinstall the source with a fresh token when
-  it expires.
-- **`offline_access` required for refresh.** If `offline_access` was not
-  included in the consent scope, no refresh token is issued and you must
-  re-authenticate after each token expiry.
+- **Token expiry / no auto-refresh.** Access tokens expire after ~1 hour.
+  Coral currently stores the refresh-token metadata from the OAuth flow but does
+  **not** automatically refresh expired access tokens yet. When the token
+  expires, re-run **Sign in with Microsoft** (or, for pasted tokens, reinstall
+  the source with a fresh token).
+- **`offline_access` scope.** Included so the flow obtains a refresh token and
+  stores its metadata for when automatic refresh is supported. Without it, no
+  refresh token is issued.
 - **Delegated permissions only.** This source uses delegated (user-context)
   permissions and can only access the signed-in user's own mailbox. Application
   permissions (accessing other users' mailboxes as an admin) are not supported.
-- **Pagination via `$skip`.** Microsoft Graph recommends `$skiptoken`-based
-  cursor pagination for large result sets. This source uses `$skip`/`$top`
-  offset pagination, which is simpler but less efficient for very large
-  mailboxes. For best performance, use `WHERE` filters and explicit `LIMIT`
-  clauses to keep result sets small.
+- **Single-page message reads.** `messages` and `folder_messages` return only
+  the most recent page (~50, ordered by received date). Microsoft Graph
+  paginates mail by following the `@odata.nextLink` URL it returns, which this
+  source does not follow yet, so older messages aren't returned and column
+  predicates filter only within that page rather than being pushed to Graph.
+  Use `folder_messages` to scope to a folder.
 - **`contacts` returns default folder only.** Contacts in non-default contact
   folders are not returned. Use the Graph API directly if you need contacts
   from a specific folder.
