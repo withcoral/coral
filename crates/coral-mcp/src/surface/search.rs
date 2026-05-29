@@ -117,8 +117,12 @@ struct ProviderStatusValue<'a> {
 impl<'a> From<&'a coral_api::v1::SearchProviderStatus> for ProviderStatusValue<'a> {
     fn from(status: &'a coral_api::v1::SearchProviderStatus) -> Self {
         Self {
-            provider: provider_name(SearchProvider::try_from(status.provider).ok()),
-            state: provider_state(SearchProviderState::try_from(status.state).ok()),
+            provider: SearchProvider::try_from(status.provider)
+                .unwrap_or(SearchProvider::Unspecified)
+                .label(),
+            state: SearchProviderState::try_from(status.state)
+                .unwrap_or(SearchProviderState::Unspecified)
+                .label(),
             note: &status.note,
         }
     }
@@ -132,7 +136,7 @@ struct TruncationValue<'a> {
     note: &'a str,
 }
 
-impl TruncationValue<'static> {
+impl TruncationValue<'_> {
     fn empty() -> Self {
         Self {
             truncated: false,
@@ -153,7 +157,9 @@ fn truncation_value(truncation: &SearchResultTruncation) -> TruncationValue<'_> 
 }
 
 fn search_result_value(result: &SearchResult) -> Option<Value> {
-    let provider = provider_name(SearchProvider::try_from(result.provider).ok());
+    let provider = SearchProvider::try_from(result.provider)
+        .unwrap_or(SearchProvider::Unspecified)
+        .label();
     match result.payload.as_ref()? {
         Payload::CatalogMetadata(metadata) => catalog_metadata_result_value(metadata, provider),
         Payload::ColumnHint(hint) => Some(column_hint_value(hint, provider)),
@@ -163,7 +169,9 @@ fn search_result_value(result: &SearchResult) -> Option<Value> {
             value: &value.value,
             schema_name: &value.schema_name,
             surface_name: &value.surface_name,
-            surface_kind: surface_kind(SearchSurfaceKind::try_from(value.surface_kind).ok()),
+            surface_kind: SearchSurfaceKind::try_from(value.surface_kind)
+                .unwrap_or(SearchSurfaceKind::Unspecified)
+                .label(),
             column_name: &value.column_name,
             field_path: &value.field_path,
             observed_count: value.observed_count,
@@ -219,8 +227,12 @@ fn column_hint_value(hint: &ColumnHint, provider: &'static str) -> Value {
         r#type: "column_hint",
         schema_name: &hint.schema_name,
         surface_name: &hint.surface_name,
-        surface_kind: surface_kind(SearchSurfaceKind::try_from(hint.surface_kind).ok()),
-        field_role: field_role(SearchFieldRole::try_from(hint.field_role).ok()),
+        surface_kind: SearchSurfaceKind::try_from(hint.surface_kind)
+            .unwrap_or(SearchSurfaceKind::Unspecified)
+            .label(),
+        field_role: SearchFieldRole::try_from(hint.field_role)
+            .unwrap_or(SearchFieldRole::Unspecified)
+            .label(),
         name: &hint.name,
         data_type: &hint.data_type,
         required: hint.required,
@@ -352,44 +364,6 @@ impl<'a> From<&'a coral_api::v1::TableFunctionResultColumn> for FunctionResultCo
             is_nullable: column.nullable,
             description: &column.description,
         }
-    }
-}
-
-fn provider_name(provider: Option<SearchProvider>) -> &'static str {
-    match provider {
-        Some(SearchProvider::CatalogMetadata) => "catalog_metadata",
-        Some(SearchProvider::ObservedValues) => "observed_values",
-        Some(SearchProvider::Unspecified) | None => "unknown",
-    }
-}
-
-fn provider_state(state: Option<SearchProviderState>) -> &'static str {
-    match state {
-        Some(SearchProviderState::ResultsFound) => "results_found",
-        Some(SearchProviderState::Empty) => "empty",
-        Some(SearchProviderState::NotEnabled) => "not_enabled",
-        Some(SearchProviderState::Skipped) => "skipped",
-        Some(SearchProviderState::Partial) => "partial",
-        Some(SearchProviderState::Error) => "error",
-        Some(SearchProviderState::Unspecified) | None => "unknown",
-    }
-}
-
-fn surface_kind(kind: Option<SearchSurfaceKind>) -> &'static str {
-    match kind {
-        Some(SearchSurfaceKind::Table) => "table",
-        Some(SearchSurfaceKind::TableFunction) => "table_function",
-        Some(SearchSurfaceKind::Unspecified) | None => "unknown",
-    }
-}
-
-fn field_role(role: Option<SearchFieldRole>) -> &'static str {
-    match role {
-        Some(SearchFieldRole::TableColumn) => "table_column",
-        Some(SearchFieldRole::TableFilter) => "table_filter",
-        Some(SearchFieldRole::TableFunctionArgument) => "table_function_argument",
-        Some(SearchFieldRole::TableFunctionResultColumn) => "table_function_result_column",
-        Some(SearchFieldRole::Unspecified) | None => "unknown",
     }
 }
 

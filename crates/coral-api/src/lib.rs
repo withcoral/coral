@@ -40,6 +40,66 @@ pub mod v1 {
     tonic::include_proto!("coral.v1");
 }
 
+impl v1::SearchProvider {
+    /// Stable label used in Coral JSON/search output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CatalogMetadata => "catalog_metadata",
+            Self::ObservedValues => "observed_values",
+            Self::Unspecified => "unknown",
+        }
+    }
+}
+
+impl v1::SearchProviderState {
+    /// Stable label used in Coral JSON/search output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ResultsFound => "results_found",
+            Self::Empty => "empty",
+            Self::NotEnabled => "not_enabled",
+            Self::Skipped => "skipped",
+            Self::Partial => "partial",
+            Self::Error => "error",
+            Self::Unspecified => "unknown",
+        }
+    }
+
+    /// Whether this state represents normal provider coverage.
+    #[must_use]
+    pub const fn is_healthy(self) -> bool {
+        matches!(self, Self::ResultsFound | Self::Empty | Self::NotEnabled)
+    }
+}
+
+impl v1::SearchSurfaceKind {
+    /// Stable label used in Coral JSON/search output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::TableFunction => "table_function",
+            Self::Unspecified => "unknown",
+        }
+    }
+}
+
+impl v1::SearchFieldRole {
+    /// Stable label used in Coral JSON/search output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::TableColumn => "table_column",
+            Self::TableFilter => "table_filter",
+            Self::TableFunctionArgument => "table_function_argument",
+            Self::TableFunctionResultColumn => "table_function_result_column",
+            Self::Unspecified => "unknown",
+        }
+    }
+}
+
 /// Maximum gRPC message size for `QueryService` *responses*, in bytes.
 ///
 /// `ExecuteSql` is a unary RPC that returns the full Arrow IPC result in
@@ -134,5 +194,30 @@ pub fn grpc_response_status_code(code: tonic::Code) -> &'static str {
         Code::Unavailable => "UNAVAILABLE",
         Code::DataLoss => "DATA_LOSS",
         Code::Unauthenticated => "UNAUTHENTICATED",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::v1::{SearchFieldRole, SearchProvider, SearchProviderState, SearchSurfaceKind};
+
+    #[test]
+    fn search_enum_labels_are_stable() {
+        assert_eq!(SearchProvider::CatalogMetadata.label(), "catalog_metadata");
+        assert_eq!(SearchProviderState::Partial.label(), "partial");
+        assert_eq!(SearchSurfaceKind::TableFunction.label(), "table_function");
+        assert_eq!(
+            SearchFieldRole::TableFunctionArgument.label(),
+            "table_function_argument"
+        );
+    }
+
+    #[test]
+    fn search_provider_state_marks_normal_coverage_healthy() {
+        assert!(SearchProviderState::ResultsFound.is_healthy());
+        assert!(SearchProviderState::Empty.is_healthy());
+        assert!(SearchProviderState::NotEnabled.is_healthy());
+        assert!(!SearchProviderState::Partial.is_healthy());
+        assert!(!SearchProviderState::Error.is_healthy());
     }
 }

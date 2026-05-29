@@ -45,6 +45,27 @@ coral sql "DESCRIBE datadog.hosts"
 
 `DESCRIBE SELECT ...` still describes the result schema of the query itself.
 
+## `coral search`
+
+Find likely Coral catalog items, columns, filters, observed values, and provider-native search paths.
+
+```shellscript
+coral search "payments-api timeout"
+coral search --limit 25 "payments-api timeout"
+coral search --json "payments-api timeout"
+```
+
+The text output is compact and shows each result's type, name, and most useful payload detail. A table or column result points to a SQL surface to query, a native search path gives a table-function call shape, and an observed value shows data seen in earlier local SQL output. Run `coral sql` with the returned reference or example call when you need current source rows.
+
+### Options
+
+| Option    | Type    | Default | Description                         |
+| --------- | ------- | ------- | ----------------------------------- |
+| `--json`  | flag    | `false` | Emit structured JSON output         |
+| `--limit` | integer | `50`    | Maximum results to return, 1 to 100 |
+
+JSON output contains the same provider-status, truncation, and typed-result fields returned by the shared Search API.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.

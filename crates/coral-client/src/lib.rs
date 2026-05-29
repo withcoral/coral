@@ -49,6 +49,22 @@ pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,
 };
 
+/// Formats one SQL identifier by always quoting and escaping it.
+#[must_use]
+pub fn format_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+/// Formats a schema-qualified SQL reference by quoting each identifier part.
+#[must_use]
+pub fn format_sql_reference(schema_name: &str, relation_name: &str) -> String {
+    format!(
+        "{}.{}",
+        format_sql_identifier(schema_name),
+        format_sql_identifier(relation_name)
+    )
+}
+
 /// Fully decoded unary query response.
 #[derive(Debug, Clone)]
 pub struct CollectedQueryResult {
@@ -259,6 +275,7 @@ mod tests {
     use super::{
         CollectedQueryResult, batches_to_json_rows, batches_to_json_rows_json_safe_numbers,
         decode_execute_sql_response, format_batches_json, format_batches_table,
+        format_sql_identifier, format_sql_reference,
     };
 
     fn response() -> ExecuteSqlResponse {
@@ -554,6 +571,17 @@ mod tests {
         let rows = batches_to_json_rows(decoded.batches()).expect("rows");
         let first = rows.first().expect("first row");
         assert_eq!(first.get("id"), Some(&serde_json::json!(1)));
+    }
+
+    #[test]
+    fn sql_formatting_always_quotes_identifier_parts() {
+        assert_eq!(format_sql_identifier("github"), r#""github""#);
+        assert_eq!(format_sql_identifier("git\"hub"), r#""git""hub""#);
+        assert_eq!(format_sql_reference("select", "from"), r#""select"."from""#);
+        assert_eq!(
+            format_sql_reference("GitHub", "Pull.Requests"),
+            r#""GitHub"."Pull.Requests""#
+        );
     }
 
     #[test]

@@ -214,19 +214,23 @@ mod tests {
     fn sql_reference_quotes_each_identifier_independently() {
         assert_eq!(
             format_schema_table_equivalent("github", "pulls"),
-            "github.pulls"
+            "\"github\".\"pulls\""
         );
         assert_eq!(
             format_schema_table_equivalent("github", "Pull.Requests"),
-            "github.\"Pull.Requests\""
+            "\"github\".\"Pull.Requests\""
         );
         assert_eq!(
             format_schema_table_equivalent("git.hub", "pulls"),
-            "\"git.hub\".pulls"
+            "\"git.hub\".\"pulls\""
         );
         assert_eq!(
             format_schema_table_equivalent("git\"hub", "pulls"),
-            "\"git\"\"hub\".pulls"
+            "\"git\"\"hub\".\"pulls\""
+        );
+        assert_eq!(
+            format_schema_table_equivalent("select", "from"),
+            "\"select\".\"from\""
         );
     }
 }

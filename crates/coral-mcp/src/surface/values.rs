@@ -1,6 +1,9 @@
 use coral_api::v1::{PaginationResponse, TableSummary};
+use coral_client::format_sql_reference;
 use serde::Serialize;
 use serde_json::{Map, Value};
+
+pub(crate) use coral_client::format_sql_identifier;
 
 pub(crate) fn queryable_table_summary_value(table: &TableSummary) -> Value {
     serde_json::to_value(QueryableTableSummaryValue::from(table))
@@ -98,28 +101,5 @@ impl<'a> From<&'a TableSummary> for MissingTableSummaryValue<'a> {
 }
 
 pub(crate) fn format_schema_table_equivalent(schema_name: &str, table_name: &str) -> String {
-    format!(
-        "{}.{}",
-        format_sql_identifier(schema_name),
-        format_sql_identifier(table_name)
-    )
-}
-
-pub(crate) fn format_sql_identifier(identifier: &str) -> String {
-    if identifier_needs_quotes(identifier) {
-        format!("\"{}\"", identifier.replace('"', "\"\""))
-    } else {
-        identifier.to_string()
-    }
-}
-
-fn identifier_needs_quotes(identifier: &str) -> bool {
-    let mut chars = identifier.chars();
-    let Some(first) = chars.next() else {
-        return true;
-    };
-    if !(first.is_ascii_lowercase() || first == '_') {
-        return true;
-    }
-    !chars.all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '_')
+    format_sql_reference(schema_name, table_name)
 }

@@ -36,6 +36,24 @@ use rmcp::ServiceExt;
 pub use error::McpError;
 pub(crate) use server::CoralMcpServer;
 
+/// Renders a search response using the same JSON shape advertised by the MCP
+/// search tool schema.
+#[must_use]
+pub fn search_response_value(response: &coral_api::v1::SearchResponse) -> serde_json::Value {
+    surface::search_value(response)
+}
+
+/// Serializes a search response using the MCP search tool JSON contract.
+///
+/// # Errors
+///
+/// Returns [`serde_json::Error`] if the rendered response cannot be serialized.
+pub fn search_response_json(
+    response: &coral_api::v1::SearchResponse,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&search_response_value(response))
+}
+
 /// Optional MCP surface features.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {

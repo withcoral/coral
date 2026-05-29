@@ -15,6 +15,7 @@ mod embedded_ui;
 pub mod env;
 mod onboard;
 mod query_error;
+mod search_output;
 mod source_ops;
 
 use std::borrow::Cow;
@@ -27,7 +28,7 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{ExecuteSqlRequest, SearchRequest};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
@@ -63,6 +64,8 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
+    /// Find likely catalog items, columns, filters, and native search paths
+    Search(SearchArgs),
     /// Manage data sources
     Source(SourceArgs),
     /// Interactive wizard to set up Coral and explore use cases
@@ -204,6 +207,19 @@ fn add_feature_override_args(mut cmd: clap::Command) -> clap::Command {
             );
     }
     cmd
+}
+
+#[derive(Debug, Args)]
+/// Find likely catalog items, columns, filters, and native search paths
+struct SearchArgs {
+    /// Emit JSON instead of compact text output
+    #[arg(long)]
+    json: bool,
+    /// Maximum results to return, from 1 to 100
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=100))]
+    limit: Option<u32>,
+    /// Search keywords, identifier, phrase, or partial intent
+    query: String,
 }
 
 #[derive(Debug, Args)]
@@ -358,9 +374,11 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
-                RequiredRuntime::AppClient
-            }
+            Command::Sql(_)
+            | Command::Search(_)
+            | Command::Source(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => RequiredRuntime::AppClient,
             Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
@@ -520,7 +538,11 @@ async fn run_no_runtime_command(
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Sql(_)
+        | Command::Search(_)
+        | Command::Source(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -553,6 +575,20 @@ async fn run_app_command(
             };
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
+        }
+        Command::Search(args) => {
+            let response = app
+                .search_client()
+                .search(Request::new(SearchRequest {
+                    workspace: Some(default_workspace()),
+                    query: args.query,
+                    // 0 asks the service to apply its default result window.
+                    limit: args.limit.unwrap_or(0),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner();
+            print_search_response(&response, args.json)?;
         }
         Command::Source(args) => run_source(&app, args).await?,
         Command::Onboard => {
@@ -615,6 +651,27 @@ fn run_features(
             store.disable(&feature)?;
             println!("Disabled feature `{feature}` in config.toml.");
         }
+    }
+    Ok(())
+}
+
+fn print_search_response(
+    response: &coral_api::v1::SearchResponse,
+    json: bool,
+) -> Result<(), anyhow::Error> {
+    if json {
+        println!("{}", search_output::search_json(response)?);
+        return Ok(());
+    }
+
+    let rows = search_output::search_rows(response);
+    if rows.is_empty() {
+        println!("No search results.");
+    } else {
+        print_text_table(["Type", "Name", "Reference", "Details"], rows);
+    }
+    for warning in search_output::search_warnings(response) {
+        println!("{warning}");
     }
     Ok(())
 }

@@ -523,7 +523,10 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let tables_json =
         serde_json::from_str::<serde_json::Value>(tables_text).expect("parse tables resource");
     assert_eq!(tables_json["tables"][0]["name"], "coral.columns");
-    assert_eq!(tables_json["tables"][0]["sql_reference"], "coral.columns");
+    assert_eq!(
+        tables_json["tables"][0]["sql_reference"],
+        "\"coral\".\"columns\""
+    );
     assert!(
         tables_json["tables"]
             .as_array()
@@ -554,7 +557,10 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(catalog["total"], 8);
     assert_eq!(catalog["items"][0]["kind"], "table");
     assert_eq!(catalog["items"][0]["name"], "coral.columns");
-    assert_eq!(catalog["items"][0]["sql_reference"], "coral.columns");
+    assert_eq!(
+        catalog["items"][0]["sql_reference"],
+        "\"coral\".\"columns\""
+    );
     assert_eq!(catalog["items"][0]["table"]["table_name"], "columns");
     assert_matches_output_schema(list_catalog_tool, &catalog);
 
@@ -887,10 +893,13 @@ async fn list_catalog_surfaces_table_functions() {
     assert_eq!(catalog["total"], 3);
     assert_eq!(catalog["items"][0]["kind"], "table_function");
     assert_eq!(catalog["items"][0]["name"], "searchy.lookup_issue");
-    assert_eq!(catalog["items"][0]["sql_reference"], "searchy.lookup_issue");
+    assert_eq!(
+        catalog["items"][0]["sql_reference"],
+        "\"searchy\".\"lookup_issue\""
+    );
     assert_eq!(
         catalog["items"][0]["sql_call_example"],
-        "searchy.lookup_issue(number => '<value>')"
+        "\"searchy\".\"lookup_issue\"(\"number\" => '<value>')"
     );
     assert_eq!(
         catalog["items"][0]["table_function"]["arguments"][0]["name"],
@@ -923,7 +932,7 @@ async fn list_catalog_surfaces_table_functions() {
     assert_eq!(functions["items"][0]["name"], "searchy.search_issues");
     assert_eq!(
         functions["items"][0]["sql_call_example"],
-        "searchy.search_issues(q => '<value>')"
+        "\"searchy\".\"search_issues\"(\"q\" => '<value>')"
     );
     assert_matches_output_schema(catalog_tool, &functions);
 
@@ -1175,7 +1184,7 @@ async fn mcp_tool_error_does_not_end_session() {
     );
     assert_eq!(
         structured_catalog_after_error["items"][0]["sql_reference"],
-        "local_messages.events"
+        "\"local_messages\".\"events\""
     );
     assert_eq!(catalog_after_error.is_error, Some(false));
 
