@@ -11,7 +11,10 @@ use crate::backends::http::fetch::fetch_rows;
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::trace::HttpBodyCapture;
-use crate::{QuerySource, RequestAuthenticator, SourceInputResolver, SourceInputResolverError};
+use crate::{
+    RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver,
+    SourceInputResolverError,
+};
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate};
 
@@ -27,7 +30,7 @@ pub(crate) struct HttpSourceClient {
     pub(super) auth: AuthSpec,
     pub(super) request_headers: Vec<HeaderSpec>,
     pub(super) request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source: Option<QuerySource>,
+    source_input_resolution_context: Option<SourceInputResolutionContext>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     pub(super) rate_limit: RateLimitSpec,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
@@ -78,7 +81,7 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-        source: QuerySource,
+        source_input_resolution_context: SourceInputResolutionContext,
         source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
         body_capture_max_bytes: Option<usize>,
     ) -> Result<Self> {
@@ -87,7 +90,7 @@ impl HttpSourceClient {
             source_secrets,
             source_variables,
             request_authenticators,
-            Some(source),
+            Some(source_input_resolution_context),
             source_input_resolver,
             body_capture_max_bytes,
         )
@@ -98,7 +101,7 @@ impl HttpSourceClient {
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-        source: Option<QuerySource>,
+        source_input_resolution_context: Option<SourceInputResolutionContext>,
         source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
         body_capture_max_bytes: Option<usize>,
     ) -> Result<Self> {
@@ -126,7 +129,7 @@ impl HttpSourceClient {
             auth: manifest.auth.clone(),
             request_headers: manifest.request_headers.clone(),
             request_authenticators: request_authenticators.clone(),
-            source,
+            source_input_resolution_context,
             source_input_resolver,
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
@@ -154,7 +157,10 @@ impl HttpSourceClient {
     pub(super) async fn resolved_inputs_for_request(
         &self,
     ) -> Result<Arc<BTreeMap<String, String>>> {
-        let (Some(resolver), Some(source)) = (&self.source_input_resolver, &self.source) else {
+        let (Some(resolver), Some(source)) = (
+            &self.source_input_resolver,
+            &self.source_input_resolution_context,
+        ) else {
             return Ok(Arc::clone(&self.resolved_inputs));
         };
         resolver
