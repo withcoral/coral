@@ -13,27 +13,32 @@ coral source add --file sources/community/stackoverflow/manifest.yaml
 ```sql
 -- Search questions by keyword
 SELECT question_id, title, score, is_answered
-FROM stackoverflow.questions
-WHERE query = 'rust async await'
+FROM stackoverflow.search_questions('rust async await')
 LIMIT 10;
 
 -- Find unanswered questions
-SELECT title, score, view_count
-FROM stackoverflow.questions
-WHERE query = 'python fastapi'
-  AND is_answered = false
+SELECT title, score, view_count, link
+FROM stackoverflow.search_questions('python fastapi')
+WHERE is_answered = false
 LIMIT 5;
+
+-- High-score questions
+SELECT title, score, answer_count, link
+FROM stackoverflow.search_questions('zed editor')
+ORDER BY score DESC
+LIMIT 10;
 ```
 
-## Tables
+## Functions
 
-| Table | Description |
-|-------|-------------|
-| `questions` | Search Stack Overflow questions by keyword |
+| Function | Description |
+|----------|-------------|
+| `search_questions(query)` | Search Stack Overflow questions by keyword (matched in title) |
 
 ## Notes
 
-- `query` filter is required
-- The `Accept-Encoding: identity` header prevents gzip compression that would otherwise break JSON parsing
+- Uses `kind: search` — a native search function, not a scannable table
+- Pagination is enabled (`mode: page`, up to 100 results per page, max 3 pages per query)
+- `Accept-Encoding: identity` header is required to prevent gzip compression that breaks JSON parsing
+- Unauthenticated requests are limited to 300/day per IP; register an app at [stackapps.com](https://stackapps.com) for 10,000/day
 - `owner_display_name` uses nested path `[owner, display_name]` to access the question author's name
-- Unauthenticated requests are limited to 300/day per IP; register an app for 10,000/day

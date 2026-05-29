@@ -2,7 +2,7 @@ name: stackoverflow
 version: 0.1.0
 dsl_version: 3
 backend: http
-description: Search Stack Overflow questions and answers via the Stack Exchange API. No authentication required.
+description: Search Stack Overflow questions via the Stack Exchange API. No authentication required.
 base_url: https://api.stackexchange.com/2.3
 
 auth:
@@ -13,101 +13,101 @@ auth:
       value: "identity"
 
 test_queries:
-  - SELECT question_id, title, score, answer_count FROM stackoverflow.questions WHERE query = 'rust async' LIMIT 5
-  - SELECT question_id, title, is_answered FROM stackoverflow.questions WHERE query = 'python fastapi' LIMIT 3
+  - SELECT question_id, title, score, answer_count, is_answered FROM stackoverflow.search_questions('rust async') LIMIT 10
+  - SELECT question_id, title, score FROM stackoverflow.search_questions('python fastapi') LIMIT 5
 
-tables:
-  - name: questions
-    description: >
-      Search Stack Overflow questions by keyword.
-      Returns questions sorted by relevance. The Accept-Encoding: identity header
-      prevents gzip compression which would break the JSON parser.
-    filters:
+functions:
+  - name: search_questions
+    kind: search
+    description: >-
+      Search Stack Overflow questions by keyword using the Stack Exchange /search endpoint.
+      Returns questions whose title matches the query, sorted by activity.
+      The Accept-Encoding: identity header prevents gzip compression that would otherwise
+      break the JSON parser.
+    fetch_limit_default: 25
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 3
+    args:
       - name: query
-        required: true
+        bind:
+          arg: query
     request:
       method: GET
-      path: /search?order=desc&sort=activity&intitle={{filter.query}}&site=stackoverflow
+      path: /search
+      query:
+        - name: intitle
+          from: arg
+          key: query
+        - name: order
+          from: literal
+          value: "desc"
+        - name: sort
+          from: literal
+          value: "activity"
+        - name: site
+          from: literal
+          value: "stackoverflow"
     response:
       rows_path:
         - items
     pagination:
-      mode: none
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: pagesize
     columns:
       - name: question_id
         type: Int64
         nullable: false
         description: Unique Stack Overflow question ID.
-        expr:
-          kind: path
-          path: [question_id]
+        expr: {kind: path, path: [question_id]}
       - name: title
         type: Utf8
         nullable: false
         description: Question title.
-        expr:
-          kind: path
-          path: [title]
+        expr: {kind: path, path: [title]}
       - name: link
         type: Utf8
         nullable: true
         description: Full URL to the question on Stack Overflow.
-        expr:
-          kind: path
-          path: [link]
+        expr: {kind: path, path: [link]}
       - name: score
         type: Int64
         nullable: true
         description: Question score (upvotes minus downvotes).
-        expr:
-          kind: path
-          path: [score]
+        expr: {kind: path, path: [score]}
       - name: answer_count
         type: Int64
         nullable: true
         description: Number of answers.
-        expr:
-          kind: path
-          path: [answer_count]
+        expr: {kind: path, path: [answer_count]}
       - name: is_answered
         type: Boolean
         nullable: true
         description: Whether the question has an accepted answer.
-        expr:
-          kind: path
-          path: [is_answered]
+        expr: {kind: path, path: [is_answered]}
       - name: view_count
         type: Int64
         nullable: true
         description: Number of times the question has been viewed.
-        expr:
-          kind: path
-          path: [view_count]
+        expr: {kind: path, path: [view_count]}
       - name: owner_display_name
         type: Utf8
         nullable: true
         description: Display name of the question author.
-        expr:
-          kind: path
-          path: [owner, display_name]
+        expr: {kind: path, path: [owner, display_name]}
       - name: creation_date
         type: Int64
         nullable: true
         description: Question creation date as a Unix timestamp.
-        expr:
-          kind: path
-          path: [creation_date]
+        expr: {kind: path, path: [creation_date]}
       - name: last_activity_date
         type: Int64
         nullable: true
         description: Last activity date as a Unix timestamp.
-        expr:
-          kind: path
-          path: [last_activity_date]
-      - name: query
-        type: Utf8
-        nullable: true
-        description: The search query used.
-        expr:
-          kind: from_filter
-          key: query
+        expr: {kind: path, path: [last_activity_date]}
