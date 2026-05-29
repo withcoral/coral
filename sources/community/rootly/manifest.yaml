@@ -1,0 +1,1032 @@
+name: rootly
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Rootly incident response data, including incidents, timelines,
+  action items, services, severities, environments, teams, users, and
+  API key metadata.
+base_url: https://api.rootly.com
+
+inputs:
+  ROOTLY_API_TOKEN:
+    kind: secret
+    hint: >-
+      Rootly API token. Generate one from Organization Settings -> API Keys.
+      The token permissions determine which incident response resources this
+      source can read.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.ROOTLY_API_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/vnd.api+json
+  - name: Content-Type
+    from: literal
+    value: application/vnd.api+json
+
+test_queries:
+  - SELECT id, title, status, created_at FROM rootly.incidents LIMIT 1
+  - SELECT id, name, slug FROM rootly.services LIMIT 1
+  - SELECT id, name, severity FROM rootly.severities LIMIT 1
+
+tables:
+  - name: incidents
+    description: >-
+      Rootly incidents with lifecycle status, severity, impacted services,
+      ownership context, timestamps, and incident URLs.
+    guide: |
+      Start here for incident response analytics:
+      `SELECT sequential_id, title, status, severity_name, url
+       FROM rootly.incidents ORDER BY created_at DESC LIMIT 25`.
+      Use filters such as status, severity, services, teams, created_at_gte,
+      and created_at_lte to push filtering to Rootly.
+    filters:
+      - name: search
+      - name: status
+      - name: severity
+      - name: services
+      - name: teams
+      - name: created_at_gt
+      - name: created_at_gte
+      - name: created_at_lt
+      - name: created_at_lte
+      - name: sort
+    request:
+      method: GET
+      path: /v1/incidents
+      query:
+        - name: filter[search]
+          from: filter
+          key: search
+        - name: filter[status]
+          from: filter
+          key: status
+        - name: filter[severity]
+          from: filter
+          key: severity
+        - name: filter[services]
+          from: filter
+          key: services
+        - name: filter[teams]
+          from: filter
+          key: teams
+        - name: filter[created_at][gt]
+          from: filter
+          key: created_at_gt
+        - name: filter[created_at][gte]
+          from: filter
+          key: created_at_gte
+        - name: filter[created_at][lt]
+          from: filter
+          key: created_at_lt
+        - name: filter[created_at][lte]
+          from: filter
+          key: created_at_lte
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Rootly incident ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: sequential_id
+        type: Int64
+        nullable: true
+        description: Human-readable incident sequence number.
+        expr: {kind: path, path: [attributes, sequential_id]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Internal incident title.
+        expr: {kind: path, path: [attributes, title]}
+      - name: public_title
+        type: Utf8
+        nullable: true
+        description: Public incident title.
+        expr: {kind: path, path: [attributes, public_title]}
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Incident summary.
+        expr: {kind: path, path: [attributes, summary]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current incident lifecycle status.
+        expr: {kind: path, path: [attributes, status]}
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Incident kind.
+        expr: {kind: path, path: [attributes, kind]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Incident slug.
+        expr: {kind: path, path: [attributes, slug]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Source that created the incident.
+        expr: {kind: path, path: [attributes, source]}
+      - name: private
+        type: Boolean
+        nullable: true
+        description: Whether the incident is private.
+        expr: {kind: path, path: [attributes, private]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Incident URL.
+        expr: {kind: path, path: [attributes, url]}
+      - name: short_url
+        type: Utf8
+        nullable: true
+        description: Short incident URL.
+        expr: {kind: path, path: [attributes, short_url]}
+      - name: severity_id
+        type: Utf8
+        nullable: true
+        description: Severity ID associated with the incident.
+        expr: {kind: path, path: [attributes, severity, data, id]}
+      - name: severity_name
+        type: Utf8
+        nullable: true
+        description: Severity name associated with the incident.
+        expr: {kind: path, path: [attributes, severity, data, attributes, name]}
+      - name: severity_level
+        type: Utf8
+        nullable: true
+        description: Rootly severity level.
+        expr: {kind: path, path: [attributes, severity, data, attributes, severity]}
+      - name: user
+        type: Json
+        nullable: true
+        description: User object associated with the incident.
+        expr: {kind: path, path: [attributes, user]}
+      - name: services
+        type: Json
+        nullable: true
+        description: Services attached to the incident.
+        expr: {kind: path, path: [attributes, services]}
+      - name: environments
+        type: Json
+        nullable: true
+        description: Environments attached to the incident.
+        expr: {kind: path, path: [attributes, environments]}
+      - name: teams
+        type: Json
+        nullable: true
+        description: Teams attached to the incident.
+        expr: {kind: path, path: [attributes, teams]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Incident creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Incident update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated_at]}
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Incident start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, started_at]}
+      - name: mitigated_at
+        type: Timestamp
+        nullable: true
+        description: Incident mitigation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, mitigated_at]}
+      - name: resolved_at
+        type: Timestamp
+        nullable: true
+        description: Incident resolution time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, resolved_at]}
+
+  - name: incident_events
+    description: Timeline events for a specific Rootly incident.
+    guide: |
+      Requires incident_id:
+      `SELECT event, visibility, occurred_at
+       FROM rootly.incident_events WHERE incident_id = 'incident-id'`.
+    filters:
+      - name: incident_id
+        required: true
+    request:
+      method: GET
+      path: /v1/incidents/{{filter.incident_id}}/events
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: incident_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Incident ID filter value.
+        expr: {kind: from_filter, key: incident_id}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Incident event ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: event
+        type: Utf8
+        nullable: true
+        description: Event text.
+        expr: {kind: path, path: [attributes, event]}
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Event visibility.
+        expr: {kind: path, path: [attributes, visibility]}
+      - name: occurred_at
+        type: Timestamp
+        nullable: true
+        description: Time when the event occurred.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, occurred_at]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Event creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created_at]}
+
+  - name: action_items
+    description: Organization-wide Rootly action items for incident tasks and follow-ups.
+    guide: |
+      Use this table to review post-incident work:
+      `SELECT summary, kind, priority, status, due_date
+       FROM rootly.action_items WHERE status = 'open' LIMIT 50`.
+    filters:
+      - name: status
+      - name: kind
+      - name: priority
+      - name: incident_status
+      - name: due_date_gt
+      - name: due_date_gte
+      - name: due_date_lt
+      - name: due_date_lte
+      - name: sort
+    request:
+      method: GET
+      path: /v1/action_items
+      query:
+        - name: filter[status]
+          from: filter
+          key: status
+        - name: filter[kind]
+          from: filter
+          key: kind
+        - name: filter[priority]
+          from: filter
+          key: priority
+        - name: filter[incident_status]
+          from: filter
+          key: incident_status
+        - name: filter[due_date][gt]
+          from: filter
+          key: due_date_gt
+        - name: filter[due_date][gte]
+          from: filter
+          key: due_date_gte
+        - name: filter[due_date][lt]
+          from: filter
+          key: due_date_lt
+        - name: filter[due_date][lte]
+          from: filter
+          key: due_date_lte
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Action item ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Action item summary.
+        expr: {kind: path, path: [attributes, summary]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Action item description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Action item kind, such as task or follow_up.
+        expr: {kind: path, path: [attributes, kind]}
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Action item priority.
+        expr: {kind: path, path: [attributes, priority]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Action item status.
+        expr: {kind: path, path: [attributes, status]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Action item URL.
+        expr: {kind: path, path: [attributes, url]}
+      - name: short_url
+        type: Utf8
+        nullable: true
+        description: Short action item URL.
+        expr: {kind: path, path: [attributes, short_url]}
+      - name: assigned_to
+        type: Json
+        nullable: true
+        description: Assigned user object.
+        expr: {kind: path, path: [attributes, assigned_to]}
+      - name: assigned_to_group_ids
+        type: Json
+        nullable: true
+        description: Assigned group IDs.
+        expr: {kind: path, path: [attributes, assigned_to_group_ids]}
+      - name: jira_issue_url
+        type: Utf8
+        nullable: true
+        description: Linked Jira issue URL, if present.
+        expr: {kind: path, path: [attributes, jira_issue_url]}
+      - name: due_date
+        type: Timestamp
+        nullable: true
+        description: Action item due date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, due_date]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Action item creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Action item update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated_at]}
+
+  - name: services
+    description: Rootly services and ownership/routing metadata.
+    guide: |
+      Inventory service ownership:
+      `SELECT name, slug, owner_group_ids, owner_user_ids
+       FROM rootly.services LIMIT 50`.
+    filters:
+      - name: search
+      - name: name
+      - name: slug
+      - name: sort
+    request:
+      method: GET
+      path: /v1/services
+      query:
+        - name: filter[search]
+          from: filter
+          key: search
+        - name: filter[name]
+          from: filter
+          key: name
+        - name: filter[slug]
+          from: filter
+          key: slug
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Service ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Service name.
+        expr: {kind: path, path: [attributes, name]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Service slug.
+        expr: {kind: path, path: [attributes, slug]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Service description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Service display color.
+        expr: {kind: path, path: [attributes, color]}
+      - name: owner_group_ids
+        type: Json
+        nullable: true
+        description: Owning group IDs.
+        expr: {kind: path, path: [attributes, owner_group_ids]}
+      - name: owner_user_ids
+        type: Json
+        nullable: true
+        description: Owning user IDs.
+        expr: {kind: path, path: [attributes, owner_user_ids]}
+      - name: pagerduty_id
+        type: Utf8
+        nullable: true
+        description: Linked PagerDuty ID.
+        expr: {kind: path, path: [attributes, pagerduty_id]}
+      - name: opsgenie_id
+        type: Utf8
+        nullable: true
+        description: Linked Opsgenie ID.
+        expr: {kind: path, path: [attributes, opsgenie_id]}
+      - name: github_repository_name
+        type: Utf8
+        nullable: true
+        description: Linked GitHub repository name.
+        expr: {kind: path, path: [attributes, github_repository_name]}
+      - name: environment_ids
+        type: Json
+        nullable: true
+        description: Environment IDs attached to the service.
+        expr: {kind: path, path: [attributes, environment_ids]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Service creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Service update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated_at]}
+
+  - name: severities
+    description: Rootly severity definitions used to classify incident impact.
+    guide: |
+      `SELECT name, slug, severity, color FROM rootly.severities ORDER BY position`.
+    filters:
+      - name: search
+      - name: name
+      - name: slug
+      - name: severity
+      - name: sort
+    request:
+      method: GET
+      path: /v1/severities
+      query:
+        - name: filter[search]
+          from: filter
+          key: search
+        - name: filter[name]
+          from: filter
+          key: name
+        - name: filter[slug]
+          from: filter
+          key: slug
+        - name: filter[severity]
+          from: filter
+          key: severity
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Severity ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Severity name.
+        expr: {kind: path, path: [attributes, name]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Severity slug.
+        expr: {kind: path, path: [attributes, slug]}
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Severity level value.
+        expr: {kind: path, path: [attributes, severity]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Severity description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Severity display color.
+        expr: {kind: path, path: [attributes, color]}
+      - name: position
+        type: Int64
+        nullable: true
+        description: Severity display position.
+        expr: {kind: path, path: [attributes, position]}
+      - name: notify_emails
+        type: Json
+        nullable: true
+        description: Notification email list.
+        expr: {kind: path, path: [attributes, notify_emails]}
+
+  - name: environments
+    description: Rootly environments used to classify incident impact.
+    guide: |
+      `SELECT name, slug, color FROM rootly.environments ORDER BY name`.
+    filters:
+      - name: search
+      - name: name
+      - name: slug
+      - name: sort
+    request:
+      method: GET
+      path: /v1/environments
+      query:
+        - name: filter[search]
+          from: filter
+          key: search
+        - name: filter[name]
+          from: filter
+          key: name
+        - name: filter[slug]
+          from: filter
+          key: slug
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Environment ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Environment name.
+        expr: {kind: path, path: [attributes, name]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Environment slug.
+        expr: {kind: path, path: [attributes, slug]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Environment description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Environment display color.
+        expr: {kind: path, path: [attributes, color]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Environment creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Environment update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated_at]}
+
+  - name: teams
+    description: Rootly teams for ownership, incident routing, and on-call context.
+    guide: |
+      `SELECT id, name, slug, description FROM rootly.teams LIMIT 50`.
+    filters:
+      - name: search
+      - name: name
+      - name: slug
+      - name: sort
+    request:
+      method: GET
+      path: /v1/teams
+      query:
+        - name: filter[search]
+          from: filter
+          key: search
+        - name: filter[name]
+          from: filter
+          key: name
+        - name: filter[slug]
+          from: filter
+          key: slug
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Team name.
+        expr: {kind: path, path: [attributes, name]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Team slug.
+        expr: {kind: path, path: [attributes, slug]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Team description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Team creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Team update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated_at]}
+
+  - name: users
+    description: Rootly users with profile and role relationship metadata.
+    guide: |
+      `SELECT email, full_name, time_zone, role_id FROM rootly.users LIMIT 50`.
+    filters:
+      - name: search
+      - name: email
+      - name: sort
+    request:
+      method: GET
+      path: /v1/users
+      query:
+        - name: filter[search]
+          from: filter
+          key: search
+        - name: filter[email]
+          from: filter
+          key: email
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [attributes, email]}
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User first name.
+        expr: {kind: path, path: [attributes, first_name]}
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User last name.
+        expr: {kind: path, path: [attributes, last_name]}
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: User full name.
+        expr: {kind: path, path: [attributes, full_name]}
+      - name: full_name_with_team
+        type: Utf8
+        nullable: true
+        description: User full name with team.
+        expr: {kind: path, path: [attributes, full_name_with_team]}
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: User time zone.
+        expr: {kind: path, path: [attributes, time_zone]}
+      - name: role_id
+        type: Utf8
+        nullable: true
+        description: Role relationship ID.
+        expr: {kind: path, path: [relationships, role, data, id]}
+      - name: on_call_role_id
+        type: Utf8
+        nullable: true
+        description: On-call role relationship ID.
+        expr: {kind: path, path: [relationships, on_call_role, data, id]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: User update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated_at]}
+
+  - name: api_keys
+    description: >-
+      Rootly API key metadata. Secret token values are not returned by Rootly.
+    guide: |
+      Audit token hygiene:
+      `SELECT name, kind, expires_at, last_used_at
+       FROM rootly.api_keys WHERE active = true LIMIT 50`.
+    filters:
+      - name: search
+      - name: name
+      - name: kind
+      - name: active
+      - name: sort
+    request:
+      method: GET
+      path: /v1/api_keys
+      query:
+        - name: filter[search]
+          from: filter
+          key: search
+        - name: filter[name]
+          from: filter
+          key: name
+        - name: filter[kind]
+          from: filter
+          key: kind
+        - name: filter[active]
+          from: filter_bool
+          key: active
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: API key ID.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: JSON:API resource type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: API key name.
+        expr: {kind: path, path: [attributes, name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: API key description.
+        expr: {kind: path, path: [attributes, description]}
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: API key kind, such as personal, team, or organization.
+        expr: {kind: path, path: [attributes, kind]}
+      - name: role_id
+        type: Utf8
+        nullable: true
+        description: Role ID assigned to the key.
+        expr: {kind: path, path: [attributes, role_id]}
+      - name: on_call_role_id
+        type: Utf8
+        nullable: true
+        description: On-call role ID assigned to the key.
+        expr: {kind: path, path: [attributes, on_call_role_id]}
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: API key expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, expires_at]}
+      - name: last_used_at
+        type: Timestamp
+        nullable: true
+        description: Last time this key was used.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, last_used_at]}
+      - name: active
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: API key active filter value.
+        expr: {kind: from_filter, key: active}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: API key creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: API key update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [attributes, updated_at]}
