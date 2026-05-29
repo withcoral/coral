@@ -1,0 +1,103 @@
+name: linkedin
+version: 0.1.0
+dsl_version: 3
+backend: file
+description: >-
+  Query a LinkedIn data export (the GDPR archive any LinkedIn member can
+  download) as SQL tables. Reads the CSV files from ~/linkedin_export.
+test_queries:
+  - SELECT * FROM linkedin.skills LIMIT 1
+  - SELECT * FROM linkedin.profile LIMIT 1
+tables:
+  - name: profile
+    description: "LinkedIn profile: name, headline, summary, location, industry."
+    format: csv
+    format_options:
+      has_header: true
+    guide: |
+      Reads `Profile.csv` from a LinkedIn data export extracted to
+      `~/linkedin_export/`. Get the export from LinkedIn -> Settings ->
+      Data Privacy -> Get a copy of your data (select Profile, Skills,
+      Positions, Connections). Adjust `location` if your export lives elsewhere.
+    source:
+      location: file://~/linkedin_export/
+      glob: Profile.csv
+    columns:
+      - name: first_name
+        type: Utf8
+      - name: last_name
+        type: Utf8
+      - name: headline
+        type: Utf8
+      - name: summary
+        type: Utf8
+      - name: location
+        type: Utf8
+      - name: industry
+        type: Utf8
+
+  - name: skills
+    description: LinkedIn skills with endorsement counts.
+    format: csv
+    format_options:
+      has_header: true
+    guide: |
+      Reads `Skills.csv` from the LinkedIn export in `~/linkedin_export/`.
+    source:
+      location: file://~/linkedin_export/
+      glob: Skills.csv
+    columns:
+      - name: name
+        type: Utf8
+      - name: endorsements
+        type: Int64
+
+  - name: positions
+    description: "Work history: company, title, description, and dates."
+    format: csv
+    format_options:
+      has_header: true
+    guide: |
+      Reads `Positions.csv` from the LinkedIn export in `~/linkedin_export/`.
+    source:
+      location: file://~/linkedin_export/
+      glob: Positions.csv
+    columns:
+      - name: company_name
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: location
+        type: Utf8
+      - name: started_on
+        type: Utf8
+      - name: finished_on
+        type: Utf8
+
+  - name: connections
+    description: "Connections: person, email, company, position, connected date."
+    format: csv
+    format_options:
+      has_header: true
+    guide: |
+      Reads `Connections.csv` from the LinkedIn export in `~/linkedin_export/`.
+      Note: older exports prefix this file with a few notes lines; remove them
+      so the column header row is first if a query fails to parse.
+    source:
+      location: file://~/linkedin_export/
+      glob: Connections.csv
+    columns:
+      - name: first_name
+        type: Utf8
+      - name: last_name
+        type: Utf8
+      - name: email_address
+        type: Utf8
+      - name: company
+        type: Utf8
+      - name: position
+        type: Utf8
+      - name: connected_on
+        type: Utf8
