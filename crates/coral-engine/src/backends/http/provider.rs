@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 use serde_json::Value;
 
@@ -16,10 +16,9 @@ use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
-use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
+use crate::backends::shared::filter_expr::{classify_filter_pushdown, extract_filter_values};
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::convert_items;
-use coral_spec::FilterMode;
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -166,23 +165,7 @@ impl TableProvider for HttpSourceTableProvider {
         &self,
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>> {
-        let allowed: HashSet<&str> = self
-            .table
-            .filters()
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect();
-        let filter_modes: HashMap<&str, FilterMode> = self
-            .table
-            .filters()
-            .iter()
-            .map(|f| (f.name.as_str(), f.mode))
-            .collect();
-
-        Ok(filters
-            .iter()
-            .map(|expr| classify_filter(expr, &allowed, &filter_modes))
-            .collect())
+        Ok(classify_filter_pushdown(filters, self.table.filters()))
     }
 
     async fn scan(
@@ -220,174 +203,5 @@ impl TableProvider for HttpSourceTableProvider {
             projection,
             limit,
         })
-    }
-}
-
-fn classify_filter(
-    expr: &Expr,
-    allowed: &HashSet<&str>,
-    filter_modes: &HashMap<&str, FilterMode>,
-) -> TableProviderFilterPushDown {
-    if let Expr::Column(col) = expr
-        && allowed.contains(col.name())
-    {
-        return TableProviderFilterPushDown::Exact;
-    }
-    if let Expr::Not(inner) = expr
-        && let Expr::Column(col) = inner.as_ref()
-        && allowed.contains(col.name())
-    {
-        return TableProviderFilterPushDown::Exact;
-    }
-    if let Expr::IsTrue(inner) | Expr::IsFalse(inner) = expr
-        && let Expr::Column(col) = inner.as_ref()
-        && allowed.contains(col.name())
-    {
-        return TableProviderFilterPushDown::Exact;
-    }
-    if let Expr::BinaryExpr(binary) = expr
-        && binary.op == Operator::Eq
-        && let Expr::Column(col) = binary.left.as_ref()
-        && allowed.contains(col.name())
-        && literal_to_string(binary.right.as_ref()).is_some()
-    {
-        return TableProviderFilterPushDown::Exact;
-    }
-    if let Expr::Like(like) = expr
-        && !like.negated
-        && let Expr::Column(col) = like.expr.as_ref()
-        && allowed.contains(col.name())
-        && literal_to_string(like.pattern.as_ref()).is_some()
-    {
-        let mode = filter_modes.get(col.name()).copied().unwrap_or_default();
-        if matches!(mode, FilterMode::Search | FilterMode::Contains) {
-            // Inexact: the API receives the stripped search/contains term (performance
-            // win) but DataFusion keeps a residual filter to enforce exact
-            // LIKE/ILIKE semantics client-side (correctness win).
-            return TableProviderFilterPushDown::Inexact;
-        }
-    }
-    TableProviderFilterPushDown::Unsupported
-}
-
-#[cfg(test)]
-mod tests {
-    use super::classify_filter;
-    use coral_spec::FilterMode;
-    use datafusion::common::Column;
-    use datafusion::logical_expr::{
-        Expr, Operator, TableProviderFilterPushDown, binary_expr, expr::Like, lit,
-    };
-    use std::collections::{HashMap, HashSet};
-    use std::ops::Not;
-
-    fn allowed<'a>(names: &'a [&'a str]) -> HashSet<&'a str> {
-        names.iter().copied().collect()
-    }
-
-    fn modes<'a>(entries: &'a [(&'a str, FilterMode)]) -> HashMap<&'a str, FilterMode> {
-        entries.iter().copied().collect()
-    }
-
-    fn like_expr(col_name: &str, pattern: &str) -> Expr {
-        Expr::Like(Like::new(
-            false,
-            Box::new(col(col_name)),
-            Box::new(lit(pattern)),
-            None,
-            false,
-        ))
-    }
-
-    fn col(name: &str) -> Expr {
-        Expr::Column(Column::from_name(name))
-    }
-
-    #[test]
-    fn like_ignored_for_equality_mode_filter() {
-        let pushdown = classify_filter(
-            &like_expr("status", "%open%"),
-            &allowed(&["status"]),
-            &modes(&[("status", FilterMode::Equality)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
-    }
-
-    #[test]
-    fn strips_wildcards_from_like_pattern() {
-        let pushdown = classify_filter(
-            &like_expr("q", "%deploy runbook%"),
-            &allowed(&["q"]),
-            &modes(&[("q", FilterMode::Contains)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
-    }
-
-    #[test]
-    fn contains_filter_also_accepts_equality() {
-        let pushdown = classify_filter(
-            &binary_expr(col("query"), Operator::Eq, lit("deploy")),
-            &allowed(&["query"]),
-            &modes(&[("query", FilterMode::Contains)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
-    }
-
-    #[test]
-    fn extracts_like_value_for_contains_mode_filter() {
-        let pushdown = classify_filter(
-            &like_expr("query", "%deploy%"),
-            &allowed(&["query"]),
-            &modes(&[("query", FilterMode::Contains)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
-    }
-
-    #[test]
-    fn extracts_like_value_for_legacy_search_mode_filter() {
-        let pushdown = classify_filter(
-            &like_expr("query", "%deploy%"),
-            &allowed(&["query"]),
-            &modes(&[("query", FilterMode::Search)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
-    }
-
-    #[test]
-    fn boolean_column_filter_pushes_down_exactly() {
-        let pushdown = classify_filter(&col("descending"), &allowed(&["descending"]), &modes(&[]));
-        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
-    }
-
-    #[test]
-    fn negated_boolean_column_filter_pushes_down_exactly() {
-        let pushdown = classify_filter(
-            &col("descending").not(),
-            &allowed(&["descending"]),
-            &modes(&[]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
-    }
-
-    #[test]
-    fn boolean_is_true_and_is_false_push_down_exactly() {
-        for expr in [
-            Expr::IsTrue(Box::new(col("descending"))),
-            Expr::IsFalse(Box::new(col("descending"))),
-        ] {
-            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
-            assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
-        }
-    }
-
-    #[test]
-    fn null_inclusive_boolean_is_predicates_are_not_pushed_down() {
-        for expr in [
-            Expr::IsNotTrue(Box::new(col("descending"))),
-            Expr::IsNotFalse(Box::new(col("descending"))),
-        ] {
-            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
-            assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
-        }
     }
 }
