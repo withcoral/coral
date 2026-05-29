@@ -10,10 +10,10 @@ base_url: https://appsignal.com
 inputs:
   APPSIGNAL_API_TOKEN:
     kind: secret
-    hint: AppSignal personal API token.
+    hint: AppSignal personal API token from the AppSignal API settings page.
   APPSIGNAL_APP_ID:
     kind: variable
-    hint: AppSignal app ID used for app-scoped GraphQL queries.
+    hint: AppSignal app ID from app settings or the /sites/<app_id> URL.
 
 request_headers:
   - name: Accept
@@ -25,7 +25,9 @@ request_headers:
 
 test_queries:
   - SELECT id, name, environment FROM appsignal.app_overview LIMIT 1
+  - SELECT id, short_revision, created_at FROM appsignal.deploy_markers LIMIT 1
   - SELECT id, number, state FROM appsignal.exception_incidents LIMIT 1
+  - SELECT id, name, url FROM appsignal.uptime_monitors LIMIT 1
 
 tables:
   - name: app_overview
@@ -78,8 +80,13 @@ tables:
   - name: deploy_markers
     description: Deploy markers for the configured AppSignal app.
     guide: |
-      Use this table to correlate incidents with recent deployments.
+      Use this table to correlate incidents with recent deployments. AppSignal
+      supports `start`, `end`, and manual `offset` filters for bounded windows.
     fetch_limit_default: 100
+    filters:
+      - name: start
+      - name: end
+      - name: offset
     request:
       method: POST
       path: /graphql
@@ -91,9 +98,9 @@ tables:
         - path: [query]
           from: literal
           value: |
-            query MarkersIndexQuery($appId: String!, $limit: Int) {
+            query MarkersIndexQuery($appId: String!, $limit: Int, $offset: Int, $start: ISO8601DateTime, $end: ISO8601DateTime) {
               app(id: $appId) {
-                deployMarkers(limit: $limit) {
+                deployMarkers(limit: $limit, offset: $offset, start: $start, end: $end) {
                   id
                   createdAt
                   shortRevision
@@ -110,13 +117,23 @@ tables:
         - path: [variables, appId]
           from: input
           key: APPSIGNAL_APP_ID
-        - path: [variables, limit]
-          from: literal
-          value: 100
+        - path: [variables, offset]
+          from: filter
+          key: offset
+        - path: [variables, start]
+          from: filter
+          key: start
+        - path: [variables, end]
+          from: filter
+          key: end
     response:
       rows_path: [data, app, deployMarkers]
     pagination:
       mode: none
+      page_size:
+        default: 100
+        max: 100
+        body_path: [variables, limit]
     columns:
       - name: id
         type: Utf8
@@ -178,8 +195,16 @@ tables:
     description: Exception incidents for the configured AppSignal app.
     guide: |
       Use this table to inspect current error incident state, severity, action
-      names, namespaces, and last occurrence time.
+      names, namespaces, and last occurrence time. AppSignal supports
+      provider-side `state`, `order`, `marker_id`, and manual `offset` filters
+      for incident triage. The returned `namespace` column remains available
+      for local filtering.
     fetch_limit_default: 100
+    filters:
+      - name: state
+      - name: order
+      - name: marker_id
+      - name: offset
     request:
       method: POST
       path: /graphql
@@ -191,9 +216,9 @@ tables:
         - path: [query]
           from: literal
           value: |
-            query ExceptionIncidentsQuery($appId: String!, $limit: Int) {
+            query ExceptionIncidentsQuery($appId: String!, $limit: Int, $offset: Int, $state: String, $order: String, $marker: String) {
               app(id: $appId) {
-                exceptionIncidents(limit: $limit) {
+                exceptionIncidents(limit: $limit, offset: $offset, state: $state, order: $order, marker: $marker) {
                   id
                   number
                   count
@@ -211,13 +236,26 @@ tables:
         - path: [variables, appId]
           from: input
           key: APPSIGNAL_APP_ID
-        - path: [variables, limit]
-          from: literal
-          value: 100
+        - path: [variables, offset]
+          from: filter
+          key: offset
+        - path: [variables, state]
+          from: filter
+          key: state
+        - path: [variables, order]
+          from: filter
+          key: order
+        - path: [variables, marker]
+          from: filter
+          key: marker_id
     response:
       rows_path: [data, app, exceptionIncidents]
     pagination:
       mode: none
+      page_size:
+        default: 100
+        max: 100
+        body_path: [variables, limit]
     columns:
       - name: id
         type: Utf8
@@ -278,7 +316,7 @@ tables:
         expr: {kind: path, path: []}
 
   - name: uptime_monitors
-    description: Uptime monitors and their alert state for the configured app.
+    description: Partial uptime monitor view and selected alert fields for the configured app.
     fetch_limit_default: 100
     request:
       method: POST
