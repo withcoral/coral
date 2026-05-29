@@ -1,0 +1,114 @@
+name: reddit
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Search Reddit posts across all subreddits using the public JSON API. No authentication required.
+base_url: https://www.reddit.com
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: User-Agent
+      from: literal
+      value: "python:coral-reddit-source:v1.0 (community source)"
+
+test_queries:
+  - SELECT id, title, score, subreddit FROM reddit.posts WHERE query = 'rust programming' LIMIT 5
+  - SELECT id, title, score FROM reddit.posts WHERE query = 'open source tools' LIMIT 3
+
+tables:
+  - name: posts
+    description: >
+      Search Reddit posts by keyword across all subreddits using Reddit's public search API.
+      Returns link posts sorted by new. Uses expr path notation to navigate Reddit's
+      nested {kind, data} response structure.
+    filters:
+      - name: query
+        required: true
+    request:
+      method: GET
+      path: /search.json?q={{filter.query}}&sort=new&limit=25&type=link
+    response:
+      rows_path:
+        - data
+        - children
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Reddit post ID (e.g. "abc123").
+        expr:
+          kind: path
+          path: [data, id]
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Post title.
+        expr:
+          kind: path
+          path: [data, title]
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL the post links to.
+        expr:
+          kind: path
+          path: [data, url]
+      - name: score
+        type: Int64
+        nullable: true
+        description: Post score (upvotes minus downvotes).
+        expr:
+          kind: path
+          path: [data, score]
+      - name: num_comments
+        type: Int64
+        nullable: true
+        description: Number of comments.
+        expr:
+          kind: path
+          path: [data, num_comments]
+      - name: subreddit
+        type: Utf8
+        nullable: true
+        description: Subreddit the post belongs to (without r/ prefix).
+        expr:
+          kind: path
+          path: [data, subreddit]
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: Relative permalink (prefix with https://reddit.com to get full URL).
+        expr:
+          kind: path
+          path: [data, permalink]
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Reddit username of the poster.
+        expr:
+          kind: path
+          path: [data, author]
+      - name: created_utc
+        type: Float64
+        nullable: true
+        description: Post creation time as a UTC Unix timestamp.
+        expr:
+          kind: path
+          path: [data, created_utc]
+      - name: selftext
+        type: Utf8
+        nullable: true
+        description: Body text for self posts.
+        expr:
+          kind: path
+          path: [data, selftext]
+      - name: query
+        type: Utf8
+        nullable: true
+        description: The search query used.
+        expr:
+          kind: from_filter
+          key: query
