@@ -29,13 +29,12 @@ use crate::backends::{
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names,
 };
-use crate::{QuerySource, SourceInputResolver, SourceInputResolverError};
+use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
 
 #[derive(Debug, Clone)]
 struct McpCompiledSource {
     manifest: McpSourceManifest,
-    source_secrets: BTreeMap<String, String>,
-    source_variables: BTreeMap<String, String>,
+    source_input_resolution: SourceInputResolutionContext,
     source_inputs: Arc<McpSourceInputs>,
     caller: McpSourceClient,
 }
@@ -43,24 +42,23 @@ struct McpCompiledSource {
 #[derive(Debug, Clone)]
 struct McpSourceInputs {
     fallback: Arc<BTreeMap<String, String>>,
-    source: Option<QuerySource>,
+    source: Option<SourceInputResolutionContext>,
     resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
 impl McpSourceInputs {
-    fn new(
+    fn with_resolver(
         fallback: Arc<BTreeMap<String, String>>,
-        source: QuerySource,
-        resolver: Option<Arc<dyn SourceInputResolver>>,
+        source: SourceInputResolutionContext,
+        resolver: Arc<dyn SourceInputResolver>,
     ) -> Self {
         Self {
             fallback,
             source: Some(source),
-            resolver,
+            resolver: Some(resolver),
         }
     }
 
-    #[cfg(test)]
     fn static_inputs(fallback: Arc<BTreeMap<String, String>>) -> Self {
         Self {
             fallback,
@@ -85,16 +83,20 @@ pub(crate) fn compile_manifest(
     manifest: &McpSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
+    let source_input_resolution = SourceInputResolutionContext::from_query_source(request.source);
     let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
         &manifest.declared_inputs,
-        &request.source_secrets,
-        &request.source_variables,
+        source_input_resolution.secrets(),
+        source_input_resolution.variables(),
     ));
-    let source_inputs = Arc::new(McpSourceInputs::new(
-        Arc::clone(&resolved_inputs),
-        request.source.clone(),
-        request.source_input_resolver.clone(),
-    ));
+    let source_inputs = Arc::new(match request.source_input_resolver.clone() {
+        Some(resolver) => McpSourceInputs::with_resolver(
+            Arc::clone(&resolved_inputs),
+            source_input_resolution.clone(),
+            resolver,
+        ),
+        None => McpSourceInputs::static_inputs(Arc::clone(&resolved_inputs)),
+    });
     let caller = Arc::new(StdioMcpToolCaller {
         source_name: manifest.common.name.clone(),
         server: manifest.server.clone(),
@@ -102,8 +104,7 @@ pub(crate) fn compile_manifest(
     });
     compile_source_with_caller(
         manifest.clone(),
-        request.source_secrets.clone(),
-        request.source_variables.clone(),
+        source_input_resolution,
         source_inputs,
         caller,
     )
@@ -111,15 +112,13 @@ pub(crate) fn compile_manifest(
 
 fn compile_source_with_caller(
     manifest: McpSourceManifest,
-    source_secrets: BTreeMap<String, String>,
-    source_variables: BTreeMap<String, String>,
+    source_input_resolution: SourceInputResolutionContext,
     source_inputs: Arc<McpSourceInputs>,
     caller: Arc<dyn McpToolCaller>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(McpCompiledSource {
         manifest,
-        source_secrets,
-        source_variables,
+        source_input_resolution,
         source_inputs,
         caller: McpSourceClient::new(caller),
     })
@@ -178,10 +177,15 @@ impl CompiledBackendSource for McpCompiledSource {
             ));
         }
 
-        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let secret_keys = self
+            .source_input_resolution
+            .secrets()
+            .keys()
+            .cloned()
+            .collect();
         let inputs = build_registered_inputs(
-            &self.manifest.declared_inputs,
-            &self.source_variables,
+            self.source_input_resolution.declared_inputs(),
+            self.source_input_resolution.variables(),
             &secret_keys,
         );
 
