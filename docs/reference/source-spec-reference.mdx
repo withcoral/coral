@@ -975,6 +975,12 @@ sent only to the token endpoint and are never included in the authorization URL.
 They may be stored as internal credential metadata so Coral can refresh the
 access token without prompting the user again.
 
+OAuth endpoint URLs may include `{{input.KEY}}` templates for declared
+`kind: variable` inputs, which Coral renders during OAuth credential setup. Use
+this for non-secret endpoint components such as a Microsoft tenant ID or site
+domain. OAuth endpoint templates do not support secret inputs, filters,
+function arguments, state, or inline defaults.
+
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
 `scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral stores OAuth
 metadata alongside the source secret and preserves rotated refresh tokens when

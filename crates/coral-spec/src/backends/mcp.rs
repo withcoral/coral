@@ -546,13 +546,12 @@ fn validate_mcp_table(source_name: &str, table: &RawMcpTableSpec) -> Result<()> 
         source_name,
         &format!("table '{}'", table.name),
     )?;
-    let known_filters = validate_filters_and_column_exprs(
+    validate_filters_and_column_exprs(
         &table.filter_specs(),
         &table.columns,
         source_name,
         &format!("table '{}'", table.name),
     )?;
-    let _ = known_filters;
 
     let mut bound_tool_args: HashSet<&str> = HashSet::new();
     for (name, source) in &table.tool_args {
