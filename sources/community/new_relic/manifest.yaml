@@ -1,0 +1,421 @@
+name: new_relic
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query New Relic NerdGraph accounts, user context, entities, and NRQL
+  results through Coral SQL.
+base_url: "{{input.NEW_RELIC_GRAPHQL_URL}}"
+
+inputs:
+  NEW_RELIC_GRAPHQL_URL:
+    kind: variable
+    default: https://api.newrelic.com/graphql
+    hint: |
+      New Relic NerdGraph endpoint. Use https://api.newrelic.com/graphql
+      for the main region or https://api.eu.newrelic.com/graphql for EU.
+  NEW_RELIC_USER_KEY:
+    kind: secret
+    hint: |
+      New Relic user API key with access to NerdGraph for the accounts and
+      entities you want to query. Paste only the key value.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: API-Key
+      from: template
+      template: "{{input.NEW_RELIC_USER_KEY}}"
+
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM new_relic.accounts LIMIT 1
+
+functions:
+  - name: nrql
+    description: >-
+      Run a New Relic Query Language query against one New Relic account.
+      The result shape is dynamic, so every row also exposes `raw` JSON.
+    args:
+      - name: account_id
+        required: true
+        bind:
+          arg: account_id
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: timeout
+        bind:
+          arg: timeout
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query CoralNrql($query: Nrql!, $timeout: Seconds) {
+              actor {
+                account(id: {{arg.account_id}}) {
+                  nrql(query: $query, timeout: $timeout) {
+                    results
+                  }
+                }
+              }
+            }
+        - path: [variables, query]
+          from: arg
+          key: query
+        - path: [variables, timeout]
+          from: arg
+          key: timeout
+    response:
+      rows_path: [data, actor, account, nrql, results]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: count
+        type: Float64
+        nullable: true
+        description: Common NRQL aggregate result for `count(*)`.
+        expr: {kind: path, path: [count]}
+      - name: average
+        type: Float64
+        nullable: true
+        description: Common NRQL aggregate result for `average(...)`.
+        expr: {kind: path, path: [average]}
+      - name: percentage
+        type: Float64
+        nullable: true
+        description: Common NRQL aggregate result for `percentage(...)`.
+        expr: {kind: path, path: [percentage]}
+      - name: facet
+        type: Json
+        nullable: true
+        description: FACET value returned by NRQL, when present.
+        expr: {kind: path, path: [facet]}
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: Timestamp returned by TIMESERIES queries, when present.
+        expr: {kind: path, path: [timestamp]}
+      - name: begin_time_seconds
+        type: Int64
+        nullable: true
+        description: Timeseries bucket start time, when present.
+        expr: {kind: path, path: [beginTimeSeconds]}
+      - name: end_time_seconds
+        type: Int64
+        nullable: true
+        description: Timeseries bucket end time, when present.
+        expr: {kind: path, path: [endTimeSeconds]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw NRQL result row.
+        expr: {kind: current_row}
+
+  - name: search_entities
+    kind: search
+    description: >-
+      Search New Relic monitored entities using NerdGraph entitySearch.
+      The query accepts New Relic entity search syntax.
+    fetch_limit_default: 100
+    search_limits:
+      default_top_k: 100
+      max_top_k: 500
+      max_calls_per_query: 5
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query CoralEntitySearch($query: String!, $cursor: String) {
+              actor {
+                entitySearch(query: $query) {
+                  results(cursor: $cursor) {
+                    nextCursor
+                    entities {
+                      guid
+                      name
+                      accountId
+                      domain
+                      type
+                      entityType
+                      reporting
+                      alertSeverity
+                      permalink
+                      tags {
+                        key
+                        values
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        - path: [variables, query]
+          from: arg
+          key: query
+    response:
+      rows_path: [data, actor, entitySearch, results, entities]
+      row_strategy: direct
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [variables, cursor]
+      response_cursor_path: [data, actor, entitySearch, results, nextCursor]
+    columns:
+      - name: guid
+        type: Utf8
+        nullable: false
+        description: Entity GUID.
+        expr: {kind: path, path: [guid]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Entity name.
+        expr: {kind: path, path: [name]}
+      - name: account_id
+        type: Int64
+        nullable: true
+        description: New Relic account ID that owns the entity.
+        expr: {kind: path, path: [accountId]}
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Entity domain, such as APM or BROWSER.
+        expr: {kind: path, path: [domain]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Entity type.
+        expr: {kind: path, path: [type]}
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: NerdGraph entity type.
+        expr: {kind: path, path: [entityType]}
+      - name: reporting
+        type: Boolean
+        nullable: true
+        description: Whether the entity is currently reporting telemetry.
+        expr: {kind: path, path: [reporting]}
+      - name: alert_severity
+        type: Utf8
+        nullable: true
+        description: Current alert severity, when available.
+        expr: {kind: path, path: [alertSeverity]}
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: New Relic UI permalink for the entity.
+        expr: {kind: path, path: [permalink]}
+      - name: tags
+        type: Json
+        nullable: true
+        description: Entity tags.
+        expr: {kind: path, path: [tags]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw New Relic entity object.
+        expr: {kind: current_row}
+
+tables:
+  - name: accounts
+    description: New Relic accounts visible to the authenticated user key.
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            {
+              actor {
+                accounts {
+                  id
+                  name
+                }
+              }
+            }
+    response:
+      rows_path: [data, actor, accounts]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: New Relic account ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: New Relic account name.
+        expr: {kind: path, path: [name]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw New Relic account object.
+        expr: {kind: current_row}
+
+  - name: user
+    description: Authenticated New Relic user context.
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            {
+              actor {
+                user {
+                  id
+                  name
+                  email
+                }
+              }
+            }
+    response:
+      rows_path: [data, actor, user]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: New Relic user ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User display name.
+        expr: {kind: path, path: [name]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [email]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw New Relic user object.
+        expr: {kind: current_row}
+
+  - name: entity
+    description: Single New Relic monitored entity by GUID.
+    filters:
+      - name: guid
+        required: true
+    request:
+      method: POST
+      path: /
+      query: []
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            {
+              actor {
+                entity(guid: "{{filter.guid}}") {
+                  guid
+                  name
+                  accountId
+                  domain
+                  type
+                  entityType
+                  reporting
+                  alertSeverity
+                  permalink
+                  tags {
+                    key
+                    values
+                  }
+                }
+              }
+            }
+    response:
+      rows_path: [data, actor, entity]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: guid
+        type: Utf8
+        nullable: false
+        description: Entity GUID.
+        expr: {kind: path, path: [guid]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Entity name.
+        expr: {kind: path, path: [name]}
+      - name: account_id
+        type: Int64
+        nullable: true
+        description: New Relic account ID that owns the entity.
+        expr: {kind: path, path: [accountId]}
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Entity domain, such as APM or BROWSER.
+        expr: {kind: path, path: [domain]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Entity type.
+        expr: {kind: path, path: [type]}
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: NerdGraph entity type.
+        expr: {kind: path, path: [entityType]}
+      - name: reporting
+        type: Boolean
+        nullable: true
+        description: Whether the entity is currently reporting telemetry.
+        expr: {kind: path, path: [reporting]}
+      - name: alert_severity
+        type: Utf8
+        nullable: true
+        description: Current alert severity, when available.
+        expr: {kind: path, path: [alertSeverity]}
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: New Relic UI permalink for the entity.
+        expr: {kind: path, path: [permalink]}
+      - name: tags
+        type: Json
+        nullable: true
+        description: Entity tags.
+        expr: {kind: path, path: [tags]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw New Relic entity object.
+        expr: {kind: current_row}
