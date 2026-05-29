@@ -12,7 +12,8 @@ inputs:
     kind: secret
     hint: |
       Buttondown API key. Create one in Buttondown settings and paste only the
-      key value, without the `Token` prefix.
+      key value, without the `Token` prefix. Grant read permission for
+      subscribers, emails, tags, and surveys.
 
 auth:
   type: HeaderAuth
@@ -25,10 +26,15 @@ request_headers:
   - name: Accept
     from: literal
     value: application/json
+  - name: X-API-Version
+    from: literal
+    value: "2026-04-01"
 
 test_queries:
   - SELECT id, email_address, type FROM buttondown.subscribers LIMIT 1
   - SELECT id, subject FROM buttondown.emails LIMIT 1
+  - SELECT id, name FROM buttondown.tags LIMIT 1
+  - SELECT id, question FROM buttondown.surveys LIMIT 1
 
 tables:
   - name: subscribers
@@ -44,6 +50,7 @@ tables:
       - name: source
       - name: date_start
       - name: date_end
+      - name: ordering
     request:
       method: GET
       path: /subscribers
@@ -66,14 +73,13 @@ tables:
         - name: date__end
           from: filter
           key: date_end
+        - name: ordering
+          from: filter
+          key: ordering
     response:
       rows_path: [results]
     pagination:
       mode: link_header
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
     columns:
       - name: id
         type: Utf8
@@ -155,6 +161,7 @@ tables:
       - name: source
       - name: publish_date_start
       - name: publish_date_end
+      - name: ordering
     request:
       method: GET
       path: /emails
@@ -177,14 +184,13 @@ tables:
         - name: publish_date__end
           from: filter
           key: publish_date_end
+        - name: ordering
+          from: filter
+          key: ordering
     response:
       rows_path: [results]
     pagination:
       mode: link_header
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
     columns:
       - name: id
         type: Utf8
@@ -318,6 +324,7 @@ tables:
     description: Buttondown surveys.
     filters:
       - name: status
+      - name: ordering
     request:
       method: GET
       path: /surveys
@@ -325,14 +332,13 @@ tables:
         - name: status
           from: filter
           key: status
+        - name: ordering
+          from: filter
+          key: ordering
     response:
       rows_path: [results]
     pagination:
       mode: link_header
-      page_size:
-        default: 100
-        max: 100
-        query_param: page_size
     columns:
       - name: id
         type: Utf8
