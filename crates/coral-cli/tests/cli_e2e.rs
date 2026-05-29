@@ -9,6 +9,7 @@
 
 mod harness;
 
+use std::fs;
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, StringArray};
@@ -128,6 +129,111 @@ async fn sql_command_renders_json_output() {
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select 1 as value");
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_file_command_sends_batch_request() {
+    let server = MockServer::start().await;
+    let file = tempfile::NamedTempFile::new().expect("temp sql file");
+    fs::write(file.path(), "select 1 as value;\nselect 2 as value;").expect("write sql file");
+
+    let assert = server
+        .cmd()
+        .args(["sql", "--file", file.path().to_str().expect("utf-8 path")])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("-- Query 1"),
+        "expected first query heading: {stdout}"
+    );
+    assert!(
+        stdout.contains("-- Query 2"),
+        "expected second query heading: {stdout}"
+    );
+
+    assert!(
+        server.execute_sql_requests().is_empty(),
+        "file mode should not call unary execute_sql"
+    );
+    let requests = server.execute_sql_batch_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql_batch call");
+    assert_eq!(
+        requests[0].sql,
+        vec![
+            "SELECT 1 AS value".to_string(),
+            "SELECT 2 AS value".to_string()
+        ]
+    );
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_file_command_renders_json_result_sets() {
+    let server = MockServer::start().await;
+    let file = tempfile::NamedTempFile::new().expect("temp sql file");
+    fs::write(file.path(), "select 1 as value;\nselect 2 as value;").expect("write sql file");
+
+    let assert = server
+        .cmd()
+        .args([
+            "sql",
+            "--format",
+            "json",
+            "--file",
+            file.path().to_str().expect("utf-8 path"),
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let result_sets: Vec<serde_json::Value> =
+        serde_json::from_str(stdout.trim()).expect("batch JSON should parse");
+    assert_eq!(result_sets.len(), 2);
+    assert_eq!(result_sets[0]["index"], serde_json::json!(1));
+    assert_eq!(
+        result_sets[0]["sql"],
+        serde_json::json!("SELECT 1 AS value")
+    );
+    assert_eq!(result_sets[0]["rows"][0]["value"], serde_json::json!(1));
+    assert_eq!(result_sets[1]["index"], serde_json::json!(2));
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_file_command_rejects_stdin_placeholder() {
+    let server = MockServer::start().await;
+
+    server.cmd().args(["sql", "--file", "-"]).assert().failure();
+
+    assert!(server.execute_sql_batch_requests().is_empty());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_file_command_surfaces_batch_errors() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_execute_sql_batch_error(Code::Internal, "batch failed"),
+    )
+    .await;
+    let file = tempfile::NamedTempFile::new().expect("temp sql file");
+    fs::write(file.path(), "select 1 as value;\nselect 2 as value;").expect("write sql file");
+
+    server
+        .cmd()
+        .args(["sql", "--file", file.path().to_str().expect("utf-8 path")])
+        .assert()
+        .failure();
+
+    let requests = server.execute_sql_batch_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql_batch call");
 
     server.shutdown().await;
 }

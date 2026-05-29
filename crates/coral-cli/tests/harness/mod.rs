@@ -21,13 +21,14 @@ use coral_api::v1::{
     CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
     DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    ExecuteSqlBatchRequest, ExecuteSqlBatchResponse, ExecuteSqlBatchResult, ExecuteSqlRequest,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
+    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListColumnsResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
+    PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -233,6 +234,29 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     }
 }
 
+fn mock_sql_batch_response(sql: &[String]) -> ExecuteSqlBatchResponse {
+    let results = sql
+        .iter()
+        .enumerate()
+        .filter_map(|(position, statement)| {
+            let trimmed = statement.trim_start().to_ascii_uppercase();
+            if trimmed.starts_with("CREATE TEMP TABLE")
+                || trimmed.starts_with("CREATE TEMPORARY TABLE")
+            {
+                return None;
+            }
+            let response = mock_sql_response(statement);
+            Some(ExecuteSqlBatchResult {
+                index: i32::try_from(position + 1).unwrap_or(i32::MAX),
+                sql: statement.clone(),
+                arrow_ipc_stream: response.arrow_ipc_stream,
+                row_count: response.row_count,
+            })
+        })
+        .collect();
+    ExecuteSqlBatchResponse { results }
+}
+
 fn mock_coral_tables_response() -> ExecuteSqlResponse {
     let schema = Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
@@ -430,6 +454,7 @@ impl<T> MockResult<T> {
 #[derive(Clone)]
 pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
+    execute_sql_batch_override: Option<MockResult<ExecuteSqlBatchResponse>>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
@@ -440,6 +465,7 @@ impl Default for MockServerConfig {
     fn default() -> Self {
         Self {
             execute_sql_override: None,
+            execute_sql_batch_override: None,
             discover_sources: MockResult::ok(mock_discover_response()),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![
@@ -487,6 +513,20 @@ impl MockServerConfig {
 
     pub(crate) fn with_execute_sql_error(mut self, code: Code, message: impl Into<String>) -> Self {
         self.execute_sql_override = Some(MockResult::err(code, message));
+        self
+    }
+
+    pub(crate) fn with_execute_sql_batch(mut self, response: ExecuteSqlBatchResponse) -> Self {
+        self.execute_sql_batch_override = Some(MockResult::ok(response));
+        self
+    }
+
+    pub(crate) fn with_execute_sql_batch_error(
+        mut self,
+        code: Code,
+        message: impl Into<String>,
+    ) -> Self {
+        self.execute_sql_batch_override = Some(MockResult::err(code, message));
         self
     }
 
@@ -558,6 +598,7 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
+    execute_sql_batch: Mutex<Vec<ExecuteSqlBatchRequest>>,
     list_catalog: Mutex<Vec<ListCatalogRequest>>,
     search_catalog: Mutex<Vec<SearchCatalogRequest>>,
     describe_table: Mutex<Vec<DescribeTableRequest>>,
@@ -618,6 +659,35 @@ impl QueryService for MockQueryService {
         let response = match self.config.execute_sql_override.clone() {
             Some(result) => result.into_tonic_result()?,
             None => mock_sql_response(&sql),
+        };
+
+        Ok(Response::new(response))
+    }
+
+    async fn execute_sql_batch(
+        &self,
+        request: Request<ExecuteSqlBatchRequest>,
+    ) -> Result<Response<ExecuteSqlBatchResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .execute_sql_batch
+            .lock()
+            .expect("execute_sql_batch capture")
+            .push(request.clone());
+
+        for sql in &request.sql {
+            if sql
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("DELETE FROM")
+            {
+                return Err(Status::invalid_argument("DML not supported: DELETE"));
+            }
+        }
+
+        let response = match self.config.execute_sql_batch_override.clone() {
+            Some(result) => result.into_tonic_result()?,
+            None => mock_sql_batch_response(&request.sql),
         };
 
         Ok(Response::new(response))
@@ -1030,6 +1100,14 @@ impl MockServer {
             .execute_sql
             .lock()
             .expect("execute_sql capture")
+            .clone()
+    }
+
+    pub(crate) fn execute_sql_batch_requests(&self) -> Vec<ExecuteSqlBatchRequest> {
+        self.captured
+            .execute_sql_batch
+            .lock()
+            .expect("execute_sql_batch capture")
             .clone()
     }
 

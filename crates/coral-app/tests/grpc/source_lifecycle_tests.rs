@@ -7,14 +7,14 @@
 use std::fs;
 
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess,
-    SourceCredentialStorage, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    Workspace, catalog_item, import_source_response, query_test_result,
+    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    ExecuteSqlBatchRequest, ExecuteSqlRequest, ExplainSqlRequest, GetSourceInfoRequest,
+    GetSourceRequest, ImportSourceRequest, ListCatalogRequest, PaginationRequest, QueryTestFailure,
+    QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret, SourceVariable,
+    ValidateSourceRequest, Workspace, catalog_item, import_source_response, query_test_result,
     source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::default_workspace;
+use coral_client::{batches_to_json_rows, decode_execute_sql_batch_response, default_workspace};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -442,6 +442,32 @@ async fn query_execution_rejects_non_read_only_sql() {
         .expect_err("SET should be rejected");
     assert_eq!(set_error.code(), tonic::Code::InvalidArgument);
     assert!(set_error.message().contains("Statement not supported"));
+}
+
+#[tokio::test]
+async fn execute_sql_batch_supports_session_local_temp_table_ctas() {
+    let harness = GrpcHarness::new().await;
+
+    let response = harness
+        .query_client()
+        .execute_sql_batch(Request::new(ExecuteSqlBatchRequest {
+            workspace: Some(default_workspace()),
+            sql: vec![
+                "create temp table t as select 1 as value".to_string(),
+                "select * from t".to_string(),
+            ],
+        }))
+        .await
+        .expect("batch query should execute")
+        .into_inner();
+
+    let results = decode_execute_sql_batch_response(&response).expect("decode batch response");
+    assert_eq!(results.len(), 1);
+    let result = results.first().expect("batch result");
+    assert_eq!(result.index(), 2);
+    assert_eq!(result.sql(), "select * from t");
+    let rows = batches_to_json_rows(result.result().batches()).expect("rows");
+    assert_eq!(rows, vec![serde_json::json!({ "value": 1 })]);
 }
 
 #[tokio::test]

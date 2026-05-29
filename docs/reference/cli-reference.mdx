@@ -24,15 +24,38 @@ Run one SQL query and exit.
 
 ```shellscript
 coral sql "<SQL>"
+coral sql --file queries.sql
 ```
 
 ### Options
 
-| Option     | Type              | Default | Description   |
-| ---------- | ----------------- | ------- | ------------- |
-| `--format` | `table` \| `json` | `table` | Output format |
+| Option     | Type              | Default | Description                                |
+| ---------- | ----------------- | ------- | ------------------------------------------ |
+| `--format` | `table` \| `json` | `table` | Output format                              |
+| `-f, --file` | path            |         | Execute a semicolon-delimited SQL file     |
 
 JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
+
+When `--file` is used, Coral executes statements sequentially in one private
+batch session and stops on the first error. Statements in SQL files must be
+separated with semicolons. Batch mode supports session-local temporary tables
+created with `CREATE TEMP TABLE ... AS SELECT ...`; normal inline
+`coral sql "<SQL>"` remains read-only and does not allow DDL or DML.
+
+Batch JSON output is an array of result-set objects:
+
+```json
+[
+  {
+    "index": 1,
+    "sql": "SELECT 1 AS value",
+    "rows": [{ "value": 1 }]
+  }
+]
+```
+
+Statements that only create batch-local temporary tables do not appear in the
+result-set array.
 
 ## `coral source`
 

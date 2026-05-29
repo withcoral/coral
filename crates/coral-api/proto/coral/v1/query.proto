@@ -20,6 +20,35 @@ message ExecuteSqlResponse {
   int64 row_count = 2;
 }
 
+// Executes an ordered batch of SQL statements in one private query session.
+message ExecuteSqlBatchRequest {
+  // Workspace that scopes the queryable source set.
+  Workspace workspace = 1;
+  // Ordered SQL statements to execute. Batch mode permits session-local
+  // temporary-table CTAS statements in addition to read-only query statements.
+  repeated string sql = 2;
+}
+
+// One result set produced by a batch SQL statement.
+message ExecuteSqlBatchResult {
+  // 1-based statement index from the original batch request.
+  int32 index = 1;
+  // SQL text for the statement that produced this result set.
+  string sql = 2;
+  // Arrow IPC stream bytes containing zero or more record batches plus schema.
+  bytes arrow_ipc_stream = 3;
+  // Total row count returned by the query.
+  int64 row_count = 4;
+}
+
+// Fully materialized result sets for a batch SQL request.
+message ExecuteSqlBatchResponse {
+  // Result sets produced by statements in request order. Statements that only
+  // mutate session-local batch state, such as accepted temporary-table CTAS
+  // statements, do not appear here.
+  repeated ExecuteSqlBatchResult results = 1;
+}
+
 // Explains one SQL statement by producing query-engine plan renderings without
 // executing it.
 message ExplainSqlRequest {
@@ -49,6 +78,8 @@ message ExplainSqlResponse {
 service QueryService {
   // Executes one read-only SQL statement and returns the full result set.
   rpc ExecuteSql(ExecuteSqlRequest) returns (ExecuteSqlResponse);
+  // Executes ordered batch SQL in one private session and returns result sets.
+  rpc ExecuteSqlBatch(ExecuteSqlBatchRequest) returns (ExecuteSqlBatchResponse);
   // Explains one read-only SQL statement without executing it.
   rpc ExplainSql(ExplainSqlRequest) returns (ExplainSqlResponse);
 }

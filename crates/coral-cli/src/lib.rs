@@ -18,6 +18,7 @@ mod query_error;
 mod source_ops;
 
 use std::borrow::Cow;
+use std::fs;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
@@ -27,14 +28,18 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{ExecuteSqlBatchRequest, ExecuteSqlRequest};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
-    AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table, manifest_input_from_proto,
+    AppClient, batches_to_json_rows, decode_execute_sql_batch_response,
+    decode_execute_sql_response, default_workspace, format_batches_json, format_batches_table,
+    manifest_input_from_proto,
 };
 use dialoguer::console::measure_text_width;
+use serde_json::json;
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser as SqlParser;
 use tonic::Request;
 
 #[cfg(test)]
@@ -110,8 +115,12 @@ struct SqlArgs {
     /// Output format for query results
     #[arg(long, value_enum, default_value = "table")]
     format: OutputFormat,
+    /// SQL file to execute as an ordered batch
+    #[arg(short, long, value_name = "PATH", conflicts_with = "sql")]
+    file: Option<PathBuf>,
     /// SQL query to execute
-    sql: String,
+    #[arg(required_unless_present = "file")]
+    sql: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -573,25 +582,7 @@ async fn run_app_command(
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
-            let response = match app
-                .query_client()
-                .execute_sql(Request::new(ExecuteSqlRequest {
-                    workspace: Some(default_workspace()),
-                    sql: args.sql,
-                }))
-                .await
-            {
-                Ok(response) => response.into_inner(),
-                Err(status) => {
-                    return Err(CliError::Query {
-                        error_message: query_error::telemetry_error_message(&status),
-                        error_type: query_error::telemetry_error_type(&status),
-                        rendered_stderr: query_error::render_query_error(&status),
-                    });
-                }
-            };
-            let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
-            print_batches(result.batches(), args.format)?;
+            run_sql_command(&app, args).await?;
         }
         Command::Source(args) => run_source(&app, args).await?,
         Command::Onboard => {
@@ -729,6 +720,41 @@ fn print_batches(
     Ok(())
 }
 
+fn print_batch_results(
+    results: &[coral_client::CollectedBatchQueryResult],
+    format: OutputFormat,
+) -> Result<(), anyhow::Error> {
+    match format {
+        OutputFormat::Table => {
+            for (position, result) in results.iter().enumerate() {
+                if position > 0 {
+                    println!();
+                }
+                println!(
+                    "-- Query {} ------------------------------------------------",
+                    result.index()
+                );
+                println!("{}", format_batches_table(result.result().batches())?);
+            }
+        }
+        OutputFormat::Json => {
+            let values = results
+                .iter()
+                .map(|result| {
+                    let rows = batches_to_json_rows(result.result().batches())?;
+                    Ok(json!({
+                        "index": result.index(),
+                        "sql": result.sql(),
+                        "rows": rows,
+                    }))
+                })
+                .collect::<Result<Vec<_>, coral_client::QueryResultError>>()?;
+            println!("{}", serde_json::to_string(&values)?);
+        }
+    }
+    Ok(())
+}
+
 fn print_text_table<const COLUMNS: usize>(
     headers: [&str; COLUMNS],
     rows: impl IntoIterator<Item = [String; COLUMNS]>,
@@ -741,6 +767,80 @@ fn print_text_table<const COLUMNS: usize>(
     for row in rows {
         println!("{}", format_table_row(row.each_ref(), &widths));
     }
+}
+
+async fn run_sql_command(app: &AppClient, args: SqlArgs) -> Result<(), CliError> {
+    match (args.sql, args.file) {
+        (Some(sql), None) => {
+            let response = match app
+                .query_client()
+                .execute_sql(Request::new(ExecuteSqlRequest {
+                    workspace: Some(default_workspace()),
+                    sql,
+                }))
+                .await
+            {
+                Ok(response) => response.into_inner(),
+                Err(status) => return Err(query_status_to_cli_error(&status)),
+            };
+            let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
+            print_batches(result.batches(), args.format)?;
+        }
+        (None, Some(path)) => {
+            let statements = read_batch_sql_file(&path)?;
+            let response = match app
+                .query_client()
+                .execute_sql_batch(Request::new(ExecuteSqlBatchRequest {
+                    workspace: Some(default_workspace()),
+                    sql: statements,
+                }))
+                .await
+            {
+                Ok(response) => response.into_inner(),
+                Err(status) => return Err(query_status_to_cli_error(&status)),
+            };
+            let results =
+                decode_execute_sql_batch_response(&response).map_err(anyhow::Error::from)?;
+            print_batch_results(&results, args.format)?;
+        }
+        (Some(_), Some(_)) => {
+            return Err(anyhow::anyhow!("provide either inline SQL or --file, not both").into());
+        }
+        (None, None) => {
+            return Err(anyhow::anyhow!("provide inline SQL or --file <PATH>").into());
+        }
+    }
+    Ok(())
+}
+
+fn query_status_to_cli_error(status: &tonic::Status) -> CliError {
+    CliError::Query {
+        error_message: query_error::telemetry_error_message(status),
+        error_type: query_error::telemetry_error_type(status),
+        rendered_stderr: query_error::render_query_error(status),
+    }
+}
+
+fn read_batch_sql_file(path: &PathBuf) -> Result<Vec<String>, anyhow::Error> {
+    if path == &PathBuf::from("-") {
+        anyhow::bail!("--file - is not supported; pass a SQL file path");
+    }
+    let contents = fs::read_to_string(path).map_err(|error| {
+        anyhow::anyhow!("failed to read SQL file '{}': {error}", path.display())
+    })?;
+    let dialect = GenericDialect {};
+    let statements = SqlParser::parse_sql(&dialect, &contents)
+        .map_err(|error| anyhow::anyhow!("failed to parse SQL file '{}': {error}", path.display()))?
+        .into_iter()
+        .map(|statement| statement.to_string())
+        .collect::<Vec<_>>();
+    if statements.is_empty() {
+        anyhow::bail!(
+            "SQL file '{}' does not contain any statements",
+            path.display()
+        );
+    }
+    Ok(statements)
 }
 
 fn compute_column_widths<const COLUMNS: usize>(
