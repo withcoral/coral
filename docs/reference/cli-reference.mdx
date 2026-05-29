@@ -91,6 +91,10 @@ authorization URL or device verification URL, wait for provider completion, and
 store the resulting access token without printing token material. If the
 provider returns refresh metadata, Coral keeps it internally so short-lived
 OAuth access tokens can be refreshed without re-running `coral source add`.
+If the browser runs somewhere that cannot reach Coral's loopback listener, such
+as a host browser authorizing a Coral process in a VM or SSH session, paste the
+final localhost redirect URL into the terminal prompt and Coral submits it to
+the local callback listener.
 Environment variables still win, so a secret value already present in the
 environment bypasses the retrieval choice.
 
