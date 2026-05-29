@@ -1,0 +1,40 @@
+---
+- name: Gather sanitized raw facts for Coral normalization
+  hosts: all
+  gather_facts: true
+  become: true
+
+  vars:
+    raw_facts_dir: "{{ playbook_dir }}/../raw-facts"
+
+  tasks:
+    - name: Ensure raw facts directory exists on control node
+      ansible.builtin.file:
+        path: "{{ raw_facts_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+
+    - name: Gather package facts
+      ansible.builtin.package_facts:
+        manager: auto
+      ignore_errors: true
+
+    - name: Export selected facts to local JSON
+      ansible.builtin.copy:
+        content: >-
+          {{ {
+            'inventory_hostname': inventory_hostname,
+            'ansible_facts': ansible_facts,
+            'coral_roles': coral_roles | default([]),
+            'coral_expected_services': coral_expected_services | default([])
+          } | to_nice_json }}
+        dest: "{{ raw_facts_dir }}/{{ inventory_hostname }}.json"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
