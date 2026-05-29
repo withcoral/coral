@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,6 +13,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
+use super::McpSourceInputs;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
@@ -20,12 +21,11 @@ use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
-use crate::backends::shared::template::{RenderContext, resolve_value_source};
 
 pub(super) struct McpTableProvider {
     backend: McpSourceClient,
     source_schema: String,
-    resolved_inputs: Arc<BTreeMap<String, String>>,
+    source_inputs: Arc<McpSourceInputs>,
     table: Arc<McpTableSpec>,
     schema: SchemaRef,
 }
@@ -44,14 +44,14 @@ impl McpTableProvider {
     pub(super) fn new(
         backend: McpSourceClient,
         source_schema: String,
-        resolved_inputs: Arc<BTreeMap<String, String>>,
+        source_inputs: Arc<McpSourceInputs>,
         table: McpTableSpec,
     ) -> Result<Self> {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
         Ok(Self {
             backend,
             source_schema,
-            resolved_inputs,
+            source_inputs,
             table: Arc::new(table),
             schema,
         })
@@ -105,13 +105,6 @@ impl TableProvider for McpTableProvider {
         let filter_values = extract_filter_values(filters, self.table.filters());
 
         let mut arguments = JsonObject::new();
-
-        let render_context = RenderContext::source_scoped(&self.resolved_inputs);
-        for (name, source) in &self.table.tool_args {
-            if let Some(value) = resolve_value_source(source, &render_context)? {
-                arguments.insert(name.clone(), value);
-            }
-        }
 
         for filter in self.table.filters() {
             match filter_values.get(&filter.name) {
@@ -167,6 +160,8 @@ impl TableProvider for McpTableProvider {
             relation: self.table.name().to_string(),
             tool_name: self.table.tool.clone(),
             arguments,
+            source_inputs: Some(Arc::clone(&self.source_inputs)),
+            source_tool_args: Arc::new(self.table.tool_args.clone()),
             response: self.table.response.clone(),
             pagination: self.table.pagination.clone(),
             limit: limits.truncate,

@@ -72,6 +72,7 @@ pub(crate) fn resolve_value_source(
             let rendered = render_template(template, context)?;
             Ok(Some(Value::String(rendered)))
         }
+        ValueSourceSpec::OneOf { values } => resolve_one_of(values, context),
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
         ValueSourceSpec::Filter { key, default } => Ok(string_runtime_value(
             context,
@@ -152,11 +153,31 @@ pub(crate) fn resolve_value_source(
         ValueSourceSpec::Input { key } => {
             Ok(context.resolved_inputs.get(key).cloned().map(Value::String))
         }
+        ValueSourceSpec::Bearer { key } => Ok(context
+            .resolved_inputs
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .map(|value| Value::String(format!("Bearer {value}")))),
         ValueSourceSpec::State { key } => {
             Ok(context.state.get(key).map(|v| Value::String(v.clone())))
         }
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => Ok(Some(now_minus_seconds(*seconds))),
     }
+}
+
+fn resolve_one_of(
+    values: &[ValueSourceSpec],
+    context: &RenderContext<'_>,
+) -> Result<Option<Value>> {
+    for value in values {
+        let Some(resolved) = resolve_value_source(value, context)? else {
+            continue;
+        };
+        if !value_to_string(&resolved).is_empty() {
+            return Ok(Some(resolved));
+        }
+    }
+    Ok(None)
 }
 
 fn string_runtime_value(
@@ -373,12 +394,33 @@ pub(crate) fn validate_value_source_inputs(
         ValueSourceSpec::Template { template } => {
             validate_input_dependencies(template, resolved_inputs)
         }
+        ValueSourceSpec::OneOf { values } => {
+            let mut last_error = None;
+            for value in values {
+                match validate_value_source_inputs(value, resolved_inputs) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Err(last_error.unwrap_or_else(|| {
+                DataFusionError::Execution("`from: one_of` value source has no values".to_string())
+            }))
+        }
         ValueSourceSpec::Input { key } => {
             if resolved_inputs.contains_key(key) {
                 Ok(())
             } else {
                 Err(DataFusionError::Execution(format!(
                     "missing source input '{key}' for `from: input` value source"
+                )))
+            }
+        }
+        ValueSourceSpec::Bearer { key } => {
+            if resolved_inputs.contains_key(key) {
+                Ok(())
+            } else {
+                Err(DataFusionError::Execution(format!(
+                    "missing source input '{key}' for `from: bearer` value source"
                 )))
             }
         }
@@ -402,10 +444,17 @@ pub(crate) fn validate_value_source_inputs(
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
+    use coral_spec::ValueSourceSpec;
     use serde_json::json;
 
-    use super::{EMPTY_MAP, RenderContext, resolve_value_source};
-    use coral_spec::ValueSourceSpec;
+    use super::{EMPTY_MAP, RenderContext, resolve_value_source, validate_value_source_inputs};
+
+    fn inputs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
 
     fn test_render_context<'a>(
         filters: &'a HashMap<String, String>,
@@ -633,5 +682,91 @@ mod tests {
         .expect("bool filter should resolve");
 
         assert_eq!(value, Some(json!(false)));
+    }
+
+    #[test]
+    fn one_of_prefers_first_present_value() {
+        let resolved_inputs = inputs(&[("API_KEY", "lin_api_key"), ("OAUTH_TOKEN", "oauth")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![
+                    ValueSourceSpec::Input {
+                        key: "API_KEY".to_string(),
+                    },
+                    ValueSourceSpec::Bearer {
+                        key: "OAUTH_TOKEN".to_string(),
+                    },
+                ],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, Some(json!("lin_api_key")));
+    }
+
+    #[test]
+    fn one_of_uses_bearer_fallback_value() {
+        let resolved_inputs = inputs(&[("OAUTH_TOKEN", "oauth")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![
+                    ValueSourceSpec::Input {
+                        key: "API_KEY".to_string(),
+                    },
+                    ValueSourceSpec::Bearer {
+                        key: "OAUTH_TOKEN".to_string(),
+                    },
+                ],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, Some(json!("Bearer oauth")));
+    }
+
+    #[test]
+    fn one_of_ignores_empty_bearer_values() {
+        let resolved_inputs = inputs(&[("OAUTH_TOKEN", "")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                }],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn one_of_input_dependency_validation_accepts_any_resolved_branch() {
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+            ],
+        };
+
+        validate_value_source_inputs(&value, &inputs(&[("API_KEY", "lin_api_key")]))
+            .expect("api key should satisfy one_of");
+        validate_value_source_inputs(&value, &inputs(&[("OAUTH_TOKEN", "oauth_access")]))
+            .expect("oauth token should satisfy one_of");
+        assert!(
+            validate_value_source_inputs(&value, &inputs(&[]))
+                .expect_err("missing both should fail")
+                .to_string()
+                .contains("missing source input 'OAUTH_TOKEN' for `from: bearer` value source")
+        );
     }
 }

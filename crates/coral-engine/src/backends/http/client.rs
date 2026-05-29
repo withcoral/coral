@@ -7,11 +7,11 @@ use std::time::Duration;
 use datafusion::error::{DataFusionError, Result};
 use serde_json::Value;
 
-use crate::RequestAuthenticator;
 use crate::backends::http::fetch::fetch_rows;
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::trace::HttpBodyCapture;
+use crate::{QuerySource, RequestAuthenticator, SourceInputResolver, SourceInputResolverError};
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate};
 
@@ -27,6 +27,8 @@ pub(crate) struct HttpSourceClient {
     pub(super) auth: AuthSpec,
     pub(super) request_headers: Vec<HeaderSpec>,
     pub(super) request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source: Option<QuerySource>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     pub(super) rate_limit: RateLimitSpec,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
     pub(super) body_capture: HttpBodyCapture,
@@ -52,11 +54,52 @@ impl HttpSourceClient {
     ///
     /// Returns a `DataFusionError` if required credentials are missing or if an
     /// authentication header template cannot be resolved.
+    #[cfg(test)]
     pub(crate) fn from_manifest(
         manifest: &HttpSourceManifest,
         source_secrets: &BTreeMap<String, String>,
         source_variables: &BTreeMap<String, String>,
         request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+        body_capture_max_bytes: Option<usize>,
+    ) -> Result<Self> {
+        Self::build(
+            manifest,
+            source_secrets,
+            source_variables,
+            request_authenticators,
+            None,
+            None,
+            body_capture_max_bytes,
+        )
+    }
+
+    pub(crate) fn from_manifest_with_source_input_resolver(
+        manifest: &HttpSourceManifest,
+        source_secrets: &BTreeMap<String, String>,
+        source_variables: &BTreeMap<String, String>,
+        request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+        source: QuerySource,
+        source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+        body_capture_max_bytes: Option<usize>,
+    ) -> Result<Self> {
+        Self::build(
+            manifest,
+            source_secrets,
+            source_variables,
+            request_authenticators,
+            Some(source),
+            source_input_resolver,
+            body_capture_max_bytes,
+        )
+    }
+
+    fn build(
+        manifest: &HttpSourceManifest,
+        source_secrets: &BTreeMap<String, String>,
+        source_variables: &BTreeMap<String, String>,
+        request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+        source: Option<QuerySource>,
+        source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
         body_capture_max_bytes: Option<usize>,
     ) -> Result<Self> {
         let resolved_inputs =
@@ -83,6 +126,8 @@ impl HttpSourceClient {
             auth: manifest.auth.clone(),
             request_headers: manifest.request_headers.clone(),
             request_authenticators: request_authenticators.clone(),
+            source,
+            source_input_resolver,
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
             body_capture: HttpBodyCapture::new(body_capture_max_bytes),
@@ -105,4 +150,21 @@ impl HttpSourceClient {
     ) -> Result<Vec<Value>> {
         fetch_rows(self, target, filter_values, arg_values, sql_limit).await
     }
+
+    pub(super) async fn resolved_inputs_for_request(
+        &self,
+    ) -> Result<Arc<BTreeMap<String, String>>> {
+        let (Some(resolver), Some(source)) = (&self.source_input_resolver, &self.source) else {
+            return Ok(Arc::clone(&self.resolved_inputs));
+        };
+        resolver
+            .resolve_inputs(source)
+            .await
+            .map(Arc::new)
+            .map_err(source_input_error)
+    }
+}
+
+fn source_input_error(error: SourceInputResolverError) -> DataFusionError {
+    DataFusionError::External(Box::new(error))
 }
