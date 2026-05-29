@@ -14,7 +14,13 @@ inputs:
     hint: Superset base URL without a trailing slash.
   SUPERSET_ACCESS_TOKEN:
     kind: secret
-    hint: Superset bearer access token.
+    hint: |
+      Superset JWT access token from POST /api/v1/security/login. Use a user
+      with read access to dashboards, charts, datasets, databases, SQL Lab
+      saved queries, and query history. The security users and roles tables
+      also require a role with permission to read Superset security users and
+      roles, such as Admin or a custom role with the relevant can_read
+      permissions.
 
 auth:
   type: HeaderAuth

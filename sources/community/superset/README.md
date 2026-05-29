@@ -5,13 +5,21 @@ inventory, and analytics workspace cleanup.
 
 ## Setup
 
-Provide a Superset base URL and bearer access token:
+Provide a Superset base URL and JWT bearer access token. Create the token with
+`POST /api/v1/security/login`, then use the returned `access_token` value
+without the `Bearer` prefix.
 
 ```bash
 SUPERSET_BASE_URL=http://localhost:8088 \
 SUPERSET_ACCESS_TOKEN=... \
 coral source add --file sources/community/superset/manifest.yaml
 ```
+
+The token user needs read access to dashboards, charts, datasets, databases,
+SQL Lab saved queries, and query history. The `superset.users` and
+`superset.roles` tables call `/api/v1/security/users/` and
+`/api/v1/security/roles/`, so they require Admin or a custom role with the
+corresponding security user and role read permissions.
 
 Run validation:
 
