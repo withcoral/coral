@@ -715,9 +715,9 @@ tables:
             - attributes
             - details
       - name: user_id
-        type: Int64
+        type: Utf8
         nullable: true
-        description: ID of the user associated with the alert.
+        description: ID of the user associated with the alert. Join to rootly.users.id.
         expr:
           kind: path
           path:
