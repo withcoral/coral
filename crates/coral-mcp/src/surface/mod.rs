@@ -8,7 +8,8 @@ mod tools;
 mod values;
 
 pub(crate) use catalog::{
-    describe_table_value, list_catalog_value, list_columns_value, search_catalog_value,
+    describe_table_value, list_catalog_schema_summary_value, list_catalog_value,
+    list_columns_value, search_catalog_value,
 };
 pub(crate) use discovery::{Pagination, parse_pagination, parse_pagination_with_limits};
 pub(crate) use errors::{

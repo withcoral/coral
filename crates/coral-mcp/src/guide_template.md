@@ -72,7 +72,7 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 - Joins across schemas work with standard SQL after table scans complete.
 - Use `LIKE` or `ILIKE` for SQL wildcard matching with `%` and `_`. `SIMILAR TO` uses regex-shaped patterns, so write `.*` instead of `%`, `.` instead of `_`, or escape literal percent/underscore characters as `\%` and `\_`.
 - Regex operators such as `~` and `~*` treat `%` and `_` as ordinary literal characters.
-- `list_catalog` shows queryable tables and parameterized table functions in pages; pass `schema`, `kind`, `limit`, and `offset` to narrow large catalogs. Omit `kind` or pass `null` to list all item kinds.
+- `list_catalog` returns a compact schema summary when called without `schema` or `kind`. Pass `schema`, `kind`, `limit`, and `offset` for detailed pages of queryable tables and parameterized table functions. Omit `kind` or pass `null` with `schema` to list all item kinds in that schema.
 - `search_catalog` searches table and table-function names, descriptions, arguments, result columns, guides, and required filters with a Rust regex; use it before broad SQL metadata scans when you know part of the catalog item you need.
 - `describe_table` returns one compact table detail with guide text, required filters, and column count; use `coral.columns` when you need full column details.
 - `list_columns` lists columns for one table; pass `pattern`, `required_only`, `limit`, and `offset` to inspect large schemas progressively. Existing tables return paginated `columns` plus `total`, `has_more`, and optional `next_offset`; regex matches add `matched_fields` per column. Missing tables return `found: false` with suggested recovery calls instead of an empty page.

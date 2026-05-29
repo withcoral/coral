@@ -71,17 +71,17 @@ pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_cou
     Tool::new(
         "list_catalog",
         format!(
-            "List database catalog items. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
+            "List database catalog schemas or items. With no schema and no kind, returns a compact schema summary for {visible_table_count} table(s) and {visible_function_count} table function(s). Pass schema or kind for detailed catalog items."
         ),
         json_object_schema(&json!({
             "type": "object",
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact SQL schema name to list."
+                    "description": "Optional exact SQL schema name to list detailed catalog items for."
                 },
                 "kind": {
-                    "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
+                    "description": "Optional item kind to list. Omit or pass null with schema to list all item kinds. Omit both schema and kind to return a compact schema summary.",
                     "anyOf": [
                         {
                             "type": "string",
@@ -399,6 +399,16 @@ fn search_catalog_description(visible_table_count: usize, visible_function_count
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
+        "oneOf": [
+            list_catalog_items_output_schema(),
+            list_catalog_schema_summary_output_schema()
+        ]
+    }))
+}
+
+fn list_catalog_items_output_schema() -> Value {
+    json!({
+        "type": "object",
         "required": ["items", "total", "limit", "offset", "has_more"],
         "additionalProperties": false,
         "properties": {
@@ -429,7 +439,83 @@ fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
                 "minimum": 0
             }
         }
-    }))
+    })
+}
+
+fn list_catalog_schema_summary_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": [
+            "view",
+            "schemas",
+            "total_schemas",
+            "total_items",
+            "limit",
+            "offset",
+            "has_more"
+        ],
+        "additionalProperties": false,
+        "properties": {
+            "view": { "enum": ["schema_summary"] },
+            "schemas": catalog_schema_summary_array_output_schema(),
+            "total_schemas": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "total_items": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0
+            },
+            "has_more": { "type": "boolean" },
+            "next_offset": {
+                "type": "integer",
+                "minimum": 0
+            }
+        }
+    })
+}
+
+fn catalog_schema_summary_array_output_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": [
+                "schema_name",
+                "table_count",
+                "table_function_count",
+                "sample_items"
+            ],
+            "additionalProperties": false,
+            "properties": {
+                "schema_name": { "type": "string" },
+                "table_count": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "table_function_count": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "sample_items": catalog_schema_sample_items_output_schema()
+            }
+        }
+    })
+}
+
+fn catalog_schema_sample_items_output_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" }
+    })
 }
 
 fn catalog_table_item_output_schema() -> Value {

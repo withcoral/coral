@@ -372,7 +372,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .contains("With no schema and no kind, returns a compact schema summary")
     );
     assert!(
         updated_tools[2]
@@ -426,14 +426,16 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect("list catalog");
     let catalog = catalog.structured_content.expect("structured catalog");
-    assert_eq!(catalog["total"], 3);
-    assert_eq!(catalog["items"][0]["kind"], "table");
-    assert_eq!(catalog["items"][0]["name"], "local_messages.events");
+    assert_eq!(catalog["view"], "schema_summary");
+    assert_eq!(catalog["total_schemas"], 1);
+    assert_eq!(catalog["total_items"], 3);
+    assert_eq!(catalog["schemas"][0]["schema_name"], "local_messages");
+    assert_eq!(catalog["schemas"][0]["table_count"], 3);
+    assert_eq!(catalog["schemas"][0]["table_function_count"], 0);
     assert_eq!(
-        catalog["items"][0]["sql_reference"],
+        catalog["schemas"][0]["sample_items"][0],
         "local_messages.events"
     );
-    assert_eq!(catalog["items"][0]["table"]["table_name"], "events");
     assert_matches_output_schema(list_catalog_tool, &catalog);
 
     let catalog_page = client
@@ -795,22 +797,64 @@ async fn list_catalog_surfaces_table_functions() {
     add_demo_source(&mut session.source_client, manifest_yaml).await;
 
     let tools = client.list_all_tools().await.expect("tools");
+    assert_table_function_catalog_tools(&tools);
+    let catalog_tool = tool_by_name(&tools, "list_catalog");
+    let search_tool = tool_by_name(&tools, "search_catalog");
+
+    assert_searchy_schema_summary(client, catalog_tool).await;
+    assert_searchy_catalog_items(client, catalog_tool).await;
+    assert_searchy_function_catalog_page(client, catalog_tool).await;
+    assert_searchy_catalog_search(client, search_tool).await;
+
+    session.shutdown().await;
+}
+
+fn assert_table_function_catalog_tools(tools: &[Tool]) {
     assert!(
-        tool_by_name(&tools, "list_catalog")
+        tool_by_name(tools, "list_catalog")
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("1 table(s) and 2 table function(s) are currently visible")
+            .contains("With no schema and no kind, returns a compact schema summary")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));
+}
 
-    let catalog_tool = tool_by_name(&tools, "list_catalog");
-    let search_tool = tool_by_name(&tools, "search_catalog");
-    let catalog = client
+async fn assert_searchy_schema_summary(
+    client: &RunningService<RoleClient, ()>,
+    catalog_tool: &Tool,
+) {
+    let catalog_summary = client
         .call_tool(CallToolRequestParams::new("list_catalog"))
         .await
         .expect("list catalog")
+        .structured_content
+        .expect("structured catalog summary");
+    assert_eq!(catalog_summary["view"], "schema_summary");
+    assert_eq!(catalog_summary["total_schemas"], 1);
+    assert_eq!(catalog_summary["schemas"][0]["schema_name"], "searchy");
+    assert_eq!(catalog_summary["schemas"][0]["table_count"], 1);
+    assert_eq!(catalog_summary["schemas"][0]["table_function_count"], 2);
+    assert_eq!(
+        catalog_summary["schemas"][0]["sample_items"][0],
+        "searchy.lookup_issue"
+    );
+    assert_matches_output_schema(catalog_tool, &catalog_summary);
+}
+
+async fn assert_searchy_catalog_items(
+    client: &RunningService<RoleClient, ()>,
+    catalog_tool: &Tool,
+) {
+    let catalog = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "searchy"
+            }))),
+        )
+        .await
+        .expect("list searchy catalog")
         .structured_content
         .expect("structured catalog");
     assert_eq!(catalog["total"], 3);
@@ -832,7 +876,12 @@ async fn list_catalog_surfaces_table_functions() {
     assert_eq!(catalog["items"][1]["kind"], "table");
     assert_eq!(catalog["items"][1]["name"], "searchy.placeholder");
     assert_matches_output_schema(catalog_tool, &catalog);
+}
 
+async fn assert_searchy_function_catalog_page(
+    client: &RunningService<RoleClient, ()>,
+    catalog_tool: &Tool,
+) {
     let functions = client
         .call_tool(
             CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
@@ -855,7 +904,12 @@ async fn list_catalog_surfaces_table_functions() {
         "searchy.search_issues(q => '<value>')"
     );
     assert_matches_output_schema(catalog_tool, &functions);
+}
 
+async fn assert_searchy_catalog_search(
+    client: &RunningService<RoleClient, ()>,
+    search_tool: &Tool,
+) {
     let search = client
         .call_tool(
             CallToolRequestParams::new("search_catalog").with_arguments(json_object(&json!({
@@ -878,8 +932,6 @@ async fn list_catalog_surfaces_table_functions() {
             .any(|field| field == "arguments")
     );
     assert_matches_output_schema(search_tool, &search);
-
-    session.shutdown().await;
 }
 
 #[tokio::test]
@@ -1067,12 +1119,8 @@ async fn mcp_tool_error_does_not_end_session() {
         .structured_content
         .expect("structured content");
     assert_eq!(
-        structured_catalog_after_error["items"][0]["name"],
-        "local_messages.events"
-    );
-    assert_eq!(
-        structured_catalog_after_error["items"][0]["sql_reference"],
-        "local_messages.events"
+        structured_catalog_after_error["schemas"][0]["schema_name"],
+        "local_messages"
     );
     assert_eq!(catalog_after_error.is_error, Some(false));
 

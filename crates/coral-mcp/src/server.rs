@@ -28,11 +28,12 @@ use crate::{
     surface::{
         CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
         describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, internal_status, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        initial_instructions, internal_status, list_catalog_arguments,
+        list_catalog_schema_summary_value, list_catalog_tool, list_catalog_value,
+        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
+        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -322,6 +323,24 @@ impl CoralMcpServer {
         request_arguments: Option<&Map<String, Value>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         let arguments = list_catalog_arguments(request_arguments)?;
+        if arguments.schema.is_none() && arguments.kind.is_none() {
+            let result = self
+                .load_catalog(
+                    None,
+                    CATALOG_KIND_ALL,
+                    PaginationRequest {
+                        limit: LIST_CATALOG_UNBOUNDED_LIMIT,
+                        offset: 0,
+                    },
+                )
+                .await
+                .map(|response| list_catalog_schema_summary_value(&response, arguments.pagination));
+            return Ok(ToolCallOutcome::from_value_result(
+                "Catalog schema summary",
+                result,
+            ));
+        }
+
         let mut catalog_client = self.catalog.clone();
         let result = catalog_client
             .list_catalog(Request::new(ListCatalogRequest {

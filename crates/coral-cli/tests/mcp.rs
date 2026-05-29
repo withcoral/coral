@@ -280,7 +280,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .description
             .as_deref()
             .expect("list_catalog description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .contains("With no schema and no kind, returns a compact schema summary")
     );
     assert!(
         tools[2]
@@ -592,21 +592,28 @@ async fn assert_list_catalog_tool(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let structured_catalog =
         structured_tool_content(client, CallToolRequestParams::new("list_catalog")).await?;
-    assert_eq!(structured_catalog["total"], 3);
+    assert_eq!(structured_catalog["view"], "schema_summary");
+    assert_eq!(structured_catalog["total_schemas"], 1);
+    assert_eq!(structured_catalog["total_items"], 3);
     assert_eq!(structured_catalog["limit"], 50);
     assert_eq!(structured_catalog["offset"], 0);
     assert_eq!(structured_catalog["has_more"], false);
     assert_eq!(
-        structured_catalog["items"][0]["name"],
+        structured_catalog["schemas"][0]["schema_name"],
+        "local_messages"
+    );
+    assert_eq!(structured_catalog["schemas"][0]["table_count"], 3);
+    assert_eq!(structured_catalog["schemas"][0]["table_function_count"], 0);
+    assert_eq!(
+        structured_catalog["schemas"][0]["sample_items"][0],
         "local_messages.events"
     );
-    assert_eq!(structured_catalog["items"][0]["kind"], "table");
     let requests = server.list_catalog_requests();
     let request = requests.last().expect("list catalog request");
     assert_eq!(request.schema_name, "");
     assert_eq!(request.kind, 0);
     let request_pagination = request.pagination.as_ref().expect("request pagination");
-    assert_eq!(request_pagination.limit, 50);
+    assert_eq!(request_pagination.limit, 0);
     assert_eq!(request_pagination.offset, 0);
 
     let all_kinds = structured_tool_content(
@@ -809,8 +816,8 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
         .await?;
     assert_eq!(catalog.is_error, Some(false));
     assert_eq!(
-        catalog.structured_content.expect("structured content")["items"][0]["name"],
-        "local_messages.events"
+        catalog.structured_content.expect("structured content")["schemas"][0]["schema_name"],
+        "local_messages"
     );
 
     client.cancel().await?;

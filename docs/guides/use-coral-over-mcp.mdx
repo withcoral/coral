@@ -15,7 +15,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database        |
-| Tool     | `list_catalog`   | List database tables and table functions with pagination |
+| Tool     | `list_catalog`   | List schemas, tables, and table functions                |
 | Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
@@ -28,9 +28,11 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 
 ### Discovery tools
 
-**`list_catalog`**: paginated list of database tables and parameterized table functions.
+**`list_catalog`**: schema summary or paginated list of database tables and parameterized table functions.
 
-- Arguments: optional `schema`, `kind`, `limit`, `offset`. Omit `kind` (or pass `null`) to include both `"table"` and `"table_function"` items.
+- Arguments: optional `schema`, `kind`, `limit`, `offset`.
+- With no `schema` and no `kind`, returns a compact schema summary with counts and sample item names.
+- Pass `schema` or `kind` to return detailed catalog items. Omit `kind` (or pass `null`) with `schema` to include both `"table"` and `"table_function"` items.
 - For tables, use `sql_reference` in `FROM` and `JOIN` clauses.
 - For table functions, use `sql_call_example` and fill in the required arguments.
 - Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
@@ -234,7 +236,7 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 > "Run a small Coral query against `coral.tables`."
 
-The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` and `coral.table_functions` to return SQL schemas and catalog items, and use `describe_table` or `list_columns` for table-specific metadata. Large catalogs should be paged with `limit` and `offset`.
+The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` and `coral.table_functions` to return SQL schemas and catalog items, and use `describe_table` or `list_columns` for table-specific metadata. Use no-argument `list_catalog` for a compact schema summary; pass `schema` or `kind` when you need detailed catalog items. Large detailed catalogs should be paged with `limit` and `offset`.
 
 ## Troubleshooting
 

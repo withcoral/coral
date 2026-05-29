@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use coral_api::v1::{
     ColumnSearchResult, DescribeTableResponse, ListCatalogResponse, ListColumnsResponse,
     SearchCatalogResponse, Table as ProtoTable, TableFunction as ProtoTableFunction,
@@ -8,11 +10,13 @@ use coral_api::v1::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use super::Pagination;
 use super::values::{
     format_schema_table_equivalent, format_sql_identifier, insert_pagination_fields,
     missing_table_summary_value, paged_collection_value,
 };
 
+const SCHEMA_SAMPLE_ITEM_LIMIT: usize = 3;
 pub(crate) fn describe_table_value(
     schema: &str,
     table: &str,
@@ -111,6 +115,48 @@ pub(crate) fn list_catalog_value(response: &ListCatalogResponse) -> Value {
     paged_collection_value("items", items, &pagination)
 }
 
+pub(crate) fn list_catalog_schema_summary_value(
+    response: &ListCatalogResponse,
+    pagination: Pagination,
+) -> Value {
+    let mut summaries = BTreeMap::new();
+    for item in &response.items {
+        add_catalog_item_to_schema_summaries(item, &mut summaries);
+    }
+
+    let total_items = response.pagination.as_ref().map_or_else(
+        || u32::try_from(response.items.len()).unwrap_or(u32::MAX),
+        |pagination| pagination.total_count,
+    );
+    let schemas = summaries
+        .into_values()
+        .map(CatalogSchemaSummaryValue::from)
+        .collect::<Vec<_>>();
+    let total_schemas = u32::try_from(schemas.len()).unwrap_or(u32::MAX);
+    let offset = usize::try_from(pagination.offset).unwrap_or(usize::MAX);
+    let limit = usize::try_from(pagination.limit).unwrap_or(usize::MAX);
+    let page_schemas = schemas
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+    let returned_count = u32::try_from(page_schemas.len()).unwrap_or(u32::MAX);
+    let has_more = pagination.offset.saturating_add(returned_count) < total_schemas;
+    let next_offset = has_more.then_some(pagination.offset.saturating_add(returned_count));
+
+    serde_json::to_value(CatalogSchemaSummaryPageValue {
+        view: "schema_summary",
+        schemas: page_schemas,
+        total_schemas,
+        total_items,
+        limit: pagination.limit,
+        offset: pagination.offset,
+        has_more,
+        next_offset,
+    })
+    .expect("catalog schema summary value serializes")
+}
+
 fn catalog_item_value(item: &coral_api::v1::CatalogItem) -> Option<Value> {
     match item.item.as_ref()? {
         catalog_item::Item::Table(table) => {
@@ -175,6 +221,89 @@ fn column_search_result_value(result: &ColumnSearchResult) -> Option<Value> {
         );
     }
     Some(Value::Object(value))
+}
+
+fn add_catalog_item_to_schema_summaries(
+    item: &coral_api::v1::CatalogItem,
+    summaries: &mut BTreeMap<String, CatalogSchemaSummaryBuilder>,
+) {
+    let Some(item) = item.item.as_ref() else {
+        return;
+    };
+    match item {
+        catalog_item::Item::Table(table) => {
+            let entry = summaries
+                .entry(table.schema_name.clone())
+                .or_insert_with(|| CatalogSchemaSummaryBuilder::new(&table.schema_name));
+            entry.table_count += 1;
+            entry.push_sample_item(&table.name);
+        }
+        catalog_item::Item::TableFunction(function) => {
+            let entry = summaries
+                .entry(function.schema_name.clone())
+                .or_insert_with(|| CatalogSchemaSummaryBuilder::new(&function.schema_name));
+            entry.table_function_count += 1;
+            entry.push_sample_item(&function.name);
+        }
+    }
+}
+
+struct CatalogSchemaSummaryBuilder {
+    schema_name: String,
+    table_count: u32,
+    table_function_count: u32,
+    sample_items: Vec<String>,
+}
+
+impl CatalogSchemaSummaryBuilder {
+    fn new(schema_name: &str) -> Self {
+        Self {
+            schema_name: schema_name.to_string(),
+            table_count: 0,
+            table_function_count: 0,
+            sample_items: Vec::new(),
+        }
+    }
+
+    fn push_sample_item(&mut self, item_name: &str) {
+        if self.sample_items.len() >= SCHEMA_SAMPLE_ITEM_LIMIT {
+            return;
+        }
+        self.sample_items
+            .push(format!("{}.{}", self.schema_name, item_name));
+    }
+}
+
+#[derive(Serialize)]
+struct CatalogSchemaSummaryPageValue {
+    view: &'static str,
+    schemas: Vec<CatalogSchemaSummaryValue>,
+    total_schemas: u32,
+    total_items: u32,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct CatalogSchemaSummaryValue {
+    schema_name: String,
+    table_count: u32,
+    table_function_count: u32,
+    sample_items: Vec<String>,
+}
+
+impl From<CatalogSchemaSummaryBuilder> for CatalogSchemaSummaryValue {
+    fn from(builder: CatalogSchemaSummaryBuilder) -> Self {
+        Self {
+            schema_name: builder.schema_name,
+            table_count: builder.table_count,
+            table_function_count: builder.table_function_count,
+            sample_items: builder.sample_items,
+        }
+    }
 }
 
 #[derive(Serialize)]
