@@ -23,6 +23,9 @@ request_headers:
 test_queries:
   - SELECT id, name FROM canny.boards LIMIT 1
   - SELECT id, title, status FROM canny.posts LIMIT 1
+  - SELECT id, name FROM canny.users LIMIT 1
+  - SELECT id, name FROM canny.companies LIMIT 1
+  - SELECT id, name FROM canny.tags LIMIT 1
 
 tables:
   - name: boards
@@ -64,14 +67,22 @@ tables:
   - name: posts
     description: Canny feedback posts with score, status, board, author, owner, and tag metadata.
     guide: |
-      Use `board_id`, `status`, or `owner_id` filters to narrow post lists.
+      Use `board_id`, `status`, `author_id`, `company_id`, `tag_ids`, or
+      `search` filters to narrow post lists. Canny paginates this endpoint
+      with `limit` and `skip` in the JSON body; Coral sends the first page and
+      supports manual `skip` filtering for follow-up pages.
       `author__*`, `owner__*`, and `board__*` flatten nested Canny response
       objects.
     fetch_limit_default: 100
     filters:
       - name: board_id
       - name: status
-      - name: owner_id
+      - name: author_id
+      - name: company_id
+      - name: tag_ids
+      - name: search
+      - name: sort
+      - name: skip
     request:
       method: POST
       path: /api/v1/posts/list
@@ -85,9 +96,24 @@ tables:
         - path: [status]
           from: filter
           key: status
-        - path: [ownerID]
+        - path: [authorID]
           from: filter
-          key: owner_id
+          key: author_id
+        - path: [companyID]
+          from: filter
+          key: company_id
+        - path: [tagIDs]
+          from: filter
+          key: tag_ids
+        - path: [search]
+          from: filter
+          key: search
+        - path: [sort]
+          from: filter
+          key: sort
+        - path: [skip]
+          from: filter
+          key: skip
     response:
       rows_path: [posts]
     pagination:
@@ -277,6 +303,13 @@ tables:
         type: Utf8
         nullable: false
         description: Canny user ID.
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: External userID value used by Canny vote filters.
+        expr:
+          kind: path
+          path: [userID]
       - name: name
         type: Utf8
         nullable: true
@@ -344,8 +377,13 @@ tables:
 
   - name: tags
     description: Canny tags for organizing feedback posts.
+    guide: |
+      Canny paginates tags with `limit` and `skip` in the JSON body; Coral
+      sends the first page and supports manual `skip` filtering for follow-up
+      pages.
     filters:
       - name: board_id
+      - name: skip
     request:
       method: POST
       path: /api/v1/tags/list
@@ -353,16 +391,20 @@ tables:
         - path: [apiKey]
           from: input
           key: CANNY_API_KEY
-        - path: [limit]
-          from: literal
-          value: 10000
         - path: [boardID]
           from: filter
           key: board_id
+        - path: [skip]
+          from: filter
+          key: skip
     response:
       rows_path: [tags]
     pagination:
       mode: none
+      page_size:
+        default: 100
+        max: 100
+        body_path: [limit]
     columns:
       - name: id
         type: Utf8
@@ -484,6 +526,13 @@ tables:
         expr:
           kind: path
           path: [voter, id]
+      - name: voter__user_id
+        type: Utf8
+        nullable: true
+        description: Voter external userID value usable with the `user_id` filter.
+        expr:
+          kind: path
+          path: [voter, userID]
       - name: voter__name
         type: Utf8
         nullable: true

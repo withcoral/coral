@@ -65,8 +65,33 @@ LIMIT 20;
 
 - This source is read-only.
 - Canny expects the API key in the JSON body as `apiKey`.
+- `canny.posts` exposes documented filters such as `author_id`, `company_id`,
+  `tag_ids`, `search`, `sort`, and `status`; undocumented `ownerID` filtering
+  is not used.
+- Canny `posts/list` and `tags/list` paginate with `limit` and `skip` in the
+  JSON body. The current Coral HTTP DSL can set the first-page `limit`, and
+  these tables expose `skip` as a manual filter for follow-up pages.
+- `canny.users.user_id` and `canny.votes.voter__user_id` expose Canny's
+  external `userID` value, which is distinct from Canny's internal `id` and is
+  the value used by the `canny.votes.user_id` filter.
 - `canny.comments` is scoped by `post_id`; `canny.votes` can be scoped by
   `post_id`, `board_id`, `user_id`, or `company_id`.
+
+## Validation evidence
+
+Static validation run locally:
+
+```bash
+coral source lint sources/community/canny/manifest.yaml
+make lint-sources
+yamllint sources/community/canny/manifest.yaml
+git diff --check origin/main..HEAD
+gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
+```
+
+Credentialed `coral source add --file`, `coral source test canny`, and
+representative live queries for users, companies, votes, and comments require a
+Canny API key plus live post data and were not run in this workspace.
 
 ## API references
 
