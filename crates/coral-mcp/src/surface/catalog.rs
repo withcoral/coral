@@ -1,6 +1,6 @@
 use coral_api::v1::{
     ColumnSearchResult, DescribeTableResponse, ListCatalogResponse, ListColumnsResponse,
-    SearchCatalogResponse, Table as ProtoTable, TableFunction as ProtoTableFunction,
+    Table as ProtoTable, TableFunction as ProtoTableFunction,
     TableFunctionArgument as ProtoTableFunctionArgument,
     TableFunctionResultColumn as ProtoTableFunctionResultColumn, TableSummary as ProtoTableSummary,
     catalog_item,
@@ -49,37 +49,14 @@ fn describe_missing_table_value(
         .iter()
         .map(missing_table_summary_value)
         .collect::<Vec<_>>();
-    let escaped_table = regex::escape(table);
-    let search_arguments = if same_schema_tables.is_empty() {
-        SuggestedCallArguments {
-            pattern: Some(escaped_table),
-            schema: None,
+    let suggested_calls = vec![SuggestedCall {
+        tool: "list_catalog",
+        arguments: SuggestedCallArguments {
+            schema: (!same_schema_tables.is_empty()).then_some(schema),
             kind: Some("table"),
-            limit: None,
-        }
-    } else {
-        SuggestedCallArguments {
-            pattern: Some(escaped_table),
-            schema: Some(schema),
-            kind: Some("table"),
-            limit: None,
-        }
-    };
-    let mut suggested_calls = vec![SuggestedCall {
-        tool: "search_catalog",
-        arguments: search_arguments,
+            limit: Some(10),
+        },
     }];
-    if !same_schema_tables.is_empty() {
-        suggested_calls.push(SuggestedCall {
-            tool: "list_catalog",
-            arguments: SuggestedCallArguments {
-                pattern: None,
-                schema: Some(schema),
-                kind: Some("table"),
-                limit: Some(10),
-            },
-        });
-    }
     serde_json::to_value(MissingTableValue {
         found: false,
         requested: RequestedTable { schema, table },
@@ -89,16 +66,6 @@ fn describe_missing_table_value(
         suggested_calls,
     })
     .expect("missing table value serializes")
-}
-
-pub(crate) fn search_catalog_value(response: &SearchCatalogResponse) -> Value {
-    let pagination = response.pagination.unwrap_or_default();
-    let items = response
-        .items
-        .iter()
-        .filter_map(catalog_search_result_value)
-        .collect::<Vec<_>>();
-    paged_collection_value("items", items, &pagination)
 }
 
 pub(crate) fn list_catalog_value(response: &ListCatalogResponse) -> Value {
@@ -111,7 +78,7 @@ pub(crate) fn list_catalog_value(response: &ListCatalogResponse) -> Value {
     paged_collection_value("items", items, &pagination)
 }
 
-fn catalog_item_value(item: &coral_api::v1::CatalogItem) -> Option<Value> {
+pub(crate) fn catalog_item_value(item: &coral_api::v1::CatalogItem) -> Option<Value> {
     match item.item.as_ref()? {
         catalog_item::Item::Table(table) => {
             serde_json::to_value(CatalogTableItemValue::from(table)).ok()
@@ -132,15 +99,6 @@ fn minimal_table_function_call_example(function: &ProtoTableFunction) -> String 
         .collect::<Vec<_>>()
         .join(", ");
     format!("{reference}({required_arguments})")
-}
-
-fn catalog_search_result_value(result: &coral_api::v1::CatalogSearchResult) -> Option<Value> {
-    let mut value = catalog_item_value(result.item.as_ref()?)?;
-    value.as_object_mut()?.insert(
-        "matched_fields".to_string(),
-        serde_json::to_value(&result.matched_fields).ok()?,
-    );
-    Some(value)
 }
 
 pub(crate) fn list_columns_value(
@@ -230,8 +188,6 @@ struct SuggestedCall<'a> {
 
 #[derive(Serialize)]
 struct SuggestedCallArguments<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pattern: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]

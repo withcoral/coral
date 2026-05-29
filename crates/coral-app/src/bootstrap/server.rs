@@ -17,11 +17,12 @@ use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
+use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -47,9 +48,10 @@ use crate::feedback::publisher::{
 use crate::feedback::service::FeedbackService;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::search::service::{SearchIndexRefresher, SearchService};
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::ConfigStore;
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -280,7 +282,7 @@ impl ServerBuilder {
             config_store,
             credential_manager,
             query_runtime_context,
-            layout,
+            layout.clone(),
             self.config.engine_extensions_providers,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
@@ -293,6 +295,7 @@ impl ServerBuilder {
             query_manager,
             feedback_manager,
             trace_service,
+            layout,
             self.config.mode,
         )
         .await
@@ -374,10 +377,17 @@ async fn start_server(
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
     trace_service: Option<TraceService>,
+    layout: AppStateLayout,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
-    let source_service = SourceService::new(source_manager, query_manager.clone());
+    let search_index_refresher = SearchIndexRefresher::new(layout);
+    let source_service = SourceService::new(
+        source_manager,
+        query_manager.clone(),
+        search_index_refresher.clone(),
+    );
     let catalog_service = CatalogService::new(query_manager.clone());
+    let search_service = SearchService::new(query_manager.clone(), search_index_refresher);
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
     let mut routes = Routes::default()
@@ -387,6 +397,10 @@ async fn start_server(
         .add_service(GrpcMethodAnnotatedService::new(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
+        ))
+        .add_service(GrpcMethodAnnotatedService::new(
+            SearchServiceServer::new(search_service)
+                .max_encoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE),
         ))
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
@@ -712,7 +726,7 @@ enabled = false
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let trace_service =
@@ -722,6 +736,7 @@ enabled = false
             query_manager,
             feedback_manager,
             Some(trace_service),
+            layout,
             ServerMode::NativeGrpc,
         )
         .await
@@ -1093,7 +1108,7 @@ tables:
                 home_dir: Some(fake_home.clone()),
                 ..QueryRuntimeContext::default()
             },
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
@@ -1101,6 +1116,7 @@ tables:
             query_manager,
             feedback_manager,
             None,
+            layout,
             ServerMode::NativeGrpc,
         )
         .await
@@ -1192,7 +1208,7 @@ tables:
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
@@ -1200,6 +1216,7 @@ tables:
             query_manager,
             feedback_manager,
             None,
+            layout,
             ServerMode::NativeGrpc,
         )
         .await
@@ -1291,7 +1308,7 @@ tables:
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
@@ -1299,6 +1316,7 @@ tables:
             query_manager,
             feedback_manager,
             None,
+            layout,
             ServerMode::NativeGrpc,
         )
         .await

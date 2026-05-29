@@ -19,6 +19,7 @@ use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
+use crate::search::observed::ObservedValueIndexer;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::model::InstalledSource;
@@ -104,7 +105,7 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(workspace_name, &sources);
+                let runtime = self.runtime_config_for_execute(workspace_name, &sources);
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -249,6 +250,23 @@ impl QueryManager {
             provider_input_resolver,
         )));
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
+    }
+
+    fn runtime_config_for_execute(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+    ) -> QueryRuntimeConfig {
+        let mut runtime = self.runtime_config(workspace_name, selected_sources);
+        runtime
+            .extensions
+            .query_result_observers
+            .push(Arc::new(ObservedValueIndexer::new(
+                self.layout.clone(),
+                workspace_name.clone(),
+                selected_sources,
+            )));
+        runtime
     }
 }
 

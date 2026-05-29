@@ -86,6 +86,14 @@ impl AppStateLayout {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
+    pub(crate) fn search_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name).join("search")
+    }
+
+    pub(crate) fn search_index_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.search_dir(workspace_name).join("tantivy")
+    }
+
     pub(crate) fn source_dir(
         &self,
         workspace_name: &WorkspaceName,
@@ -166,6 +174,14 @@ mod tests {
                 .join("default")
                 .join("feedback")
                 .join("reports.jsonl")
+        );
+        assert_eq!(
+            layout.search_index_dir(&workspace_name),
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("search")
+                .join("tantivy")
         );
         assert_eq!(
             layout.local_trace_store_dir(),

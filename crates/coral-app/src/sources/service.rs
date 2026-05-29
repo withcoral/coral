@@ -34,6 +34,7 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
+use crate::search::service::SearchIndexRefresher;
 use crate::sources::SourceName;
 use crate::sources::manager::{
     CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, ImportSourceCommand,
@@ -55,13 +56,19 @@ use tokio_stream::StreamExt as _;
 pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
+    search_indexes: SearchIndexRefresher,
 }
 
 impl SourceService {
-    pub(crate) fn new(source_manager: SourceManager, query_manager: QueryManager) -> Self {
+    pub(crate) fn new(
+        source_manager: SourceManager,
+        query_manager: QueryManager,
+        search_indexes: SearchIndexRefresher,
+    ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
+            search_indexes,
         }
     }
 }
@@ -157,6 +164,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let search_indexes = self.search_indexes.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -168,6 +176,9 @@ impl SourceServiceApi for SourceService {
             let installed = sources
                 .create_bundled_source(&workspace_name, &command)
                 .map_err(app_status)?;
+            let source_name = installed.name.clone();
+            search_indexes.mark_catalog_dirty(&workspace_name).await;
+            search_indexes.discard_source_observed_values(&workspace_name, &source_name);
             Ok(Response::new(CreateBundledSourceResponse {
                 source: Some(installed_source_to_proto(&workspace_name, installed)),
             }))
@@ -181,6 +192,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let search_indexes = self.search_indexes.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -198,14 +210,19 @@ impl SourceServiceApi for SourceService {
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
-                        sources
+                        let installed = sources
                             .create_bundled_source_with_oauth(
                                 &workspace_name,
                                 command,
                                 event_sender,
                             )
                             .await
-                            .map_err(app_status)
+                            .map_err(app_status)?;
+                        let source_name = installed.name.clone();
+                        search_indexes.mark_catalog_dirty(&workspace_name).await;
+                        search_indexes
+                            .discard_source_observed_values(&workspace_name, &source_name);
+                        Ok(installed)
                     })
                 });
             Ok(Response::new(Box::pin(stream.map(|response| {
@@ -222,6 +239,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<Self::ImportSourceStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let search_indexes = self.search_indexes.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -234,6 +252,9 @@ impl SourceServiceApi for SourceService {
                 let installed = sources
                     .import_source(&workspace_name, &command)
                     .map_err(app_status)?;
+                let source_name = installed.name.clone();
+                search_indexes.mark_catalog_dirty(&workspace_name).await;
+                search_indexes.discard_source_observed_values(&workspace_name, &source_name);
                 let response = ImportSourceResponse {
                     event: Some(import_source_response::Event::Source(
                         installed_source_to_proto(&response_workspace_name, installed),
@@ -256,10 +277,15 @@ impl SourceServiceApi for SourceService {
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
-                        sources
+                        let installed = sources
                             .import_source_with_credentials(&workspace_name, command, event_sender)
                             .await
-                            .map_err(app_status)
+                            .map_err(app_status)?;
+                        let source_name = installed.name.clone();
+                        search_indexes.mark_catalog_dirty(&workspace_name).await;
+                        search_indexes
+                            .discard_source_observed_values(&workspace_name, &source_name);
+                        Ok(installed)
                     })
                 });
             Ok(Response::new(stream))
@@ -273,6 +299,7 @@ impl SourceServiceApi for SourceService {
     ) -> Result<Response<DeleteSourceResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
+        let search_indexes = self.search_indexes.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -280,6 +307,8 @@ impl SourceServiceApi for SourceService {
             sources
                 .delete_source(&workspace_name, &source_name)
                 .map_err(app_status)?;
+            search_indexes.mark_catalog_dirty(&workspace_name).await;
+            search_indexes.discard_source_observed_values(&workspace_name, &source_name);
             Ok(Response::new(DeleteSourceResponse {}))
         })
         .await

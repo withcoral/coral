@@ -9,8 +9,6 @@ use crate::bootstrap::AppError;
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::workspaces::WorkspaceName;
 
-const DEFAULT_SEARCH_LIMIT: u32 = 20;
-const MAX_SEARCH_LIMIT: u32 = 100;
 const DEFAULT_COLUMN_LIMIT: u32 = 50;
 const MAX_COLUMN_LIMIT: u32 = 200;
 const MAX_METADATA_PATTERN_BYTES: usize = 256;
@@ -43,41 +41,6 @@ pub(crate) enum CatalogItem {
 pub(crate) enum CatalogItemKind {
     Table,
     TableFunction,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct CatalogSearchResult {
-    pub(crate) item: CatalogItem,
-    pub(crate) matched_fields: Vec<CatalogMetadataField>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CatalogMetadataField {
-    SchemaName,
-    TableName,
-    FunctionName,
-    Name,
-    Description,
-    Guide,
-    RequiredFilters,
-    Arguments,
-    ResultColumns,
-}
-
-impl CatalogMetadataField {
-    pub(crate) fn as_proto_name(self) -> &'static str {
-        match self {
-            Self::SchemaName => "schema_name",
-            Self::TableName => "table_name",
-            Self::FunctionName => "function_name",
-            Self::Name => "name",
-            Self::Description => "description",
-            Self::Guide => "guide",
-            Self::RequiredFilters => "required_filters",
-            Self::Arguments => "arguments",
-            Self::ResultColumns => "result_columns",
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -193,31 +156,6 @@ impl CatalogDiscovery {
         Ok(items)
     }
 
-    pub(crate) async fn search_catalog(
-        &self,
-        workspace_name: &WorkspaceName,
-        pattern: &str,
-        schema_name: Option<&str>,
-        kind: Option<CatalogItemKind>,
-        ignore_case: bool,
-        pagination: Pagination,
-    ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
-        let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
-        let matches = self
-            .catalog_items(workspace_name, schema_name, kind)
-            .await?
-            .into_iter()
-            .filter_map(|item| {
-                let matched_fields = catalog_item_matched_fields(&item, &regex);
-                (!matched_fields.is_empty()).then_some(CatalogSearchResult {
-                    item,
-                    matched_fields,
-                })
-            })
-            .collect();
-        Ok(page_items(matches, pagination))
-    }
-
     pub(crate) async fn describe_table(
         &self,
         workspace_name: &WorkspaceName,
@@ -324,10 +262,6 @@ fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {
     }
 }
 
-pub(crate) fn search_pagination(pagination: Option<Pagination>) -> Result<Pagination, AppError> {
-    pagination_with_limits(pagination, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT)
-}
-
 pub(crate) fn column_pagination(pagination: Option<Pagination>) -> Result<Pagination, AppError> {
     pagination_with_limits(pagination, DEFAULT_COLUMN_LIMIT, MAX_COLUMN_LIMIT)
 }
@@ -373,78 +307,6 @@ pub(crate) fn compile_metadata_regex(pattern: &str, ignore_case: bool) -> Result
         .size_limit(REGEX_SIZE_LIMIT_BYTES)
         .build()
         .map_err(|error| AppError::InvalidInput(format!("invalid regex pattern: {error}")))
-}
-
-fn catalog_item_matched_fields(item: &CatalogItem, regex: &Regex) -> Vec<CatalogMetadataField> {
-    match item {
-        CatalogItem::Table(table) => table_matched_fields(table, regex),
-        CatalogItem::TableFunction(function) => table_function_matched_fields(function, regex),
-    }
-}
-
-fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<CatalogMetadataField> {
-    let name = format!("{}.{}", table.schema_name, table.table_name);
-    let candidates = [
-        (CatalogMetadataField::SchemaName, table.schema_name.as_str()),
-        (CatalogMetadataField::TableName, table.table_name.as_str()),
-        (CatalogMetadataField::Name, name.as_str()),
-        (
-            CatalogMetadataField::Description,
-            table.description.as_str(),
-        ),
-        (CatalogMetadataField::Guide, table.guide.as_str()),
-    ];
-    let mut matches = candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field))
-        .collect::<Vec<_>>();
-    if table
-        .required_filters
-        .iter()
-        .any(|filter| regex.is_match(filter))
-    {
-        matches.push(CatalogMetadataField::RequiredFilters);
-    }
-    matches
-}
-
-fn table_function_matched_fields(
-    function: &TableFunctionInfo,
-    regex: &Regex,
-) -> Vec<CatalogMetadataField> {
-    let name = format!("{}.{}", function.schema_name, function.function_name);
-    let candidates = [
-        (
-            CatalogMetadataField::SchemaName,
-            function.schema_name.as_str(),
-        ),
-        (
-            CatalogMetadataField::FunctionName,
-            function.function_name.as_str(),
-        ),
-        (CatalogMetadataField::Name, name.as_str()),
-        (
-            CatalogMetadataField::Description,
-            function.description.as_str(),
-        ),
-    ];
-    let mut matches = candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field))
-        .collect::<Vec<_>>();
-    if function.arguments.iter().any(|argument| {
-        regex.is_match(&argument.name) || argument.values.iter().any(|value| regex.is_match(value))
-    }) {
-        matches.push(CatalogMetadataField::Arguments);
-    }
-    if function.result_columns.iter().any(|column| {
-        regex.is_match(&column.name)
-            || regex.is_match(&column.data_type)
-            || regex.is_match(&column.description)
-    }) {
-        matches.push(CatalogMetadataField::ResultColumns);
-    }
-    matches
 }
 
 fn column_matched_fields(column: &ColumnInfo, regex: &Regex) -> Vec<ColumnMetadataField> {
@@ -532,32 +394,7 @@ pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CatalogMetadataField, compile_metadata_regex, table_matched_fields};
-    use coral_engine::TableInfo;
-
-    fn table(required_filters: Vec<String>) -> TableInfo {
-        TableInfo {
-            schema_name: "github".to_string(),
-            table_name: "Pull.Requests".to_string(),
-            description: "Pull request table".to_string(),
-            guide: "Query pull requests.".to_string(),
-            columns: Vec::new(),
-            required_filters,
-        }
-    }
-
-    #[test]
-    fn required_filters_match_each_filter_independently() {
-        let summary = table(vec!["owner".to_string(), "repo".to_string()]);
-
-        assert_eq!(
-            table_matched_fields(&summary, &regex::Regex::new("^repo$").expect("regex")),
-            vec![CatalogMetadataField::RequiredFilters]
-        );
-        assert!(
-            table_matched_fields(&summary, &regex::Regex::new("r.r").expect("regex")).is_empty()
-        );
-    }
+    use super::compile_metadata_regex;
 
     #[test]
     fn empty_metadata_pattern_is_invalid() {

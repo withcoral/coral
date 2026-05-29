@@ -82,4 +82,8 @@ pub struct TableFunctionInfo {
     pub arguments: Vec<TableFunctionArgumentInfo>,
     /// Columns returned by the function.
     pub result_columns: Vec<TableFunctionResultColumnInfo>,
+    /// Function role. Search functions perform provider-native retrieval.
+    pub kind: String,
+    /// JSON-encoded provider search limit metadata, when declared by the source.
+    pub search_limits_json: Option<String>,
 }

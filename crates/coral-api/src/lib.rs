@@ -55,6 +55,12 @@ pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 /// responses larger than tonic's 4 MB default.
 pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
 
+/// Maximum gRPC message size for `SearchService` *responses*, in bytes.
+///
+/// Universal Search returns bounded metadata hints, but it may include source,
+/// table-function, and column descriptions for many installed sources.
+pub const SEARCH_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
+
 /// Maximum gRPC message size for `TraceService` *responses*, in bytes.
 ///
 /// Trace details can include large span attributes, which may exceed tonic's

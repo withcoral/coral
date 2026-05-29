@@ -1,0 +1,167 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/catalog.proto";
+import "coral/v1/resources.proto";
+
+// Universal Search request for clue routing over Coral metadata and local search indexes.
+message SearchRequest {
+  // Workspace whose current search context should be inspected.
+  Workspace workspace = 1;
+  // User or agent clue to route to likely Coral surfaces.
+  string query = 2;
+  // Optional maximum results. Zero applies the API default.
+  uint32 limit = 3;
+}
+
+// Universal Search response with typed, bounded routing hints.
+message SearchResponse {
+  // Ordered search hints.
+  repeated SearchResult results = 1;
+  // Provider coverage and error disclosure.
+  repeated SearchProviderStatus provider_statuses = 2;
+  // Result truncation metadata.
+  SearchResultTruncation truncation = 3;
+}
+
+// Result truncation metadata.
+message SearchResultTruncation {
+  // Whether more results were available than returned.
+  bool truncated = 1;
+  // Number of results returned in this response.
+  uint32 returned_count = 2;
+  // Applied maximum result count.
+  uint32 max_results = 3;
+  // Human-readable truncation note.
+  string note = 4;
+}
+
+// Backing provider status for a search response.
+message SearchProviderStatus {
+  // Provider name.
+  SearchProvider provider = 1;
+  // Provider state for this request.
+  SearchProviderState state = 2;
+  // Short coverage or error note.
+  string note = 3;
+}
+
+// Universal Search backing providers.
+enum SearchProvider {
+  // Unknown provider.
+  SEARCH_PROVIDER_UNSPECIFIED = 0;
+  // Catalog metadata provider.
+  SEARCH_PROVIDER_CATALOG_METADATA = 1;
+  // Local observed-value provider.
+  SEARCH_PROVIDER_OBSERVED_VALUES = 2;
+}
+
+// Provider state for one request.
+enum SearchProviderState {
+  // Unknown provider state.
+  SEARCH_PROVIDER_STATE_UNSPECIFIED = 0;
+  // Provider returned one or more results.
+  SEARCH_PROVIDER_STATE_RESULTS_FOUND = 1;
+  // Provider ran and returned no results.
+  SEARCH_PROVIDER_STATE_EMPTY = 2;
+  // Provider is not enabled.
+  SEARCH_PROVIDER_STATE_NOT_ENABLED = 3;
+  // Provider was skipped for this request.
+  SEARCH_PROVIDER_STATE_SKIPPED = 4;
+  // Provider returned partial results.
+  SEARCH_PROVIDER_STATE_PARTIAL = 5;
+  // Provider failed for this request.
+  SEARCH_PROVIDER_STATE_ERROR = 6;
+}
+
+// One typed Universal Search result.
+message SearchResult {
+  // Result type, duplicated outside the payload for compact consumers.
+  SearchResultType type = 1;
+  // Typed result payload.
+  oneof payload {
+    // Source, table, or table-function metadata hit.
+    CatalogItem catalog_item = 10;
+    // Column, filter, argument, or result-column hint.
+    ColumnHint column_hint = 11;
+    // Local observed-value hit. Reserved for the observed-value provider.
+    ObservedValue observed_value = 12;
+    // Registered provider-native search function the agent can call explicitly.
+    NativeSearchPath native_search_path = 13;
+  }
+}
+
+// Universal Search result types.
+enum SearchResultType {
+  // Unknown result type.
+  SEARCH_RESULT_TYPE_UNSPECIFIED = 0;
+  // Catalog item result.
+  SEARCH_RESULT_TYPE_CATALOG_ITEM = 1;
+  // Column/filter/argument hint result.
+  SEARCH_RESULT_TYPE_COLUMN_HINT = 2;
+  // Local observed-value result.
+  SEARCH_RESULT_TYPE_OBSERVED_VALUE = 3;
+  // Provider-native search path result.
+  SEARCH_RESULT_TYPE_NATIVE_SEARCH_PATH = 4;
+}
+
+// Surface kind for a column-style hint.
+enum SearchSurfaceKind {
+  // Unknown surface kind.
+  SEARCH_SURFACE_KIND_UNSPECIFIED = 0;
+  // Table surface.
+  SEARCH_SURFACE_KIND_TABLE = 1;
+  // Table-function surface.
+  SEARCH_SURFACE_KIND_TABLE_FUNCTION = 2;
+}
+
+// A field-level hint that may hold or accept the query clue.
+message ColumnHint {
+  // Workspace that scopes this hint.
+  Workspace workspace = 1;
+  // Source schema that owns the surface.
+  string schema_name = 2;
+  // Table or table-function name.
+  string surface_name = 3;
+  // Whether the owning surface is a table or table function.
+  SearchSurfaceKind surface_kind = 4;
+  // Column, required filter, argument, or result-column name.
+  string name = 5;
+  // Data type when known.
+  string data_type = 6;
+  // Whether this field must be supplied or constrained.
+  bool required = 7;
+  // Human-readable field description.
+  string description = 8;
+  // Metadata fields that matched the query.
+  repeated string matched_fields = 9;
+}
+
+// Placeholder shape for local observed-value results.
+message ObservedValue {
+  // Matched value or redacted display value.
+  string value = 1;
+  // Source schema where the value was observed.
+  string schema_name = 2;
+  // Table or function where the value was observed.
+  string surface_name = 3;
+  // Column that produced the value.
+  string column_name = 4;
+}
+
+// A registered provider-native search path that can search upstream data explicitly.
+message NativeSearchPath {
+  // Source-scoped table function that performs provider-native retrieval.
+  TableFunction table_function = 1;
+  // Example SQL call using the provider-native search function.
+  string sql_call_example = 2;
+  // Metadata fields that matched the query.
+  repeated string matched_fields = 3;
+}
+
+// Universal Search APIs.
+service SearchService {
+  // Routes a clue to typed Coral search hints.
+  rpc Search(SearchRequest) returns (SearchResponse);
+}

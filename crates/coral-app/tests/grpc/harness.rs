@@ -7,7 +7,7 @@ use coral_api::v1::{
     ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
-    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
+    AppClient, CatalogClient, QueryClient, SearchClient, SourceClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
@@ -75,6 +75,10 @@ impl GrpcHarness {
 
     pub(crate) fn query_client(&self) -> QueryClient {
         self.app.query_client()
+    }
+
+    pub(crate) fn search_client(&self) -> SearchClient {
+        self.app.search_client()
     }
 
     pub(crate) async fn import_source(
@@ -362,6 +366,12 @@ pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
             },
             {
                 "name": "search_issues",
+                "kind": "search",
+                "search_limits": {
+                    "default_top_k": 10,
+                    "max_top_k": 100,
+                    "max_calls_per_query": 1,
+                },
                 "description": "Search issues",
                 "args": [
                     {

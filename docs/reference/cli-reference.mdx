@@ -34,6 +34,25 @@ coral sql "<SQL>"
 
 JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
 
+## `coral search`
+
+Route a clue to likely Coral catalog items, columns, filters, and provider-native search paths.
+
+```shellscript
+coral search "payments-api timeout"
+coral search --json "payments-api timeout"
+```
+
+The text output is compact and shows each result's type, name, and most useful payload detail. Treat results as routing hints; verify them with `coral sql` before using retrieved data as evidence.
+
+### Options
+
+| Option   | Type | Default | Description                 |
+| -------- | ---- | ------- | --------------------------- |
+| `--json` | flag | `false` | Emit structured JSON output |
+
+JSON output contains the same provider-status, truncation, and typed-result fields returned by the shared Search API.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.
@@ -219,8 +238,8 @@ This server exposes:
 | Type     | Name             | Description                      |
 | -------- | ---------------- | -------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database |
+| Tool     | `search`         | Route clues to likely catalog items, columns, filters, and native search paths |
 | Tool     | `list_catalog`   | List database tables and table functions |
-| Tool     | `search_catalog` | Search database catalog metadata by regex |
 | Tool     | `describe_table` | Show compact database table metadata |
 | Tool     | `list_columns`   | List columns for one database table |
 | Resource | `coral://guide`  | Database workflow guide for agents |

@@ -232,6 +232,8 @@ pub(crate) fn collect_table_functions(
                             description: column.description.clone(),
                         })
                         .collect(),
+                    kind: function.kind.clone(),
+                    search_limits_json: function.search_limits_json.clone(),
                 })
         })
         .collect::<Vec<_>>();

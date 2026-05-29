@@ -4,8 +4,7 @@
 )]
 
 use coral_api::v1::{
-    DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-    SearchCatalogRequest, catalog_item,
+    DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest, catalog_item,
 };
 use coral_client::default_workspace;
 use tonic::Request;
@@ -14,66 +13,6 @@ use super::harness::{
     GrpcHarness, fixture_manifest_with_functions_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_filter_yaml,
 };
-
-#[tokio::test]
-async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_functions_yaml(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
-
-    let response = harness
-        .catalog_client()
-        .search_catalog(Request::new(SearchCatalogRequest {
-            workspace: Some(default_workspace()),
-            pattern: "Issue".to_string(),
-            ignore_case: true,
-            schema_name: "searchy".to_string(),
-            kind: 0,
-            pagination: Some(PaginationRequest {
-                limit: 2,
-                offset: 0,
-            }),
-        }))
-        .await
-        .expect("search catalog")
-        .into_inner();
-
-    let pagination = response.pagination.expect("pagination");
-    assert_eq!(pagination.total_count, 2);
-    assert_eq!(pagination.limit, 2);
-    assert_eq!(pagination.offset, 0);
-    assert!(!pagination.has_more);
-    assert_eq!(response.items.len(), 2);
-    let function = match response.items[0]
-        .item
-        .as_ref()
-        .expect("search result")
-        .item
-        .as_ref()
-        .expect("catalog item")
-    {
-        catalog_item::Item::TableFunction(function) => function,
-        catalog_item::Item::Table(_) => panic!("expected table function"),
-    };
-    assert_eq!(function.name, "lookup_issue");
-    assert!(
-        response.items[0]
-            .matched_fields
-            .iter()
-            .any(|field| field == "description")
-    );
-    assert!(
-        response.items[0]
-            .matched_fields
-            .iter()
-            .any(|field| field == "result_columns")
-    );
-}
 
 #[tokio::test]
 async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagination() {
@@ -307,21 +246,6 @@ async fn list_columns_missing_table_takes_precedence_over_invalid_pattern() {
 #[tokio::test]
 async fn invalid_regex_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .catalog_client()
-        .search_catalog(Request::new(SearchCatalogRequest {
-            workspace: Some(default_workspace()),
-            pattern: "[".to_string(),
-            ignore_case: true,
-            schema_name: String::new(),
-            kind: 0,
-            pagination: None,
-        }))
-        .await
-        .expect_err("invalid catalog regex should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(error.message().contains("invalid regex pattern"));
 
     harness
         .import_source(

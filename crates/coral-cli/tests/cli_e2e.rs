@@ -133,6 +133,99 @@ async fn sql_command_renders_json_output() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn search_command_renders_text_output() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search", "github issue title"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.contains("Type"), "expected type header: {stdout}");
+    assert!(
+        stdout.contains("native_search_path"),
+        "expected native search path row: {stdout}"
+    );
+    assert!(
+        stdout.contains("github.search_issues"),
+        "expected qualified search function: {stdout}"
+    );
+    assert!(
+        stdout.contains("github.search_issues(q => '<q>')"),
+        "expected SQL call example: {stdout}"
+    );
+    assert!(
+        stdout.contains("column_hint"),
+        "expected column hint row: {stdout}"
+    );
+    assert!(
+        stdout.contains("github.issues.title"),
+        "expected qualified column hint: {stdout}"
+    );
+
+    let requests = server.search_requests();
+    assert_eq!(requests.len(), 1, "expected one search call");
+    assert_eq!(requests[0].query, "github issue title");
+    assert_eq!(requests[0].limit, 0);
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_command_renders_json_output() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search", "--json", "github issue title"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("search JSON output");
+    assert_eq!(
+        value
+            .pointer("/provider_statuses/0/provider")
+            .and_then(serde_json::Value::as_str),
+        Some("catalog_metadata")
+    );
+    assert_eq!(
+        value
+            .pointer("/truncation/returned_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        value
+            .pointer("/results/0/type")
+            .and_then(serde_json::Value::as_str),
+        Some("native_search_path")
+    );
+    assert_eq!(
+        value
+            .pointer("/results/0/sql_call_example")
+            .and_then(serde_json::Value::as_str),
+        Some("github.search_issues(q => '<q>')")
+    );
+    assert_eq!(
+        value
+            .pointer("/results/1/type")
+            .and_then(serde_json::Value::as_str),
+        Some("column_hint")
+    );
+
+    let requests = server.search_requests();
+    assert_eq!(requests.len(), 1, "expected one search call");
+    assert_eq!(requests[0].query, "github issue title");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_discover_renders_available_sources() {
     let server = MockServer::start().await;
 
