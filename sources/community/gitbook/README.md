@@ -89,13 +89,17 @@ SELECT title, path, markdown
 FROM gitbook.page
 WHERE space_id = 'space_...'
   AND page_id = 'page_...'
-  AND format = 'markdown';
+  AND format = 'markdown'
+  AND markdown_refs = 'url';
 ```
 
 ## Notes
 
 - The manifest is read-only and avoids GitBook mutation endpoints.
 - Paginated list endpoints use GitBook's `next.page` cursor.
+- `gitbook.page` supports GitBook's Markdown reference formatting option
+  through the `markdown_refs` filter, which is sent as
+  `format.markdown.refs`.
 - Nested fields follow Coral's double-underscore convention, for example
   `dimensions__width`.
 - Each table exposes a `raw` JSON column for fields GitBook may add over time.
