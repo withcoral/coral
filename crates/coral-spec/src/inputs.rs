@@ -84,16 +84,27 @@ pub struct ManifestOAuthCredentialSpec {
     pub redirect_uri: Option<String>,
     /// Whether Coral binds the authored redirect URI port exactly or chooses a free port.
     pub redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode,
+    /// Provider authorization endpoint URL template for authorization-code sessions.
+    pub authorization_url: Option<String>,
+    /// Provider device authorization endpoint URL template for device-code sessions.
+    pub device_authorization_url: Option<String>,
+    /// Provider token endpoint URL template.
+    pub token_url: String,
+    /// OAuth client configuration.
+    pub client: ManifestOAuthClientSpec,
+    /// Optional OAuth scope parameter configuration.
+    pub scopes: Option<ManifestOAuthScopesSpec>,
+}
+
+/// OAuth provider endpoint URLs rendered with source variables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthEndpointUrls {
     /// Provider authorization endpoint URL for authorization-code sessions.
     pub authorization_url: Option<String>,
     /// Provider device authorization endpoint URL for device-code sessions.
     pub device_authorization_url: Option<String>,
     /// Provider token endpoint URL.
     pub token_url: String,
-    /// OAuth client configuration.
-    pub client: ManifestOAuthClientSpec,
-    /// Optional OAuth scope parameter configuration.
-    pub scopes: Option<ManifestOAuthScopesSpec>,
 }
 
 impl ManifestOAuthCredentialSpec {
@@ -108,6 +119,70 @@ impl ManifestOAuthCredentialSpec {
             "OAuth redirect URI",
         )
     }
+
+    /// Render provider endpoint URL templates with resolved source variables.
+    pub fn endpoint_urls(
+        &self,
+        source_inputs: &BTreeMap<String, String>,
+    ) -> Result<ManifestOAuthEndpointUrls> {
+        let authorization_url = self
+            .authorization_url
+            .as_deref()
+            .map(|template| render_oauth_endpoint_url("authorization", template, source_inputs))
+            .transpose()?;
+        let device_authorization_url = self
+            .device_authorization_url
+            .as_deref()
+            .map(|template| {
+                render_oauth_endpoint_url("device authorization", template, source_inputs)
+            })
+            .transpose()?;
+        let token_url = render_oauth_endpoint_url("token", &self.token_url, source_inputs)?;
+        Ok(ManifestOAuthEndpointUrls {
+            authorization_url,
+            device_authorization_url,
+            token_url,
+        })
+    }
+}
+
+fn render_oauth_endpoint_url(
+    label: &str,
+    raw_template: &str,
+    source_inputs: &BTreeMap<String, String>,
+) -> Result<String> {
+    let template = ParsedTemplate::parse(raw_template)?;
+    let mut rendered = String::with_capacity(template.raw().len());
+    for part in template.parts() {
+        match part {
+            crate::TemplatePart::Literal(literal) => rendered.push_str(literal),
+            crate::TemplatePart::Token(token) => {
+                if token.namespace() != &TemplateNamespace::Input {
+                    return Err(ManifestError::validation(format!(
+                        "unsupported OAuth endpoint template token '{}'",
+                        token.raw()
+                    )));
+                }
+                if token.default_value().is_some() {
+                    return Err(ManifestError::validation(format!(
+                        "OAuth endpoint template token '{}' must declare defaults under top-level inputs",
+                        token.raw()
+                    )));
+                }
+                let value = source_inputs.get(token.key()).ok_or_else(|| {
+                    ManifestError::validation(format!(
+                        "missing source input '{}' for OAuth endpoint template",
+                        token.key()
+                    ))
+                })?;
+                rendered.push_str(value);
+            }
+        }
+    }
+    Url::parse(&rendered).map_err(|error| {
+        ManifestError::validation(format!("invalid OAuth {label} URL: {error}"))
+    })?;
+    Ok(rendered)
 }
 
 /// Supported loopback redirect URI port binding modes.
@@ -269,6 +344,7 @@ pub fn resolve_inputs(
 pub(crate) fn collect_source_inputs_value(root: &Value) -> Result<Vec<ManifestInputSpec>> {
     let inputs = collect_declared_inputs(root)?;
     validate_input_references(root, &inputs)?;
+    validate_oauth_endpoint_templates(&inputs)?;
     Ok(inputs)
 }
 
@@ -397,6 +473,102 @@ fn credential_like_input_key(key: &str) -> bool {
             || key.ends_with(&format!("_{marker}"))
             || key.starts_with(&format!("{marker}_"))
     })
+}
+
+fn validate_oauth_endpoint_templates(inputs: &[ManifestInputSpec]) -> Result<()> {
+    let declared = inputs
+        .iter()
+        .map(|input| (input.key.as_str(), input))
+        .collect::<BTreeMap<_, _>>();
+    for input in inputs {
+        let Some(credential) = input.credential.as_ref() else {
+            continue;
+        };
+        for method in &credential.methods {
+            let Some(oauth) = method.oauth.as_ref() else {
+                continue;
+            };
+            validate_oauth_endpoint_templates_for_method(&input.key, oauth, &declared)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_oauth_endpoint_templates_for_method(
+    input_key: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    declared: &BTreeMap<&str, &ManifestInputSpec>,
+) -> Result<()> {
+    if let Some(template) = oauth.authorization_url.as_deref() {
+        validate_oauth_endpoint_template(input_key, "authorization_url", template, declared)?;
+    }
+    if let Some(template) = oauth.device_authorization_url.as_deref() {
+        validate_oauth_endpoint_template(
+            input_key,
+            "device_authorization_url",
+            template,
+            declared,
+        )?;
+    }
+    validate_oauth_endpoint_template(input_key, "token_url", &oauth.token_url, declared)
+}
+
+fn validate_oauth_endpoint_template(
+    input_key: &str,
+    field: &str,
+    raw_template: &str,
+    declared: &BTreeMap<&str, &ManifestInputSpec>,
+) -> Result<()> {
+    let template = ParsedTemplate::parse(raw_template)?;
+    let mut rendered = String::with_capacity(template.raw().len());
+    let mut has_required_variable = false;
+
+    for part in template.parts() {
+        match part {
+            crate::TemplatePart::Literal(literal) => rendered.push_str(literal),
+            crate::TemplatePart::Token(token) => {
+                if !matches!(token.namespace(), TemplateNamespace::Input) {
+                    return Err(ManifestError::validation(format!(
+                        "manifest input '{input_key}' oauth.endpoints.{field} uses unsupported template token '{}'; OAuth endpoint templates only support source variable input tokens",
+                        token.raw()
+                    )));
+                }
+                if token.default_value().is_some() {
+                    return Err(ManifestError::validation(format!(
+                        "manifest input '{}' must declare defaults under top-level inputs",
+                        token.key()
+                    )));
+                }
+                let Some(input) = declared.get(token.key()) else {
+                    return Err(ManifestError::validation(format!(
+                        "manifest input '{}' is referenced but not declared under top-level inputs",
+                        token.key()
+                    )));
+                };
+                if input.kind != ManifestInputKind::Variable {
+                    return Err(ManifestError::validation(format!(
+                        "manifest input '{}' is referenced by oauth.endpoints.{field} but is not a variable",
+                        token.key()
+                    )));
+                }
+                if input.required {
+                    has_required_variable = true;
+                } else {
+                    rendered.push_str(&input.default_value);
+                }
+            }
+        }
+    }
+
+    if !has_required_variable {
+        Url::parse(&rendered).map_err(|error| {
+            ManifestError::validation(format!(
+                "manifest input '{input_key}' oauth.endpoints.{field} is invalid: {error}"
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 fn parse_credential(input_key: &str, value: &Value) -> Result<ManifestCredentialSpec> {
@@ -528,20 +700,13 @@ fn parse_oauth(
         })?;
     let authorization_url =
         optional_string(endpoints, "authorization_url", input_key, "oauth.endpoints")?;
-    if let Some(url) = authorization_url.as_deref() {
-        validate_url(input_key, "authorization_url", url)?;
-    }
     let device_authorization_url = optional_string(
         endpoints,
         "device_authorization_url",
         input_key,
         "oauth.endpoints",
     )?;
-    if let Some(url) = device_authorization_url.as_deref() {
-        validate_url(input_key, "device_authorization_url", url)?;
-    }
     let token_url = required_string(endpoints, "token_url", input_key, "oauth.endpoints")?;
-    validate_url(input_key, "token_url", &token_url)?;
     let client = oauth
         .get("client")
         .ok_or_else(|| {
@@ -947,15 +1112,6 @@ fn redirect_uri_has_explicit_port(raw: &str) -> bool {
     !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-fn validate_url(input_key: &str, field: &str, raw: &str) -> Result<()> {
-    Url::parse(raw).map_err(|error| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.endpoints.{field} is invalid: {error}"
-        ))
-    })?;
-    Ok(())
-}
-
 fn validate_input_key(label: &str, value: &str) -> Result<()> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1099,11 +1255,13 @@ mod tests {
 
     use super::{
         ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
-        ManifestOAuthClientSecretTransport, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
-        ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
+        ManifestOAuthClientIdSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
+        ManifestOAuthCredentialSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
+        ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
         ManifestOAuthScopeDelimiter, collect_source_inputs_value,
     };
     use crate::{ManifestError, Result};
+    use std::collections::BTreeMap;
 
     fn collect(raw: &str) -> Result<Vec<ManifestInputSpec>> {
         let root: serde_json::Value =
@@ -1696,6 +1854,232 @@ tables: []
         )
         .expect_err("bad endpoint should fail");
         assert!(error.to_string().contains("authorization_url is invalid"));
+    }
+
+    #[test]
+    fn parses_oauth_endpoint_templates_referencing_variables() {
+        let inputs = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "  API_TOKEN:\n",
+                "  OUTLOOK_TENANT_ID:\n    kind: variable\n    default: organizations\n  API_TOKEN:\n",
+            )
+            .replace(
+                "https://provider.example.com/oauth/authorize",
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize",
+            )
+            .replace(
+                "https://provider.example.com/oauth/token",
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+            ),
+        )
+        .expect("templated endpoint");
+        let oauth = inputs
+            .iter()
+            .find(|input| input.key == "API_TOKEN")
+            .and_then(|input| input.credential.as_ref())
+            .and_then(|credential| credential.methods[0].oauth.as_ref())
+            .expect("oauth");
+
+        assert_eq!(
+            oauth.authorization_url.as_deref(),
+            Some(
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize"
+            )
+        );
+        assert_eq!(
+            oauth.token_url,
+            "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
+        );
+    }
+
+    #[test]
+    fn validates_oauth_endpoint_templates_with_declared_defaults() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "  API_TOKEN:\n",
+                "  OUTLOOK_HOST:\n    kind: variable\n    default: foo bar.com\n  API_TOKEN:\n",
+            )
+            .replace(
+                "https://provider.example.com/oauth/token",
+                "https://{{input.OUTLOOK_HOST}}/oauth/token",
+            ),
+        )
+        .expect_err("invalid default-rendered endpoint should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("oauth.endpoints.token_url is invalid"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn defers_oauth_endpoint_url_parsing_for_required_variables() {
+        collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "  API_TOKEN:\n",
+                "  OUTLOOK_PORT:\n    kind: variable\n  API_TOKEN:\n",
+            )
+            .replace(
+                "https://provider.example.com/oauth/token",
+                "https://provider.example.com:{{input.OUTLOOK_PORT}}/oauth/token",
+            ),
+        )
+        .expect("required variable endpoint parsing should be deferred");
+    }
+
+    #[test]
+    fn rejects_oauth_endpoint_templates_referencing_secrets() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "https://provider.example.com/oauth/token",
+                "https://provider.example.com/{{input.API_TOKEN}}/oauth/token",
+            ),
+        )
+        .expect_err("secret endpoint reference should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("is referenced by oauth.endpoints.token_url but is not a variable"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_oauth_endpoint_templates_referencing_runtime_tokens() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "https://provider.example.com/oauth/token",
+                "https://provider.example.com/{{filter.tenant}}/oauth/token",
+            ),
+        )
+        .expect_err("runtime token endpoint reference should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("only support source variable input tokens"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn endpoint_urls_reject_inline_template_defaults() {
+        let oauth = ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                pkce: ManifestOAuthPkceMode::Disabled,
+            },
+            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: Some(
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID|organizations}}/oauth2/v2.0/authorize"
+                    .to_string(),
+            ),
+            device_authorization_url: None,
+            token_url:
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
+                    .to_string(),
+            client: ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+            },
+            scopes: None,
+        };
+        let source_inputs =
+            BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
+        let error = oauth
+            .endpoint_urls(&source_inputs)
+            .expect_err("inline endpoint defaults should fail at the public render boundary");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must declare defaults under top-level inputs"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn endpoint_urls_render_source_input_templates() {
+        let oauth = ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                pkce: ManifestOAuthPkceMode::Disabled,
+            },
+            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: Some(
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize"
+                    .to_string(),
+            ),
+            device_authorization_url: Some(
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/devicecode"
+                    .to_string(),
+            ),
+            token_url:
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
+                    .to_string(),
+            client: ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+            },
+            scopes: None,
+        };
+        let source_inputs =
+            BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
+        let endpoints = oauth.endpoint_urls(&source_inputs).expect("endpoint urls");
+
+        assert_eq!(
+            endpoints.authorization_url.as_deref(),
+            Some("https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize")
+        );
+        assert_eq!(
+            endpoints.device_authorization_url.as_deref(),
+            Some("https://login.microsoftonline.com/organizations/oauth2/v2.0/devicecode")
+        );
+        assert_eq!(
+            endpoints.token_url,
+            "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+        );
     }
 
     #[test]

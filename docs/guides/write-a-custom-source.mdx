@@ -277,6 +277,7 @@ Choose OAuth client settings from the provider's OAuth app and token endpoint re
 - Use `pkce: required` for public clients when the provider supports it. Use `pkce: disabled` only for providers that do not support PKCE.
 - When the token endpoint requires client authentication with a client secret, prompt for both OAuth client values: set `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`) to match the token endpoint.
 - When the provider requires pre-registered redirect URIs with exact ports, use `redirect_uri_port_mode: fixed` with a non-zero port and tell users to register that exact URI in the OAuth app.
+- When OAuth endpoint URLs need non-secret install-time configuration, such as a Microsoft tenant ID, declare that value as a `kind: variable` input and reference it with `{{input.KEY}}` in `endpoints.authorization_url`, `endpoints.token_url`, or `endpoints.device_authorization_url`. OAuth endpoint templates do not support secrets, filters, function arguments, state, or inline defaults.
 
 ### Install-time input collection
 
