@@ -1,0 +1,466 @@
+name: twitch
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query user profiles, followed channels, followed live streams, and clips
+  from Twitch Helix.
+base_url: https://api.twitch.tv
+
+inputs:
+  TWITCH_CLIENT_ID:
+    kind: variable
+    hint: |
+      Twitch application Client ID from https://dev.twitch.tv/console.
+      This is a public app identifier used in the Helix Client-Id header.
+      Register the OAuth redirect URL as http://localhost:3000.
+  TWITCH_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Twitch OAuth user access token. Use "Connect with Twitch" for the
+      authorization-code flow, or paste an existing user access token.
+
+      The OAuth flow requests the user:read:follows scope, which is required
+      for followed_channels and followed_streams. The client secret is prompted
+      only during OAuth setup and is never written into this manifest.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Twitch
+          description: Authorize Coral to read your followed Twitch channels and streams.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: disabled
+            redirect_uri: http://localhost:3000
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://id.twitch.tv/oauth2/authorize
+              token_url: https://id.twitch.tv/oauth2/token
+            client:
+              id:
+                input: TWITCH_CLIENT_ID
+              secret:
+                input: TWITCH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - user:read:follows
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Twitch OAuth user access token.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.TWITCH_ACCESS_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Client-Id
+    from: input
+    key: TWITCH_CLIENT_ID
+
+test_queries:
+  - SELECT id, login, display_name FROM twitch.users LIMIT 1
+
+tables:
+  - name: users
+    description: Twitch user profile data.
+    guide: |
+      Returns the authenticated user when no filter is provided. Optionally
+      filter by `id` or `login` to look up another user:
+      `SELECT id, login, display_name FROM twitch.users WHERE login = 'twitchdev'`.
+      Use the authenticated user's `id` as `follower_user_id` for
+      followed_channels and followed_streams.
+    filters:
+      - name: id
+        required: false
+        description: Twitch user ID.
+      - name: login
+        required: false
+        description: Twitch login name.
+    request:
+      method: GET
+      path: /helix/users
+      query:
+        - name: id
+          from: filter
+          key: id
+        - name: login
+          from: filter
+          key: login
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Twitch user ID.
+      - name: login
+        type: Utf8
+        nullable: false
+        description: Lowercase Twitch login name.
+      - name: display_name
+        type: Utf8
+        nullable: false
+        description: User display name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Twitch user type, such as admin, global_mod, or staff.
+      - name: broadcaster_type
+        type: Utf8
+        nullable: true
+        description: Broadcaster status, such as partner or affiliate.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: User channel description.
+      - name: profile_image_url
+        type: Utf8
+        nullable: true
+        description: User profile image URL.
+      - name: offline_image_url
+        type: Utf8
+        nullable: true
+        description: User offline image URL.
+      - name: view_count
+        type: Int64
+        nullable: true
+        description: Total channel view count.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Account creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  - name: followed_channels
+    description: Twitch broadcasters followed by the authenticated user.
+    guide: |
+      Requires `follower_user_id`, which must match the user ID in the OAuth
+      access token. Get it from `twitch.users` first:
+      `SELECT id FROM twitch.users LIMIT 1`.
+
+      Example:
+      `SELECT broadcaster_name, followed_at FROM twitch.followed_channels
+      WHERE follower_user_id = '<user-id>' ORDER BY followed_at DESC`.
+    filters:
+      - name: follower_user_id
+        required: true
+        description: Authenticated user's Twitch ID.
+      - name: broadcaster_id
+        required: false
+        description: Optional broadcaster ID to check whether the user follows that broadcaster.
+    request:
+      method: GET
+      path: /helix/channels/followed
+      query:
+        - name: user_id
+          from: filter
+          key: follower_user_id
+        - name: broadcaster_id
+          from: filter
+          key: broadcaster_id
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 100
+        query_param: first
+      cursor_param: after
+      response_cursor_path:
+        - pagination
+        - cursor
+    columns:
+      - name: follower_user_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Authenticated user ID from the required filter.
+        expr:
+          kind: from_filter
+          key: follower_user_id
+      - name: broadcaster_id
+        type: Utf8
+        nullable: false
+        description: Followed broadcaster's Twitch user ID.
+      - name: broadcaster_login
+        type: Utf8
+        nullable: false
+        description: Followed broadcaster's login name.
+      - name: broadcaster_name
+        type: Utf8
+        nullable: false
+        description: Followed broadcaster's display name.
+      - name: followed_at
+        type: Timestamp
+        nullable: false
+        description: Time when the authenticated user followed the broadcaster.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - followed_at
+
+  - name: followed_streams
+    description: Live Twitch streams from channels followed by the authenticated user.
+    guide: |
+      Requires `follower_user_id`, which must match the user ID in the OAuth
+      access token. Get it from `twitch.users` first:
+      `SELECT id FROM twitch.users LIMIT 1`.
+
+      Example:
+      `SELECT user_name, game_name, title, viewer_count FROM twitch.followed_streams
+      WHERE follower_user_id = '<user-id>' ORDER BY viewer_count DESC`.
+    filters:
+      - name: follower_user_id
+        required: true
+        description: Authenticated user's Twitch ID.
+    request:
+      method: GET
+      path: /helix/streams/followed
+      query:
+        - name: user_id
+          from: filter
+          key: follower_user_id
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 100
+        query_param: first
+      cursor_param: after
+      response_cursor_path:
+        - pagination
+        - cursor
+    columns:
+      - name: follower_user_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Authenticated user ID from the required filter.
+        expr:
+          kind: from_filter
+          key: follower_user_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Twitch stream ID.
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: Broadcaster's Twitch user ID.
+      - name: user_login
+        type: Utf8
+        nullable: false
+        description: Broadcaster's login name.
+      - name: user_name
+        type: Utf8
+        nullable: false
+        description: Broadcaster's display name.
+      - name: game_id
+        type: Utf8
+        nullable: true
+        description: Twitch game or category ID.
+      - name: game_name
+        type: Utf8
+        nullable: true
+        description: Twitch game or category name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Stream type, typically live.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Stream title.
+      - name: tags
+        type: Json
+        nullable: true
+        description: Tags applied to the stream.
+      - name: viewer_count
+        type: Int64
+        nullable: true
+        description: Current live viewer count.
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Time when the broadcast started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - started_at
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Stream language code.
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Stream thumbnail URL template.
+      - name: tag_ids
+        type: Json
+        nullable: true
+        description: Legacy tag IDs returned by Twitch, when present.
+      - name: is_mature
+        type: Boolean
+        nullable: true
+        description: Whether the stream is marked mature.
+
+  - name: clips
+    description: Twitch clips for a specific broadcaster.
+    guide: |
+      Requires `broadcaster_id`. Twitch's Get Clips endpoint requires one of
+      `broadcaster_id`, `game_id`, or `id`; this v1 table models the
+      broadcaster-scoped path. Use IDs from followed_channels or users.
+
+      Example:
+      `SELECT title, view_count, creator_name, duration, url FROM twitch.clips
+      WHERE broadcaster_id = '<broadcaster-id>' ORDER BY view_count DESC LIMIT 20`.
+      Optional filters: `started_at`, `ended_at`, and `is_featured`.
+    filters:
+      - name: broadcaster_id
+        required: true
+        description: Broadcaster ID whose clips should be returned.
+      - name: started_at
+        required: false
+        description: RFC3339 start time for the clip creation window.
+      - name: ended_at
+        required: false
+        description: RFC3339 end time for the clip creation window.
+      - name: is_featured
+        type: Boolean
+        required: false
+        description: Whether to return only featured or non-featured clips.
+    request:
+      method: GET
+      path: /helix/clips
+      query:
+        - name: broadcaster_id
+          from: filter
+          key: broadcaster_id
+        - name: started_at
+          from: filter
+          key: started_at
+        - name: ended_at
+          from: filter
+          key: ended_at
+        - name: is_featured
+          from: filter_bool
+          key: is_featured
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 100
+        query_param: first
+      cursor_param: after
+      response_cursor_path:
+        - pagination
+        - cursor
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Twitch clip ID.
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL for watching the clip.
+      - name: embed_url
+        type: Utf8
+        nullable: true
+        description: URL for embedding the clip.
+      - name: broadcaster_id
+        type: Utf8
+        nullable: false
+        description: Broadcaster ID for the channel where the clip was captured.
+      - name: broadcaster_name
+        type: Utf8
+        nullable: true
+        description: Broadcaster display name.
+      - name: creator_id
+        type: Utf8
+        nullable: true
+        description: User ID for the clip creator.
+      - name: creator_name
+        type: Utf8
+        nullable: true
+        description: Display name for the clip creator.
+      - name: video_id
+        type: Utf8
+        nullable: true
+        description: Source video ID, when available.
+      - name: game_id
+        type: Utf8
+        nullable: true
+        description: Game or category ID for the clip.
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Clip language code.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Clip title.
+      - name: view_count
+        type: Int64
+        nullable: true
+        description: Number of clip views.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Clip creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Clip thumbnail URL.
+      - name: duration
+        type: Float64
+        nullable: true
+        description: Clip duration in seconds.
+      - name: vod_offset
+        type: Int64
+        nullable: true
+        description: Offset in seconds where the clip starts in the source VOD.
+      - name: is_featured
+        type: Boolean
+        nullable: true
+        description: Whether the clip is featured.
