@@ -161,8 +161,10 @@ functions:
                       type
                       entityType
                       reporting
-                      alertSeverity
                       permalink
+                      ... on AlertableEntityOutline {
+                        alertSeverity
+                      }
                       tags {
                         key
                         values
@@ -349,8 +351,10 @@ tables:
                   type
                   entityType
                   reporting
-                  alertSeverity
                   permalink
+                  ... on AlertableEntity {
+                    alertSeverity
+                  }
                   tags {
                     key
                     values

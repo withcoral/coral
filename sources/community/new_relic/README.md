@@ -39,7 +39,7 @@ Search entities with New Relic entity search syntax:
 
 ```sql
 SELECT guid, name, domain, type, reporting, alert_severity
-FROM new_relic.search_entities(query => 'name LIKE `%api%`')
+FROM new_relic.search_entities(query => 'name like ''%api%''')
 LIMIT 50;
 ```
 
@@ -54,11 +54,29 @@ WHERE guid = '...';
 ## Notes
 
 - This source is read-only and uses NerdGraph queries only.
+- `alert_severity` is selected through New Relic's alertable entity fragments,
+  so it is nullable for entity types that do not implement those interfaces.
 - NRQL result rows are dynamic, so the `raw` JSON column is the canonical
   output. Common aggregate and timeseries fields are exposed as convenience
   columns when present.
 - Use the EU NerdGraph endpoint for New Relic accounts hosted in the EU data
   center.
+
+## Validation evidence
+
+Static validation run locally:
+
+```bash
+coral source lint sources/community/new_relic/manifest.yaml
+make lint-sources
+yamllint sources/community/new_relic/manifest.yaml
+git diff --check origin/main..HEAD
+gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
+```
+
+Credentialed `coral source add --file`, `coral source test new_relic`, and
+representative live queries require a New Relic user API key and were not run
+in this workspace.
 
 ## References
 
