@@ -174,9 +174,12 @@ async fn run_installed_source_menu(
                 .iter()
                 .map(manifest_input_from_proto)
                 .collect::<Result<Vec<_>, _>>()?;
-            let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
+            let inputs = source_ops::prompt_for_inputs_with_credential_methods_in_mode(
+                &inputs,
+                source_ops::CredentialPromptMode::CredentialMethodFirst,
+            )?;
             let result =
-                source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
+                source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
             println!("Reconfigured source {}", result.name);
             source_ops::validate_and_warn(
                 app,
@@ -197,8 +200,11 @@ async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<
         .iter()
         .map(manifest_input_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let (variables, secrets) = source_ops::prompt_for_inputs(&inputs)?;
-    let result = source_ops::add_bundled_source(app, &source.name, variables, secrets).await?;
+    let inputs = source_ops::prompt_for_inputs_with_credential_methods_in_mode(
+        &inputs,
+        source_ops::CredentialPromptMode::CredentialMethodFirst,
+    )?;
+    let result = source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
     println!("Added source {}", result.name);
     source_ops::validate_and_warn(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
 }

@@ -2213,9 +2213,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion-tracing"
-version = "53.0.1"
+version = "53.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8c6042c471ac0d904296cab7c20c11849de2333573879c015aa04462345e7db"
+checksum = "07de1239d9c1ff5a251848438a2ea03ae936e1613beeeea8bff8d3e88fb72fda"
 dependencies = [
  "async-trait",
  "comfy-table",

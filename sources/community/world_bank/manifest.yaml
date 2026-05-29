@@ -1,0 +1,669 @@
+name: world_bank
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query macroeconomic and development indicators from the World Bank Open Data
+  API. Covers 29,500+ time-series indicators — GDP, population, poverty rates,
+  CO2 emissions, school enrollment, life expectancy, inflation, and more —
+  across 200+ countries and regions. No authentication required.
+base_url: https://api.worldbank.org/v2
+
+test_queries:
+  - SELECT indicator_id, indicator_name, date, value FROM world_bank.data WHERE country = 'US' AND indicator = 'NY.GDP.MKTP.CD' LIMIT 5
+  - SELECT country_name, date, value FROM world_bank.data WHERE country = 'all' AND indicator = 'SI.POV.DDAY' AND mrnev = '1' LIMIT 10
+  - SELECT id, name, region, income_level FROM world_bank.countries LIMIT 5
+  - SELECT id, topic FROM world_bank.topics
+  - SELECT id, name FROM world_bank.topic_indicators WHERE topic = '3' LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # world_bank.data — core time-series query table
+  # GET /v2/country/{country}/indicator/{indicator}?format=json
+  # Response: [meta, data_array] — rows at index 1 ("rows_path: ['1']")
+  # Pagination: page mode, "page" + "per_page" params
+  # ──────────────────────────────────────────────────────────────────────
+  - name: data
+    description: >-
+      Time-series indicator values for a country or region. Each row is one
+      year's observation for the given indicator and country combination.
+      Requires both `country` (ISO2 or ISO3 code, or "all" for all countries)
+      and `indicator` (World Bank indicator code, e.g. NY.GDP.MKTP.CD).
+      Values cover from 1960 to the most recently published year; some
+      years may have no data (value is null). Use world_bank.indicators to
+      discover indicator codes, and world_bank.countries for country codes.
+    guide: >-
+      Always supply both required filters:
+        WHERE country = '<ISO2 or ISO3>' AND indicator = '<code>'
+
+      Examples:
+        country = 'US' or 'USA'     → United States
+        country = 'IN' or 'IND'     → India
+        country = 'all'             → all countries (returns data for each
+                                       country across all years)
+
+      Filter by a single year or year range (pushed to the API):
+        WHERE date = '2024'           → single year only
+        WHERE date = '2010:2020'      → inclusive year range
+
+      Use mrnev for cross-country snapshots (latest non-empty value):
+        WHERE country = 'all' AND indicator = 'SI.POV.DDAY' AND mrnev = '1'
+        returns one row per country with its latest non-null observation.
+        Prefer mrnev for sparse indicators (poverty rates, hospital beds,
+        etc.) where recent periods may have no published data.
+
+      Use mrv for the N most recently published periods (may include nulls):
+        WHERE country = 'all' AND indicator = 'NY.GDP.MKTP.CD' AND mrv = '1'
+        returns one row per country for the most recent period regardless of
+        whether value is null. Without mrv or mrnev, data for all years is
+        returned interleaved per country.
+
+      Commonly used indicators:
+        NY.GDP.MKTP.CD    GDP (current US$)
+        SP.POP.TOTL       Population total
+        SI.POV.DDAY       Poverty headcount ratio at $3.00/day (2021 PPP) %
+        EN.ATM.CO2E.PC    CO2 emissions (metric tons per capita)
+        SH.DYN.MORT       Mortality rate, under-5 (per 1,000 live births)
+        SE.PRM.ENRR       School enrollment, primary (% gross)
+        FP.CPI.TOTL.ZG    Inflation, consumer prices (annual %)
+        NY.GNP.PCAP.CD    GNI per capita (current US$)
+        SL.UEM.TOTL.ZS    Unemployment, total (% of total labor force)
+        EG.FEC.RNEW.ZS    Renewable energy consumption (% of total)
+
+      `value` is null for years with no published data — filter with
+        WHERE value IS NOT NULL to exclude missing observations.
+      `date` is a year string (e.g. '2024') — not a timestamp.
+      Results are ordered newest-first by default.
+    fetch_limit_default: 100
+    filters:
+      - name: country
+        required: true
+      - name: indicator
+        required: true
+      - name: date
+      - name: mrv
+      - name: mrnev
+    request:
+      method: GET
+      path: /country/{{filter.country}}/indicator/{{filter.indicator}}
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: date
+          from: filter
+          key: date
+        - name: mrv
+          from: filter
+          key: mrv
+        - name: mrnev
+          from: filter
+          key: mrnev
+    response:
+      rows_path:
+        - "1"
+      allow_404_empty: true
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 100
+      page_size:
+        default: 100
+        max: 1000
+        query_param: per_page
+    columns:
+      - name: indicator_id
+        type: Utf8
+        nullable: false
+        description: World Bank indicator code (e.g. NY.GDP.MKTP.CD).
+        expr:
+          kind: path
+          path:
+            - indicator
+            - id
+
+      - name: indicator_name
+        type: Utf8
+        nullable: false
+        description: Human-readable indicator name (e.g. "GDP (current US$)").
+        expr:
+          kind: path
+          path:
+            - indicator
+            - value
+
+      - name: country_id
+        type: Utf8
+        nullable: false
+        description: ISO2 country code as returned by the API (e.g. "US", "IN").
+        expr:
+          kind: path
+          path:
+            - country
+            - id
+
+      - name: country_name
+        type: Utf8
+        nullable: false
+        description: Full country or region name (e.g. "United States", "India").
+        expr:
+          kind: path
+          path:
+            - country
+            - value
+
+      - name: countryiso3code
+        type: Utf8
+        nullable: true
+        description: ISO3 country code (e.g. "USA", "IND"). May be empty for aggregate regions.
+
+      - name: date
+        type: Utf8
+        nullable: false
+        description: >-
+          Year of observation as a string (e.g. "2024"). World Bank data is
+          annual; this is not a timestamp. Use ORDER BY date DESC for newest first.
+
+      - name: value
+        type: Float64
+        nullable: true
+        description: >-
+          Indicator value for this country and year. Null when the World Bank
+          has not published data for this combination. Filter WHERE value IS NOT NULL
+          to exclude missing years.
+
+      - name: unit
+        type: Utf8
+        nullable: true
+        description: Unit of measurement, if specified by the indicator (often empty).
+
+      - name: obs_status
+        type: Utf8
+        nullable: true
+        description: Observation status flag (e.g. "E" for estimate). Often empty.
+
+      - name: decimal
+        type: Int64
+        nullable: true
+        description: Number of decimal places recommended for display by the World Bank.
+
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Echoes the country filter used to query this row.
+        expr:
+          kind: from_filter
+          key: country
+
+      - name: indicator
+        type: Utf8
+        nullable: true
+        description: Echoes the indicator filter used to query this row.
+        expr:
+          kind: from_filter
+          key: indicator
+
+      - name: mrv
+        type: Utf8
+        nullable: true
+        description: >-
+          Echoes the mrv (Most Recent Value periods) filter. When set to '1',
+          the API returns one row per country for the most recently published
+          period — which may have a null value for sparse indicators. For
+          latest non-null observations use mrnev instead.
+          Pass as a quoted string: WHERE mrv = '1'.
+        expr:
+          kind: from_filter
+          key: mrv
+
+      - name: mrnev
+        type: Utf8
+        nullable: true
+        description: >-
+          Echoes the mrnev (Most Recent Non-Empty Values) filter. When set to
+          '1', the API returns one row per country with its latest non-null
+          observation, skipping periods with no published data. Preferred over
+          mrv for sparse indicators such as poverty rates, hospital beds, or
+          any indicator updated less than annually. Pass as a quoted string:
+          WHERE mrnev = '1'.
+        expr:
+          kind: from_filter
+          key: mrnev
+
+  # ──────────────────────────────────────────────────────────────────────
+  # world_bank.indicators — full catalog of 29,500+ indicator codes
+  # GET /v2/indicator?format=json&per_page=N&page=N
+  # Response: [meta, indicator_array] — rows at index 1
+  # Pagination: page mode
+  # ──────────────────────────────────────────────────────────────────────
+  - name: indicators
+    description: >-
+      Full catalog of all World Bank indicators. Each row is one indicator
+      with its code, name, source database, and thematic topics. Use this
+      table to discover indicator codes to pass to world_bank.data.
+      There are 29,500+ indicators — use LIMIT and search by name in your
+      SQL client, or use world_bank.topic_indicators to browse by topic.
+    guide: >-
+      Use this table to look up indicator codes for world_bank.data.
+      The API does not support server-side text search; results are returned
+      alphabetically by indicator ID. To find indicators by name, either:
+
+      1. Browse by topic with world_bank.topic_indicators — each topic returns
+         a much smaller scoped set of indicators (typically 100–500).
+
+      2. Use a high LIMIT to fetch more rows and apply a client-side filter:
+           SELECT id, name FROM world_bank.indicators
+           WHERE name LIKE '%CO2%' LIMIT 500
+
+         Note: the LIKE filter applies only to the rows fetched in this
+         request. Use a large LIMIT to scan more of the 29,500+ indicators.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /indicator
+      query:
+        - name: format
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - "1"
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 300
+      page_size:
+        default: 100
+        max: 1000
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: >-
+          World Bank indicator code (e.g. NY.GDP.MKTP.CD, SP.POP.TOTL).
+          Pass this value as the `indicator` filter in world_bank.data.
+
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable indicator name.
+
+      - name: unit
+        type: Utf8
+        nullable: true
+        description: Unit of measurement, if specified. Often empty.
+
+      - name: source_id
+        type: Utf8
+        nullable: true
+        description: Numeric ID of the source database within the World Bank.
+        expr:
+          kind: path
+          path:
+            - source
+            - id
+
+      - name: source_name
+        type: Utf8
+        nullable: true
+        description: Name of the World Bank source database (e.g. "World Development Indicators").
+        expr:
+          kind: path
+          path:
+            - source
+            - value
+
+      - name: source_note
+        type: Utf8
+        nullable: true
+        description: >-
+          Detailed methodology note describing what the indicator measures
+          and how it is computed.
+        expr:
+          kind: path
+          path:
+            - sourceNote
+
+      - name: source_organization
+        type: Utf8
+        nullable: true
+        description: Organization that collects or compiles this indicator.
+        expr:
+          kind: path
+          path:
+            - sourceOrganization
+
+      - name: topics
+        type: Json
+        nullable: true
+        description: >-
+          Array of thematic topics this indicator belongs to.
+          Each element has an "id" (matches world_bank.topics.id) and a "value" (topic name).
+
+  # ──────────────────────────────────────────────────────────────────────
+  # world_bank.countries — country and region metadata
+  # GET /v2/country?format=json&per_page=300
+  # Response: [meta, country_array] — rows at index 1
+  # All 296 entries fit in a single page — pagination: none
+  # ──────────────────────────────────────────────────────────────────────
+  - name: countries
+    description: >-
+      Metadata for all 296 countries and aggregate regions tracked by the
+      World Bank. Includes ISO2 and ISO3 codes, geographic region,
+      income level classification, lending type, and capital city.
+      Use this table to look up country codes for world_bank.data.
+      Aggregate regions (e.g. "East Asia & Pacific") are also listed
+      and can be used with country = 'EAS' in world_bank.data.
+    guide: >-
+      Use this table to look up the country codes needed for world_bank.data:
+
+        SELECT id, iso2_code, name, region, income_level
+        FROM world_bank.countries
+        WHERE region = 'South Asia'
+
+      The `id` column is the ISO3 code (e.g. "USA", "IND", "EAS").
+      Both ISO2 (e.g. "US") and ISO3 codes work in world_bank.data filters.
+      Aggregate region entries have an empty `capital_city`.
+    fetch_limit_default: 296
+    request:
+      method: GET
+      path: /country
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: per_page
+          from: literal
+          value: "300"
+    response:
+      rows_path:
+        - "1"
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: >-
+          ISO3 country code (e.g. "USA", "IND") or aggregate region code
+          (e.g. "EAS" for East Asia & Pacific). Use as the `country` filter
+          in world_bank.data, or use the shorter ISO2 code from iso2_code.
+
+      - name: iso2_code
+        type: Utf8
+        nullable: true
+        description: ISO2 country code (e.g. "US", "IN"). Also accepted by world_bank.data.
+        expr:
+          kind: path
+          path:
+            - iso2Code
+
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Full country or region name (e.g. "United States", "East Asia & Pacific").
+
+      - name: region_id
+        type: Utf8
+        nullable: true
+        description: Region code (e.g. "NAC" for North America, "SAS" for South Asia).
+        expr:
+          kind: path
+          path:
+            - region
+            - id
+
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Geographic region name (e.g. "North America", "South Asia").
+        expr:
+          kind: path
+          path:
+            - region
+            - value
+
+      - name: admin_region
+        type: Utf8
+        nullable: true
+        description: Administrative region name. Empty for high-income countries and aggregate regions.
+        expr:
+          kind: path
+          path:
+            - adminregion
+            - value
+
+      - name: income_level_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Income level code (e.g. "HIC" = High income, "UMC" = Upper middle income,
+          "LMC" = Lower middle income, "LIC" = Low income).
+        expr:
+          kind: path
+          path:
+            - incomeLevel
+            - id
+
+      - name: income_level
+        type: Utf8
+        nullable: true
+        description: Income level classification (e.g. "High income", "Low income").
+        expr:
+          kind: path
+          path:
+            - incomeLevel
+            - value
+
+      - name: lending_type
+        type: Utf8
+        nullable: true
+        description: >-
+          World Bank lending type (e.g. "IBRD", "IDA", "Blend", "Not classified").
+          Relevant for understanding which countries qualify for different lending programs.
+        expr:
+          kind: path
+          path:
+            - lendingType
+            - value
+
+      - name: capital_city
+        type: Utf8
+        nullable: true
+        description: Capital city name. Empty for aggregate regions.
+        expr:
+          kind: path
+          path:
+            - capitalCity
+
+      - name: longitude
+        type: Utf8
+        nullable: true
+        description: Longitude of the country centroid as a string (e.g. "-77.032").
+
+      - name: latitude
+        type: Utf8
+        nullable: true
+        description: Latitude of the country centroid as a string (e.g. "38.8895").
+
+  # ──────────────────────────────────────────────────────────────────────
+  # world_bank.topics — 21 thematic topic groups
+  # GET /v2/topic?format=json
+  # Response: [meta, topic_array] — rows at index 1
+  # All 21 entries fit in one page — pagination: none
+  # ──────────────────────────────────────────────────────────────────────
+  - name: topics
+    description: >-
+      The 21 thematic topic groups used to organize World Bank indicators.
+      Examples: Agriculture & Rural Development, Economy & Growth, Education,
+      Environment, Health, Poverty, Social Development, and more.
+      Use the topic id with world_bank.topic_indicators to browse indicators
+      belonging to a specific theme.
+    guide: >-
+      Use topic ids with world_bank.topic_indicators to explore indicators
+      for a given theme:
+
+        -- List all themes
+        SELECT id, topic FROM world_bank.topics
+
+        -- Then browse indicators in theme 3 (Economy & Growth)
+        SELECT id, name FROM world_bank.topic_indicators WHERE topic = '3'
+    fetch_limit_default: 21
+    request:
+      method: GET
+      path: /topic
+      query:
+        - name: format
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - "1"
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: >-
+          Numeric topic identifier (1–21). Pass as the `topic` filter
+          (as a string) in world_bank.topic_indicators.
+
+      - name: topic
+        type: Utf8
+        nullable: false
+        description: Topic name (e.g. "Economy & Growth", "Health", "Education").
+        expr:
+          kind: path
+          path:
+            - value
+
+      - name: source_note
+        type: Utf8
+        nullable: true
+        description: Description of what this thematic area covers.
+        expr:
+          kind: path
+          path:
+            - sourceNote
+
+  # ──────────────────────────────────────────────────────────────────────
+  # world_bank.topic_indicators — indicators filtered by topic
+  # GET /v2/topic/{topic}/indicator?format=json
+  # Response: [meta, indicator_array] — rows at index 1
+  # Pagination: page mode
+  # ──────────────────────────────────────────────────────────────────────
+  - name: topic_indicators
+    description: >-
+      Indicators belonging to a specific thematic topic. Requires the `topic`
+      filter (numeric topic ID from world_bank.topics, passed as a string).
+      Returns a subset of world_bank.indicators relevant to the chosen theme —
+      useful for discovering indicator codes within a domain without browsing
+      all 29,500+ indicators.
+    guide: >-
+      Use world_bank.topics first to find a topic id, then query here:
+
+        -- Economy & Growth indicators (topic 3)
+        SELECT id, name FROM world_bank.topic_indicators WHERE topic = '3'
+
+        -- Health indicators (topic 8)
+        SELECT id, name FROM world_bank.topic_indicators WHERE topic = '8'
+
+        -- Environment indicators (topic 6)
+        SELECT id, name FROM world_bank.topic_indicators WHERE topic = '6'
+
+      Topic IDs:
+        1=Agriculture, 2=Aid Effectiveness, 3=Economy & Growth, 4=Education,
+        5=Energy & Mining, 6=Environment, 7=Financial Sector, 8=Health,
+        9=Infrastructure, 10=Social Protection & Labor, 11=Poverty,
+        12=Private Sector, 13=Public Sector, 14=Science & Technology,
+        15=Social Development, 16=Trade, 17=Urban Development,
+        18=Gender, 19=Millenium Dev Goals, 20=Climate Change, 21=External Debt
+    fetch_limit_default: 100
+    filters:
+      - name: topic
+        required: true
+    request:
+      method: GET
+      path: /topic/{{filter.topic}}/indicator
+      query:
+        - name: format
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - "1"
+      allow_404_empty: true
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 50
+      page_size:
+        default: 100
+        max: 1000
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: >-
+          World Bank indicator code (e.g. NY.GDP.MKTP.CD). Pass this as the
+          `indicator` filter in world_bank.data.
+
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable indicator name.
+
+      - name: unit
+        type: Utf8
+        nullable: true
+        description: Unit of measurement, if specified. Often empty.
+
+      - name: source_id
+        type: Utf8
+        nullable: true
+        description: Numeric ID of the source database within the World Bank.
+        expr:
+          kind: path
+          path:
+            - source
+            - id
+
+      - name: source_name
+        type: Utf8
+        nullable: true
+        description: Name of the World Bank source database.
+        expr:
+          kind: path
+          path:
+            - source
+            - value
+
+      - name: source_note
+        type: Utf8
+        nullable: true
+        description: Methodology note describing what the indicator measures.
+        expr:
+          kind: path
+          path:
+            - sourceNote
+
+      - name: topics
+        type: Json
+        nullable: true
+        description: >-
+          All topic tags for this indicator (may include additional topics beyond
+          the one filtered on). Each element has "id" and "value".
+
+      - name: topic
+        type: Utf8
+        nullable: true
+        description: Echoes the topic filter used to query this table.
+        expr:
+          kind: from_filter
+          key: topic
