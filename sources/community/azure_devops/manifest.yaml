@@ -1,0 +1,781 @@
+name: azure_devops
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Azure DevOps projects, Git repositories, pull requests, commits,
+  builds, pipelines, WIQL results, and work items from the REST API.
+base_url: https://dev.azure.com/{{input.AZURE_DEVOPS_ORGANIZATION}}
+
+inputs:
+  AZURE_DEVOPS_ORGANIZATION:
+    kind: variable
+    hint: Azure DevOps organization name from dev.azure.com/{organization}.
+  AZURE_DEVOPS_USERNAME:
+    kind: variable
+    default: ""
+    hint: |
+      Username for Basic auth. Azure DevOps PAT auth accepts an empty
+      username; leave the default unless your environment requires one.
+  AZURE_DEVOPS_PAT:
+    kind: secret
+    hint: |
+      Azure DevOps personal access token with read scopes for the projects,
+      code, builds, and work items you want to query.
+  AZURE_DEVOPS_API_VERSION:
+    kind: variable
+    default: "7.1"
+    hint: Azure DevOps REST API version.
+
+auth:
+  type: BasicAuth
+  username: "{{input.AZURE_DEVOPS_USERNAME}}"
+  password: "{{input.AZURE_DEVOPS_PAT}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name, state FROM azure_devops.projects LIMIT 1
+
+functions:
+  - name: wiql
+    description: >-
+      Run a read-only Work Item Query Language query in a project. Returns
+      matching work item IDs and URLs; use `azure_devops.work_item` for fields.
+    args:
+      - name: project
+        required: true
+        bind:
+          arg: project
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: time_precision
+        bind:
+          arg: time_precision
+    request:
+      method: POST
+      path: /{{arg.project}}/_apis/wit/wiql
+      query:
+        - name: api-version
+          from: input
+          key: AZURE_DEVOPS_API_VERSION
+        - name: timePrecision
+          from: arg
+          key: time_precision
+      body:
+        - path: [query]
+          from: arg
+          key: query
+    response:
+      rows_path: [workItems]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Work item ID.
+        expr: {kind: path, path: [id]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Work item REST URL.
+        expr: {kind: path, path: [url]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw WIQL result row.
+        expr: {kind: current_row}
+
+tables:
+  - name: projects
+    description: Azure DevOps projects visible to the authenticated PAT.
+    filters:
+      - name: state_filter
+        required: false
+      - name: get_default_team_image_url
+        required: false
+    request:
+      method: GET
+      path: /_apis/projects
+      query:
+        - name: api-version
+          from: input
+          key: AZURE_DEVOPS_API_VERSION
+        - name: stateFilter
+          from: filter
+          key: state_filter
+        - name: getDefaultTeamImageUrl
+          from: filter
+          key: get_default_team_image_url
+    response:
+      rows_path: [value]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+        expr: {kind: path, path: [name]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Project state.
+        expr: {kind: path, path: [state]}
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Project visibility.
+        expr: {kind: path, path: [visibility]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+        expr: {kind: path, path: [description]}
+      - name: last_update_time
+        type: Timestamp
+        nullable: true
+        description: Last project update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastUpdateTime]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Project REST URL.
+        expr: {kind: path, path: [url]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Azure DevOps project object.
+        expr: {kind: current_row}
+
+  - name: repositories
+    description: Git repositories visible to the authenticated PAT.
+    guide: |
+      Lists repositories at the organization level. Use `project__name` or
+      `project__id` to join back to `azure_devops.projects`.
+    filters:
+      - name: include_links
+        required: false
+      - name: include_all_urls
+        required: false
+      - name: include_hidden
+        required: false
+    request:
+      method: GET
+      path: /_apis/git/repositories
+      query:
+        - name: api-version
+          from: input
+          key: AZURE_DEVOPS_API_VERSION
+        - name: includeLinks
+          from: filter
+          key: include_links
+        - name: includeAllUrls
+          from: filter
+          key: include_all_urls
+        - name: includeHidden
+          from: filter
+          key: include_hidden
+    response:
+      rows_path: [value]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Repository ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Repository name.
+        expr: {kind: path, path: [name]}
+      - name: default_branch
+        type: Utf8
+        nullable: true
+        description: Repository default branch.
+        expr: {kind: path, path: [defaultBranch]}
+      - name: size
+        type: Int64
+        nullable: true
+        description: Repository size in bytes.
+        expr: {kind: path, path: [size]}
+      - name: remote_url
+        type: Utf8
+        nullable: true
+        description: Git remote URL.
+        expr: {kind: path, path: [remoteUrl]}
+      - name: web_url
+        type: Utf8
+        nullable: true
+        description: Web URL.
+        expr: {kind: path, path: [webUrl]}
+      - name: project__id
+        type: Utf8
+        nullable: true
+        description: Owning project ID.
+        expr: {kind: path, path: [project, id]}
+      - name: project__name
+        type: Utf8
+        nullable: true
+        description: Owning project name.
+        expr: {kind: path, path: [project, name]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Azure DevOps repository object.
+        expr: {kind: current_row}
+
+  - name: pull_requests
+    description: Pull requests in a project.
+    filters:
+      - name: project
+        required: true
+      - name: repository_id
+        required: false
+      - name: status
+        required: false
+      - name: creator_id
+        required: false
+      - name: reviewer_id
+        required: false
+      - name: source_ref_name
+        required: false
+      - name: target_ref_name
+        required: false
+    request:
+      method: GET
+      path: /{{filter.project}}/_apis/git/pullrequests
+      query:
+        - name: api-version
+          from: input
+          key: AZURE_DEVOPS_API_VERSION
+        - name: searchCriteria.repositoryId
+          from: filter
+          key: repository_id
+        - name: searchCriteria.status
+          from: filter
+          key: status
+        - name: searchCriteria.creatorId
+          from: filter
+          key: creator_id
+        - name: searchCriteria.reviewerId
+          from: filter
+          key: reviewer_id
+        - name: searchCriteria.sourceRefName
+          from: filter
+          key: source_ref_name
+        - name: searchCriteria.targetRefName
+          from: filter
+          key: target_ref_name
+    response:
+      rows_path: [value]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: pull_request_id
+        type: Int64
+        nullable: false
+        description: Pull request ID.
+        expr: {kind: path, path: [pullRequestId]}
+      - name: code_review_id
+        type: Int64
+        nullable: true
+        description: Code review ID.
+        expr: {kind: path, path: [codeReviewId]}
+      - name: repository_id
+        type: Utf8
+        nullable: true
+        description: Repository ID.
+        expr: {kind: path, path: [repository, id]}
+      - name: repository_name
+        type: Utf8
+        nullable: true
+        description: Repository name.
+        expr: {kind: path, path: [repository, name]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Pull request title.
+        expr: {kind: path, path: [title]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Pull request status.
+        expr: {kind: path, path: [status]}
+      - name: source_ref_name
+        type: Utf8
+        nullable: true
+        description: Source branch ref.
+        expr: {kind: path, path: [sourceRefName]}
+      - name: target_ref_name
+        type: Utf8
+        nullable: true
+        description: Target branch ref.
+        expr: {kind: path, path: [targetRefName]}
+      - name: created_by__display_name
+        type: Utf8
+        nullable: true
+        description: PR author display name.
+        expr: {kind: path, path: [createdBy, displayName]}
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: Pull request creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [creationDate]}
+      - name: closed_date
+        type: Timestamp
+        nullable: true
+        description: Pull request closed time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [closedDate]}
+      - name: merge_status
+        type: Utf8
+        nullable: true
+        description: Merge status.
+        expr: {kind: path, path: [mergeStatus]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Pull request REST URL.
+        expr: {kind: path, path: [url]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Azure DevOps pull request object.
+        expr: {kind: current_row}
+
+  - name: commits
+    description: Commits in an Azure DevOps Git repository.
+    filters:
+      - name: project
+        required: true
+      - name: repository_id
+        required: true
+      - name: branch
+        required: false
+      - name: from_date
+        required: false
+      - name: to_date
+        required: false
+      - name: author
+        required: false
+      - name: item_path
+        required: false
+    request:
+      method: GET
+      path: /{{filter.project}}/_apis/git/repositories/{{filter.repository_id}}/commits
+      query:
+        - name: api-version
+          from: input
+          key: AZURE_DEVOPS_API_VERSION
+        - name: searchCriteria.itemVersion.version
+          from: filter
+          key: branch
+        - name: searchCriteria.fromDate
+          from: filter
+          key: from_date
+        - name: searchCriteria.toDate
+          from: filter
+          key: to_date
+        - name: searchCriteria.author
+          from: filter
+          key: author
+        - name: searchCriteria.itemPath
+          from: filter
+          key: item_path
+    response:
+      rows_path: [value]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: searchCriteria.skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: searchCriteria.$top
+    columns:
+      - name: commit_id
+        type: Utf8
+        nullable: false
+        description: Commit SHA.
+        expr: {kind: path, path: [commitId]}
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Commit message.
+        expr: {kind: path, path: [comment]}
+      - name: author__name
+        type: Utf8
+        nullable: true
+        description: Author name.
+        expr: {kind: path, path: [author, name]}
+      - name: author__email
+        type: Utf8
+        nullable: true
+        description: Author email.
+        expr: {kind: path, path: [author, email]}
+      - name: author__date
+        type: Timestamp
+        nullable: true
+        description: Author date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [author, date]}
+      - name: committer__name
+        type: Utf8
+        nullable: true
+        description: Committer name.
+        expr: {kind: path, path: [committer, name]}
+      - name: committer__email
+        type: Utf8
+        nullable: true
+        description: Committer email.
+        expr: {kind: path, path: [committer, email]}
+      - name: committer__date
+        type: Timestamp
+        nullable: true
+        description: Committer date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [committer, date]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Commit REST URL.
+        expr: {kind: path, path: [url]}
+      - name: remote_url
+        type: Utf8
+        nullable: true
+        description: Commit web URL.
+        expr: {kind: path, path: [remoteUrl]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Azure DevOps commit object.
+        expr: {kind: current_row}
+
+  - name: builds
+    description: Build runs in an Azure DevOps project.
+    filters:
+      - name: project
+        required: true
+      - name: definitions
+        required: false
+      - name: branch_name
+        required: false
+      - name: status_filter
+        required: false
+      - name: result_filter
+        required: false
+      - name: min_time
+        required: false
+      - name: max_time
+        required: false
+    request:
+      method: GET
+      path: /{{filter.project}}/_apis/build/builds
+      query:
+        - name: api-version
+          from: input
+          key: AZURE_DEVOPS_API_VERSION
+        - name: definitions
+          from: filter
+          key: definitions
+        - name: branchName
+          from: filter
+          key: branch_name
+        - name: statusFilter
+          from: filter
+          key: status_filter
+        - name: resultFilter
+          from: filter
+          key: result_filter
+        - name: minTime
+          from: filter
+          key: min_time
+        - name: maxTime
+          from: filter
+          key: max_time
+    response:
+      rows_path: [value]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Build ID.
+        expr: {kind: path, path: [id]}
+      - name: build_number
+        type: Utf8
+        nullable: true
+        description: Build number.
+        expr: {kind: path, path: [buildNumber]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Build status.
+        expr: {kind: path, path: [status]}
+      - name: result
+        type: Utf8
+        nullable: true
+        description: Build result.
+        expr: {kind: path, path: [result]}
+      - name: source_branch
+        type: Utf8
+        nullable: true
+        description: Source branch.
+        expr: {kind: path, path: [sourceBranch]}
+      - name: source_version
+        type: Utf8
+        nullable: true
+        description: Source version.
+        expr: {kind: path, path: [sourceVersion]}
+      - name: queue_time
+        type: Timestamp
+        nullable: true
+        description: Time when the build was queued.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [queueTime]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Build start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [startTime]}
+      - name: finish_time
+        type: Timestamp
+        nullable: true
+        description: Build finish time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [finishTime]}
+      - name: definition__id
+        type: Int64
+        nullable: true
+        description: Build definition ID.
+        expr: {kind: path, path: [definition, id]}
+      - name: definition__name
+        type: Utf8
+        nullable: true
+        description: Build definition name.
+        expr: {kind: path, path: [definition, name]}
+      - name: requested_for__display_name
+        type: Utf8
+        nullable: true
+        description: User the build was requested for.
+        expr: {kind: path, path: [requestedFor, displayName]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Build REST URL.
+        expr: {kind: path, path: [url]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Azure DevOps build object.
+        expr: {kind: current_row}
+
+  - name: pipelines
+    description: Pipelines in an Azure DevOps project.
+    filters:
+      - name: project
+        required: true
+      - name: order_by
+        required: false
+    request:
+      method: GET
+      path: /{{filter.project}}/_apis/pipelines
+      query:
+        - name: api-version
+          from: input
+          key: AZURE_DEVOPS_API_VERSION
+        - name: orderBy
+          from: filter
+          key: order_by
+    response:
+      rows_path: [value]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: continuationToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Pipeline ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Pipeline name.
+        expr: {kind: path, path: [name]}
+      - name: folder
+        type: Utf8
+        nullable: true
+        description: Pipeline folder.
+        expr: {kind: path, path: [folder]}
+      - name: revision
+        type: Int64
+        nullable: true
+        description: Pipeline revision.
+        expr: {kind: path, path: [revision]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Pipeline REST URL.
+        expr: {kind: path, path: [url]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Azure DevOps pipeline object.
+        expr: {kind: current_row}
+
+  - name: work_item
+    description: Single Azure DevOps work item by ID.
+    filters:
+      - name: id
+        required: true
+      - name: fields
+        required: false
+      - name: as_of
+        required: false
+      - name: expand
+        required: false
+    request:
+      method: GET
+      path: /_apis/wit/workitems/{{filter.id}}
+      query:
+        - name: api-version
+          from: input
+          key: AZURE_DEVOPS_API_VERSION
+        - name: fields
+          from: filter
+          key: fields
+        - name: asOf
+          from: filter
+          key: as_of
+        - name: $expand
+          from: filter
+          key: expand
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Work item ID.
+        expr: {kind: path, path: [id]}
+      - name: rev
+        type: Int64
+        nullable: true
+        description: Work item revision.
+        expr: {kind: path, path: [rev]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Work item type.
+        expr: {kind: path, path: [fields, System.WorkItemType]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Work item title.
+        expr: {kind: path, path: [fields, System.Title]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Work item state.
+        expr: {kind: path, path: [fields, System.State]}
+      - name: assigned_to
+        type: Utf8
+        nullable: true
+        description: Assigned user display name when returned as text.
+        expr: {kind: path, path: [fields, System.AssignedTo, displayName]}
+      - name: created_date
+        type: Timestamp
+        nullable: true
+        description: Work item creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [fields, System.CreatedDate]}
+      - name: changed_date
+        type: Timestamp
+        nullable: true
+        description: Work item changed time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [fields, System.ChangedDate]}
+      - name: fields
+        type: Json
+        nullable: true
+        description: Full work item field map.
+        expr: {kind: path, path: [fields]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Work item REST URL.
+        expr: {kind: path, path: [url]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Azure DevOps work item object.
+        expr: {kind: current_row}
