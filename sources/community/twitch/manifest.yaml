@@ -13,7 +13,9 @@ inputs:
     hint: Twitch application client ID.
   TWITCH_ACCESS_TOKEN:
     kind: secret
-    hint: Twitch OAuth app or user access token, without a `Bearer` prefix.
+    hint: |
+      Twitch OAuth app or user access token, without a `Bearer` prefix. The
+      token must be issued for the same Client-Id configured here.
 
 auth:
   type: HeaderAuth
@@ -76,10 +78,6 @@ tables:
         type: Utf8
         nullable: true
         description: Broadcaster type.
-      - name: view_count
-        type: Int64
-        nullable: true
-        description: View count.
       - name: created_at
         type: Timestamp
         nullable: true
@@ -257,10 +255,6 @@ tables:
         nullable: true
         description: Stream tags.
         expr: {kind: path, path: [tags]}
-      - name: is_mature
-        type: Boolean
-        nullable: true
-        description: Whether the stream is marked mature.
       - name: raw_json
         type: Json
         nullable: true
@@ -269,9 +263,14 @@ tables:
 
   - name: games
     description: Twitch games/categories.
+    guide: |
+      Twitch requires exactly one of `id`, `name`, or `igdb_id`. For category
+      discovery without an exact selector, use `twitch.top_games` or
+      `twitch.search_categories(...)`.
     filters:
       - name: id
       - name: name
+      - name: igdb_id
     request:
       method: GET
       path: /games
@@ -282,6 +281,9 @@ tables:
         - name: name
           from: filter
           key: name
+        - name: igdb_id
+          from: filter
+          key: igdb_id
     response:
       rows_path: [data]
     pagination:
@@ -351,9 +353,12 @@ tables:
   - name: videos
     description: Twitch published videos by ID, broadcaster, or game/category.
     guide: |
-      Twitch requires one of `id`, `user_id`, or `game_id`. When using `user_id`
-      or `game_id`, optional `language`, `period`, `sort`, and `type` filters
-      can narrow results.
+      Twitch requires exactly one of `id`, `user_id`, or `game_id`. When using
+      `user_id` or `game_id`, optional `language`, `period`, `sort`, and
+      `type` filters can narrow results. Valid `period` values are `all`,
+      `day`, `week`, and `month`; valid `sort` values are `time`, `trending`,
+      and `views`; valid `type` values are `all`, `upload`, `archive`, and
+      `highlight`.
     fetch_limit_default: 100
     filters:
       - name: id
@@ -485,9 +490,10 @@ tables:
   - name: clips
     description: Twitch clips by ID, broadcaster, or game/category.
     guide: |
-      Twitch requires one of `id`, `broadcaster_id`, or `game_id`. When using
-      broadcaster or game filters, optional `started_at` and `ended_at` filters
-      narrow the clip time range.
+      Twitch requires exactly one of `id`, `broadcaster_id`, or `game_id`.
+      `started_at`, `ended_at`, and `is_featured` are valid only with
+      `broadcaster_id` or `game_id`; use a narrow time window because Twitch
+      caps paginated clip access.
     fetch_limit_default: 100
     filters:
       - name: id
