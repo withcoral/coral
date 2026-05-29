@@ -6,7 +6,8 @@ use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendRegistration, CompiledBackendSource, RegisteredSource, SourceTableFunctions,
+    BackendRegistration, BackendRegistrationContext, CompiledBackendSource, RegisteredSource,
+    SourceTableFunctions,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
@@ -91,6 +92,7 @@ pub(crate) async fn register_sources(
 
     let mut result = SourceRegistrationResult::default();
     let mut seen_schemas = std::collections::HashSet::new();
+    let registration_context = BackendRegistrationContext::default();
 
     for source in sources {
         match source {
@@ -100,7 +102,14 @@ pub(crate) async fn register_sources(
                 let schema_name = compiled_source.schema_name().to_string();
                 let source_name = compiled_source.source_name().to_string();
 
-                match register_source(ctx, &mut seen_schemas, compiled_source.as_ref()).await {
+                match register_source(
+                    ctx,
+                    &registration_context,
+                    &mut seen_schemas,
+                    compiled_source.as_ref(),
+                )
+                .await
+                {
                     Ok(registration) => {
                         let BackendRegistration {
                             tables,
@@ -190,6 +199,7 @@ pub(crate) fn register_sources_blocking(
 
 async fn register_source(
     ctx: &SessionContext,
+    registration_context: &BackendRegistrationContext,
     seen_schemas: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
 ) -> DataFusionResult<BackendRegistration> {
@@ -202,7 +212,7 @@ async fn register_source(
         )));
     }
 
-    source.register(ctx).await
+    source.register(ctx, registration_context).await
 }
 
 fn push_source_failure(
