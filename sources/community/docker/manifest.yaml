@@ -1,0 +1,89 @@
+name: docker
+version: 0.2.0
+dsl_version: 3
+backend: http
+description: >
+  Query Docker container metadata as SQL via the Docker Engine HTTP API.
+  Exposes running and all containers as tables, with snake_case columns
+  for ergonomic queries. Supports local Unix socket proxy or remote TLS-secured daemon.
+
+inputs:
+  DOCKER_API_BASE:
+    kind: variable
+    default: http://localhost:2375
+    hint: >
+      Docker Engine HTTP API base URL.
+      For local use: expose via socat or SSH tunnel rather than raw TCP.
+      For remote use: always secure with TLS (see README).
+
+base_url: "{{input.DOCKER_API_BASE}}"
+
+test_queries:
+  - SELECT id, image, status, state FROM docker.containers LIMIT 1
+
+tables:
+  - name: containers
+    description: >
+      All containers including stopped, exited, paused, and dead ones.
+      Equivalent to: docker ps --all
+    request:
+      method: GET
+      path: /containers/json?all=true
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        path: Id
+        type: Utf8
+        description: Full 64-character container ID
+      - name: image
+        path: Image
+        type: Utf8
+        description: Image name and tag (e.g. nginx:latest)
+      - name: status
+        path: Status
+        type: Utf8
+        description: Human-readable status string (e.g. "Exited (255) 2 days ago")
+      - name: state
+        path: State
+        type: Utf8
+        description: Machine-readable state (running, exited, dead, paused, restarting)
+      - name: created_epoch
+        path: Created
+        type: Int64
+        description: Container creation time as Unix epoch seconds
+      - name: command
+        path: Command
+        type: Utf8
+        description: Entrypoint command string
+
+  - name: running
+    description: >
+      Only currently running containers.
+      Equivalent to: docker ps
+    request:
+      method: GET
+      path: /containers/json
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        path: Id
+        type: Utf8
+        description: Full 64-character container ID
+      - name: image
+        path: Image
+        type: Utf8
+        description: Image name and tag
+      - name: status
+        path: Status
+        type: Utf8
+        description: Human-readable status string
+      - name: state
+        path: State
+        type: Utf8
+        description: Machine-readable state
+      - name: created_epoch
+        path: Created
+        type: Int64
+        description: Container creation time as Unix epoch seconds
