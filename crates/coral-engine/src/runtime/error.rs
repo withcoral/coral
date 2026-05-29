@@ -9,7 +9,9 @@ use datafusion::sql::sqlparser::parser::Parser;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
-use crate::{CoreError, QueryResultObserverError, SourceDecoratorError, TableInfo};
+use crate::{
+    CoreError, QueryResultObserverError, SourceDecoratorError, SourceInputResolverError, TableInfo,
+};
 
 pub(crate) fn datafusion_to_core(error: &DataFusionError, tables: &[TableInfo]) -> CoreError {
     datafusion_to_core_with_sql(error, tables, None)
@@ -41,6 +43,9 @@ pub(crate) fn datafusion_to_core_with_sql(
             if let Some(source_decorator_error) = inner.downcast_ref::<SourceDecoratorError>() {
                 return source_decorator_error_to_core(source_decorator_error);
             }
+            if let Some(source_input_error) = inner.downcast_ref::<SourceInputResolverError>() {
+                return source_input_resolver_error_to_core(source_input_error);
+            }
             CoreError::internal(inner.to_string())
         }
         DataFusionError::ObjectStore(err) => CoreError::Unavailable(err.to_string()),
@@ -62,6 +67,15 @@ pub(crate) fn query_result_observer_error_to_core(error: &QueryResultObserverErr
     match error {
         QueryResultObserverError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
         QueryResultObserverError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(detail.clone())
+        }
+    }
+}
+
+fn source_input_resolver_error_to_core(error: &SourceInputResolverError) -> CoreError {
+    match error {
+        SourceInputResolverError::InvalidInput(detail) => CoreError::InvalidInput(detail.clone()),
+        SourceInputResolverError::FailedPrecondition(detail) => {
             CoreError::FailedPrecondition(detail.clone())
         }
     }

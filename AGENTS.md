@@ -48,6 +48,11 @@
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled
   sources under `sources/core/**`, `docs/docs.json`, and the changelog.
+- The live docs site deploys from the long-lived `docs` branch, not `main`, so
+  the published catalog matches the latest released binary. `main` still owns
+  docs freshness, but merging to `main` no longer publishes the site by itself:
+  the release workflow advances `docs` after release artifacts are published.
+  See `docs/AGENTS.md` for the full publishing model.
 - Keep checked-in generated files marked in `.gitattributes` with
   `linguist-generated` so GitHub collapses them by default in PR diffs.
 - Source inputs that carry credentials must be `kind: secret`, never
@@ -55,6 +60,11 @@
   passwords, private keys, authorization header values, and admin/read keys,
   even when the credential is read-only or the source also supports anonymous
   access.
+- When source credential retrieval or auth guidance changes, keep the source
+  spec docs and maintained Coral source-spec skills aligned in the same change.
+  OAuth source-spec behavior needs both reader-facing docs and agent-facing
+  author/review guidance because `credential.methods` controls setup while
+  `auth` still controls runtime requests.
 - Keep maintained Coral agent skills in `plugins/coral/skills`. External
   distribution repos or packages should mirror from that directory rather than
   becoming a separate source of truth. Use

@@ -1,0 +1,391 @@
+name: gmail
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Gmail messages, threads, labels, drafts, and profile
+  information from your Google Gmail account using the Gmail REST API.
+inputs:
+  GMAIL_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Google Gmail OAuth 2.0 access token with the Gmail readonly scope.
+      Paste the access token value itself, without a `Bearer ` prefix.
+      For interactive setup, choose "Connect Gmail" and provide a
+      Google OAuth Desktop app client ID and client secret with the Gmail API
+      enabled.
+
+      The OAuth flow requests:
+      https://www.googleapis.com/auth/gmail.readonly
+      See https://developers.google.com/workspace/gmail/api/auth/scopes.
+
+      Note: gmail.readonly is a restricted scope. Users publishing an app
+      publicly will need to go through Google OAuth verification.
+      gmail.metadata is insufficient for this source because the messages
+      and threads tables support a q search filter, which requires at least
+      gmail.readonly per Gmail API docs.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Gmail
+          description: Use Google OAuth to retrieve a Gmail access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GMAIL_OAUTH_CLIENT_ID
+              secret:
+                input: GMAIL_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/gmail.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Gmail OAuth access token.
+base_url: "https://gmail.googleapis.com"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.GMAIL_ACCESS_TOKEN}}"
+test_queries:
+  - SELECT history_id, messages_total, threads_total FROM gmail.profile LIMIT 1
+  - SELECT id, thread_id FROM gmail.messages LIMIT 5
+  - SELECT id, name, type FROM gmail.labels LIMIT 5
+tables:
+  - name: profile
+    description: >
+      Returns the Gmail profile for the authenticated user. Includes
+      email address, total message count, total thread count, and history ID.
+    guide: >
+      `SELECT email_address, messages_total, threads_total FROM gmail.profile`.
+    request:
+      method: GET
+      path: /gmail/v1/users/me/profile
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: email_address
+        type: Utf8
+        nullable: false
+        description: The user's email address.
+        expr:
+          kind: path
+          path:
+            - emailAddress
+      - name: messages_total
+        type: Int64
+        nullable: true
+        description: Total number of messages in the mailbox.
+        expr:
+          kind: path
+          path:
+            - messagesTotal
+      - name: threads_total
+        type: Int64
+        nullable: true
+        description: Total number of threads in the mailbox.
+        expr:
+          kind: path
+          path:
+            - threadsTotal
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: The ID of the mailbox's current history record.
+        expr:
+          kind: path
+          path:
+            - historyId
+
+  - name: labels
+    description: >
+      Lists all labels in the authenticated user's mailbox. Includes
+      system labels (INBOX, SENT, DRAFT, SPAM, TRASH) and user-created labels.
+    guide: >
+      `SELECT id, name, type FROM gmail.labels`.
+    request:
+      method: GET
+      path: /gmail/v1/users/me/labels
+    response:
+      rows_path:
+        - labels
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique label ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the label.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Label type, either system or user.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: message_list_visibility
+        type: Utf8
+        nullable: true
+        description: Whether to show or hide the label in the message list.
+        expr:
+          kind: path
+          path:
+            - messageListVisibility
+      - name: label_list_visibility
+        type: Utf8
+        nullable: true
+        description: Whether to show the label in the label list.
+        expr:
+          kind: path
+          path:
+            - labelListVisibility
+
+  - name: messages
+    description: >
+      Lists messages in the authenticated user's mailbox. Returns message ID
+      and thread ID. Use label_ids filter to scope to INBOX, SENT, DRAFT, SPAM,
+      or TRASH. Use include_spam_trash filter to include SPAM and TRASH results.
+    guide: >
+      `SELECT id, thread_id FROM gmail.messages LIMIT 100`.
+      Filter by label: `SELECT id, thread_id FROM gmail.messages
+      WHERE label_ids = 'INBOX' LIMIT 100`.
+    fetch_limit_default: 100
+    filters:
+      - name: label_ids
+        required: false
+      - name: q
+        required: false
+      - name: include_spam_trash
+        required: false
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+      query:
+        - name: labelIds
+          from: filter
+          key: label_ids
+        - name: q
+          from: filter
+          key: q
+        - name: includeSpamTrash
+          from: filter
+          key: include_spam_trash
+    response:
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+    columns:
+      - name: label_ids
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional label filter (e.g. INBOX, SENT, DRAFT).
+        expr:
+          kind: from_filter
+          key: label_ids
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Gmail search query filter.
+        expr:
+          kind: from_filter
+          key: q
+      - name: include_spam_trash
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether to include SPAM and TRASH in results.
+        expr:
+          kind: from_filter
+          key: include_spam_trash
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique message ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: ID of the thread the message belongs to.
+        expr:
+          kind: path
+          path:
+            - threadId
+
+  - name: threads
+    description: >
+      Lists threads in the authenticated user's mailbox. Returns thread ID,
+      snippet, and history ID. Use include_spam_trash to include SPAM and TRASH.
+    guide: >
+      `SELECT id, snippet FROM gmail.threads LIMIT 100`.
+    fetch_limit_default: 100
+    filters:
+      - name: label_ids
+        required: false
+      - name: q
+        required: false
+      - name: include_spam_trash
+        required: false
+    request:
+      method: GET
+      path: /gmail/v1/users/me/threads
+      query:
+        - name: labelIds
+          from: filter
+          key: label_ids
+        - name: q
+          from: filter
+          key: q
+        - name: includeSpamTrash
+          from: filter
+          key: include_spam_trash
+    response:
+      rows_path:
+        - threads
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+    columns:
+      - name: label_ids
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional label filter (e.g. INBOX, SENT, SPAM, TRASH).
+        expr:
+          kind: from_filter
+          key: label_ids
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Gmail search query filter.
+        expr:
+          kind: from_filter
+          key: q
+      - name: include_spam_trash
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether to include SPAM and TRASH in results.
+        expr:
+          kind: from_filter
+          key: include_spam_trash
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique thread ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Short snippet of the thread's latest message.
+        expr:
+          kind: path
+          path:
+            - snippet
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: The ID of the last history record that modified this thread.
+        expr:
+          kind: path
+          path:
+            - historyId
+
+  - name: drafts
+    description: >
+      Lists all drafts in the authenticated user's mailbox. Returns draft ID
+      and the associated message ID and thread ID.
+    guide: >
+      `SELECT id, message_id, message_thread_id FROM gmail.drafts LIMIT 100`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /gmail/v1/users/me/drafts
+    response:
+      rows_path:
+        - drafts
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique draft ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: message_id
+        type: Utf8
+        nullable: true
+        description: ID of the message associated with this draft.
+        expr:
+          kind: path
+          path:
+            - message
+            - id
+      - name: message_thread_id
+        type: Utf8
+        nullable: true
+        description: Thread ID of the message associated with this draft.
+        expr:
+          kind: path
+          path:
+            - message
+            - threadId
