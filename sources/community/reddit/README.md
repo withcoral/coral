@@ -37,4 +37,4 @@ LIMIT 5;
 - Reddit wraps each post in `{kind, data}` — this spec uses `expr: kind: path` to navigate the nested structure cleanly
 - `permalink` is a relative path — prefix with `https://reddit.com` for a full URL
 - Reddit rate-limits unauthenticated requests (~60 req/10 min per IP)
-- For higher rate limits, use Reddit's OAuth API instead
+- **Cloud deployments**: Reddit blocks requests from cloud provider IPs (AWS, GCP, Fly.io, etc.) with HTTP 403. This spec works on local machines. For cloud use, switch to the [Reddit OAuth API](https://www.reddit.com/dev/api/) with a registered app (`oauth.reddit.com` base URL + `Authorization: Bearer <token>` header).
