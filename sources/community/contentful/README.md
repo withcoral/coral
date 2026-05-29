@@ -9,6 +9,12 @@ Preview API token instead.
 
 ## Credentials
 
+Create a Delivery API token in Contentful's space settings when
+`CONTENTFUL_API_BASE` is `https://cdn.contentful.com`. Use a Preview API token
+when `CONTENTFUL_API_BASE` is `https://preview.contentful.com`. The token,
+space ID, environment ID, and API host must all point at the same Contentful
+space/environment.
+
 ```bash
 export CONTENTFUL_SPACE_ID="..."
 export CONTENTFUL_ENVIRONMENT_ID="master"
