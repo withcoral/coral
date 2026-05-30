@@ -1,0 +1,492 @@
+name: airtable
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Airtable operational bases through SQL. Covers conventional tables for
+  employees, departments, assets, IT tickets, projects, tasks, clients,
+  invoices, vendors, purchase orders, time logs, and expenses.
+inputs:
+  AIRTABLE_ACCESS_TOKEN:
+    kind: secret
+    required: true
+    hint: >-
+      Airtable personal access token or OAuth access token with data.records:read
+      access to the base. Create a personal access token at
+      https://airtable.com/create/tokens and grant it access to the base you
+      want Coral to query.
+  AIRTABLE_BASE_ID:
+    kind: variable
+    required: true
+    hint: >-
+      Airtable base ID, starting with app. You can find it in the base URL or
+      the Airtable API documentation for the base.
+  AIRTABLE_EMPLOYEES_TABLE:
+    kind: variable
+    default: employees
+    hint: URL-safe Airtable table name or table ID for employee records.
+  AIRTABLE_DEPARTMENTS_TABLE:
+    kind: variable
+    default: departments
+    hint: URL-safe Airtable table name or table ID for department records.
+  AIRTABLE_ASSETS_TABLE:
+    kind: variable
+    default: assets
+    hint: URL-safe Airtable table name or table ID for asset inventory records.
+  AIRTABLE_IT_TICKETS_TABLE:
+    kind: variable
+    default: it_tickets
+    hint: URL-safe Airtable table name or table ID for IT ticket records.
+  AIRTABLE_PROJECTS_TABLE:
+    kind: variable
+    default: projects
+    hint: URL-safe Airtable table name or table ID for project records.
+  AIRTABLE_TASKS_TABLE:
+    kind: variable
+    default: tasks
+    hint: URL-safe Airtable table name or table ID for task records.
+  AIRTABLE_CLIENTS_TABLE:
+    kind: variable
+    default: clients
+    hint: URL-safe Airtable table name or table ID for client records.
+  AIRTABLE_INVOICES_TABLE:
+    kind: variable
+    default: invoices
+    hint: URL-safe Airtable table name or table ID for invoice records.
+  AIRTABLE_VENDORS_TABLE:
+    kind: variable
+    default: vendors
+    hint: URL-safe Airtable table name or table ID for vendor records.
+  AIRTABLE_PURCHASE_ORDERS_TABLE:
+    kind: variable
+    default: purchase_orders
+    hint: URL-safe Airtable table name or table ID for purchase order records.
+  AIRTABLE_TIME_LOGS_TABLE:
+    kind: variable
+    default: time_logs
+    hint: URL-safe Airtable table name or table ID for time log records.
+  AIRTABLE_EXPENSES_TABLE:
+    kind: variable
+    default: expenses
+    hint: URL-safe Airtable table name or table ID for expense records.
+base_url: https://api.airtable.com/v0
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: AIRTABLE_ACCESS_TOKEN
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT id, name, status FROM airtable.employees LIMIT 1
+  - SELECT id, name, status FROM airtable.projects LIMIT 1
+tables:
+  - name: employees
+    description: Employee directory records from Airtable.
+    guide: &table_guide |
+      Each row is an Airtable record. Common operational fields are exposed as
+      convenience columns, and the complete Airtable field payload is available
+      in `fields` for base-specific columns. Use `view` to query a saved view
+      and `filter_by_formula` to push an Airtable formula predicate.
+    fetch_limit_default: 100
+    filters: &record_filters
+      - name: view
+        required: false
+        description: Airtable saved view name or view ID.
+      - name: filter_by_formula
+        required: false
+        description: Airtable formula used as the filterByFormula query parameter.
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_EMPLOYEES_TABLE}}
+      query: &record_query
+        - name: view
+          from: filter
+          key: view
+        - name: filterByFormula
+          from: filter
+          key: filter_by_formula
+    response: &record_response
+      rows_path:
+        - records
+      row_strategy: direct
+      allow_404_empty: false
+    pagination: &airtable_pagination
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path:
+        - offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: pageSize
+    columns: &record_columns
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Airtable record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time Airtable created the record.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdTime
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Common name/title field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Common status field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Status
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Common email field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Email
+      - name: department
+        type: Utf8
+        nullable: true
+        description: Common department field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Department
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: Common owner or assignee field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Owner
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Common priority field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Priority
+      - name: amount
+        type: Float64
+        nullable: true
+        description: Common amount or cost field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Amount
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Common start date field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Start Date
+      - name: due_date
+        type: Utf8
+        nullable: true
+        description: Common due date field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Due Date
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Common end date field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - End Date
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Common description field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Description
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: Common notes field from the Airtable record.
+        expr:
+          kind: path
+          path:
+            - fields
+            - Notes
+      - name: fields
+        type: Json
+        nullable: true
+        description: Complete Airtable fields object for base-specific columns.
+        expr:
+          kind: path
+          path:
+            - fields
+
+  - name: departments
+    description: Department records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_DEPARTMENTS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: assets
+    description: Asset inventory records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_ASSETS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: it_tickets
+    description: IT ticket records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_IT_TICKETS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: projects
+    description: Project records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_PROJECTS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: tasks
+    description: Task records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_TASKS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: clients
+    description: Client records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_CLIENTS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: invoices
+    description: Invoice records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_INVOICES_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: vendors
+    description: Vendor records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_VENDORS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: purchase_orders
+    description: Purchase order records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_PURCHASE_ORDERS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: time_logs
+    description: Time log records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_TIME_LOGS_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: expenses
+    description: Expense records from Airtable.
+    guide: *table_guide
+    fetch_limit_default: 100
+    filters: *record_filters
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_EXPENSES_TABLE}}
+      query: *record_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+functions:
+  - name: search_employees
+    kind: search
+    description: Search employees with Airtable filterByFormula.
+    fetch_limit_default: 25
+    search_limits: &search_limits
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args: &search_args
+      - name: formula
+        required: true
+        bind:
+          arg: formula
+      - name: view
+        required: false
+        bind:
+          arg: view
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_EMPLOYEES_TABLE}}
+      query: &search_query
+        - name: filterByFormula
+          from: arg
+          key: formula
+        - name: view
+          from: arg
+          key: view
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: search_assets
+    kind: search
+    description: Search assets with Airtable filterByFormula.
+    fetch_limit_default: 25
+    search_limits: *search_limits
+    args: *search_args
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_ASSETS_TABLE}}
+      query: *search_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: search_it_tickets
+    kind: search
+    description: Search IT tickets with Airtable filterByFormula.
+    fetch_limit_default: 25
+    search_limits: *search_limits
+    args: *search_args
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_IT_TICKETS_TABLE}}
+      query: *search_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: search_projects
+    kind: search
+    description: Search projects with Airtable filterByFormula.
+    fetch_limit_default: 25
+    search_limits: *search_limits
+    args: *search_args
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_PROJECTS_TABLE}}
+      query: *search_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
+
+  - name: search_clients
+    kind: search
+    description: Search clients with Airtable filterByFormula.
+    fetch_limit_default: 25
+    search_limits: *search_limits
+    args: *search_args
+    request:
+      method: GET
+      path: /{{input.AIRTABLE_BASE_ID}}/{{input.AIRTABLE_CLIENTS_TABLE}}
+      query: *search_query
+    response: *record_response
+    pagination: *airtable_pagination
+    columns: *record_columns
