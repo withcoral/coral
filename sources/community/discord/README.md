@@ -6,12 +6,13 @@ This custom source enables ContextOS and the Coral community to run real-time SQ
 
 ---
 
-## 👥 Contributors & Open Source Dedication
+## Contributors
 
-This is an open-source contribution to the Coral community, designed, tested, and built by:
-- **Ganesh Bamalwa**
-- **Siddhant Shivam**
-- **Vishal Kumar**
+Built and contributed to the Coral community by:
+
+- [Ganesh Bamalwa](https://github.com/GaneshBamalwa)
+- [Siddhant Shivam](https://github.com/sidshivam625)
+- [Vishal Kumar](https://github.com/Vishy-MK)
 
 We hope this source empowers you to build awesome conversational intelligence tools!
 
@@ -46,7 +47,7 @@ To add the bot to your Discord server:
 Ensure you have [Coral CLI](https://coral.so/docs) installed. Register the custom source spec file by running:
 
 ```bash
-coral source add --file ./discord.yaml
+coral source add --file ./manifest.yaml
 ```
 
 When prompted, paste your Discord Bot Token:

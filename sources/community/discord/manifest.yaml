@@ -38,7 +38,15 @@ tables:
           from: literal
           value: "true"
     pagination:
-      mode: none
+      mode: cursor
+      cursor:
+        next_path:
+          - id
+        query_param: after
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
     response:
       row_strategy: direct
     columns:
@@ -297,6 +305,10 @@ tables:
     request:
       method: GET
       path: /guilds/{{filter.guild_id}}/members
+      query:
+        - name: limit
+          from: literal
+          value: "100"
     pagination:
       mode: none
     response:
