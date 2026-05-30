@@ -15,7 +15,7 @@ coral source add --file sources/community/nvd/manifest.yaml
 
 ## Rate Limits
 
-All queries run unauthenticated at 5 requests per 30 seconds. The NVD API supports an optional `apiKey` request header that raises the limit to 50 requests per 30 seconds, but this source does not wire an API key. If you need higher throughput, use `coral source add --interactive` to configure a custom header manually.
+All queries run unauthenticated at 5 requests per 30 seconds. This source is unauthenticated only — no API key is wired. Auth support can be contributed if higher throughput is needed.
 
 ## Tables
 
@@ -157,7 +157,7 @@ WHERE v.cve_id = 'CVE-2021-44228';
 - Date values use ISO 8601 format: `2024-01-01T00:00:00.000`.
 - CVSS metric columns are nullable — a row is returned for every fetched CVE, but the `metrics` column is null when NVD has not assigned that metric version.
 - Most CVEs published after 2019 use CVSS v3.1 (`cvss_v3_1_metrics`). Older CVEs may only have CVSS v3.0 (`cvss_v3_0_metrics`) or v2 (`cvss_v2_metrics`) scores.
-- The `metrics` column is a JSON array. Use `json_get(metrics, 0)` to get the first element, then `json_get_str(...)` to extract individual fields. Filter to `type = 'Primary'` and `source = 'nvd@nist.gov'` for the authoritative NVD score.
+- The `metrics` column is a JSON array. Each element has `source`, `type`, `cvssData`, `exploitabilityScore`, and `impactScore` fields. Do not rely on array position — NVD may return multiple entries per CVE. Select the authoritative score by checking `source = 'nvd@nist.gov'` and `type = 'Primary'` on each element.
 - The `references` column is a JSON array. Use `json_get(references, 0)` to get the first reference object, then `json_get_str(json_get(references, 0), 'url')` to extract the URL.
 - No authentication is required. The NVD API key is not wired into this source.
 - **CVSS v4.0 is out of scope for this version.** Only CVSS v2, v3.0, and v3.1 metrics are covered.
