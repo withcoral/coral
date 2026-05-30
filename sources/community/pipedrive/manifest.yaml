@@ -1212,7 +1212,7 @@ functions:
         - items
     args:
       - name: term
-        required: false
+        required: true
         bind:
           arg: term
       - name: exact_match

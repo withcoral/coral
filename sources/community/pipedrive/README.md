@@ -1,10 +1,10 @@
 # Pipedrive (Community)
 
 **Version:** 0.1.0
-**Backend:** HTTP (Pipedrive REST API v2)
+**Backend:** HTTP (Pipedrive REST API)
 **Tables:** 10
 **Functions:** 3
-**Base URL:** `https://api.pipedrive.com/api/v2`
+**Base URL:** `https://<company>.pipedrive.com`
 
 Query your Pipedrive CRM data through SQL. Explore deals, contacts,
 organizations, activities, notes, leads, products, pipelines, stages, and
@@ -30,7 +30,13 @@ Copy your personal API token.
 
 ```sh
 export PIPEDRIVE_API_TOKEN="<your-pipedrive-api-token>"
+export PIPEDRIVE_COMPANY_DOMAIN="<your-company-domain>"
 ```
+If your Pipedrive URL is:
+https://coral-testing.pipedrive.com
+
+Set:
+PIPEDRIVE_COMPANY_DOMAIN=coral-testing
 
 ### 3. Add the source
 
@@ -70,10 +76,13 @@ Pipedrive data.
 
 ## API version
 
-This source uses **Pipedrive REST API v2** (`https://api.pipedrive.com/api/v2`)
-throughout. Key v2 differences from v1:
+This source uses **Pipedrive REST API** endpoints through your company domain: (`https://<company>.pipedrive.com`)
+Key differences in Pipedrive API behavior across endpoints:
 
-- Cursor-based pagination (`cursor` / `limit`) replaces offset pagination
+- Pagination varies by endpoint.
+- Some endpoints use offset pagination, while others use provider-defined pagination modes.
+- Coral normalizes pagination internally and exposes results as a single continuous stream.
+- Coral handles pagination automatically during query execution.
 - All timestamps are RFC 3339 format (e.g. `2024-01-01T00:00:00Z`)
 - Related object fields (`user_id`, `person_id`, `org_id`) return plain IDs, not embedded objects
 - `user_id` on deals renamed to `owner_id`; `active_flag` replaced by `is_deleted` (negated)
@@ -81,6 +90,9 @@ throughout. Key v2 differences from v1:
 - Organization and activity `address`/`location` fields are nested objects
 
 ## Search functions
+
+All search functions require a non-empty `term`.
+This is enforced in the manifest; omitting it will cause a validation error before the request is sent.
 
 | Function | Description |
 |---|---|
@@ -211,6 +223,7 @@ Add the source:
 
 ```sh
 export PIPEDRIVE_API_TOKEN="<your-pipedrive-api-token>"
+export PIPEDRIVE_COMPANY_DOMAIN="<your-company-domain>"
 cargo run -p coral-cli -- source add --file sources/community/pipedrive/manifest.yaml
 ```
 
@@ -246,9 +259,9 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 
 ## Notes
 
-- Uses Pipedrive REST API v2 (`https://api.pipedrive.com/api/v2`)
+- Uses Pipedrive REST API endpoints through your company domain
 - Authenticates with `x-api-token` header (personal API token only)
-- All tables use cursor-based pagination (`cursor` / `limit`)
+- Pagination varies by endpoint and is handled automatically by Coral using provider-defined pagination strategies.
 - Timestamps are RFC 3339 format throughout
 - `is_deleted = true` means soft-deleted; entities are fully deleted 30 days after last activity
 - Nested fields like `address` and `location` are flattened with double-underscore notation (e.g. `address__country`)
