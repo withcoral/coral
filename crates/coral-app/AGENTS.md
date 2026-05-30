@@ -12,6 +12,7 @@ root.
 - workspace identity and validation
 - source lifecycle and install/remove persistence
 - credential-set identity and credential material persistence
+- runtime feature registry semantics for user-facing `[features]` config
 - bundled-source manifest description and install-time manifest mapping through
   `coral-spec`
 - query-time selection of installed sources before calling `coral-engine`
@@ -39,6 +40,8 @@ root.
   unless they own durable, independent behavior.
 - Persist imported manifests as files under app-owned state; do not inline
   them into `config.toml`.
+- User-facing runtime feature semantics belong in `coral_app::features`; raw
+  config-file persistence, locking, and TOML extraction stay in `state/`.
 - Bundled installs persist source identity plus configured variables and
   secrets, then resolve their manifest from the current binary at runtime.
 - Credential backend selection stays inside `credentials/`. Managers pass

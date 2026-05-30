@@ -84,11 +84,12 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Use the source manifest schema as both inspiration for authoring and validation of structure: https://github.com/withcoral/coral/blob/main/crates/coral-spec/src/schema/source_manifest.schema.json
 - Use source variables for non-secret configuration.
 - Use source secrets for credentials.
-- For OAuth-backed services, model browser-based setup with `inputs.<TOKEN>.credential.methods[]` using `type: oauth`; keep the runtime `auth` or request header pointing at the same secret input.
-- OAuth credential methods currently mean authorization-code flow with a loopback `http://127.0.0.1` or `http://localhost` redirect URI. Set `flow.pkce` explicitly to `required` or `disabled`, choose `redirect_uri_port_mode: random` for provider apps that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI.
+- For OAuth-backed services, model setup with `inputs.<TOKEN>.credential.methods[]` using `type: oauth`; keep the runtime `auth` or request header pointing at the same secret input.
+- OAuth credential methods support device-code flow and authorization-code flow. For authorization-code flow, set `flow.type: authorization_code`, set `flow.pkce` explicitly to `required` or `disabled`, use a loopback `http://127.0.0.1` or `http://localhost` redirect URI, choose `redirect_uri_port_mode: random` for provider apps that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI. The CLI also accepts the final loopback redirect URL pasted into the terminal when the browser cannot reach the machine running Coral, so do not reject authorization-code OAuth solely because users may run Coral over SSH, in a VM, or in another split-browser environment. For device-code flow, declare `flow.type: device_code`, `endpoints.device_authorization_url`, `endpoints.token_url`, and a public client ID; omit redirect URI fields and do not declare a client secret.
+- OAuth endpoint URLs may template declared `kind: variable` inputs with `{{input.KEY}}` for non-secret endpoint components such as tenant IDs or domains. Do not reference secret inputs, filters, function arguments, state, or inline defaults from OAuth endpoint URLs.
 - If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
-- Do not assume automatic token refresh. If the provider returns short-lived access tokens, call that out as a limitation unless the source has another supported long-lived credential path.
+- For short-lived OAuth access tokens, make sure the OAuth method can obtain refresh tokens when the provider supports them, and document any scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire unless the source has another supported long-lived credential path.
 - Keep table names stable and SQL-friendly.
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
@@ -140,6 +141,7 @@ Specific guidance:
   - describe the browser-based setup in `description`
   - list required OAuth scopes in the secret hint or method description
   - mention whether users need to register a fixed loopback redirect URI or provide their own OAuth client ID/secret
+  - for authorization-code flow, note that users can paste the final localhost redirect URL into the terminal if their browser cannot reach Coral's loopback listener directly
 - For derived secrets (for example Basic auth blobs):
   - include a short shell example (for example a Base64 command)
 - Prefer stable documentation links.
@@ -190,7 +192,7 @@ For HTTP-backed sources:
 
 Read `references/http-source-checklist.md` when you need table-shape and pagination guidance.
 
-If your HTTP source uses an Authorization header with a prefix (e.g. `Authorization: Bearer <token>`), you can use a secret input for the token and define the header as a template:
+If your HTTP source uses an Authorization header with a prefix (e.g. `Authorization: Bearer <token>`), use a secret input for the raw token and define the header with `from: bearer`:
 
 ```yaml
 inputs:
@@ -201,8 +203,8 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.FOOBAR_API_TOKEN}}
+      from: bearer
+      key: FOOBAR_API_TOKEN
 ```
 
 For an OAuth-backed HTTP source, add the retrieval method to that same secret input:
@@ -240,8 +242,30 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.FOOBAR_API_TOKEN}}
+      from: bearer
+      key: FOOBAR_API_TOKEN
+```
+
+When a provider accepts either a full pasted API-key header or an OAuth access token, declare both credential inputs as optional secrets, then use `from: one_of` and put the complete header value first, followed by a `from: bearer` OAuth fallback:
+
+```yaml
+inputs:
+  FOOBAR_API_KEY:
+    kind: secret
+    required: false
+  FOOBAR_OAUTH_ACCESS_TOKEN:
+    kind: secret
+    required: false
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: FOOBAR_API_KEY
+        - from: bearer
+          key: FOOBAR_OAUTH_ACCESS_TOKEN
 ```
 
 ## Local Data Sources

@@ -1159,7 +1159,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -1171,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "apple-native-keyring-store",
  "arrow",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1243,6 +1243,7 @@ dependencies = [
  "coral-client",
  "coral-mcp",
  "coral-spec",
+ "crossterm",
  "dialoguer",
  "jsonschema",
  "regex",
@@ -1255,11 +1256,12 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-types",
+ "url",
 ]
 
 [[package]]
 name = "coral-client"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arrow",
  "coral-api",
@@ -1279,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1317,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "coral-api",
  "coral-app",
@@ -1339,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "coral-spec"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1418,8 +1420,11 @@ dependencies = [
  "bitflags",
  "crossterm_winapi",
  "document-features",
+ "mio",
  "parking_lot",
  "rustix",
+ "signal-hook",
+ "signal-hook-mio",
  "winapi",
 ]
 
@@ -2213,9 +2218,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion-tracing"
-version = "53.0.1"
+version = "53.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8c6042c471ac0d904296cab7c20c11849de2333573879c015aa04462345e7db"
+checksum = "07de1239d9c1ff5a251848438a2ea03ae936e1613beeeea8bff8d3e88fb72fda"
 dependencies = [
  "async-trait",
  "comfy-table",
@@ -3473,6 +3478,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]
@@ -4949,6 +4955,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-mio"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
+dependencies = [
+ "libc",
+ "mio",
+ "signal-hook",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6384,7 +6411,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",

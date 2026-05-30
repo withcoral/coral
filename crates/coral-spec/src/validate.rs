@@ -536,6 +536,20 @@ fn validate_value_source(
         ValueSourceSpec::Template { template } => {
             validate_template(template, known_filters, context)?;
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for (index, value) in values.iter().enumerate() {
+                validate_value_source(
+                    value,
+                    known_filters,
+                    &format!("{context} one_of values[{index}]"),
+                )?;
+            }
+        }
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
@@ -673,6 +687,20 @@ fn validate_arg_value_source(
         ValueSourceSpec::Template { template } => {
             validate_arg_template(template, request_arg_names, context)?;
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for (index, value) in values.iter().enumerate() {
+                validate_arg_value_source(
+                    value,
+                    request_arg_names,
+                    &format!("{context} one_of values[{index}]"),
+                )?;
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -706,7 +734,7 @@ fn validate_arg_template(
     Ok(())
 }
 
-fn validate_identifier(value: &str, context: &str) -> Result<()> {
+pub(crate) fn validate_identifier(value: &str, context: &str) -> Result<()> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
         return Err(ManifestError::validation(format!(
@@ -1248,7 +1276,7 @@ mod tests {
     fn validate_http_table_rejects_function_arg_template_tokens() {
         let request = RequestSpec {
             path: ParsedTemplate::parse("/search/{{arg.q}}").expect("template"),
-            ..RequestSpec::default()
+            ..base_request()
         };
 
         let error = validate_http_table(
@@ -1268,6 +1296,86 @@ mod tests {
             error
                 .to_string()
                 .contains("uses function argument token 'arg.q' outside a function request")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_function_arg_one_of_value_sources() {
+        let request = RequestSpec {
+            query: vec![QueryParamSpec {
+                name: "value".to_string(),
+                value: ValueSourceSpec::OneOf {
+                    values: vec![
+                        ValueSourceSpec::Input {
+                            key: "API_KEY".to_string(),
+                        },
+                        ValueSourceSpec::Arg {
+                            key: "q".to_string(),
+                            default: None,
+                        },
+                    ],
+                },
+            }],
+            ..base_request()
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &request,
+            &[],
+            &PaginationSpec::default(),
+            None,
+            &[],
+        )
+        .expect_err("table request one_of values should reject function arguments");
+
+        assert!(
+            error
+                .to_string()
+                .contains("uses function argument 'q' outside a function request")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_unknown_filter_one_of_value_sources() {
+        let request = RequestSpec {
+            query: vec![QueryParamSpec {
+                name: "value".to_string(),
+                value: ValueSourceSpec::OneOf {
+                    values: vec![
+                        ValueSourceSpec::Input {
+                            key: "API_KEY".to_string(),
+                        },
+                        ValueSourceSpec::Filter {
+                            key: "missing".to_string(),
+                            default: None,
+                        },
+                    ],
+                },
+            }],
+            ..base_request()
+        };
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &request,
+            &[],
+            &PaginationSpec::default(),
+            None,
+            &[],
+        )
+        .expect_err("table request one_of values should reject unknown filters");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown filter 'missing'")
         );
     }
 
@@ -1335,6 +1443,48 @@ mod tests {
                 "unexpected error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn validate_http_function_accepts_arg_one_of_value_sources() {
+        let function = function_with_request_value(ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Arg {
+                    key: "q".to_string(),
+                    default: None,
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+            ],
+        });
+
+        validate_http_function("demo", &function)
+            .expect("function request one_of should accept declared args");
+    }
+
+    #[test]
+    fn validate_http_function_rejects_unknown_arg_one_of_value_sources() {
+        let function = function_with_request_value(ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Arg {
+                    key: "missing".to_string(),
+                    default: None,
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+            ],
+        });
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("function request one_of should reject unknown args");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown request arg 'missing'")
+        );
     }
 
     #[test]
