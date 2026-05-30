@@ -1,0 +1,404 @@
+name: osv
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Open Source Vulnerabilities (OSV) records by package and ecosystem or
+  by vulnerability identifier via the public OSV.dev HTTP API. No API key is
+  required.
+base_url: https://api.osv.dev
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, summary, severity FROM osv.vulnerabilities WHERE package = 'lodash' AND ecosystem = 'npm' LIMIT 5
+  - SELECT id, summary FROM osv.vulnerabilities WHERE package = 'lodash' AND ecosystem = 'npm' LIMIT 3
+  - SELECT id, summary, details FROM osv.vulnerability WHERE id = 'GHSA-29mw-wpgm-hmr9'
+
+tables:
+  - name: vulnerabilities
+    description: >-
+      OSV vulnerability matches from POST /v1/query. Filter by package and
+      ecosystem (optionally version, commit, or purl). Paginates with
+      next_page_token when the API returns large result sets.
+    guide: |
+      List vulnerabilities affecting a package in an ecosystem:
+
+        SELECT id, summary, severity, published
+        FROM osv.vulnerabilities
+        WHERE package = 'lodash' AND ecosystem = 'npm'
+        LIMIT 10;
+
+      Narrow to a specific version or commit:
+
+        WHERE package = 'jinja2' AND ecosystem = 'PyPI' AND version = '3.1.4'
+        WHERE commit = '6879efc2c1596d11a6a6ad296f80063b558d5e0f'
+
+      Lookup a known OSV, GHSA, or CVE identifier (single record):
+
+        SELECT id, summary, details, affected, references
+        FROM osv.vulnerability
+        WHERE id = 'GHSA-29mw-wpgm-hmr9';
+
+      Ecosystem names are case-sensitive (npm, PyPI, RubyGems, etc.). JSON
+      columns support json_get_* helpers for nested fields.
+    filters:
+      - name: package
+        required: false
+        description: Package name in the ecosystem namespace (for example lodash).
+      - name: ecosystem
+        required: false
+        description: OSV ecosystem name (for example npm, PyPI, RubyGems).
+      - name: version
+        required: false
+        description: Optional version string for fuzzy upstream matching.
+      - name: commit
+        required: false
+        description: Git commit hash (mutually exclusive with version).
+      - name: purl
+        required: false
+        description: >-
+          Package URL (pkg:...). Do not combine with package and ecosystem, or
+          set both a versioned purl and top-level version (OSV returns 400).
+    request:
+      method: POST
+      path: /v1/query
+      body:
+        - path:
+            - package
+            - name
+          from: filter
+          key: package
+        - path:
+            - package
+            - ecosystem
+          from: filter
+          key: ecosystem
+        - path:
+            - version
+          from: filter
+          key: version
+        - path:
+            - commit
+          from: filter
+          key: commit
+        - path:
+            - package
+            - purl
+          from: filter
+          key: purl
+    requests:
+      - when_filters:
+          - commit
+        method: POST
+        path: /v1/query
+        body:
+          - path:
+              - commit
+            from: filter
+            key: commit
+          - path:
+              - package
+              - name
+            from: filter
+            key: package
+          - path:
+              - package
+              - ecosystem
+            from: filter
+            key: ecosystem
+      - when_filters:
+          - package
+          - ecosystem
+          - version
+        method: POST
+        path: /v1/query
+        body:
+          - path:
+              - package
+              - name
+            from: filter
+            key: package
+          - path:
+              - package
+              - ecosystem
+            from: filter
+            key: ecosystem
+          - path:
+              - version
+            from: filter
+            key: version
+      - when_filters:
+          - package
+          - purl
+        method: POST
+        path: /v1/query
+        body:
+          - path:
+              - package
+              - purl
+            from: filter
+            key: purl
+          - path:
+              - version
+            from: filter
+            key: version
+    response:
+      rows_path:
+        - vulns
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - page_token
+      response_cursor_path:
+        - next_page_token
+      max_pages: 50
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OSV vulnerability identifier (OSV-, GHSA-, or CVE-prefixed).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Short one-line summary of the vulnerability.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Detailed vulnerability description and remediation guidance.
+        expr:
+          kind: path
+          path:
+            - details
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: Publication time (RFC 3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: modified
+        type: Timestamp
+        nullable: true
+        description: Last modified time (RFC 3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: >-
+          Severity score strings from the OSV severity array (for example
+          CVSS:3.1/...). Multiple scores are joined with "; ".
+        expr:
+          kind: join_array_path
+          path:
+            - severity
+          item_path:
+            - score
+          separator: "; "
+      - name: affected
+        type: Json
+        nullable: true
+        description: Affected packages, version ranges, and ecosystem-specific metadata.
+        expr:
+          kind: path
+          path:
+            - affected
+      - name: references
+        type: Json
+        nullable: true
+        description: External references (advisories, commits, reports) with type and URL.
+        expr:
+          kind: path
+          path:
+            - references
+      - name: aliases
+        type: Json
+        nullable: true
+        description: Related identifiers (for example CVE aliases of a GHSA record).
+        expr:
+          kind: path
+          path:
+            - aliases
+      - name: package
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the package filter used for POST /v1/query.
+        expr:
+          kind: from_filter
+          key: package
+      - name: ecosystem
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the ecosystem filter used for POST /v1/query.
+        expr:
+          kind: from_filter
+          key: ecosystem
+      - name: version_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the optional version filter.
+        expr:
+          kind: from_filter
+          key: version
+      - name: commit_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the optional commit filter.
+        expr:
+          kind: from_filter
+          key: commit
+      - name: purl_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the optional purl filter.
+        expr:
+          kind: from_filter
+          key: purl
+
+  - name: vulnerability
+    description: >-
+      A single OSV vulnerability document from GET /v1/vulns/{id}. Use when you
+      already know the OSV, GHSA, or CVE identifier.
+    guide: |
+      Fetch one record by identifier:
+
+        SELECT id, summary, severity, affected, aliases
+        FROM osv.vulnerability
+        WHERE id = 'CVE-2020-28500';
+
+      Accepts OSV-, GHSA-, and CVE-style identifiers supported by OSV.dev.
+    filters:
+      - name: id
+        required: true
+        description: OSV, GHSA, or CVE identifier.
+    request:
+      method: GET
+      path: /v1/vulns/{{filter.id}}
+    response:
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OSV vulnerability identifier (OSV-, GHSA-, or CVE-prefixed).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Short one-line summary of the vulnerability.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Detailed vulnerability description and remediation guidance.
+        expr:
+          kind: path
+          path:
+            - details
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: Publication time (RFC 3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: modified
+        type: Timestamp
+        nullable: true
+        description: Last modified time (RFC 3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: >-
+          Severity score strings from the OSV severity array (for example
+          CVSS:3.1/...). Multiple scores are joined with "; ".
+        expr:
+          kind: join_array_path
+          path:
+            - severity
+          item_path:
+            - score
+          separator: "; "
+      - name: affected
+        type: Json
+        nullable: true
+        description: Affected packages, version ranges, and ecosystem-specific metadata.
+        expr:
+          kind: path
+          path:
+            - affected
+      - name: references
+        type: Json
+        nullable: true
+        description: External references (advisories, commits, reports) with type and URL.
+        expr:
+          kind: path
+          path:
+            - references
+      - name: aliases
+        type: Json
+        nullable: true
+        description: Related identifiers (for example CVE aliases of a GHSA record).
+        expr:
+          kind: path
+          path:
+            - aliases
+      - name: id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the id filter used for GET /v1/vulns/{id}.
+        expr:
+          kind: from_filter
+          key: id
