@@ -40,10 +40,12 @@ tables:
       and timestamp. `source__key` identifies the workflow, broadcast, or guide
       that produced the message; `workflow_run_id` and
       `workflow_recipient_run_id` come from the nested message source object.
-      Prefer recent `inserted_at_gte` / `inserted_at_lte` windows for routine
-      operations and incident triage.
+      Use `message_id` for provider-backed point lookup through Knock's
+      `message_ids[]` parameter. Prefer recent `inserted_at_gte` /
+      `inserted_at_lte` windows for routine operations and incident triage.
     fetch_limit_default: 100
     filters:
+      - name: message_id
       - name: status
       - name: engagement_status
       - name: channel_id
@@ -57,6 +59,9 @@ tables:
       method: GET
       path: /messages
       query:
+        - name: message_ids[]
+          from: filter
+          key: message_id
         - name: status[]
           from: filter
           key: status
@@ -205,6 +210,11 @@ tables:
         nullable: true
         description: Raw message object for provider-specific fields.
         expr: {kind: path, path: []}
+      - name: message_id
+        type: Utf8
+        nullable: true
+        description: Message ID supplied through Knock's message_ids[] filter.
+        expr: {kind: from_filter, key: message_id}
 
   - name: users
     description: Knock users.

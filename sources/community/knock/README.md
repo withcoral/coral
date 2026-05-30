@@ -7,8 +7,10 @@ delivery debugging and message observability through Knock's public API.
 
 Create a Knock secret API key in the Knock dashboard for the environment you
 want to inspect, such as development or production. Public API keys are not
-sufficient for these server-side endpoints. Use a key with read access to
-messages, recipients/users, tenants, and message observability data.
+sufficient for these server-side endpoints. Knock secret `sk_` keys are scoped
+to the selected environment and can perform API requests for that environment,
+so create or use a secret key from the exact environment you want Coral to
+query.
 
 ```bash
 KNOCK_API_KEY=... coral source add --file sources/community/knock/manifest.yaml
@@ -45,7 +47,7 @@ LIMIT 5;
 ```sql
 SELECT id, source__key, status, channel__type, tenant, inserted_at
 FROM knock.messages
-WHERE status != 'delivered'
+WHERE status = 'undelivered'
 ORDER BY inserted_at DESC
 LIMIT 20;
 ```
@@ -56,6 +58,13 @@ FROM knock.messages
 WHERE inserted_at_gte = '2026-05-01T00:00:00Z'
 ORDER BY inserted_at DESC
 LIMIT 20;
+```
+
+```sql
+SELECT id, source__key, status, channel__type, inserted_at
+FROM knock.messages
+WHERE message_id = 'msg_123'
+LIMIT 1;
 ```
 
 ```sql
@@ -90,6 +99,12 @@ ORDER BY inserted_at DESC;
   identifies the workflow, broadcast, or guide that generated the message;
   `status`, `channel__type`, `tenant`, and `inserted_at` support delivery
   triage.
+- Use pushed positive status filters such as `status = 'undelivered'` or
+  `status = 'bounced'` for incident triage. Negative predicates such as
+  `status != 'delivered'` are local SQL filters after a provider page is
+  fetched and can miss older failures.
+- Use `message_id = 'msg_...'` for provider-backed point lookup through Knock's
+  `message_ids[]` parameter instead of relying on local filtering by `id`.
 - `workflow_run_id` and `workflow_recipient_run_id` are read from the nested
   `source` object in Knock message responses.
 - List endpoints use Knock cursor pagination with `page_size` up to 50. For
@@ -112,9 +127,35 @@ git diff --check origin/main..HEAD
 gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
 ```
 
-Credentialed `coral source add --file`, `coral source test knock`, and
-representative live queries require a Knock API key and were not run in this
-workspace.
+Credentialed live validation against a Knock development environment:
+
+```text
+Manifest is valid
+Added source knock (secrets: file (plaintext))
+
+  ✓ knock connected successfully
+  Secrets: file (plaintext)
+
+    knock (6 tables)
+    ├─ message_activities
+    ├─ message_delivery_logs
+    ├─ message_events
+    ├─ messages
+    ├─ tenants
+    └─ users
+    Query tests
+    2 declared · 2 passed · 0 failed
+
+    ✓ SELECT id, source__key, status FROM knock.messages LIMIT 1
+      0 rows
+    ✓ SELECT id, name FROM knock.users LIMIT 1
+      0 rows
+```
+
+Representative live queries against this fresh development environment
+successfully returned zero rows for `knock.messages`, `knock.users`, and
+`knock.tenants`. The environment had no message IDs, so message child tables
+could not be exercised honestly; Knock returns 422 for fabricated message IDs.
 
 ## API references
 
