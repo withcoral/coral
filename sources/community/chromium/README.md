@@ -274,6 +274,86 @@ Run these commands directly from the Coral CLI to query browser data.
 
 ---
 
+
+## Additional Features
+
+| Feature | Description |
+|----------|-------------|
+| Deterministic Profile Resolution | Automatically scans browser User Data directories and consistently selects the most recently used profile, preventing data from being mixed across multiple profiles. |
+| Safe SQLite Extraction | Copies database files together with associated `-wal` and `-shm` files to avoid locking issues and ensure complete reads while browsers remain open. |
+
+---
+
+## Updated Data Sources Added
+
+| Category | Description |
+|-----------|-------------|
+| Bookmarks | Saved bookmarks and folder hierarchy |
+| History | Browsing history, URLs, titles, and visit counts with WebKit timestamps converted to ISO 8601 UTC |
+| Downloads | Download records, local file paths, file sizes, and timestamps converted from WebKit epochs to ISO 8601 UTC |
+| Extensions | Installed browser extensions |
+| Top Sites | Browser-ranked frequently visited sites |
+| Tabs | URLs extracted from browser session-restore state. Includes persisted navigation state rather than only visually open tabs. |
+
+---
+
+## Data Extraction Notes
+
+| Data Type | Implementation Notes |
+|------------|---------------------|
+| Profiles | Automatically resolves the most recently used browser profile |
+| SQLite Databases | Read safely using temporary copies |
+| WAL Databases | Copies `-wal` and `-shm` sidecar files to preserve consistency |
+| History Timestamps | Converted from Chromium WebKit epoch to ISO 8601 UTC |
+| Download Timestamps | Converted from Chromium WebKit epoch to ISO 8601 UTC |
+| Extensions | Enumerated deterministically using extension metadata |
+| Tabs | Extracted from Chromium session-restore state files |
+
+---
+
+## Additional Validation
+
+Verified:
+
+- Automatic profile discovery
+- Multiple profile environments
+- SQLite WAL database handling
+- Empty browser installations
+- Browser-not-installed fallback behavior
+- Session-restore tab extraction
+
+---
+
+## Additional Failure Handling
+
+| Scenario | Behavior |
+|-----------|-----------|
+| Browser Running | Reads succeed through copied database snapshots |
+| Missing WAL/SHM Files | Falls back gracefully |
+| Multiple Profiles Present | Automatically selects most recently used profile |
+| Browser Not Installed | Returns empty table |
+| Profile Not Found | Returns empty table |
+| Missing Database | Returns empty table |
+| Empty Browser Data | Returns 0 rows |
+| Missing Browser Files | No source crash |
+
+---
+
+## Additional Privacy & Security Details
+
+| Aspect | Details |
+|----------|----------|
+| Database Access | Read-only |
+| Browser Can Remain Open | Yes |
+| Local Server | `127.0.0.1:8765` |
+| Data Processing | Fully local |
+| Network Access | Localhost only |
+| External Services | None |
+| Cloud Uploads | None |
+| Third-Party Dependencies | None |
+| User Data Transmission | Never leaves the machine |
+
+
 # Advanced Analytics
 
 ## Largest Files Downloaded via Edge
@@ -343,3 +423,6 @@ or upgrade Coral using the installation method appropriate for your environment.
 | Dependencies | Python standard library only |
 
 This source is designed with a privacy-first approach, ensuring all browser data remains under your control.
+
+
+# Contributions By github.com/GaneshBamalwa and github.com/sidshivam625
