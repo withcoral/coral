@@ -210,16 +210,6 @@ impl FeatureStore {
         })
     }
 
-    /// Loads the effective runtime feature state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] if `config.toml` exists but cannot be read or parsed.
-    pub fn load(&self) -> Result<Features, AppError> {
-        let raw = crate::state::load_raw_feature_overrides(&self.layout)?;
-        Ok(Features::from_raw_overrides(&raw))
-    }
-
     /// Loads effective runtime feature state, applying process-local overrides.
     ///
     /// # Errors
@@ -230,17 +220,6 @@ impl FeatureStore {
         let mut features = Features::from_raw_overrides(&raw);
         features.apply_overrides(overrides);
         Ok(features)
-    }
-
-    /// Lists every known feature with configured and effective status.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] if `config.toml` exists but cannot be read or parsed.
-    pub fn statuses(&self) -> Result<Vec<FeatureStatus>, AppError> {
-        let raw = crate::state::load_raw_feature_overrides(&self.layout)?;
-        let features = Features::from_raw_overrides(&raw);
-        Ok(statuses_from_raw(&raw, &features))
     }
 
     /// Lists every known feature, applying process-local overrides to effective state.
