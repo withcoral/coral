@@ -122,7 +122,7 @@ ORDER BY usdc_received DESC;
 
 - **Error responses are HTTP 200 and cannot be auto-detected.** Etherscan signals failures as `{"status":"0","message":"NOTOK","result":"<reason>"}` inside an HTTP 200 body. Coral's HTTP backend only treats a JSON-boolean `ok_path` as success, but Etherscan's `status` is the string `"1"`/`"0"`, so it cannot be modelled — setting `ok_path: [status]` would reject *successful* responses too. As a result, an auth, rate-limit, or bad-parameter failure surfaces as a single row with null transfer fields (the echoed `chainid`/`address` still populate), not a query error. **If a query returns one all-null row or zero rows unexpectedly, verify your API key, `chainid`, and `address`.** (A Coral feature request for string/value `ok_path` matching would let this be modelled properly.)
 - **Rate limits** — Free tier: 3 calls/sec, Lite tier: 5 calls/sec. Use conservative page sizes and cache aggressively.
-- **Chain support** — Free API key supports Ethereum mainnet (chainid=1). Base (8453), Optimism (10), and Arbitrum (42161) may require a paid plan.
+- **Chain support** — Free-tier API keys cover Ethereum mainnet (chainid=1) and Arbitrum One (42161). Base (8453) and OP Mainnet (10) are **not** free-tier chains and require a paid plan. See [Etherscan supported chains](https://docs.etherscan.io/supported-chains). A query that fails only on a specific chain is likely a plan-tier limit rather than source behavior.
 - **Pagination** — Uses offset-based pagination (page/offset params). Default page size is 50, max 100.
 
 ### Value precision

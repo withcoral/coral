@@ -16,7 +16,7 @@ request_headers:
     from: literal
     value: application/json
 test_queries:
-  - SELECT hash, from_address, to_address, value FROM etherscan.token_transfers WHERE chainid = 1 AND address = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' LIMIT 1
+  - SELECT hash, from_address, to_address, value FROM etherscan.token_transfers WHERE chainid = 1 AND address = '0x464C71f6c2F760DdA6093dCB91C24c39e5d6e18c' AND contract_address = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' LIMIT 1
 tables:
   - name: token_transfers
     description: >-
