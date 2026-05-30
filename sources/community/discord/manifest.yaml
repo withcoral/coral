@@ -1,0 +1,346 @@
+name: discord
+version: 1.0.0
+dsl_version: 3
+backend: http
+description: >
+  Connect to Discord via a Bot Token to query guilds, channels, messages,
+  and members using Discord's REST API v10.
+inputs:
+  DISCORD_BOT_TOKEN:
+    kind: secret
+    hint: Discord Bot Token (without the 'Bot ' prefix — the source adds it automatically)
+    credential:
+      methods:
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Discord Bot Token.
+base_url: https://discord.com/api/v10
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bot {{input.DISCORD_BOT_TOKEN}}"
+test_queries:
+  - SELECT id, name FROM discord.guilds LIMIT 1
+tables:
+  - name: guilds
+    description: >
+      All Discord guilds (servers) the bot is a member of.
+      Requires the bot to have 'View Channels' and 'Read Messages' permissions in the server.
+    guide: >
+      `SELECT id, name, approximate_member_count FROM discord.guilds LIMIT 5`.
+    request:
+      method: GET
+      path: /users/@me/guilds
+      query:
+        - name: with_counts
+          from: literal
+          value: "true"
+    pagination:
+      mode: none
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique guild snowflake ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Guild display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: icon
+        type: Utf8
+        nullable: true
+        description: Guild icon hash
+        expr:
+          kind: path
+          path:
+            - icon
+      - name: owner
+        type: Boolean
+        nullable: true
+        description: True if the user is the owner of the guild
+        expr:
+          kind: path
+          path:
+            - owner
+      - name: permissions
+        type: Utf8
+        nullable: true
+        description: Total permissions string for the user in the guild
+        expr:
+          kind: path
+          path:
+            - permissions
+      - name: approximate_member_count
+        type: Int64
+        nullable: true
+        description: >
+          Approximate number of members in the guild. Note this only returns a value
+          when the bot requests the guild list with with_counts=true, otherwise it returns null.
+        expr:
+          kind: path
+          path:
+            - approximate_member_count
+
+  - name: channels
+    description: >
+      All channels in a given guild. Filter by type = 0 for text channels,
+      type = 2 for voice channels, type = 4 for category groups,
+      type = 5 for announcement channels, type = 13 for stage channels,
+      and type = 15 for forum channels.
+    guide: >
+      `SELECT id, name, type, topic FROM discord.channels WHERE guild_id = 'YOUR_GUILD_ID' LIMIT 10`.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/channels
+    pagination:
+      mode: none
+    response:
+      row_strategy: direct
+    columns:
+      - name: guild_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Virtual column representing the parent guild ID used for filtering channels
+        expr:
+          kind: from_filter
+          key: guild_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique channel snowflake ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Channel name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Int64
+        nullable: false
+        description: Channel type (0=text, 2=voice, 4=category, 5=announcement, 13=stage, 15=forum)
+        expr:
+          kind: path
+          path:
+            - type
+      - name: topic
+        type: Utf8
+        nullable: true
+        description: Channel topic / description
+        expr:
+          kind: path
+          path:
+            - topic
+      - name: position
+        type: Int64
+        nullable: true
+        description: Sort position within the guild
+        expr:
+          kind: path
+          path:
+            - position
+      - name: nsfw
+        type: Boolean
+        nullable: true
+        description: Whether the channel is NSFW (Not Safe For Work)
+        expr:
+          kind: path
+          path:
+            - nsfw
+
+  - name: messages
+    description: >
+      Recent messages in a given channel. The 'limit' filter is optional and
+      defaults to 50 (maximum 100 per Discord API request).
+    guide: >
+      `SELECT author__username, content, timestamp FROM discord.messages WHERE channel_id = 'YOUR_CHANNEL_ID' AND limit = 25`.
+    filters:
+      - name: channel_id
+        required: true
+      - name: limit
+        required: false
+    request:
+      method: GET
+      path: /channels/{{filter.channel_id}}/messages
+      query:
+        - name: limit
+          from: filter
+          key: limit
+    pagination:
+      mode: none
+    response:
+      row_strategy: direct
+    columns:
+      - name: channel_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Virtual column representing the parent channel ID used to query messages
+        expr:
+          kind: from_filter
+          key: channel_id
+      - name: limit
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Virtual column representing the maximum number of messages to fetch (default 50, max 100)
+        expr:
+          kind: from_filter
+          key: limit
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique message snowflake ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: content
+        type: Utf8
+        nullable: false
+        description: Raw text content of the message
+        expr:
+          kind: path
+          path:
+            - content
+      - name: timestamp
+        type: Utf8
+        nullable: false
+        description: ISO-8601 timestamp when the message was sent
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: edited_timestamp
+        type: Utf8
+        nullable: true
+        description: ISO-8601 timestamp when the message was edited
+        expr:
+          kind: path
+          path:
+            - edited_timestamp
+      - name: author__id
+        type: Utf8
+        nullable: true
+        description: Author user snowflake ID
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author__username
+        type: Utf8
+        nullable: true
+        description: Author username
+        expr:
+          kind: path
+          path:
+            - author
+            - username
+      - name: author__discriminator
+        type: Utf8
+        nullable: true
+        description: Author discriminator (legacy tag, if present)
+        expr:
+          kind: path
+          path:
+            - author
+            - discriminator
+      - name: mention_everyone
+        type: Boolean
+        nullable: true
+        description: True if the message mentions everyone
+        expr:
+          kind: path
+          path:
+            - mention_everyone
+      - name: pinned
+        type: Boolean
+        nullable: true
+        description: True if the message is pinned
+        expr:
+          kind: path
+          path:
+            - pinned
+
+  - name: guild_members
+    description: >
+      Members of a given guild. Requires the bot to have 'Server Members Intent'
+      enabled in the Discord Developer Portal under Bot > Privileged Gateway Intents.
+      Without this intent the endpoint will return an error or empty result.
+    guide: >
+      `SELECT user__username, nick, joined_at FROM discord.guild_members WHERE guild_id = 'YOUR_GUILD_ID' LIMIT 10`.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/members
+    pagination:
+      mode: none
+    response:
+      row_strategy: direct
+    columns:
+      - name: guild_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Virtual column representing the parent guild ID used to retrieve members
+        expr:
+          kind: from_filter
+          key: guild_id
+      - name: user__id
+        type: Utf8
+        nullable: false
+        description: Unique snowflake ID of the guild member
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user__username
+        type: Utf8
+        nullable: false
+        description: Username of the guild member
+        expr:
+          kind: path
+          path:
+            - user
+            - username
+      - name: nick
+        type: Utf8
+        nullable: true
+        description: Server-specific nickname of the member, if set
+        expr:
+          kind: path
+          path:
+            - nick
+      - name: joined_at
+        type: Utf8
+        nullable: false
+        description: ISO-8601 timestamp representing when the member joined the guild
+        expr:
+          kind: path
+          path:
+            - joined_at
