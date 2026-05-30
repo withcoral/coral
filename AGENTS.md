@@ -20,6 +20,11 @@
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
+- Run `make perf-check` before submitting PRs that could affect CLI startup,
+  local server bootstrap, source registration, or `coral.tables` catalog query
+  latency. CI installs the bundled `github` source with fake credentials and
+  fails when release `coral sql "select * from coral.tables"` has a hyperfine
+  mean above 750 ms.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.
 - The built UI artifact is produced by repo/CI orchestration (`make ui-build`
@@ -44,6 +49,8 @@
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.
+- Keep general repository automation in `xtask`; reserve `scripts/` for the
+  bash Coral installer and installer-specific support.
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled

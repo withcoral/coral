@@ -18,7 +18,8 @@ use crate::{
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
-    validate_columns, validate_filters_and_column_exprs, validate_test_queries,
+    validate_columns, validate_filters_and_column_exprs, validate_identifier,
+    validate_test_queries, validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -812,43 +813,6 @@ fn validate_function_binding<'a>(
         return Err(ManifestError::validation(format!(
             "source '{source_name}' function '{function_name}' has multiple bindings for tool arg '{}'",
             binding.arg
-        )));
-    }
-    Ok(())
-}
-
-fn validate_unique_values(values: &[String], context: &str) -> Result<()> {
-    let mut seen = HashSet::new();
-    for value in values {
-        if value.trim().is_empty() {
-            return Err(ManifestError::validation(format!(
-                "{context} values must not contain empty strings"
-            )));
-        }
-        if !seen.insert(value.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "{context} value '{value}' is declared more than once"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_identifier(value: &str, context: &str) -> Result<()> {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return Err(ManifestError::validation(format!(
-            "{context} must not be empty"
-        )));
-    };
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return Err(ManifestError::validation(format!(
-            "{context} '{value}' must start with a letter or underscore"
-        )));
-    }
-    if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
-        return Err(ManifestError::validation(format!(
-            "{context} '{value}' may only contain letters, numbers, and underscores"
         )));
     }
     Ok(())
