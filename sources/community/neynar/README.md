@@ -2,7 +2,7 @@
 
 [Neynar](https://neynar.com) is the leading API provider for the [Farcaster](https://farcaster.xyz) decentralized social protocol. This community source exposes Farcaster cast search as a read-only SQL table function via [Coral](https://withcoral.com).
 
-Uses `kind: search` — a provider-ranked retrieval pattern where the API decides relevance ordering, not SQL WHERE clauses.
+Uses `kind: search` — a provider-ranked retrieval pattern. Results come back in Neynar's default reverse-chronological order (`sort_type => 'desc_chron'`); pass `sort_type => 'algorithmic'` for relevance ranking. Search criteria are passed as function arguments, not SQL `WHERE` clauses.
 
 ---
 
@@ -38,17 +38,17 @@ coral source test neynar
 
 ### `neynar.search_casts`
 
-Provider-ranked Farcaster cast search. Returns casts matching a search query, ordered by relevance (not chronologically).
+Farcaster cast search. Returns casts matching a search query in reverse-chronological order by default (`sort_type => 'desc_chron'`), or by relevance with `sort_type => 'algorithmic'`.
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `q` | Utf8 | Yes | Search query (supports `+` AND, `\|` OR, `*` prefix, `""` phrase, `~n` fuzziness, `-` negate) |
-
-| Filter | Type | Required | Description |
-|--------|------|----------|-------------|
-| `author_fid` | Int64 | No | FID of the user whose casts to search |
-| `channel_id` | Utf8 | No | Filter by channel ID |
+| `author_fid` | Int64 | No | Restrict to casts from this Farcaster ID |
+| `channel_id` | Utf8 | No | Restrict to a channel ID |
 | `mode` | Utf8 | No | Search mode: `literal` (default), `semantic`, or `hybrid` |
+| `sort_type` | Utf8 | No | Result ordering: `desc_chron` (default), `chron`, or `algorithmic` |
+
+All arguments are passed in the function call, e.g. `search_casts(q => '...', channel_id => '...', mode => 'semantic')` — not as SQL `WHERE` clauses.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -60,7 +60,7 @@ Provider-ranked Farcaster cast search. Returns casts matching a search query, or
 | `reactions__likes_count` | Int64 | Number of likes |
 | `reactions__recasts_count` | Int64 | Number of recasts |
 | `replies__count` | Int64 | Number of replies |
-| `timestamp` | Utf8 | Cast timestamp |
+| `timestamp` | Timestamp | Cast publication time (ISO 8601 from the API, exposed as a Timestamp) |
 | `embeds` | Json | Embedded content (URLs, casts, etc.) |
 
 **Call syntax:**
@@ -89,8 +89,7 @@ LIMIT 10;
 
 ```sql
 SELECT hash, text, author__username, timestamp
-FROM neynar.search_casts(q => 'ethereum')
-WHERE channel_id = 'ethereum'
+FROM neynar.search_casts(q => 'ethereum', channel_id => 'ethereum')
 LIMIT 20;
 ```
 
@@ -98,8 +97,7 @@ LIMIT 20;
 
 ```sql
 SELECT hash, text, author__username
-FROM neynar.search_casts(q => 'decentralized governance proposals')
-WHERE mode = 'semantic'
+FROM neynar.search_casts(q => 'decentralized governance proposals', mode => 'semantic')
 LIMIT 15;
 ```
 
@@ -127,9 +125,9 @@ ORDER BY mentions DESC;
 
 The `/cast/search` endpoint requires a **paid Neynar API plan**. Free API keys return HTTP 402 (Payment Required). This is a Neynar restriction, not a Coral limitation.
 
-### Provider-ranked retrieval
+### Search-function semantics
 
-This source uses `kind: search` — a provider-ranked retrieval pattern. The API decides relevance ordering based on its own ranking algorithm. You cannot filter by `WHERE author__username = '...'` at the SQL level; instead, use the `author_fid` filter or include keywords in the search query.
+This source uses `kind: search`. Search criteria are passed as function arguments — `q`, `author_fid`, `channel_id`, `mode`, `sort_type` — not SQL `WHERE` clauses, so you cannot filter by an output column such as `WHERE author__username = '...'`. Results are reverse-chronological by default; pass `sort_type => 'algorithmic'` for Neynar's relevance ranking. Use `author_fid` or keywords in `q` to scope by author.
 
 ### Result limits
 

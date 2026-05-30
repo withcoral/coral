@@ -4,7 +4,8 @@ dsl_version: 3
 backend: http
 description: >-
   Neynar Farcaster API for searching casts. Uses API key authentication.
-  Returns provider-ranked results with cast content, author info, and engagement metrics.
+  Returns casts in reverse-chronological order by default, with cast
+  content, author info, and engagement metrics.
 inputs:
   NEYNAR_API_KEY:
     kind: secret
@@ -22,8 +23,10 @@ functions:
   - name: search_casts
     kind: search
     description: >-
-      Search Farcaster casts by keyword. Returns provider-ranked results
-      with cast content, author info, and engagement metrics.
+      Search Farcaster casts by keyword. Results are reverse-chronological
+      (sort_type => 'desc_chron') by default; pass sort_type => 'algorithmic'
+      for relevance ranking. Optional author_fid, channel_id, and mode args
+      narrow the search.
     search_limits:
       default_top_k: 25
       max_top_k: 100
@@ -33,6 +36,20 @@ functions:
         required: true
         bind:
           arg: q
+      - name: author_fid
+        bind:
+          arg: author_fid
+      - name: channel_id
+        bind:
+          arg: channel_id
+      - name: mode
+        values: [literal, semantic, hybrid]
+        bind:
+          arg: mode
+      - name: sort_type
+        values: [desc_chron, chron, algorithmic]
+        bind:
+          arg: sort_type
     request:
       method: GET
       path: /cast/search
@@ -41,14 +58,17 @@ functions:
           from: arg
           key: q
         - name: author_fid
-          from: filter_int
+          from: arg_int
           key: author_fid
         - name: channel_id
-          from: filter
+          from: arg
           key: channel_id
         - name: mode
-          from: filter
+          from: arg
           key: mode
+        - name: sort_type
+          from: arg
+          key: sort_type
     response:
       rows_path:
         - result
@@ -65,16 +85,6 @@ functions:
         default: 25
         max: 100
         query_param: limit
-    filters:
-      - name: author_fid
-        type: Int64
-        description: FID of the user whose casts to search.
-      - name: channel_id
-        type: Utf8
-        description: Filter by channel ID.
-      - name: mode
-        type: Utf8
-        description: Search mode: literal (default), semantic, or hybrid.
     columns:
       - name: hash
         type: Utf8
@@ -131,8 +141,15 @@ functions:
             - replies
             - count
       - name: timestamp
-        type: Utf8
-        description: Cast timestamp.
+        type: Timestamp
+        description: Cast publication time (ISO 8601 from the API, exposed as a Timestamp).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - timestamp
       - name: embeds
         type: Json
         description: Embedded content (URLs, casts, etc.).
