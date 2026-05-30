@@ -166,7 +166,7 @@
     "v4_surface": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "type", "sha256", "base_url"],
+      "required": ["id", "type", "sha256"],
       "oneOf": [
         { "required": ["url"], "not": { "required": ["file"] } },
         { "required": ["file"], "not": { "required": ["url"] } }
@@ -187,7 +187,11 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "inputs": { "$ref": "#/$defs/inputs" },
-        "base_url": { "type": "string", "minLength": 1 },
+        "base_url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Runtime base URL template. If omitted, Coral derives it from the OpenAPI document's first servers[].url during source add/materialization."
+        },
         "auth": { "$ref": "#/$defs/auth" },
         "request_headers": {
           "type": "array",

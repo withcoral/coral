@@ -1,7 +1,6 @@
 name: statusgator_v4
 version: 0.1.0
 dsl_version: 4
-description: Preview DSL v4 source for querying StatusGator.
 surfaces:
   - id: rest
     type: openapi
@@ -10,7 +9,6 @@ surfaces:
     inputs:
       STATUSGATOR_API_TOKEN:
         kind: secret
-    base_url: "https://statusgator.com/api/v3"
     auth:
       type: HeaderAuth
       headers:

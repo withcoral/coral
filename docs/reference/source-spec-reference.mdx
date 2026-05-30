@@ -64,8 +64,10 @@ test_queries:
 
 DSL v4 top-level fields are limited to `name`, `version`, `dsl_version`,
 `description`, `test_queries`, `onboarding`, `surfaces`, and
-`projection_policy`. Top-level `backend`, `inputs`, `tables`, `functions`,
-HTTP runtime fields, and `projection_overrides` are rejected for DSL v4.
+`projection_policy`. If `description` is omitted, Coral uses the OpenAPI
+document's `info.description` when available during source add/materialization.
+Top-level `backend`, `inputs`, `tables`, `functions`, HTTP runtime fields, and
+`projection_overrides` are rejected for DSL v4.
 
 ## DSL v4 surfaces
 
@@ -104,7 +106,9 @@ Each surface requires:
 - `type`: currently only `openapi`
 - exactly one descriptor location, either `url` or `file`
 - `sha256`: lowercase hex SHA-256 of the exact descriptor bytes
-- `base_url`: runtime base URL template
+- `base_url`: optional runtime base URL template. If omitted, Coral derives it
+  from the OpenAPI document's first non-empty `servers[].url` during source
+  add/materialization, substituting OpenAPI server variable defaults.
 
 Remote descriptors must use HTTPS and are always pinned by `sha256`. Local
 `file` descriptors are for imported development sources only; they must be
