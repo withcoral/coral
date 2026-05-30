@@ -91,7 +91,7 @@ through your company domain (`https://<company>.pipedrive.com`).
 | `products` | v2 | cursor |
 | `notes` | v1 | offset (`start` / `limit`) |
 | `leads` | v1 | offset (`start` / `limit`) |
-| `users` | v1 | none — returns all users in a single response |
+| `users` | v1 | offset (`start` / `limit`) |
 | `search_deals` | v2 | cursor |
 | `search_persons` | v2 | cursor |
 | `search_organizations` | v2 | cursor |
@@ -281,7 +281,7 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 ## Notes
 
 - Authenticates with `x-api-token` header (personal API token only)
-- v2 tables use cursor pagination; v1 tables (`notes`, `leads`) use offset pagination; `users` returns all records in a single response
+- v2 tables use cursor pagination; v1 tables (`notes`, `leads`, `users`) use offset pagination (`start` / `limit`)
 - `is_deleted = true` means soft-deleted; entities are fully deleted 30 days after last activity
 - Nested fields like `address` and `location` are flattened with double-underscore notation (e.g. `address__country`, `location__value`)
 - The `notes` table `owner_id` filter maps to the `user_id` query parameter on the v1 API

@@ -932,6 +932,14 @@ tables:
     response:
       rows_path:
         - data
+    pagination:
+      mode: offset
+      offset_param: start
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
     columns:
       - name: id
         type: Int64
