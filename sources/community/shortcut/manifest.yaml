@@ -3,7 +3,7 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query members, workflows, epics, stories, iterations, and milestones
+  Query members, workflows, epics, stories, iterations, and objectives
   from Shortcut via the Shortcut REST API v3.
 base_url: https://api.app.shortcut.com/api/v3
 
@@ -13,15 +13,6 @@ inputs:
     hint: |
       Shortcut API token. Generate one at
       https://app.shortcut.com/settings/account/api-tokens.
-
-      Shortcut API tokens inherit the full permissions of the user who
-      created them and may allow read or write access to all workspace
-      data visible to that user outside Coral.
-
-      This source is read-only, but the token itself may still be used
-      for write operations against the Shortcut API depending on the
-      user role associated with the token.
-
       The token is sent as the Shortcut-Token request header.
 
 auth:
@@ -304,27 +295,18 @@ tables:
   - name: stories
     description: >-
       Stories (work items) in the Shortcut workspace discovered via the
-      Shortcut search API. Each row is one story. Requires a `query`
-      filter using Shortcut search syntax. Currently returns only the
-      first page of Shortcut search results.
+      search API. Each row is one story. Use query filter for Shortcut
+      search syntax pushdown.
     guide: |
-      Required `query` filter pushes down directly to the Shortcut
-      search API. Use Shortcut search operators such as `is:started`,
-      `type:bug`, `epic:my-epic`, or `iteration:current`.
-
-      Use `epic_id` to join with `shortcut.epics` and `iteration_id`
-      to join with `shortcut.iterations`.
-
-      Examples:
-      WHERE query = 'is:started'
-      WHERE query = 'type:bug state:unstarted'
-
-      Current limitation: only the first page of Shortcut search results
-      is returned because cursor pagination is not yet implemented in
-      this source.
+      Optional `query` filter pushes down to the Shortcut search API.
+      Use Shortcut search operators such as `is:started`, `type:bug`,
+      `epic:my-epic`, or `iteration:current`. Without a query filter,
+      returns all stories. Results are paginated with a maximum of 25
+      stories per page. Use `epic_id` to join with `shortcut.epics` and
+      `iteration_id` to join with `shortcut.iterations`.
     filters:
       - name: query
-        required: true
+        required: false
     request:
       method: GET
       path: /search/stories
@@ -332,9 +314,21 @@ tables:
         - name: query
           from: filter
           key: query
+        - name: detail
+          from: literal
+          value: slim
     response:
       rows_path:
         - data
+    pagination:
+      mode: cursor_query
+      cursor_param: next
+      response_cursor_path:
+        - next
+      page_size:
+        default: 25
+        max: 25
+        query_param: page_size
     columns:
       - name: id
         type: Int64
@@ -465,11 +459,11 @@ tables:
             kind: path
             path:
               - completed_at
-      - name: query
+      - name: query_filter
         type: Utf8
         nullable: true
         virtual: true
-        description: Search query passed to the Shortcut search API; echoed onto every row.
+        description: Search query passed as the filter; echoed onto every row.
         expr:
           kind: from_filter
           key: query
@@ -557,19 +551,19 @@ tables:
               - updated_at
 
   # ──────────────────────────────────────────────────────────────────────────
-  # milestones — milestones in the workspace
+  # objectives — objectives in the workspace (replaces deprecated milestones)
   # ──────────────────────────────────────────────────────────────────────────
-  - name: milestones
+  - name: objectives
     description: >-
-      Milestones in the Shortcut workspace. Each row is one milestone.
-      Use id to join with epics for roadmap analytics.
+      Objectives in the Shortcut workspace. Each row is one objective.
+      Shortcut deprecated GET /milestones in favour of GET /objectives.
     guide: |
-      No required filters. Use `state` to filter locally by milestone
+      No required filters. Use `state` to filter locally by objective
       state: to do, in progress, or done. Use `started_at` and
-      `completed_at` for milestone cycle-time analytics.
+      `completed_at` for objective cycle-time analytics.
     request:
       method: GET
-      path: /milestones
+      path: /objectives
     response:
       row_strategy: direct
     pagination:
@@ -578,7 +572,7 @@ tables:
       - name: id
         type: Int64
         nullable: false
-        description: Milestone ID.
+        description: Objective ID.
         expr:
           kind: path
           path:
@@ -586,7 +580,7 @@ tables:
       - name: name
         type: Utf8
         nullable: true
-        description: Milestone name.
+        description: Objective name.
         expr:
           kind: path
           path:
@@ -594,7 +588,7 @@ tables:
       - name: description
         type: Utf8
         nullable: true
-        description: Milestone description.
+        description: Objective description.
         expr:
           kind: path
           path:
@@ -602,7 +596,7 @@ tables:
       - name: state
         type: Utf8
         nullable: true
-        description: "Milestone state: to do, in progress, or done."
+        description: "Objective state: to do, in progress, or done."
         expr:
           kind: path
           path:
@@ -610,7 +604,7 @@ tables:
       - name: created_at
         type: Timestamp
         nullable: true
-        description: Timestamp when the milestone was created.
+        description: Timestamp when the objective was created.
         expr:
           kind: format_timestamp
           input: iso8601
@@ -621,7 +615,7 @@ tables:
       - name: updated_at
         type: Timestamp
         nullable: true
-        description: Timestamp when the milestone was last updated.
+        description: Timestamp when the objective was last updated.
         expr:
           kind: format_timestamp
           input: iso8601
@@ -632,7 +626,7 @@ tables:
       - name: started_at
         type: Timestamp
         nullable: true
-        description: Timestamp when the milestone was started.
+        description: Timestamp when the objective was started.
         expr:
           kind: format_timestamp
           input: iso8601
@@ -643,7 +637,7 @@ tables:
       - name: completed_at
         type: Timestamp
         nullable: true
-        description: Timestamp when the milestone was completed.
+        description: Timestamp when the objective was completed.
         expr:
           kind: format_timestamp
           input: iso8601
