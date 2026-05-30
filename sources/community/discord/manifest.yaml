@@ -309,8 +309,19 @@ tables:
         - name: limit
           from: literal
           value: "100"
+        - name: after
+          from: cursor
+          key: after
     pagination:
-      mode: none
+      mode: cursor
+      cursor:
+        next_path:
+          - id
+        query_param: after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
     response:
       row_strategy: direct
     columns:
