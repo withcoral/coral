@@ -2,7 +2,7 @@
 
 [Neynar](https://neynar.com) is the leading API provider for the [Farcaster](https://farcaster.xyz) decentralized social protocol. This community source exposes Farcaster cast search as a read-only SQL table function via [Coral](https://withcoral.com).
 
-Uses `kind: search` — a provider-ranked retrieval pattern. Results come back in Neynar's default reverse-chronological order (`sort_type => 'desc_chron'`); pass `sort_type => 'algorithmic'` for relevance ranking. Search criteria are passed as function arguments, not SQL `WHERE` clauses.
+Uses `kind: search` — a provider-ranked retrieval pattern. Results come back in Neynar's default reverse-chronological order (`sort_type => 'desc_chron'`); pass `sort_type => 'algorithmic'` to order by engagement and time. Search criteria are passed as function arguments, not SQL `WHERE` clauses.
 
 ---
 
@@ -38,7 +38,7 @@ coral source test neynar
 
 ### `neynar.search_casts`
 
-Farcaster cast search. Returns casts matching a search query in reverse-chronological order by default (`sort_type => 'desc_chron'`), or by relevance with `sort_type => 'algorithmic'`.
+Farcaster cast search. Returns casts matching a search query in reverse-chronological order by default (`sort_type => 'desc_chron'`), or ordered by engagement and time with `sort_type => 'algorithmic'`.
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
@@ -127,7 +127,7 @@ The `/cast/search` endpoint requires a **paid Neynar API plan**. Free API keys r
 
 ### Search-function semantics
 
-This source uses `kind: search`. Search criteria are passed as function arguments — `q`, `author_fid`, `channel_id`, `mode`, `sort_type` — not SQL `WHERE` clauses, so you cannot filter by an output column such as `WHERE author__username = '...'`. Results are reverse-chronological by default; pass `sort_type => 'algorithmic'` for Neynar's relevance ranking. Use `author_fid` or keywords in `q` to scope by author.
+This source uses `kind: search`. Search criteria are passed as function arguments — `q`, `author_fid`, `channel_id`, `mode`, `sort_type` — not SQL `WHERE` clauses, so you cannot filter by an output column such as `WHERE author__username = '...'`. Results are reverse-chronological by default; pass `sort_type => 'algorithmic'` for Neynar's engagement-and-time ordering. Use `author_fid` or keywords in `q` to scope by author.
 
 ### Result limits
 

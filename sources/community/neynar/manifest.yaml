@@ -25,7 +25,7 @@ functions:
     description: >-
       Search Farcaster casts by keyword. Results are reverse-chronological
       (sort_type => 'desc_chron') by default; pass sort_type => 'algorithmic'
-      for relevance ranking. Optional author_fid, channel_id, and mode args
+      to order by engagement and time. Optional author_fid, channel_id, and mode args
       narrow the search.
     search_limits:
       default_top_k: 25
