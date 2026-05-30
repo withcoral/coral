@@ -1,5 +1,6 @@
 //! DSL v4 source materialization and artifact loading.
 
+use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -8,7 +9,7 @@ use coral_spec::v4::{
     Diagnostic, Fingerprint, FingerprintSurface, MaterializedSurface, OPENAPI_IMPORTER_VERSION,
     PROJECTION_GENERATOR_VERSION, ProjectionCatalog, SemanticIr, V4_ARTIFACT_SCHEMA_VERSION,
     V4MaterializedSource, V4SourceManifest, generate_projection_catalog, import_openapi_surface,
-    normalize_source_document, validate_materialized_source,
+    normalize_source_document, openapi_document_metadata, validate_materialized_source,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -16,6 +17,7 @@ use coral_spec::{
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
 };
 use serde_json::{Value, json};
+use serde_yaml::Value as YamlValue;
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
@@ -104,6 +106,86 @@ pub(crate) fn build_v4_materialization_tmp(
             Err(error)
         }
     }
+}
+
+pub(crate) fn enrich_v4_openapi_manifest_yaml(
+    manifest_yaml: &str,
+    manifest: &V4SourceManifest,
+    descriptor_source: MaterializationDescriptorSource<'_>,
+) -> Result<String, AppError> {
+    let needs_description = manifest.common.description.trim().is_empty();
+    let needs_base_url = manifest
+        .surfaces
+        .iter()
+        .any(|surface| surface.openapi_runtime.base_url.raw().trim().is_empty());
+    if !needs_description && !needs_base_url {
+        return Ok(manifest_yaml.to_string());
+    }
+
+    let mut base_urls = BTreeMap::new();
+    let mut description = None;
+    for surface in &manifest.surfaces {
+        let surface_needs_base_url = surface.openapi_runtime.base_url.raw().trim().is_empty();
+        if !surface_needs_base_url && (!needs_description || description.is_some()) {
+            continue;
+        }
+
+        let bytes = read_verified_descriptor(surface, descriptor_source.bundled_descriptors)?;
+        let metadata = openapi_document_metadata(&bytes)
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        if surface_needs_base_url {
+            let server_url = metadata.server_url.ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "source '{}' surface '{}' omits base_url, but the OpenAPI document has no non-empty servers[0].url",
+                    manifest.common.name, surface.id
+                ))
+            })?;
+            base_urls.insert(surface.id.clone(), server_url);
+        }
+        if needs_description && description.is_none() {
+            description = metadata.description;
+        }
+    }
+
+    if base_urls.is_empty() && description.is_none() {
+        return Ok(manifest_yaml.to_string());
+    }
+
+    let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
+    if let Some(description) = description {
+        value
+            .as_mapping_mut()
+            .ok_or_else(|| AppError::InvalidInput("DSL v4 manifest must be a mapping".to_string()))?
+            .insert(
+                YamlValue::String("description".to_string()),
+                YamlValue::String(description),
+            );
+    }
+    if !base_urls.is_empty() {
+        let surfaces_key = YamlValue::String("surfaces".to_string());
+        let id_key = YamlValue::String("id".to_string());
+        let base_url_key = YamlValue::String("base_url".to_string());
+        let surfaces = value
+            .as_mapping_mut()
+            .and_then(|mapping| mapping.get_mut(&surfaces_key))
+            .and_then(YamlValue::as_sequence_mut)
+            .ok_or_else(|| {
+                AppError::InvalidInput("DSL v4 manifest is missing surfaces".to_string())
+            })?;
+        for surface in surfaces {
+            let Some(mapping) = surface.as_mapping_mut() else {
+                continue;
+            };
+            let Some(surface_id) = mapping.get(&id_key).and_then(YamlValue::as_str) else {
+                continue;
+            };
+            let Some(base_url) = base_urls.get(surface_id) else {
+                continue;
+            };
+            mapping.insert(base_url_key.clone(), YamlValue::String(base_url.clone()));
+        }
+    }
+    serde_yaml::to_string(&value).map_err(AppError::from)
 }
 
 pub(crate) fn replace_v4_materialization(
@@ -392,6 +474,23 @@ fn read_descriptor(
         }
         coral_spec::v4::SurfaceDescriptor::Url { url, .. } => read_url_descriptor(url),
     }
+}
+
+fn read_verified_descriptor(
+    surface: &coral_spec::v4::V4Surface,
+    bundled_descriptors: &[BundledV4Descriptor],
+) -> Result<Vec<u8>, AppError> {
+    let bytes = read_descriptor(surface, bundled_descriptors)?;
+    let observed = sha256_hex(&bytes);
+    if observed != surface.descriptor.sha256() {
+        return Err(AppError::FailedPrecondition(format!(
+            "descriptor hash mismatch for source surface '{}': expected {}, observed {}",
+            surface.id,
+            surface.descriptor.sha256(),
+            observed
+        )));
+    }
+    Ok(bytes)
 }
 
 fn bundled_descriptor<'a>(

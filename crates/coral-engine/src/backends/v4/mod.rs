@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::v4::{
     ProjectionKind, ProjectionVisibility, V4MaterializedSource, V4SourceManifest,
-    projection_arg_specs, projection_column_specs, projection_filter_specs,
-    request_spec_for_projection,
+    openapi_document_metadata, projection_arg_specs, projection_column_specs,
+    projection_filter_specs, request_spec_for_projection,
 };
-use coral_spec::{SourceTableFunctionSpec, TableCommon};
+use coral_spec::{ParsedTemplate, SourceTableFunctionSpec, TableCommon};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -155,13 +155,46 @@ fn http_manifest_for_surface(
     }
     Ok(HttpSourceManifest {
         common: manifest.common.clone(),
-        base_url: surface.openapi_runtime.base_url.clone(),
+        base_url: surface_base_url(surface, materialized_surface)?,
         auth: surface.openapi_runtime.auth.clone(),
         request_headers: surface.openapi_runtime.request_headers.clone(),
         rate_limit: surface.openapi_runtime.rate_limit.clone(),
         tables,
         functions,
         declared_inputs: manifest.declared_inputs.clone(),
+    })
+}
+
+fn surface_base_url(
+    surface: &coral_spec::v4::V4Surface,
+    materialized_surface: &coral_spec::v4::MaterializedSurface,
+) -> Result<ParsedTemplate, CoreError> {
+    if !surface.openapi_runtime.base_url.raw().trim().is_empty() {
+        return Ok(surface.openapi_runtime.base_url.clone());
+    }
+    let bytes = std::fs::read(&materialized_surface.raw_source_document_path).map_err(|error| {
+        CoreError::FailedPrecondition(format!(
+            "failed to read materialized OpenAPI document for surface '{}': {error}",
+            surface.id
+        ))
+    })?;
+    let metadata = openapi_document_metadata(&bytes).map_err(|error| {
+        CoreError::FailedPrecondition(format!(
+            "failed to derive base_url for DSL v4 surface '{}': {error}",
+            surface.id
+        ))
+    })?;
+    let server_url = metadata.server_url.ok_or_else(|| {
+        CoreError::FailedPrecondition(format!(
+            "DSL v4 surface '{}' omits base_url and the materialized OpenAPI document has no non-empty servers[0].url",
+            surface.id
+        ))
+    })?;
+    ParsedTemplate::parse(server_url).map_err(|error| {
+        CoreError::FailedPrecondition(format!(
+            "failed to parse derived base_url for DSL v4 surface '{}': {error}",
+            surface.id
+        ))
     })
 }
 
