@@ -1597,7 +1597,9 @@ fn resolve_projection_name_collisions(
             .iter()
             .copied()
             .max_by_key(|index| {
-                let projection = &projections[*index];
+                let projection = projections
+                    .get(*index)
+                    .expect("projection index came from projections");
                 operations
                     .get(&(
                         projection.surface_id.as_str(),
@@ -1613,7 +1615,9 @@ fn resolve_projection_name_collisions(
 
     let mut used_names = HashSet::new();
     for index in keep_base_name.iter().copied() {
-        used_names.insert(projections[index].name.clone());
+        if let Some(projection) = projections.get(index) {
+            used_names.insert(projection.name.clone());
+        }
     }
 
     for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
@@ -1621,7 +1625,9 @@ fn resolve_projection_name_collisions(
             if keep_base_name.contains(index) {
                 continue;
             }
-            let projection = &projections[*index];
+            let projection = projections
+                .get(*index)
+                .expect("projection index came from projections");
             let operation = operations.get(&(
                 projection.surface_id.as_str(),
                 projection.operation_id.as_str(),
@@ -1639,13 +1645,16 @@ fn resolve_projection_name_collisions(
                 name = format!("{name}__{suffix}");
             }
             used_names.insert(name.clone());
-            projections[*index].name = name.clone();
-            projections[*index].diagnostics.push(Diagnostic {
+            let projection = projections
+                .get_mut(*index)
+                .expect("projection index came from projections");
+            projection.name.clone_from(&name);
+            projection.diagnostics.push(Diagnostic {
                 code: "PROJECTION_NAME_COLLISION_RESOLVED".to_string(),
                 severity: DiagnosticSeverity::Warning,
                 message: format!("projection name collision resolved as '{name}'"),
-                surface_id: Some(projections[*index].surface_id.clone()),
-                operation_id: Some(projections[*index].operation_id.clone()),
+                surface_id: Some(projection.surface_id.clone()),
+                operation_id: Some(projection.operation_id.clone()),
                 projection_name: Some(name),
             });
         }
@@ -2429,6 +2438,10 @@ components:
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The OpenAPI fixture keeps related collision cases together."
+    )]
     fn projection_names_prefer_repository_lists_and_contextual_collisions() {
         let manifest = parse_source_manifest_yaml(
             r"
@@ -2545,22 +2558,31 @@ components:
             })
             .collect::<HashMap<_, _>>();
 
-        assert_eq!(names_by_operation["issues_list"].0, "issues_list");
-        assert_eq!(
-            names_by_operation["issues_list_for_org"].0,
-            "organization_issues"
-        );
-        assert_eq!(names_by_operation["issues_list_for_repo"].0, "issues");
-        assert_eq!(names_by_operation["pulls_list"].0, "pulls");
-        assert!(matches!(
-            names_by_operation["pulls_list"].1,
-            ProjectionKind::Table
-        ));
-        assert_eq!(names_by_operation["repos_list_commits"].0, "commits");
-        assert_eq!(
-            names_by_operation["pulls_list_commits"].0,
-            "repository_commits"
-        );
+        let issues_list = names_by_operation
+            .get("issues_list")
+            .expect("issues_list projection");
+        assert_eq!(issues_list.0, "issues_list");
+        let org_issues = names_by_operation
+            .get("issues_list_for_org")
+            .expect("issues_list_for_org projection");
+        assert_eq!(org_issues.0, "organization_issues");
+        let repo_issues = names_by_operation
+            .get("issues_list_for_repo")
+            .expect("issues_list_for_repo projection");
+        assert_eq!(repo_issues.0, "issues");
+        let pulls = names_by_operation
+            .get("pulls_list")
+            .expect("pulls_list projection");
+        assert_eq!(pulls.0, "pulls");
+        assert!(matches!(pulls.1, ProjectionKind::Table));
+        let commits = names_by_operation
+            .get("repos_list_commits")
+            .expect("repos_list_commits projection");
+        assert_eq!(commits.0, "commits");
+        let pull_commits = names_by_operation
+            .get("pulls_list_commits")
+            .expect("pulls_list_commits projection");
+        assert_eq!(pull_commits.0, "repository_commits");
     }
 
     #[test]
