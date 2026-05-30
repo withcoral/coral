@@ -3,44 +3,63 @@ version: 0.1.0
 dsl_version: 3
 backend: file
 
-description: Reads LinkedIn account data export CSV files as queryable SQL tables.
+description: Reads a LinkedIn account data export (the CSV archive any member can download) as queryable SQL tables.
 
 inputs:
   LINKEDIN_EXPORT_PATH:
     kind: variable
     default: ./linkedin_export
-    hint: Absolute or relative path to the extracted LinkedIn account data export directory (contains Profile.csv, Skills.csv, Positions.csv, Connections.csv).
+    hint: Absolute or relative path to the extracted LinkedIn data export directory (contains Profile.csv, Skills.csv, Positions.csv, and optionally Connections.csv).
 
 test_queries:
   - SELECT * FROM linkedin.skills LIMIT 1
   - SELECT * FROM linkedin.profile LIMIT 1
-  - SELECT first_name, last_name, company, position FROM linkedin.connections LIMIT 1
+  - SELECT * FROM linkedin.positions LIMIT 1
 
 tables:
   - name: profile
-    description: "LinkedIn profile data: headline, summary, location."
+    description: "LinkedIn profile data: name, headline, summary, industry, location."
     format: csv
     format_options:
       has_header: true
     source:
       location: file://{{input.LINKEDIN_EXPORT_PATH}}/
       glob: Profile.csv
+    # Column order matches LinkedIn's current Basic export (Profile.csv has 13
+    # columns). Declared columns are mapped positionally, so the full row is
+    # listed here even though most queries only use a few fields.
     columns:
       - name: first_name
         type: Utf8
       - name: last_name
         type: Utf8
+      - name: maiden_name
+        type: Utf8
+      - name: address
+        type: Utf8
+      - name: birth_date
+        type: Utf8
       - name: headline
         type: Utf8
       - name: summary
         type: Utf8
-      - name: location
-        type: Utf8
       - name: industry
+        type: Utf8
+      - name: zip_code
+        type: Utf8
+      - name: geo_location
+        type: Utf8
+      - name: twitter_handles
+        type: Utf8
+      - name: websites
+        type: Utf8
+      - name: instant_messengers
         type: Utf8
 
   - name: skills
-    description: LinkedIn skills with endorsement counts.
+    description: >-
+      LinkedIn skills. The current Basic export ships a single-column
+      Skills.csv (skill name only; endorsement counts are no longer included).
     format: csv
     format_options:
       has_header: true
@@ -50,11 +69,9 @@ tables:
     columns:
       - name: name
         type: Utf8
-      - name: endorsements
-        type: Int64
 
   - name: positions
-    description: "Work history: company, title, and dates."
+    description: "Work history: company, title, description, location, and dates."
     format: csv
     format_options:
       has_header: true
@@ -76,7 +93,12 @@ tables:
         type: Utf8
 
   - name: connections
-    description: "LinkedIn connections: person, company, and connected date."
+    description: >-
+      Network connections (name, profile URL, email, company, position, date).
+      LinkedIn ships Connections.csv with a 3-line notes preamble before the
+      header; Coral's CSV backend reads from the first line, so the preamble
+      must be removed first (see README "Connections preprocessing"). The
+      columns below match the post-preamble header of a standard export.
     format: csv
     format_options:
       has_header: true
@@ -87,6 +109,8 @@ tables:
       - name: first_name
         type: Utf8
       - name: last_name
+        type: Utf8
+      - name: url
         type: Utf8
       - name: email_address
         type: Utf8
