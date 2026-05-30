@@ -22,10 +22,11 @@ When inviting the bot to your server, use the OAuth2 URL Generator with:
 |---|---|---|
 | Read Messages / View Channels | `0x400` | All guild-scoped tables (channels, messages, members, roles) |
 | Read Message History | `0x10000` | `messages` table |
-| Read Members | `0x20` | `members` table (in addition to the `GUILD_MEMBERS` privileged intent) |
 | Send Messages | `0x800` | Not required for querying; only needed if the bot posts messages |
 
-The minimal permission integer for read-only queries is `0x10420` (Read Members + Read Messages / View Channels + Read Message History).
+The `members` table additionally requires the `GUILD_MEMBERS` privileged intent (configured in step 1.3), but no extra bot permission beyond `VIEW_CHANNEL`.
+
+The minimal permission integer for read-only queries is `0x10400` (View Channels + Read Message History).
 
 ### 3. Set the bot token
 
