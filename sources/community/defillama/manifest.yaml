@@ -14,7 +14,7 @@ tables:
   - name: protocols
     description: >-
       All DeFi protocols tracked by DeFiLlama with TVL and
-      price change metrics over 1d and 7d windows.
+      TVL change metrics over 1d and 7d windows.
     request:
       method: GET
       path: /protocols
@@ -62,6 +62,12 @@ tables:
     pagination:
       mode: none
     columns:
+      - name: slug
+        type: Utf8
+        description: Protocol slug used to scope the request (echoed from the filter).
+        expr:
+          kind: from_filter
+          key: slug
       - name: name
         type: Utf8
         description: Protocol display name.
@@ -73,7 +79,7 @@ tables:
         description: Array of chain names the protocol operates on.
       - name: current_chain_tvls
         type: Json
-        description: Current TVL per chain as a JSON object (e.g. {"Ethereum": 5000000000}).
+        description: 'Current TVL per chain as a JSON object (e.g. {"Ethereum": 5000000000}).'
         expr:
           kind: path
           path:

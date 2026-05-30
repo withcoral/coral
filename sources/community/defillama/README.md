@@ -1,6 +1,6 @@
 # DeFiLlama Source
 
-[DeFiLlama](https://defillama.com) is the largest TVL aggregator for DeFi protocols. This community source exposes DeFi protocol TVL and price-change metrics as read-only SQL tables via [Coral](https://withcoral.com).
+[DeFiLlama](https://defillama.com) is the largest TVL aggregator for DeFi protocols. This community source exposes DeFi protocol TVL and TVL-change metrics as read-only SQL tables via [Coral](https://withcoral.com).
 
 No authentication required — the DeFiLlama API is free and keyless.
 
@@ -26,7 +26,7 @@ coral source test defillama
 
 ### `defillama.protocols`
 
-All DeFi protocols tracked by DeFiLlama with TVL and price change metrics over 1d and 7d windows.
+All DeFi protocols tracked by DeFiLlama with TVL and TVL-change metrics over 1d and 7d windows.
 
 No required filters — returns all protocols in a single request.
 
