@@ -6,11 +6,14 @@ members, teams, configuration metadata, and member activity analytics.
 
 ## Setup
 
-Create a Productboard REST API token in Productboard integrations settings, or
-use an OAuth access token. The token needs read scopes for the surfaces you
-query, for example `entities:read`, `notes:read`, `members:read`,
-`teams:read`, and `analytics:read`. Owner/member email fields require the
-appropriate PII read permission; otherwise Productboard may redact them.
+Create a Productboard REST API token from your workspace's integrations
+settings for internal tools, or use an OAuth access token for an installed
+integration. The token must be authorized for the workspace you want to query
+and needs read scopes for the surfaces you use, for example `entities:read`,
+`notes:read`, `members:read`, `teams:read`, and `analytics:read`. Owner,
+creator, member, and customer email/name fields require the relevant PII read
+scope, such as `members:pii:read` or `users:pii:read`; otherwise Productboard
+may return `[redacted]` values or reject email filters.
 
 ```bash
 PRODUCTBOARD_API_TOKEN=... \
@@ -21,6 +24,14 @@ Run validation:
 
 ```bash
 coral source test productboard
+```
+
+First-success query after setup:
+
+```sql
+SELECT id, entity_type, name, status__name, updated_at
+FROM productboard.entities
+LIMIT 5;
 ```
 
 ## Tables
@@ -41,6 +52,8 @@ coral source test productboard
 
 ## Example queries
 
+Feature and roadmap review:
+
 ```sql
 SELECT name, status__name, owner__email, health__status, updated_at
 FROM productboard.features
@@ -49,19 +62,25 @@ ORDER BY updated_at DESC
 LIMIT 20;
 ```
 
+Customer feedback triage:
+
 ```sql
-SELECT name, owner__email, creator__email, processed, archived, created_at
+SELECT name, source_system, owner__email, creator__email, processed, archived, created_at
 FROM productboard.notes
 WHERE archived = false AND source_system = 'zendesk'
 ORDER BY created_at DESC
 LIMIT 50;
 ```
 
+Configuration discovery for plan/workspace-specific fields:
+
 ```sql
 SELECT type, filters_json
 FROM productboard.entity_configurations
 WHERE entity_type = 'feature';
 ```
+
+Workspace adoption window:
 
 ```sql
 SELECT date, member_id, role, feature_created_count, note_created_count
@@ -76,7 +95,9 @@ WHERE date_from = '2025-10-01' AND date_to = '2025-10-31';
 - Productboard list endpoints are cursor-paginated with `links.next` URLs and
   `pageCursor`. The current Coral HTTP DSL cannot safely extract `pageCursor`
   from a full JSON URL, so list tables expose a bounded first page instead of
-  claiming complete table-wide pagination.
+  claiming complete table-wide pagination. Treat broad unfiltered queries as
+  samples; use provider filters such as entity type, status, owner, note source,
+  and date windows for repeatable workflows.
 - Productboard entities and notes are configuration-driven. Standard fields are
   exposed as columns where stable, and dynamic/custom fields are preserved in
   `fields_json` and `raw_json`.
@@ -84,6 +105,12 @@ WHERE date_from = '2025-10-01' AND date_to = '2025-10-31';
   `notes:read`, `members:read`, `teams:read`, and `analytics:read`.
 - Some PII fields, including owner/member emails, are returned as `[redacted]`
   unless the token has the required PII read scope.
+- Available entity fields, filters, and customer/user fields can vary by
+  Productboard plan and workspace configuration. Use
+  `productboard.entity_configurations` and `productboard.note_configurations`
+  to inspect the exact workspace schema before depending on custom fields.
+- Productboard may return 429 rate-limit responses; keep validation queries
+  bounded and prefer narrower provider filters over large local scans.
 - Notes expose `created_at` and `updated_at` from Productboard's top-level
   note timestamps. Members and teams read stable values from their nested
   `fields` objects.

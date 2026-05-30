@@ -13,10 +13,12 @@ inputs:
     kind: secret
     hint: |
       Productboard REST API token or OAuth access token. Create REST API tokens
-      in Productboard integrations settings, or provide an OAuth access token
-      with read scopes such as entities:read, notes:read, members:read,
-      teams:read, and analytics:read. Paste only the token value, without a
-      `Bearer` prefix.
+      from Productboard workspace integrations settings, or provide an OAuth
+      access token authorized for the workspace. The token needs read access for
+      the surfaces queried here, such as entities:read, notes:read,
+      members:read, teams:read, and analytics:read. PII fields and email
+      filters require the relevant PII read scope. Paste only the token value,
+      without a `Bearer` prefix.
 
 auth:
   type: HeaderAuth
@@ -41,7 +43,9 @@ tables:
     guide: |
       Use `entity_type` to select products, components, features, subfeatures,
       initiatives, objectives, key results, releases, release groups, users, or
-      companies. Productboard custom fields are exposed in `fields_json`.
+      companies. Productboard custom fields are exposed in `fields_json`. This
+      table returns the first Productboard API page only; use provider filters
+      to keep the result set narrow.
     fetch_limit_default: 100
     filters:
       - name: entity_type
@@ -75,7 +79,7 @@ tables:
           from: filter
           key: status_name
         - name: archived
-          from: filter
+          from: filter_bool
           key: archived
         - name: parent[id]
           from: filter
@@ -178,6 +182,11 @@ tables:
 
   - name: features
     description: Productboard feature entities.
+    guide: |
+      Use this table for roadmap-style feature status, ownership, health, and
+      parent hierarchy queries. Productboard pagination is bounded to the first
+      provider page, so add status, owner, archived, or parent filters for
+      focused workflows.
     fetch_limit_default: 100
     filters:
       - name: name
@@ -202,7 +211,7 @@ tables:
           from: filter
           key: status_name
         - name: archived
-          from: filter
+          from: filter_bool
           key: archived
         - name: parent[id]
           from: filter
@@ -215,6 +224,10 @@ tables:
 
   - name: initiatives
     description: Productboard initiative entities.
+    guide: |
+      Use this table for strategic roadmap and objective planning views.
+      Productboard pagination is bounded to the first provider page, so filter
+      by status, owner, archived state, or name for focused workflows.
     fetch_limit_default: 100
     filters:
       - name: name
@@ -238,7 +251,7 @@ tables:
           from: filter
           key: status_name
         - name: archived
-          from: filter
+          from: filter_bool
           key: archived
     response:
       rows_path: [data]
@@ -248,6 +261,10 @@ tables:
 
   - name: companies
     description: Productboard company customer entities.
+    guide: |
+      Use this table to join feedback and customer-account context. Productboard
+      pagination is bounded to the first provider page, so filter by name or
+      archived state when validating a workspace with many companies.
     fetch_limit_default: 100
     filters:
       - name: name
@@ -263,7 +280,7 @@ tables:
           from: filter
           key: name
         - name: archived
-          from: filter
+          from: filter_bool
           key: archived
     response:
       rows_path: [data]
@@ -273,6 +290,10 @@ tables:
 
   - name: users
     description: Productboard customer user entities.
+    guide: |
+      Use this table for customer-user feedback context. Productboard pagination
+      is bounded to the first provider page, and customer user names may be
+      redacted unless the token has the relevant PII read scope.
     fetch_limit_default: 100
     filters:
       - name: name
@@ -288,7 +309,7 @@ tables:
           from: filter
           key: name
         - name: archived
-          from: filter
+          from: filter_bool
           key: archived
     response:
       rows_path: [data]
@@ -298,6 +319,11 @@ tables:
 
   - name: notes
     description: Productboard notes and customer feedback records.
+    guide: |
+      Use this table for feedback triage by owner, creator, source system,
+      processed state, archived state, and created/updated windows. Productboard
+      pagination is bounded to the first provider page, so use date and source
+      filters for repeatable review windows.
     fetch_limit_default: 100
     filters:
       - name: archived
@@ -317,10 +343,10 @@ tables:
       path: /notes
       query:
         - name: archived
-          from: filter
+          from: filter_bool
           key: archived
         - name: processed
-          from: filter
+          from: filter_bool
           key: processed
         - name: owner[id]
           from: filter
@@ -425,11 +451,8 @@ tables:
       - name: source_system
         type: Utf8
         nullable: true
-        virtual: true
-        description: Source system supplied as a filter.
-        expr:
-          kind: from_filter
-          key: source_system
+        description: Source system from note metadata.
+        expr: {kind: path, path: [metadata, source, system]}
       - name: links__self
         type: Utf8
         nullable: true
@@ -463,6 +486,7 @@ tables:
 
   - name: entity_configurations
     description: Entity type field, relationship, and filter configuration metadata.
+    fetch_limit_default: 25
     filters:
       - name: entity_type
     request:
@@ -504,6 +528,7 @@ tables:
 
   - name: note_configurations
     description: Note type field and validation configuration metadata.
+    fetch_limit_default: 25
     filters:
       - name: note_type
     request:
@@ -540,6 +565,12 @@ tables:
 
   - name: members
     description: Productboard workspace members.
+    guide: |
+      Use this table for workspace ownership and collaborator lookup.
+      Productboard pagination is bounded to the first provider page; use
+      `query`, `role`, `include_disabled`, and `include_invitation_pending`
+      filters for smaller member sets. Name, username, and email require the
+      relevant PII read scope.
     fetch_limit_default: 100
     filters:
       - name: query
@@ -557,10 +588,10 @@ tables:
           from: filter
           key: role
         - name: includeDisabled
-          from: filter
+          from: filter_bool
           key: include_disabled
         - name: includeInvitationPending
-          from: filter
+          from: filter_bool
           key: include_invitation_pending
     response:
       rows_path: [data]
@@ -614,6 +645,11 @@ tables:
 
   - name: teams
     description: Productboard teams.
+    guide: |
+      Use this table for ownership/team lookup in feature and initiative
+      workflows. Productboard pagination is bounded to the first provider page,
+      so filter by `name`, `handle`, or `query` when the workspace has many
+      teams.
     fetch_limit_default: 100
     filters:
       - name: name
@@ -674,6 +710,10 @@ tables:
 
   - name: member_activities
     description: Member activity analytics with optional date filtering.
+    guide: |
+      Use this table for adoption and activity windows. Prefer bounded
+      `date_from` and `date_to` filters; Productboard pagination is bounded to
+      the first provider page.
     fetch_limit_default: 100
     filters:
       - name: date_from
