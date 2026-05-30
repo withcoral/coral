@@ -5,8 +5,19 @@ import sqlite3
 import shutil
 import tempfile
 import re
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+def convert_webkit_timestamp(webkit_timestamp):
+    if not webkit_timestamp:
+        return None
+    try:
+        epoch_start = datetime(1601, 1, 1)
+        delta = timedelta(microseconds=int(webkit_timestamp))
+        return (epoch_start + delta).isoformat() + "Z"
+    except Exception:
+        return str(webkit_timestamp)
 
 def get_base_path(browser):
     if sys.platform == "darwin":
@@ -36,31 +47,32 @@ def resolve_active_profile(browser):
         return None
 
     profiles = []
-    # Optimized: We only check immediate child directories instead of a deep os.walk
-    for d in os.listdir(base_path):
-        if d == "Default" or d.startswith("Profile ") or d.startswith("Guest Profile"):
-            dir_path = os.path.join(base_path, d)
-            if os.path.isdir(dir_path):
-                history_path = os.path.join(dir_path, "History")
-                bookmarks_path = os.path.join(dir_path, "Bookmarks")
-                
-                mtime = 0
-                if os.path.exists(history_path):
-                    mtime = max(mtime, os.path.getmtime(history_path))
-                if os.path.exists(bookmarks_path):
-                    mtime = max(mtime, os.path.getmtime(bookmarks_path))
+    try:
+        for d in os.listdir(base_path):
+            if d == "Default" or d.startswith("Profile ") or d.startswith("Guest Profile"):
+                dir_path = os.path.join(base_path, d)
+                if os.path.isdir(dir_path):
+                    mtime = os.path.getmtime(dir_path)
                     
-                if mtime > 0:
+                    history_path = os.path.join(dir_path, "History")
+                    bookmarks_path = os.path.join(dir_path, "Bookmarks")
+                    
+                    if os.path.exists(history_path):
+                        mtime = max(mtime, os.path.getmtime(history_path))
+                    if os.path.exists(bookmarks_path):
+                        mtime = max(mtime, os.path.getmtime(bookmarks_path))
+                        
                     profiles.append((dir_path, mtime))
+    except Exception as e:
+        print(f"Error accessing profiles for {browser}: {e}")
+        return None
 
     if not profiles:
         default_path = os.path.join(base_path, "Default")
         return default_path if os.path.exists(default_path) else None
 
-    # Deterministic profile selection passed down to functions
     profiles.sort(key=lambda x: x[1], reverse=True)
     best_match = profiles[0][0]
-    print(f"Resolved active profile: {best_match}")
     return best_match
 
 def query_sqlite(db_name, profile_path, query):
@@ -71,7 +83,6 @@ def query_sqlite(db_name, profile_path, query):
     temp_dir = tempfile.mkdtemp()
     temp_path = os.path.join(temp_dir, db_name)
     
-    # Copying WAL and SHM sidecars
     for ext in ["", "-wal", "-shm"]:
         src = original_path + ext
         if os.path.exists(src):
@@ -116,7 +127,7 @@ def extract_bookmarks(profile_path):
                     "title": node.get("name", ""),
                     "url": node.get("url", ""), 
                     "type": node.get("type", ""),
-                    "date_added": str(node.get("date_added", ""))
+                    "date_added": convert_webkit_timestamp(node.get("date_added"))
                 })
             if "children" in node:
                 traverse(node["children"])
@@ -129,11 +140,17 @@ def extract_bookmarks(profile_path):
 
 def extract_history(profile_path):
     q = "SELECT id, url, title, visit_count, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 5000"
-    return query_sqlite("History", profile_path, q)
+    results = query_sqlite("History", profile_path, q)
+    for r in results:
+        r["last_visit_time"] = convert_webkit_timestamp(r["last_visit_time"])
+    return results
 
 def extract_downloads(profile_path):
     q = "SELECT id, target_path, received_bytes, total_bytes, start_time FROM downloads ORDER BY start_time DESC LIMIT 2000"
-    return query_sqlite("History", profile_path, q)
+    results = query_sqlite("History", profile_path, q)
+    for r in results:
+        r["start_time"] = convert_webkit_timestamp(r["start_time"])
+    return results
 
 def extract_top_sites(profile_path):
     q = "SELECT url_rank, url, title FROM top_sites ORDER BY url_rank ASC LIMIT 100"
@@ -154,7 +171,6 @@ def extract_extensions(profile_path):
         if not versions: 
             continue
             
-        # Deterministic version selection
         versions.sort(key=lambda v: os.path.getmtime(os.path.join(id_path, v)), reverse=True)
         manifest_path = os.path.join(id_path, versions[0], "manifest.json")
         
@@ -167,7 +183,6 @@ def extract_extensions(profile_path):
                         name = ext_id 
                     results.append({"id": ext_id, "name": name, "version": manifest.get("version", "")})
             except Exception as e:
-                # Removed bare except
                 print(f"Error reading extension manifest {manifest_path}: {e}")
     return results
 
@@ -186,13 +201,11 @@ def extract_tabs(profile_path):
                     found_urls = re.findall(r'(https?://[^\s\x00]+)', content)
                     urls.update(found_urls)
             except Exception as e:
-                # Removed bare except
                 print(f"Error reading session file {file_path}: {e}")
     return [{"url": u} for u in list(urls)]
 
 class BrowserAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Fixed URL parsing
         parsed_path = urlparse(self.path).path
         path_parts = parsed_path.strip("/").split("/")
         
@@ -232,7 +245,6 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = 8765
-    # ThreadingHTTPServer implemented
     server = ThreadingHTTPServer(("127.0.0.1", port), BrowserAPIHandler)
     print(f"Starting server on http://127.0.0.1:{port}")
     try:
