@@ -18,7 +18,7 @@ Configure the following by table:
 | `guilds` | Token only | none | none |
 | `channels` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`) |
 | `messages` | `channel_id` filter | `MESSAGE_CONTENT` | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`) |
-| `members` | `guild_id` filter | `GUILD_MEMBERS` | `VIEW_CHANNEL` (`0x400`) |
+| `members` | `guild_id` filter | `GUILD_MEMBERS` | none |
 | `roles` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`) |
 
 **Privileged intents** are enabled in the Developer Portal under **Bot → Privileged Gateway Intents**. Without `GUILD_MEMBERS`, `GET /guilds/{guild.id}/members` returns an empty result. Without `MESSAGE_CONTENT`, the `content`, `embeds`, and `attachments` columns return empty values.
