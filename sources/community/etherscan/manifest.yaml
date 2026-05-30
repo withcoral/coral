@@ -32,12 +32,18 @@ tables:
         type: Utf8
         required: true
         description: Wallet address to query token transfers for.
-      - name: contractaddress
+      - name: contract_address
         type: Utf8
         description: "Token contract address to filter by (e.g. USDC: 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)."
-      - name: sort
+      - name: sort_order
         type: Utf8
         description: "Sort order: 'asc' (oldest first, default) or 'desc' (newest first)."
+      - name: startblock
+        type: Int64
+        description: Only return transfers at or after this block number. Narrow the range for active wallets to avoid provider timeouts.
+      - name: endblock
+        type: Int64
+        description: Only return transfers at or before this block number.
     request:
       method: GET
       path: /api
@@ -56,10 +62,16 @@ tables:
           key: address
         - name: contractaddress
           from: filter
-          key: contractaddress
+          key: contract_address
         - name: sort
           from: filter
-          key: sort
+          key: sort_order
+        - name: startblock
+          from: filter_int
+          key: startblock
+        - name: endblock
+          from: filter_int
+          key: endblock
         - name: apikey
           from: input
           key: ETHERSCAN_API_KEY
@@ -88,6 +100,24 @@ tables:
         expr:
           kind: from_filter
           key: address
+      - name: sort_order
+        type: Utf8
+        description: Sort order applied to the request ('asc' or 'desc', echoed from the filter; null if unset).
+        expr:
+          kind: from_filter
+          key: sort_order
+      - name: startblock
+        type: Int64
+        description: Lower block bound applied to the request (echoed from the filter; null if unset).
+        expr:
+          kind: from_filter
+          key: startblock
+      - name: endblock
+        type: Int64
+        description: Upper block bound applied to the request (echoed from the filter; null if unset).
+        expr:
+          kind: from_filter
+          key: endblock
       - name: hash
         type: Utf8
         description: Transaction hash.

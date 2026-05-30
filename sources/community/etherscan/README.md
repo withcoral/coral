@@ -44,15 +44,22 @@ ERC-20 token transfer events for a wallet address on a given EVM chain.
 |--------|------|----------|-------------|
 | `chainid` | Int64 | Yes | EVM chain ID (1 = Ethereum, 8453 = Base, 10 = Optimism, 42161 = Arbitrum) |
 | `address` | Utf8 | Yes | Wallet address to query transfers for |
-| `contractaddress` | Utf8 | No | Token contract address to filter by (e.g. USDC: `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`) |
-| `sort` | Utf8 | No | Sort order: `asc` (oldest first, default) or `desc` (newest first) |
+| `contract_address` | Utf8 | No | Token contract address to filter by (e.g. USDC: `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`) |
+| `sort_order` | Utf8 | No | Sort order: `asc` (oldest first, default) or `desc` (newest first) |
+| `startblock` | Int64 | No | Only return transfers at or after this block number |
+| `endblock` | Int64 | No | Only return transfers at or before this block number |
 
 | Column | Type | Description |
 |--------|------|-------------|
+| `chainid` | Int64 | EVM chain ID the transfers were queried on (echoed from the filter) |
+| `address` | Utf8 | Wallet address the transfers were queried for (echoed from the filter) |
+| `sort_order` | Utf8 | Sort order applied to the request (echoed; null if unset) |
+| `startblock` | Int64 | Lower block bound applied to the request (echoed; null if unset) |
+| `endblock` | Int64 | Upper block bound applied to the request (echoed; null if unset) |
 | `hash` | Utf8 | Transaction hash |
 | `from_address` | Utf8 | Sender address |
 | `to_address` | Utf8 | Recipient address |
-| `contract_address` | Utf8 | Token contract address (output column) |
+| `contract_address` | Utf8 | Token contract address. Also the pushdown filter — `WHERE contract_address = '0x...'` filters API-side |
 | `value` | Utf8 | Transfer value in token's smallest unit (cast to DOUBLE and divide by 10^decimals) |
 | `token_name` | Utf8 | Token name (e.g. 'USD Coin') |
 | `token_symbol` | Utf8 | Token symbol (e.g. 'USDC') |
@@ -62,7 +69,7 @@ ERC-20 token transfer events for a wallet address on a given EVM chain.
 | `gas_used` | Utf8 | Gas used by the transaction |
 | `gas_price` | Utf8 | Gas price in wei |
 
-**Note:** `contractaddress` is the request filter (pushed to the Etherscan API). `contract_address` is the output column returned in results. Use `contractaddress` in WHERE clauses for efficient API-side filtering.
+**Note:** `contract_address` is both the API-side filter and the output column — `WHERE contract_address = '0x...'` is pushed to Etherscan for efficient token-specific queries and also appears in results. The request-echo columns (`chainid`, `address`, `sort_order`, `startblock`, `endblock`) report the filter values applied to the request.
 
 ---
 
@@ -75,7 +82,7 @@ SELECT hash, from_address, to_address, value, block_time
 FROM etherscan.token_transfers
 WHERE chainid = 1
   AND address = '0x464C71f6c2F760DdA6093dCB91C24c39e5d6e18c'
-  AND sort = 'desc'
+  AND sort_order = 'desc'
 LIMIT 10;
 ```
 
@@ -88,17 +95,21 @@ SELECT
 FROM etherscan.token_transfers
 WHERE chainid = 1
   AND address = '0x464C71f6c2F760DdA6093dCB91C24c39e5d6e18c'
-  AND contractaddress = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+  AND contract_address = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 ```
 
 ### Cross-source JOIN with a grantee registry
 
+`token_transfers` requires an `address` filter, so each query targets one wallet. Join a single grantee's wallet to label its inbound USDC, and iterate (CTE/loop) for the full registry:
+
 ```sql
 SELECT g.recipient_name, SUM(CAST(tx.value AS DOUBLE) / 1e6) AS usdc_received
 FROM grantees.registry g
-JOIN etherscan.token_transfers tx ON tx.to_address = g.wallet
+JOIN etherscan.token_transfers tx ON tx.address = g.wallet
 WHERE tx.chainid = 1
-  AND tx.contractaddress = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+  AND tx.address = '0x464C71f6c2F760DdA6093dCB91C24c39e5d6e18c'  -- one grantee wallet (required filter)
+  AND tx.contract_address = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+  AND tx.to_address = tx.address                                 -- inbound transfers only
 GROUP BY g.recipient_name
 ORDER BY usdc_received DESC;
 ```
@@ -109,7 +120,7 @@ ORDER BY usdc_received DESC;
 
 ### Etherscan V2 API behavior
 
-- **Error responses are HTTP 200** — Etherscan signals errors as `{"status":"0","message":"NOTOK","result":"..."}` inside a successful HTTP response. Coral's HTTP backend does not special-case Etherscan's string `status` convention, so an auth, rate-limit, or bad-parameter failure surfaces as an empty result rather than a query error. If a query returns no rows unexpectedly, verify your API key, `chainid`, and `address`.
+- **Error responses are HTTP 200 and cannot be auto-detected.** Etherscan signals failures as `{"status":"0","message":"NOTOK","result":"<reason>"}` inside an HTTP 200 body. Coral's HTTP backend only treats a JSON-boolean `ok_path` as success, but Etherscan's `status` is the string `"1"`/`"0"`, so it cannot be modelled — setting `ok_path: [status]` would reject *successful* responses too. As a result, an auth, rate-limit, or bad-parameter failure surfaces as a single row with null transfer fields (the echoed `chainid`/`address` still populate), not a query error. **If a query returns one all-null row or zero rows unexpectedly, verify your API key, `chainid`, and `address`.** (A Coral feature request for string/value `ok_path` matching would let this be modelled properly.)
 - **Rate limits** — Free tier: 3 calls/sec, Lite tier: 5 calls/sec. Use conservative page sizes and cache aggressively.
 - **Chain support** — Free API key supports Ethereum mainnet (chainid=1). Base (8453), Optimism (10), and Arbitrum (42161) may require a paid plan.
 - **Pagination** — Uses offset-based pagination (page/offset params). Default page size is 50, max 100.
