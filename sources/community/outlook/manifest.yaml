@@ -194,7 +194,7 @@ tables:
             - isHidden
 
   - name: messages
-    description: All email messages across the authenticated user's Outlook mailbox
+    description: Most recent email messages across the authenticated user's Outlook mailbox (single page)
     guide: |
       Returns the most recent messages across all folders, ordered by
       receivedDateTime descending. Use this table for cross-folder reads.
@@ -383,7 +383,7 @@ tables:
             - webLink
 
   - name: folder_messages
-    description: Email messages in a specific Outlook mail folder
+    description: Most recent email messages in a specific Outlook mail folder (single page)
     guide: |
       Returns messages from a single folder. The `folder_id` filter is required
       and can be either a folder UUID from `outlook.mail_folders.id` or one
