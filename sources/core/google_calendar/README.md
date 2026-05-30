@@ -183,7 +183,7 @@ SELECT summary, start_date_time, location
 FROM google_calendar.events
 WHERE time_min = '2026-05-29T00:00:00Z'
   AND time_max = '2026-06-05T00:00:00Z'
-  AND single_events = 'true'
+  AND single_events = true
 ORDER BY start_date_time ASC
 ```
 
@@ -213,7 +213,7 @@ SELECT summary, start_date, end_date
 FROM google_calendar.events
 WHERE time_min = '2026-05-01T00:00:00Z'
   AND time_max = '2026-06-01T00:00:00Z'
-  AND single_events = 'true'
+  AND single_events = true
   AND start_date IS NOT NULL
 ```
 
@@ -268,10 +268,10 @@ See [Google Calendar API quotas](https://developers.google.com/calendar/api/guid
 ## Notes
 
 - **Primary calendar**: Omit `calendar_id` in the `events` filter to query the authenticated user's primary calendar.
-- **Recurring events**: By default, recurring events return as a single event with `recurrence` rules. Set `single_events = 'true'` to expand them into individual instances — required when using `order_by = 'startTime'`.
+- **Recurring events**: By default, recurring events return as a single event with `recurrence` rules. Set `single_events = true` to expand them into individual instances — required when using `order_by = 'startTime'`.
 - **Timed vs all-day events**: Timed events populate `start_date_time`/`end_date_time`; all-day events populate `start_date`/`end_date`. Both are null for the other type.
 - **Shared calendars**: Calendar IDs containing `#` (e.g., `group@resource.calendar.google.com#...`) must use `events_calendar_id` (URL-encoded) when querying events, not the raw `id`.
-- **Cancelled events**: Use `show_deleted = 'true'` to include cancelled events in results.
+- **Cancelled events**: Use `show_deleted = true` to include cancelled events in results.
 
 ---
 
