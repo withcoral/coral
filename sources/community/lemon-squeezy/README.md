@@ -34,38 +34,47 @@ coral source test lemon_squeezy
 
 ## Tables
 
-| Table | Description |
-|---|---|
-| `stores` | Stores owned by the authenticated account, with revenue totals and 30-day summaries |
-| `products` | Products listed in your stores |
-| `variants` | Variants of each product, controlling price, billing interval, licensing, and trial settings |
-| `customers` | Customers who have made purchases, with MRR and cumulative revenue |
-| `orders` | Individual purchase transactions with full price and tax breakdowns in store currency and USD |
-| `order_items` | Line items within each order |
-| `subscriptions` | Active and historical subscriptions with billing status, renewal dates, and payment method |
-| `subscription_invoices` | Invoices generated per subscription billing cycle |
-| `discounts` | Coupon codes with redemption counts, validity windows, and subscription duration settings |
-| `license_keys` | License keys issued with purchases, tracking activation limit and current activation count |
+| Table                   | Description                                                                                                     |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `stores`                | Stores owned by the authenticated account, with revenue totals and 30-day summaries                             |
+| `products`              | Products listed in your stores                                                                                  |
+| `variants`              | Variants of each product, controlling price, billing interval, licensing, and trial settings                    |
+| `customers`             | Customers who have made purchases, with MRR and cumulative revenue                                              |
+| `orders`                | Individual purchase transactions with full price and tax breakdowns in store currency and USD                   |
+| `order_items`           | Line items within each order                                                                                    |
+| `subscriptions`         | Active and historical subscriptions with billing status, renewal dates, and payment method                      |
+| `subscription_invoices` | Invoices generated per subscription billing cycle                                                               |
+| `discounts`             | Coupon codes with validity windows, redemption limits, and subscription discount duration settings              |
+| `discount_redemptions`  | Individual records of each discount code being applied to an order — use this to count redemptions per discount |
+| `license_keys`          | License keys issued with purchases, tracking activation limit and current activation count                      |
 
 All monetary amounts are in **cents** in the store's configured currency, except
 for `*_usd` columns which are in USD cents. Divide by 100 to get decimal values.
+
+> **Note on fetch limits:** High-cardinality tables (`orders`, `customers`,
+> `subscriptions`, `subscription_invoices`, `license_keys`,
+> `discount_redemptions`) default to fetching 5 pages (up to 500 rows) per
+> unfiltered query to avoid exhausting the 300 req/min rate limit. Use filters
+> to scope queries to a specific store, subscription, or date range where
+> possible.
 
 ## Filters
 
 Most tables accept optional filters that are pushed to the API as query
 parameters, reducing data transfer.
 
-| Table | Filterable columns |
-|---|---|
-| `products` | `store_id` |
-| `variants` | `product_id` |
-| `customers` | `store_id`, `email` |
-| `orders` | `store_id`, `user_email` |
-| `order_items` | `order_id`, `product_id`, `variant_id` |
-| `subscriptions` | `store_id`, `order_id`, `product_id`, `variant_id`, `user_email`, `status` |
-| `subscription_invoices` | `store_id`, `subscription_id`, `status` |
-| `discounts` | `store_id` |
-| `license_keys` | `store_id`, `order_id`, `order_item_id`, `product_id`, `status` |
+| Table                   | Filterable columns                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------- |
+| `products`              | `store_id`                                                                                  |
+| `variants`              | `product_id`, `status`                                                                      |
+| `customers`             | `store_id`, `email`                                                                         |
+| `orders`                | `store_id`, `user_email`, `order_number`                                                    |
+| `order_items`           | `order_id`, `product_id`, `variant_id`                                                      |
+| `subscriptions`         | `store_id`, `order_id`, `order_item_id`, `product_id`, `variant_id`, `user_email`, `status` |
+| `subscription_invoices` | `store_id`, `subscription_id`, `status`, `refunded`                                         |
+| `discounts`             | `store_id`                                                                                  |
+| `discount_redemptions`  | `discount_id`, `order_id`                                                                   |
+| `license_keys`          | `store_id`, `order_id`, `order_item_id`, `product_id`, `status`                             |
 
 ## Example queries
 
@@ -147,18 +156,20 @@ LIMIT 50;
 
 ```sql
 SELECT
-  code,
-  amount_type,
-  CASE amount_type
-    WHEN 'percent' THEN CAST(amount AS VARCHAR) || '%'
-    ELSE '$' || CAST(ROUND(amount / 100.0, 2) AS VARCHAR)
-  END             AS discount_value,
-  redemptions_count,
-  max_redemptions,
-  status
-FROM lemon_squeezy.discounts
-WHERE status = 'published'
-ORDER BY redemptions_count DESC;
+  d.code,
+  d.amount_type,
+  CASE d.amount_type
+    WHEN 'percent' THEN CAST(d.amount AS VARCHAR) || '%'
+    ELSE '$' || CAST(ROUND(d.amount / 100.0, 2) AS VARCHAR)
+  END                      AS discount_value,
+  COUNT(dr.id)             AS redemptions,
+  ROUND(SUM(dr.amount) / 100.0, 2) AS total_savings_usd,
+  d.status
+FROM lemon_squeezy.discounts d
+LEFT JOIN lemon_squeezy.discount_redemptions dr ON dr.discount_id = CAST(d.id AS BIGINT)
+WHERE d.status = 'published'
+GROUP BY d.id, d.code, d.amount_type, d.amount, d.status
+ORDER BY redemptions DESC;
 ```
 
 ### Subscription invoices — recent failed payments
@@ -213,5 +224,5 @@ LIMIT 10;
 ## Links
 
 - [Lemon Squeezy API reference](https://docs.lemonsqueezy.com/api)
-- [API authentication](https://docs.lemonsqueezy.com/api/authentication)
+- [API authentication](https://docs.lemonsqueezy.com/guides/developer-guide/getting-started)
 - [Pagination](https://docs.lemonsqueezy.com/api/getting-started/requests#pagination)

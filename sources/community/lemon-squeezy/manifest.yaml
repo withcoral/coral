@@ -324,6 +324,9 @@ tables:
         - name: "filter[product_id]"
           from: filter_int
           key: product_id
+        - name: "filter[status]"
+          from: filter
+          key: status
     response:
       rows_path:
         - data
@@ -340,6 +343,9 @@ tables:
       - name: product_id
         type: Int64
         description: Filter variants to a specific product.
+      - name: status
+        type: Utf8
+        description: "Filter variants by status: draft or published."
     columns:
       - name: id
         type: Utf8
@@ -541,6 +547,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
+      fetch_limit_default: 5
     filters:
       - name: store_id
         type: Int64
@@ -652,6 +659,9 @@ tables:
         - name: "filter[user_email]"
           from: filter
           key: user_email
+        - name: "filter[order_number]"
+          from: filter_int
+          key: order_number
     response:
       rows_path:
         - data
@@ -664,6 +674,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
+      fetch_limit_default: 5
     filters:
       - name: store_id
         type: Int64
@@ -671,6 +682,9 @@ tables:
       - name: user_email
         type: Utf8
         description: Filter orders by exact customer email address.
+      - name: order_number
+        type: Int64
+        description: Filter to a specific sequential order number.
     columns:
       - name: id
         type: Utf8
@@ -960,6 +974,9 @@ tables:
         - name: "filter[order_id]"
           from: filter_int
           key: order_id
+        - name: "filter[order_item_id]"
+          from: filter_int
+          key: order_item_id
         - name: "filter[product_id]"
           from: filter_int
           key: product_id
@@ -984,6 +1001,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
+      fetch_limit_default: 5
     filters:
       - name: store_id
         type: Int64
@@ -991,6 +1009,9 @@ tables:
       - name: order_id
         type: Int64
         description: Filter subscriptions to a specific originating order.
+      - name: order_item_id
+        type: Int64
+        description: Filter subscriptions to a specific originating order item.
       - name: product_id
         type: Int64
         description: Filter subscriptions to a specific product.
@@ -1183,6 +1204,9 @@ tables:
         - name: "filter[status]"
           from: filter
           key: status
+        - name: "filter[refunded]"
+          from: filter
+          key: refunded
     response:
       rows_path:
         - data
@@ -1195,6 +1219,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
+      fetch_limit_default: 5
     filters:
       - name: store_id
         type: Int64
@@ -1204,7 +1229,10 @@ tables:
         description: Filter invoices to a specific subscription.
       - name: status
         type: Utf8
-        description: "Filter by invoice status: pending, paid, void, refunded."
+        description: "Filter by invoice status: pending, paid, void, refunded, partial_refund."
+      - name: refunded
+        type: Utf8
+        description: "Filter by refund state: true to return only refunded invoices, false for non-refunded."
     columns:
       - name: id
         type: Utf8
@@ -1285,7 +1313,7 @@ tables:
           path: [attributes, total_usd]
       - name: status
         type: Utf8
-        description: "Invoice status: pending, paid, void, refunded."
+        description: "Invoice status: pending, paid, void, refunded, partial_refund."
         expr:
           kind: path
           path: [attributes, status]
@@ -1415,12 +1443,6 @@ tables:
         expr:
           kind: path
           path: [attributes, max_redemptions]
-      - name: redemptions_count
-        type: Int64
-        description: Number of times this discount has been redeemed so far.
-        expr:
-          kind: path
-          path: [attributes, redemptions_count]
       - name: starts_at
         type: Timestamp
         nullable: true
@@ -1525,6 +1547,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
+      fetch_limit_default: 5
     filters:
       - name: store_id
         type: Int64
@@ -1652,6 +1675,111 @@ tables:
       - name: updated_at
         type: Timestamp
         description: When the license key was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # discount_redemptions
+  # ---------------------------------------------------------------------------
+  - name: discount_redemptions
+    description: >
+      Individual redemption records for Lemon Squeezy discount codes. Each row
+      represents one application of a discount to an order, recording the amount
+      saved and the order it was applied to. Use this table to count how many
+      times a discount has been redeemed — the parent discounts table does not
+      expose a redemption count field. Filter by discount_id or order_id.
+    request:
+      method: GET
+      path: /v1/discount-redemptions
+      query:
+        - name: "filter[discount_id]"
+          from: filter_int
+          key: discount_id
+        - name: "filter[order_id]"
+          from: filter_int
+          key: order_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+      fetch_limit_default: 5
+    filters:
+      - name: discount_id
+        type: Int64
+        description: Filter redemptions to a specific discount.
+      - name: order_id
+        type: Int64
+        description: Filter redemptions to a specific order.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique discount redemption ID.
+      - name: discount_id
+        type: Int64
+        description: ID of the discount that was applied.
+        expr:
+          kind: path
+          path: [attributes, discount_id]
+      - name: order_id
+        type: Int64
+        description: ID of the order this discount was applied to.
+        expr:
+          kind: path
+          path: [attributes, order_id]
+      - name: discount_name
+        type: Utf8
+        description: Name of the discount at time of redemption.
+        expr:
+          kind: path
+          path: [attributes, discount_name]
+      - name: discount_code
+        type: Utf8
+        description: Coupon code that was entered at checkout.
+        expr:
+          kind: path
+          path: [attributes, discount_code]
+      - name: discount_amount
+        type: Int64
+        description: Discount value — cents for fixed type, integer percentage for percent type.
+        expr:
+          kind: path
+          path: [attributes, discount_amount]
+      - name: discount_amount_type
+        type: Utf8
+        description: "Discount calculation type at time of redemption: percent or fixed."
+        expr:
+          kind: path
+          path: [attributes, discount_amount_type]
+      - name: amount
+        type: Int64
+        description: Actual amount saved in store-currency cents for this redemption.
+        expr:
+          kind: path
+          path: [attributes, amount]
+      - name: created_at
+        type: Timestamp
+        description: When this redemption occurred.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When this redemption record was last updated.
         expr:
           kind: format_timestamp
           input: iso8601
