@@ -36,10 +36,10 @@ test_queries:
   - SELECT id, login, display_name FROM twitch.users WHERE login = 'twitch' LIMIT 1
   - SELECT id, user_name, game_name FROM twitch.streams LIMIT 1
   - SELECT broadcaster_id, broadcaster_login FROM twitch.channels WHERE broadcaster_id = '141981764' LIMIT 1
-  - SELECT id, name FROM twitch.games WHERE name = 'Fortnite' LIMIT 1
+  - SELECT id, name FROM twitch.game_by_name(name => 'Fortnite') LIMIT 1
   - SELECT id, name FROM twitch.top_games LIMIT 1
-  - SELECT id, title FROM twitch.videos WHERE user_id = '141981764' LIMIT 1
-  - SELECT id, title FROM twitch.clips WHERE broadcaster_id = '141981764' LIMIT 1
+  - SELECT id, title FROM twitch.videos_by_user(user_id => '141981764') LIMIT 1
+  - SELECT id, title FROM twitch.clips_by_broadcaster(broadcaster_id => '141981764') LIMIT 1
   - SELECT id, display_name FROM twitch.search_channels(query => 'twitchdev') LIMIT 1
   - SELECT id, name FROM twitch.search_categories(query => 'Fortnite') LIMIT 1
 
@@ -109,9 +109,9 @@ tables:
   - name: channels
     description: Twitch channel information for one or more broadcasters.
     guide: |
-      Requires `broadcaster_id`, for example `WHERE broadcaster_id = '1234'`.
-      Twitch accepts repeated broadcaster IDs, so `IN (...)` or `OR` predicates
-      can batch lookup several known channels.
+      Requires one `broadcaster_id`, for example `WHERE broadcaster_id = '1234'`.
+      This source sends one pushed `broadcaster_id` value per request; do not
+      rely on `IN (...)` or `OR` predicates for batching.
     filters:
       - name: broadcaster_id
         required: true
@@ -269,56 +269,6 @@ tables:
         description: Raw stream object.
         expr: {kind: path, path: []}
 
-  - name: games
-    description: Twitch games/categories.
-    guide: |
-      Twitch requires exactly one of `id`, `name`, or `igdb_id`. For category
-      discovery without an exact selector, use `twitch.top_games` or
-      `twitch.search_categories(...)`.
-    filters:
-      - name: id
-      - name: name
-      - name: igdb_id
-    request:
-      method: GET
-      path: /games
-      query:
-        - name: id
-          from: filter
-          key: id
-        - name: name
-          from: filter
-          key: name
-        - name: igdb_id
-          from: filter
-          key: igdb_id
-    response:
-      rows_path: [data]
-    pagination:
-      mode: none
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Game ID.
-      - name: name
-        type: Utf8
-        nullable: true
-        description: Game/category name.
-      - name: box_art_url
-        type: Utf8
-        nullable: true
-        description: Box art URL template.
-      - name: igdb_id
-        type: Utf8
-        nullable: true
-        description: IGDB game ID, when available.
-      - name: raw_json
-        type: Json
-        nullable: true
-        description: Raw game object.
-        expr: {kind: path, path: []}
-
   - name: top_games
     description: Top Twitch games/categories by current viewer activity.
     fetch_limit_default: 100
@@ -335,7 +285,7 @@ tables:
         default: 50
         max: 100
         query_param: first
-    columns:
+    columns: &game_columns
       - name: id
         type: Utf8
         nullable: false
@@ -355,63 +305,93 @@ tables:
       - name: raw_json
         type: Json
         nullable: true
-        description: Raw top-game object.
+        description: Raw game object.
         expr: {kind: path, path: []}
 
-  - name: videos
-    description: Twitch published videos by ID, broadcaster, or game/category.
-    guide: |
-      Twitch requires exactly one of `id`, `user_id`, or `game_id`. When using
-      `user_id` or `game_id`, optional `language`, `period`, `sort`, and
-      `type` filters can narrow results. Valid `period` values are `all`,
-      `day`, `week`, and `month`; valid `sort` values are `time`, `trending`,
-      and `views`; valid `type` values are `all`, `upload`, `archive`, and
-      `highlight`.
-    fetch_limit_default: 100
-    filters:
+functions:
+  - name: game_by_id
+    kind: table
+    description: Look up one Twitch game/category by exact Twitch game ID.
+    args:
       - name: id
-      - name: user_id
-      - name: game_id
-      - name: language
-      - name: period
-      - name: sort
-      - name: type
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /games
+      query:
+        - name: id
+          from: arg
+          key: id
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns: *game_columns
+
+  - name: game_by_name
+    kind: table
+    description: Look up one Twitch game/category by exact game name.
+    args:
+      - name: name
+        required: true
+        bind:
+          arg: name
+    request:
+      method: GET
+      path: /games
+      query:
+        - name: name
+          from: arg
+          key: name
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns: *game_columns
+
+  - name: game_by_igdb_id
+    kind: table
+    description: Look up one Twitch game/category by exact IGDB game ID.
+    args:
+      - name: igdb_id
+        required: true
+        bind:
+          arg: igdb_id
+    request:
+      method: GET
+      path: /games
+      query:
+        - name: igdb_id
+          from: arg
+          key: igdb_id
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns: *game_columns
+
+  - name: video_by_id
+    kind: table
+    description: Look up one Twitch video by exact video ID.
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
     request:
       method: GET
       path: /videos
       query:
         - name: id
-          from: filter
+          from: arg
           key: id
-        - name: user_id
-          from: filter
-          key: user_id
-        - name: game_id
-          from: filter
-          key: game_id
-        - name: language
-          from: filter
-          key: language
-        - name: period
-          from: filter
-          key: period
-        - name: sort
-          from: filter
-          key: sort
-        - name: type
-          from: filter
-          key: type
     response:
       rows_path: [data]
     pagination:
-      mode: cursor_query
-      cursor_param: after
-      response_cursor_path: [pagination, cursor]
-      page_size:
-        default: 50
-        max: 100
-        query_param: first
-    columns:
+      mode: none
+    columns: &video_columns
       - name: id
         type: Utf8
         nullable: false
@@ -495,44 +475,48 @@ tables:
         description: Raw video object.
         expr: {kind: path, path: []}
 
-  - name: clips
-    description: Twitch clips by ID, broadcaster, or game/category.
-    guide: |
-      Twitch requires exactly one of `id`, `broadcaster_id`, or `game_id`.
-      `started_at`, `ended_at`, and `is_featured` are valid only with
-      `broadcaster_id` or `game_id`; use a narrow time window because Twitch
-      caps paginated clip access. Pass `is_featured` as a SQL boolean, for
-      example `is_featured = true`.
-    fetch_limit_default: 100
-    filters:
-      - name: id
-      - name: broadcaster_id
-      - name: game_id
-      - name: started_at
-      - name: ended_at
-      - name: is_featured
+  - name: videos_by_user
+    kind: table
+    description: List Twitch videos for one broadcaster user ID.
+    args:
+      - name: user_id
+        required: true
+        bind:
+          arg: user_id
+      - name: language
+        bind:
+          arg: language
+      - name: period
+        values: [all, day, week, month]
+        bind:
+          arg: period
+      - name: sort
+        values: [time, trending, views]
+        bind:
+          arg: sort
+      - name: type
+        values: [all, upload, archive, highlight]
+        bind:
+          arg: type
     request:
       method: GET
-      path: /clips
+      path: /videos
       query:
-        - name: id
-          from: filter
-          key: id
-        - name: broadcaster_id
-          from: filter
-          key: broadcaster_id
-        - name: game_id
-          from: filter
-          key: game_id
-        - name: started_at
-          from: filter
-          key: started_at
-        - name: ended_at
-          from: filter
-          key: ended_at
-        - name: is_featured
-          from: filter_bool
-          key: is_featured
+        - name: user_id
+          from: arg
+          key: user_id
+        - name: language
+          from: arg
+          key: language
+        - name: period
+          from: arg
+          key: period
+        - name: sort
+          from: arg
+          key: sort
+        - name: type
+          from: arg
+          key: type
     response:
       rows_path: [data]
     pagination:
@@ -543,7 +527,61 @@ tables:
         default: 50
         max: 100
         query_param: first
-    columns:
+    columns: *video_columns
+
+  - name: videos_by_game
+    kind: table
+    description: List Twitch videos for one game/category ID.
+    args:
+      - name: game_id
+        required: true
+        bind:
+          arg: game_id
+      - name: language
+        bind:
+          arg: language
+    request:
+      method: GET
+      path: /videos
+      query:
+        - name: game_id
+          from: arg
+          key: game_id
+        - name: language
+          from: arg
+          key: language
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: first
+    columns: *video_columns
+
+  - name: clip_by_id
+    kind: table
+    description: Look up one Twitch clip by exact clip ID.
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /clips
+      query:
+        - name: id
+          from: arg
+          key: id
+    response:
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns: &clip_columns
       - name: id
         type: Utf8
         nullable: false
@@ -622,7 +660,96 @@ tables:
         description: Raw clip object.
         expr: {kind: path, path: []}
 
-functions:
+  - name: clips_by_broadcaster
+    kind: table
+    description: List Twitch clips for one broadcaster ID.
+    args:
+      - name: broadcaster_id
+        required: true
+        bind:
+          arg: broadcaster_id
+      - name: started_at
+        bind:
+          arg: started_at
+      - name: ended_at
+        bind:
+          arg: ended_at
+      - name: is_featured
+        bind:
+          arg: is_featured
+    request:
+      method: GET
+      path: /clips
+      query:
+        - name: broadcaster_id
+          from: arg
+          key: broadcaster_id
+        - name: started_at
+          from: arg
+          key: started_at
+        - name: ended_at
+          from: arg
+          key: ended_at
+        - name: is_featured
+          from: arg_bool
+          key: is_featured
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: first
+    columns: *clip_columns
+
+  - name: clips_by_game
+    kind: table
+    description: List Twitch clips for one game/category ID.
+    args:
+      - name: game_id
+        required: true
+        bind:
+          arg: game_id
+      - name: started_at
+        bind:
+          arg: started_at
+      - name: ended_at
+        bind:
+          arg: ended_at
+      - name: is_featured
+        bind:
+          arg: is_featured
+    request:
+      method: GET
+      path: /clips
+      query:
+        - name: game_id
+          from: arg
+          key: game_id
+        - name: started_at
+          from: arg
+          key: started_at
+        - name: ended_at
+          from: arg
+          key: ended_at
+        - name: is_featured
+          from: arg_bool
+          key: is_featured
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [pagination, cursor]
+      page_size:
+        default: 50
+        max: 100
+        query_param: first
+    columns: *clip_columns
+
   - name: search_channels
     kind: search
     description: Search Twitch channels by provider-ranked query.
