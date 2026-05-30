@@ -1666,6 +1666,9 @@ fn projection_name_priority(projection: &Projection, operation: &IrOperation) ->
     if operation.id.contains("_list_for_repo") || operation.id.contains("_list_for_repository") {
         priority += 300;
     }
+    if operation.id.starts_with("repos_list_") {
+        priority += 250;
+    }
     if operation.id.ends_with("_list") {
         priority += 300;
     }
@@ -2489,6 +2492,29 @@ paths:
           content:
             application/json:
               schema: {type: array, items: {$ref: '#/components/schemas/PullRequestSimple'}}
+  /repos/{owner}/{repo}/commits:
+    get:
+      operationId: repos/list-commits
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Commit'}}
+  /repos/{owner}/{repo}/pulls/{pull_number}/commits:
+    get:
+      operationId: pulls/list-commits
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+        - {name: pull_number, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Commit'}}
 components:
   schemas:
     Issue:
@@ -2499,6 +2525,10 @@ components:
       type: object
       properties:
         id: {type: integer}
+    Commit:
+      type: object
+      properties:
+        sha: {type: string}
 "
             .as_bytes(),
         )
@@ -2526,6 +2556,11 @@ components:
             names_by_operation["pulls_list"].1,
             ProjectionKind::Table
         ));
+        assert_eq!(names_by_operation["repos_list_commits"].0, "commits");
+        assert_eq!(
+            names_by_operation["pulls_list_commits"].0,
+            "repository_commits"
+        );
     }
 
     #[test]
