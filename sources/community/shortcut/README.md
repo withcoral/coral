@@ -230,11 +230,9 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 
 - **Rate limits:** the Shortcut API enforces a limit of 200 requests per
   minute per token. Reduce query frequency or add retries if you hit limits.
-- **`detail=slim` on stories:** the stories table sends `detail=slim` to
-  the Shortcut search API to request a reduced payload. Only top-level
-  story fields are returned; description, comments, pull requests, branches,
-  and tasks are excluded. This reduces response size and avoids fetching
-  fields not exposed by this source.
+- **`detail=full` on stories:** the stories table sends `detail=full` to
+  the Shortcut search API to ensure all declared columns including
+  `cycle_time` are populated in the response.
 - **Auth header:** this source uses `Shortcut-Token: <token>` not
   `Authorization: Bearer`. Generate the token at
   https://app.shortcut.com/settings/account/api-tokens.

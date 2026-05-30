@@ -316,7 +316,7 @@ tables:
           key: query
         - name: detail
           from: literal
-          value: slim
+          value: full
     response:
       rows_path:
         - data
