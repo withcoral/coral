@@ -33,7 +33,7 @@ request_headers:
     value: application/json
 
 test_queries:
-  - SELECT id, entity_type, name FROM productboard.entities LIMIT 1
+  - SELECT id, entity_type, name FROM productboard.features LIMIT 1
   - SELECT id, note_type, name FROM productboard.notes LIMIT 1
   - SELECT type FROM productboard.entity_configurations LIMIT 1
 
@@ -43,9 +43,12 @@ tables:
     guide: |
       Use `entity_type` to select products, components, features, subfeatures,
       initiatives, objectives, key results, releases, release groups, users, or
-      companies. Productboard custom fields are exposed in `fields_json`. This
-      table returns the first Productboard API page only; use provider filters
-      to keep the result set narrow.
+      companies. Productboard rejects unsupported or missing generic entity
+      types on some workspaces, so prefer the typed tables for discovery or add
+      an explicit `entity_type` predicate when querying this table. Productboard
+      custom fields are exposed in `fields_json`. This table returns one
+      Productboard API page at a time; use `page_cursor` with the cursor value
+      from Productboard's `links.next` URL when you need to page intentionally.
     fetch_limit_default: 100
     filters:
       - name: entity_type
@@ -56,6 +59,7 @@ tables:
       - name: status_name
       - name: archived
       - name: parent_id
+      - name: page_cursor
     request:
       method: GET
       path: /entities
@@ -84,6 +88,9 @@ tables:
         - name: parent[id]
           from: filter
           key: parent_id
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -179,14 +186,19 @@ tables:
         nullable: true
         description: Raw entity object.
         expr: {kind: path, path: []}
+      - name: page_cursor
+        type: Utf8
+        nullable: true
+        description: Productboard page cursor supplied by the query.
+        expr: {kind: from_filter, key: page_cursor}
 
   - name: features
     description: Productboard feature entities.
     guide: |
       Use this table for roadmap-style feature status, ownership, health, and
-      parent hierarchy queries. Productboard pagination is bounded to the first
-      provider page, so add status, owner, archived, or parent filters for
-      focused workflows.
+      parent hierarchy queries. This table returns one Productboard API page at
+      a time; use `page_cursor` with the cursor value from Productboard's
+      `links.next` URL when you need to page intentionally.
     fetch_limit_default: 100
     filters:
       - name: name
@@ -194,6 +206,7 @@ tables:
       - name: status_name
       - name: archived
       - name: parent_id
+      - name: page_cursor
     request:
       method: GET
       path: /entities
@@ -216,6 +229,9 @@ tables:
         - name: parent[id]
           from: filter
           key: parent_id
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -225,15 +241,17 @@ tables:
   - name: initiatives
     description: Productboard initiative entities.
     guide: |
-      Use this table for strategic roadmap and objective planning views.
-      Productboard pagination is bounded to the first provider page, so filter
-      by status, owner, archived state, or name for focused workflows.
+      Use this table for strategic roadmap and objective planning views. This
+      table returns one Productboard API page at a time; use `page_cursor` with
+      the cursor value from Productboard's `links.next` URL when you need to
+      page intentionally.
     fetch_limit_default: 100
     filters:
       - name: name
       - name: owner_email
       - name: status_name
       - name: archived
+      - name: page_cursor
     request:
       method: GET
       path: /entities
@@ -253,6 +271,9 @@ tables:
         - name: archived
           from: filter_bool
           key: archived
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -262,13 +283,15 @@ tables:
   - name: companies
     description: Productboard company customer entities.
     guide: |
-      Use this table to join feedback and customer-account context. Productboard
-      pagination is bounded to the first provider page, so filter by name or
-      archived state when validating a workspace with many companies.
+      Use this table to join feedback and customer-account context. This table
+      returns one Productboard API page at a time; use `page_cursor` with the
+      cursor value from Productboard's `links.next` URL when you need to page
+      intentionally.
     fetch_limit_default: 100
     filters:
       - name: name
       - name: archived
+      - name: page_cursor
     request:
       method: GET
       path: /entities
@@ -282,6 +305,9 @@ tables:
         - name: archived
           from: filter_bool
           key: archived
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -291,13 +317,16 @@ tables:
   - name: users
     description: Productboard customer user entities.
     guide: |
-      Use this table for customer-user feedback context. Productboard pagination
-      is bounded to the first provider page, and customer user names may be
-      redacted unless the token has the relevant PII read scope.
+      Use this table for customer-user feedback context. This table returns one
+      Productboard API page at a time; use `page_cursor` with the cursor value
+      from Productboard's `links.next` URL when you need to page intentionally.
+      Customer user names may be redacted unless the token has the relevant PII
+      read scope.
     fetch_limit_default: 100
     filters:
       - name: name
       - name: archived
+      - name: page_cursor
     request:
       method: GET
       path: /entities
@@ -311,6 +340,9 @@ tables:
         - name: archived
           from: filter_bool
           key: archived
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -321,9 +353,10 @@ tables:
     description: Productboard notes and customer feedback records.
     guide: |
       Use this table for feedback triage by owner, creator, source system,
-      processed state, archived state, and created/updated windows. Productboard
-      pagination is bounded to the first provider page, so use date and source
-      filters for repeatable review windows.
+      processed state, archived state, and created/updated windows. This table
+      returns one Productboard API page at a time; use `page_cursor` with the
+      cursor value from Productboard's `links.next` URL when you need to page
+      intentionally.
     fetch_limit_default: 100
     filters:
       - name: archived
@@ -338,6 +371,7 @@ tables:
       - name: created_to
       - name: updated_from
       - name: updated_to
+      - name: page_cursor
     request:
       method: GET
       path: /notes
@@ -378,6 +412,9 @@ tables:
         - name: updatedTo
           from: filter
           key: updated_to
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -483,6 +520,11 @@ tables:
         nullable: true
         description: Raw note object.
         expr: {kind: path, path: []}
+      - name: page_cursor
+        type: Utf8
+        nullable: true
+        description: Productboard page cursor supplied by the query.
+        expr: {kind: from_filter, key: page_cursor}
 
   - name: entity_configurations
     description: Entity type field, relationship, and filter configuration metadata.
@@ -567,16 +609,18 @@ tables:
     description: Productboard workspace members.
     guide: |
       Use this table for workspace ownership and collaborator lookup.
-      Productboard pagination is bounded to the first provider page; use
-      `query`, `role`, `include_disabled`, and `include_invitation_pending`
-      filters for smaller member sets. Name, username, and email require the
-      relevant PII read scope.
+      This table returns one Productboard API page at a time; use `page_cursor`
+      with the cursor value from Productboard's `links.next` URL when you need
+      to page intentionally. Use `query`, `role`, `include_disabled`, and
+      `include_invitation_pending` filters for smaller member sets. Name,
+      username, and email require the relevant PII read scope.
     fetch_limit_default: 100
     filters:
       - name: query
       - name: role
       - name: include_disabled
       - name: include_invitation_pending
+      - name: page_cursor
     request:
       method: GET
       path: /members
@@ -593,6 +637,9 @@ tables:
         - name: includeInvitationPending
           from: filter_bool
           key: include_invitation_pending
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -642,19 +689,25 @@ tables:
         nullable: true
         description: Raw member object.
         expr: {kind: path, path: []}
+      - name: page_cursor
+        type: Utf8
+        nullable: true
+        description: Productboard page cursor supplied by the query.
+        expr: {kind: from_filter, key: page_cursor}
 
   - name: teams
     description: Productboard teams.
     guide: |
       Use this table for ownership/team lookup in feature and initiative
-      workflows. Productboard pagination is bounded to the first provider page,
-      so filter by `name`, `handle`, or `query` when the workspace has many
-      teams.
+      workflows. This table returns one Productboard API page at a time; use
+      `page_cursor` with the cursor value from Productboard's `links.next` URL
+      when you need to page intentionally.
     fetch_limit_default: 100
     filters:
       - name: name
       - name: handle
       - name: query
+      - name: page_cursor
     request:
       method: GET
       path: /teams
@@ -668,6 +721,9 @@ tables:
         - name: query
           from: filter
           key: query
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -707,17 +763,24 @@ tables:
         nullable: true
         description: Raw team object.
         expr: {kind: path, path: []}
+      - name: page_cursor
+        type: Utf8
+        nullable: true
+        description: Productboard page cursor supplied by the query.
+        expr: {kind: from_filter, key: page_cursor}
 
   - name: member_activities
     description: Member activity analytics with optional date filtering.
     guide: |
       Use this table for adoption and activity windows. Prefer bounded
-      `date_from` and `date_to` filters; Productboard pagination is bounded to
-      the first provider page.
+      `date_from` and `date_to` filters. This table returns one Productboard API
+      page at a time; use `page_cursor` with the cursor value from
+      Productboard's `links.next` URL when you need to page intentionally.
     fetch_limit_default: 100
     filters:
       - name: date_from
       - name: date_to
+      - name: page_cursor
     request:
       method: GET
       path: /analytics/member-activities
@@ -728,6 +791,9 @@ tables:
         - name: dateTo
           from: filter
           key: date_to
+        - name: pageCursor
+          from: filter
+          key: page_cursor
     response:
       rows_path: [data]
     pagination:
@@ -737,6 +803,21 @@ tables:
         type: Utf8
         nullable: true
         description: Activity date.
+      - name: date_from
+        type: Utf8
+        nullable: true
+        description: Productboard activity start date supplied by the query.
+        expr: {kind: from_filter, key: date_from}
+      - name: date_to
+        type: Utf8
+        nullable: true
+        description: Productboard activity end date supplied by the query.
+        expr: {kind: from_filter, key: date_to}
+      - name: page_cursor
+        type: Utf8
+        nullable: true
+        description: Productboard page cursor supplied by the query.
+        expr: {kind: from_filter, key: page_cursor}
       - name: domain
         type: Utf8
         nullable: true
@@ -760,16 +841,96 @@ tables:
         nullable: true
         description: Features created.
         expr: {kind: path, path: [featureCreatedCount]}
+      - name: component_created_count
+        type: Int64
+        nullable: true
+        description: Components created.
+        expr: {kind: path, path: [componentCreatedCount]}
+      - name: insight_created_count
+        type: Int64
+        nullable: true
+        description: Insights created.
+        expr: {kind: path, path: [insightCreatedCount]}
       - name: note_created_count
         type: Int64
         nullable: true
         description: Notes created.
         expr: {kind: path, path: [noteCreatedCount]}
+      - name: product_created_count
+        type: Int64
+        nullable: true
+        description: Products created.
+        expr: {kind: path, path: [productCreatedCount]}
+      - name: subfeature_created_count
+        type: Int64
+        nullable: true
+        description: Subfeatures created.
+        expr: {kind: path, path: [subfeatureCreatedCount]}
+      - name: note_state_changed_count
+        type: Int64
+        nullable: true
+        description: Note state changes.
+        expr: {kind: path, path: [noteStateChangedCount]}
+      - name: board_created_count
+        type: Int64
+        nullable: true
+        description: Boards created.
+        expr: {kind: path, path: [boardCreatedCount]}
       - name: board_opened_count
         type: Int64
         nullable: true
         description: Boards opened.
         expr: {kind: path, path: [boardOpenedCount]}
+      - name: grid_board_created_count
+        type: Int64
+        nullable: true
+        description: Grid boards created.
+        expr: {kind: path, path: [gridBoardCreatedCount]}
+      - name: timeline_board_created_count
+        type: Int64
+        nullable: true
+        description: Timeline boards created.
+        expr: {kind: path, path: [timelineBoardCreatedCount]}
+      - name: insights_board_created_count
+        type: Int64
+        nullable: true
+        description: Insights boards created.
+        expr: {kind: path, path: [insightsBoardCreatedCount]}
+      - name: document_board_created_count
+        type: Int64
+        nullable: true
+        description: Document boards created.
+        expr: {kind: path, path: [documentBoardCreatedCount]}
+      - name: column_board_created_count
+        type: Int64
+        nullable: true
+        description: Column boards created.
+        expr: {kind: path, path: [columnBoardCreatedCount]}
+      - name: grid_board_opened_count
+        type: Int64
+        nullable: true
+        description: Grid boards opened.
+        expr: {kind: path, path: [gridBoardOpenedCount]}
+      - name: timeline_board_opened_count
+        type: Int64
+        nullable: true
+        description: Timeline boards opened.
+        expr: {kind: path, path: [timelineBoardOpenedCount]}
+      - name: insights_board_opened_count
+        type: Int64
+        nullable: true
+        description: Insights boards opened.
+        expr: {kind: path, path: [insightsBoardOpenedCount]}
+      - name: document_board_opened_count
+        type: Int64
+        nullable: true
+        description: Document boards opened.
+        expr: {kind: path, path: [documentBoardOpenedCount]}
+      - name: column_board_opened_count
+        type: Int64
+        nullable: true
+        description: Column boards opened.
+        expr: {kind: path, path: [columnBoardOpenedCount]}
       - name: raw_json
         type: Json
         nullable: true

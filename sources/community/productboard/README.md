@@ -30,7 +30,7 @@ First-success query after setup:
 
 ```sql
 SELECT id, entity_type, name, status__name, updated_at
-FROM productboard.entities
+FROM productboard.features
 LIMIT 5;
 ```
 
@@ -38,7 +38,7 @@ LIMIT 5;
 
 | Table | Description |
 | --- | --- |
-| `productboard.entities` | All Productboard PM entities with optional type/status/owner filters. |
+| `productboard.entities` | Productboard PM entities with explicit `entity_type` and optional status/owner filters. |
 | `productboard.features` | Feature entities from `/v2/entities?type[]=feature`. |
 | `productboard.initiatives` | Initiative entities from `/v2/entities?type[]=initiative`. |
 | `productboard.companies` | Company customer entities. |
@@ -88,16 +88,26 @@ FROM productboard.member_activities
 WHERE date_from = '2025-10-01' AND date_to = '2025-10-31';
 ```
 
+Manual Productboard pagination:
+
+```sql
+SELECT id, entity_type, name, updated_at
+FROM productboard.features
+WHERE page_cursor = 'cursor_from_links_next'
+LIMIT 100;
+```
+
 ## Notes
 
 - This source targets Productboard REST API v2 under
   `https://api.productboard.com/v2`.
 - Productboard list endpoints are cursor-paginated with `links.next` URLs and
   `pageCursor`. The current Coral HTTP DSL cannot safely extract `pageCursor`
-  from a full JSON URL, so list tables expose a bounded first page instead of
-  claiming complete table-wide pagination. Treat broad unfiltered queries as
-  samples; use provider filters such as entity type, status, owner, note source,
-  and date windows for repeatable workflows.
+  from a full JSON URL, so list tables expose one provider page at a time and
+  include a pushed `page_cursor` filter mapped to Productboard's `pageCursor`
+  query parameter. Copy the `pageCursor` value from Productboard's `links.next`
+  URL when you need the next page, and use provider filters such as entity type,
+  status, owner, note source, and date windows for repeatable workflows.
 - Productboard entities and notes are configuration-driven. Standard fields are
   exposed as columns where stable, and dynamic/custom fields are preserved in
   `fields_json` and `raw_json`.
@@ -114,6 +124,9 @@ WHERE date_from = '2025-10-01' AND date_to = '2025-10-31';
 - Notes expose `created_at` and `updated_at` from Productboard's top-level
   note timestamps. Members and teams read stable values from their nested
   `fields` objects.
+- `productboard.member_activities` exposes the documented activity metrics as
+  first-class columns, including board, component, insight, product, feature,
+  subfeature, note, note-state-change, and board-type counts.
 
 ## Validation evidence
 
@@ -127,9 +140,45 @@ git diff --check origin/main..HEAD
 gitleaks detect --no-banner --redact --source . --log-opts=origin/main..HEAD
 ```
 
-Credentialed `coral source add --file`, `coral source test productboard`, and
-representative live queries require a Productboard token and were not run in
-this workspace.
+Credentialed live validation against a Productboard workspace:
+
+```text
+Manifest is valid
+Added source productboard (secrets: file (plaintext))
+
+  ✓ productboard connected successfully
+  Secrets: file (plaintext)
+
+    productboard (11 tables)
+    Query tests
+    3 declared · 3 passed · 0 failed
+
+    ✓ SELECT id, entity_type, name FROM productboard.features LIMIT 1
+      1 row
+    ✓ SELECT id, note_type, name FROM productboard.notes LIMIT 1
+      1 row
+    ✓ SELECT type FROM productboard.entity_configurations LIMIT 1
+      1 row
+```
+
+Representative live queries returned feature, note, and member rows, plus a
+successful zero-row member-activity window for the test workspace:
+
+```text
+| entity_type | name                       | status__name | updated_at                  |
+| feature     | Sample feature (e.g. Epic) | New idea     | 2026-05-30T11:58:35.855455Z |
+| feature     | Sample feature (e.g. Epic) | In progress  | 2026-05-30T11:58:35.738001Z |
+
+| name                                           | source_system | processed | archived |
+| Sample Note: Customer call                     |               | false     | false    |
+| Zendesk ticket #9                              | zendesk       | false     | false    |
+
+| name               | role  |
+| Saai Aravindh Raja | admin |
+
+| date | date_from | date_to | feature_created_count | note_created_count |
+|      |           |         |                       |                    |
+```
 
 ## API references
 
