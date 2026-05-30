@@ -36,7 +36,7 @@ If your Pipedrive URL is:
 https://coral-testing.pipedrive.com
 
 Set:
-PIPEDRIVE_COMPANY_DOMAIN=coral-testing
+export PIPEDRIVE_COMPANY_DOMAIN=coral-testing
 
 ### 3. Add the source
 
