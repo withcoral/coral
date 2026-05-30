@@ -224,10 +224,15 @@ pub(super) async fn fetch_rows(
             ValidatedPaginationMode::CursorQuery | ValidatedPaginationMode::CursorBody => {
                 let next_cursor =
                     get_path_value(&payload, &target.pagination().response_cursor_path)
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(ToOwned::to_owned);
+                        .filter(|v| !v.is_null())
+                        .and_then(|v| {
+                            if let Value::String(s) = v
+                                && s.trim().is_empty()
+                            {
+                                return None;
+                            }
+                            Some(v.clone())
+                        });
                 match next_cursor {
                     Some(cursor) => state.cursor = Some(cursor),
                     None => break,

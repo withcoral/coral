@@ -71,6 +71,10 @@ fn request_json(request: &RequestSpec) -> serde_json::Value {
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Formatting of all value source variants is descriptive but long"
+)]
 fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
     match value {
         ValueSourceSpec::Literal { value } => json!({
@@ -88,6 +92,11 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
         }),
         ValueSourceSpec::FilterInt { key, default } => json!({
             "from": "filter_int",
+            "key": key,
+            "default": default,
+        }),
+        ValueSourceSpec::FilterFloat { key, default } => json!({
+            "from": "filter_float",
             "key": key,
             "default": default,
         }),
@@ -123,6 +132,11 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
         }),
         ValueSourceSpec::ArgInt { key, default } => json!({
             "from": "arg_int",
+            "key": key,
+            "default": default,
+        }),
+        ValueSourceSpec::ArgFloat { key, default } => json!({
+            "from": "arg_float",
             "key": key,
             "default": default,
         }),

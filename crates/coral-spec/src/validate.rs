@@ -524,6 +524,7 @@ fn validate_value_source(
     match source {
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
+        | ValueSourceSpec::FilterFloat { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. }
@@ -552,6 +553,7 @@ fn validate_value_source(
         }
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
+        | ValueSourceSpec::ArgFloat { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => {
@@ -666,6 +668,7 @@ fn validate_arg_value_source(
     match source {
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
+        | ValueSourceSpec::ArgFloat { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. }
@@ -677,6 +680,7 @@ fn validate_arg_value_source(
         }
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
+        | ValueSourceSpec::FilterFloat { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. } => {
@@ -1044,6 +1048,7 @@ mod tests {
             detail_hints: Vec::new(),
             args: vec![TableFunctionArgSpec {
                 name: "query".to_string(),
+                description: String::new(),
                 required: true,
                 values: vec![],
                 bind: FunctionArgBinding {
@@ -1388,6 +1393,10 @@ mod tests {
             },
             ValueSourceSpec::FilterInt {
                 key: "limit".to_string(),
+                default: None,
+            },
+            ValueSourceSpec::FilterFloat {
+                key: "threshold".to_string(),
                 default: None,
             },
             ValueSourceSpec::FilterBool {

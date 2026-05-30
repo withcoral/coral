@@ -760,6 +760,7 @@
       "required": ["name", "bind"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
         "required": { "type": "boolean" },
         "values": {
           "type": "array",
@@ -1007,6 +1008,14 @@
         },
         {
           "properties": {
+            "from": { "const": "filter_float" },
+            "key": { "type": "string", "minLength": 1 },
+            "default": { "type": "number" }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
             "from": { "const": "filter_bool" },
             "key": { "type": "string", "minLength": 1 },
             "default": { "type": "boolean" }
@@ -1043,6 +1052,14 @@
             "from": { "const": "arg_int" },
             "key": { "type": "string", "minLength": 1 },
             "default": { "type": "integer" }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
+            "from": { "const": "arg_float" },
+            "key": { "type": "string", "minLength": 1 },
+            "default": { "type": "number" }
           },
           "required": ["key"]
         },
