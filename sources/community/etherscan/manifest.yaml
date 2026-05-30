@@ -34,10 +34,10 @@ tables:
         description: Wallet address to query token transfers for.
       - name: contractaddress
         type: Utf8
-        description: Token contract address to filter by (e.g. USDC: 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48).
+        description: "Token contract address to filter by (e.g. USDC: 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)."
       - name: sort
         type: Utf8
-        description: Sort order: 'asc' (oldest first, default) or 'desc' (newest first).
+        description: "Sort order: 'asc' (oldest first, default) or 'desc' (newest first)."
     request:
       method: GET
       path: /api
@@ -66,8 +66,6 @@ tables:
     response:
       rows_path:
         - result
-      error_path:
-        - message
       row_strategy: direct
     pagination:
       mode: page
@@ -80,10 +78,16 @@ tables:
     columns:
       - name: chainid
         type: Int64
-        description: EVM chain ID filter (1 = Ethereum, 8453 = Base, 10 = Optimism, 42161 = Arbitrum).
+        description: EVM chain ID the transfers were queried on (echoed from the filter).
+        expr:
+          kind: from_filter
+          key: chainid
       - name: address
         type: Utf8
-        description: Wallet address filter.
+        description: Wallet address the transfers were queried for (echoed from the filter).
+        expr:
+          kind: from_filter
+          key: address
       - name: hash
         type: Utf8
         description: Transaction hash.

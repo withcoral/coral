@@ -109,7 +109,7 @@ ORDER BY usdc_received DESC;
 
 ### Etherscan V2 API behavior
 
-- **Error responses are HTTP 200** — Etherscan signals errors as `{"status":"0","message":"NOTOK","result":"..."}` inside a successful HTTP response. Coral surfaces the `message` field via `error_path`.
+- **Error responses are HTTP 200** — Etherscan signals errors as `{"status":"0","message":"NOTOK","result":"..."}` inside a successful HTTP response. Coral's HTTP backend does not special-case Etherscan's string `status` convention, so an auth, rate-limit, or bad-parameter failure surfaces as an empty result rather than a query error. If a query returns no rows unexpectedly, verify your API key, `chainid`, and `address`.
 - **Rate limits** — Free tier: 3 calls/sec, Lite tier: 5 calls/sec. Use conservative page sizes and cache aggressively.
 - **Chain support** — Free API key supports Ethereum mainnet (chainid=1). Base (8453), Optimism (10), and Arbitrum (42161) may require a paid plan.
 - **Pagination** — Uses offset-based pagination (page/offset params). Default page size is 50, max 100.
