@@ -223,7 +223,6 @@ pub(crate) fn set_raw_feature_override(
 ) -> Result<(), AppError> {
     let _lock = FileLock::exclusive(layout.state_lock())?;
     let mut doc = read_config_document(layout)?;
-    ensure_feature_table(&doc)?;
     if doc.get("features").is_none() {
         doc.insert("features", toml_edit::table());
     }
@@ -281,19 +280,6 @@ fn write_config_document(layout: &AppStateLayout, doc: &DocumentMut) -> Result<(
     }
     storage_fs::write_atomic(layout.config_file(), doc.to_string().as_bytes())?;
     Ok(())
-}
-
-fn ensure_feature_table(doc: &DocumentMut) -> Result<(), AppError> {
-    let Some(features) = doc.get("features") else {
-        return Ok(());
-    };
-    if features.is_table() {
-        Ok(())
-    } else {
-        Err(AppError::InvalidInput(
-            "unsupported [features] config; expected a table".to_string(),
-        ))
-    }
 }
 
 #[derive(Debug, Clone)]
