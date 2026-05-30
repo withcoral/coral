@@ -9,7 +9,7 @@ summaries, package versions, package risk details, and package author metadata.
 Set `PHYLUM_API_KEY` to a Phylum API token:
 
 ```bash
-export PHYLUM_API_KEY="p0_..."
+export PHYLUM_API_KEY="ph0_..."
 coral source add --file sources/community/phylum/manifest.yaml
 ```
 
