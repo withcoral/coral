@@ -22,7 +22,6 @@ auth:
     - name: Authorization
       from: template
       template: Bearer {{input.GOOGLE_FORMS_ACCESS_TOKEN}}
-test_queries:
   - SELECT * FROM google_forms.form WHERE form_id = 'your-form-id' LIMIT 1
   - SELECT * FROM google_forms.questions WHERE form_id = 'your-form-id' AND question_id IS NOT NULL LIMIT 5
   - SELECT * FROM google_forms.responses WHERE form_id = 'your-form-id' LIMIT 5
@@ -228,16 +227,14 @@ tables:
           kind: path
           path:
             - responseId
-      - name: create_time
-        type: Utf8
+      - name: create_time`n        type: Timestamp
         nullable: true
         description: ISO 8601 timestamp when the response was first submitted.
         expr:
           kind: path
           path:
             - createTime
-      - name: last_submitted_time
-        type: Utf8
+      - name: last_submitted_time`n        type: Timestamp
         nullable: true
         description: ISO 8601 timestamp of the most recent submission or edit.
         expr:
@@ -252,8 +249,7 @@ tables:
           kind: path
           path:
             - respondentEmail
-      - name: answers
-        type: Utf8
+      - name: answers`n        type: Json
         nullable: true
         description: >-
           JSON object mapping question_id keys to answer objects. Each answer
@@ -271,3 +267,4 @@ tables:
           kind: from_filter
           key: form_id
         virtual: true
+
