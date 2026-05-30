@@ -3,6 +3,23 @@
 Query YouTube channels, videos, playlist items, search results, and comments
 through Coral SQL using the YouTube Data API v3.
 
+## Authentication
+
+This source authenticates with a **YouTube Data API v3 API key** — *not* OAuth
+2.0. An API key grants access only to **public** YouTube data: channels (by
+`id`, `forHandle`, or `forUsername`), public videos, playlists, search, and
+public comments. Owner-scoped parameters such as `mine=true` or
+`managedByMe=true` require OAuth 2.0 per the
+[YouTube auth guide](https://developers.google.com/youtube/v3/guides/authentication)
+and aren't exposed by this source. See [Limitations](#limitations) for fields
+that can still be hidden on public content.
+
+Every call counts against your Google Cloud project's daily quota — the
+default is **10,000 units per day** per project. Per-method costs are listed
+in [Quota](#quota); the source follows YouTube's `pageToken` cursors
+automatically, so bound queries with SQL `LIMIT` to cap both row volume and
+quota use.
+
 ## Setup
 
 ### 1. Create a Google Cloud project and enable the API
@@ -36,6 +53,24 @@ coral source test youtube
 The built-in test query reads `youtube.channels_by_handle` for `@DynamoGaming`
 and verifies that authentication and column mapping are working.
 
+## Quick start
+
+Once the source is added, this query works against any public channel — try
+[Marques Brownlee](https://www.youtube.com/@mkbhd) (1 quota unit):
+
+```sql
+SELECT snippet__title,
+       statistics__subscriber_count,
+       statistics__video_count,
+       content_details__related_playlists__uploads
+FROM youtube.channels_by_handle
+WHERE handle = '@mkbhd';
+```
+
+The `uploads` playlist ID returned here can be passed straight to
+`youtube.playlist_items` to list the channel's recent videos. See
+[Common workflows](#common-workflows) for the rest of the chain.
+
 ## Quota
 
 The YouTube Data API v3 has a default quota of **10,000 units per day**
@@ -55,6 +90,37 @@ per project. Costs per table:
 count. The table defaults to 50 results (`fetch_limit_default: 50`) to
 limit accidental drain. Request a quota increase in Google Cloud Console
 if you need more capacity.
+
+## Common workflows
+
+Most YouTube analysis chains a few tables together. The typical paths:
+
+- **Browse a channel's videos** — start with `youtube.channels_by_handle`
+  (by `@handle`) or `youtube.channels` (by ID). Read
+  `content_details__related_playlists__uploads`, query `youtube.playlist_items`
+  with that playlist ID, then enrich the resulting video IDs via
+  `youtube.videos` for full metadata + statistics. All four steps cost 1 unit
+  per call.
+- **Keyword search → video detail** — query `youtube.search` for a keyword
+  (set `type='video'` if you only want videos), collect `id__video_id`s, then
+  enrich them via `youtube.videos`. Each `search` page costs **100 units**;
+  prefer `playlist_items` when you only need one channel's own uploads.
+- **Comment analysis** — for a video ID, `youtube.comment_threads` returns
+  top-level threads with their first comment inline. For full reply trees,
+  follow up with `youtube.comments` per thread.
+- **Statistics** — counts (`statistics__view_count`,
+  `statistics__subscriber_count`, etc.) appear on `channels`,
+  `channels_by_handle`, and `videos`. YouTube returns them as JSON strings;
+  cast to `BIGINT` for numeric comparisons.
+
+## Pagination
+
+YouTube paginates list responses with opaque `pageToken` cursors
+(`nextPageToken` / `prevPageToken`), and each method has its own per-page
+`maxResults` cap (e.g. up to 50 for `channels.list`). Coral follows the
+cursors automatically, so use SQL `LIMIT` to cap how many pages — and
+therefore how many quota units — each query consumes. `youtube.search`
+defaults to 50 rows for that reason.
 
 ## Tables
 
@@ -185,9 +251,21 @@ LIMIT 20;
 
 - **Read-only.** This source does not create, update, or delete YouTube
   resources.
-- **Public data only.** Authentication uses an API key, which only accesses
-  public content. Private videos, watch history, liked videos, and
-  `mine=true` channel queries require OAuth and are not supported in v1.
+- **Public data only.** The API key only accesses public content. Owner-scoped
+  parameters (`mine=true`, `managedByMe=true`), private/unlisted videos you
+  don't own, watch history, and the authenticated user's likes/subscriptions
+  require OAuth 2.0 per the
+  [YouTube auth guide](https://developers.google.com/youtube/v3/guides/authentication)
+  and are not supported in v1.
+- **Fields hidden on otherwise-public content.** Some columns can come back
+  empty or zero even with a valid API key:
+  - `statistics__dislike_count` has been private since December 2021.
+  - `statistics__subscriber_count` is hidden (set to `0`) when a channel owner
+    has opted to hide their subscriber count.
+  - `youtube.comment_threads` returns 0 rows when comments are disabled for a
+    video.
+  - Region-restricted videos return reduced metadata in regions where they're
+    blocked.
 - **Statistics as strings.** YouTube returns `viewCount`, `likeCount`,
   `subscriberCount`, and similar counts as JSON strings, not numbers. Use
   `CAST(statistics__view_count AS BIGINT)` for numeric comparisons.
