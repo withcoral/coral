@@ -74,8 +74,8 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: bearer
-      key: AIRTABLE_ACCESS_TOKEN
+      from: template
+      template: Bearer {{input.AIRTABLE_ACCESS_TOKEN}}
 request_headers:
   - name: Accept
     from: literal

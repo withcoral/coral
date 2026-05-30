@@ -20,6 +20,12 @@ export AIRTABLE_BASE_ID="<your-base-id>"
 coral source add --file sources/community/airtable/manifest.yaml
 ```
 
+`AIRTABLE_ACCESS_TOKEN` should be a personal access token or OAuth access token
+sent as `Authorization: Bearer <token>`. For read-only Coral queries, the token
+needs `data.records:read` on the configured base. If you want to create a test
+base or seed validation records through the Airtable API, use a temporary token
+with `schema.bases:write` and `data.records:write`, then rotate it after setup.
+
 By default, the source queries tables named `employees`, `departments`,
 `assets`, `it_tickets`, `projects`, `tasks`, `clients`, `invoices`, `vendors`,
 `purchase_orders`, `time_logs`, and `expenses`. If your base uses different
@@ -146,3 +152,127 @@ coral source test airtable
 The default declared tests read one row from `airtable.employees` and one row
 from `airtable.projects`, so your configured base should contain those tables
 or matching table-variable overrides.
+
+### Captured live validation
+
+The following output was captured against a live Airtable base with the 12
+default tables and 125 seeded employee records.
+
+#### Add source
+
+```bash
+coral source add --file sources/community/airtable/manifest.yaml
+```
+
+```text
+Added source airtable (secrets: keychain)
+
+  ✓ airtable connected successfully
+  Secrets: keychain
+
+    airtable (12 tables)
+    ├─ assets
+    ├─ clients
+    ├─ departments
+    ├─ employees
+    ├─ expenses
+    ├─ invoices
+    ├─ it_tickets
+    ├─ projects
+    ├─ purchase_orders
+    └─ ... and 3 more
+    Query tests
+    2 declared · 2 passed · 0 failed
+
+    ✓ SELECT id, name, status FROM airtable.employees LIMIT 1
+      1 row
+
+    ✓ SELECT id, name, status FROM airtable.projects LIMIT 1
+      1 row
+```
+
+#### Source test
+
+```bash
+coral source test airtable
+```
+
+```text
+  ✓ airtable connected successfully
+  Secrets: keychain
+
+    airtable (12 tables)
+    ├─ assets
+    ├─ clients
+    ├─ departments
+    ├─ employees
+    ├─ expenses
+    ├─ invoices
+    ├─ it_tickets
+    ├─ projects
+    ├─ purchase_orders
+    ├─ tasks
+    ├─ time_logs
+    └─ vendors
+    Query tests
+    2 declared · 2 passed · 0 failed
+
+    ✓ SELECT id, name, status FROM airtable.employees LIMIT 1
+      1 row
+
+    ✓ SELECT id, name, status FROM airtable.projects LIMIT 1
+      1 row
+```
+
+#### Representative queries
+
+```sql
+SELECT name, status, email, department
+FROM airtable.employees
+ORDER BY name
+LIMIT 5;
+```
+
+```text
++---------------+-------------+-----------------------+------------+
+| name          | status      | email                 | department |
++---------------+-------------+-----------------------+------------+
+| employees 001 | Active      | employee1@example.com | Finance    |
+| employees 003 | In Progress | employee3@example.com | Operations |
+| employees 004 | Active      | employee4@example.com | IT         |
+| employees 005 | Active      | employee5@example.com | Finance    |
+| employees 006 | In Progress | employee6@example.com | HR         |
++---------------+-------------+-----------------------+------------+
+```
+
+```sql
+SELECT name, status, priority, owner
+FROM airtable.search_it_tickets(
+  formula => 'AND({Status} != ''Closed'', {Priority} = ''High'')'
+)
+LIMIT 5;
+```
+
+```text
++----------------+--------+----------+---------+
+| name           | status | priority | owner   |
++----------------+--------+----------+---------+
+| it tickets 002 | Open   | High     | Owner 2 |
++----------------+--------+----------+---------+
+```
+
+```sql
+SELECT COUNT(*) AS employee_rows
+FROM (SELECT id FROM airtable.employees LIMIT 125);
+```
+
+```text
++---------------+
+| employee_rows |
++---------------+
+| 125           |
++---------------+
+```
+
+The 125-row query verified that Coral followed Airtable's first-page `offset`
+cursor after the initial 100-record page.
