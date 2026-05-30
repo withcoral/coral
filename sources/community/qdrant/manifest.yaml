@@ -541,6 +541,10 @@ tables:
         type: Utf8
         virtual: true
         expr: {kind: from_filter, key: collection_name}
+      - name: ids
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: ids}
       - name: id
         type: Json
         nullable: false
@@ -613,6 +617,18 @@ tables:
         type: Utf8
         virtual: true
         expr: {kind: from_filter, key: collection_name}
+      - name: limit
+        type: Int64
+        virtual: true
+        expr: {kind: from_filter, key: limit}
+      - name: score_threshold
+        type: Float64
+        virtual: true
+        expr: {kind: from_filter, key: score_threshold}
+      - name: filter
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: filter}
       - name: id
         type: Json
         nullable: false
@@ -696,6 +712,26 @@ tables:
         type: Utf8
         virtual: true
         expr: {kind: from_filter, key: collection_name}
+      - name: positive
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: positive}
+      - name: negative
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: negative}
+      - name: limit
+        type: Int64
+        virtual: true
+        expr: {kind: from_filter, key: limit}
+      - name: strategy
+        type: Utf8
+        virtual: true
+        expr: {kind: from_filter, key: strategy}
+      - name: filter
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: filter}
       - name: id
         type: Json
         nullable: false
@@ -758,6 +794,22 @@ tables:
         type: Utf8
         virtual: true
         expr: {kind: from_filter, key: collection_name}
+      - name: target
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: target}
+      - name: context
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: context}
+      - name: limit
+        type: Int64
+        virtual: true
+        expr: {kind: from_filter, key: limit}
+      - name: filter
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: filter}
       - name: id
         type: Json
         nullable: false
@@ -802,6 +854,14 @@ tables:
         type: Utf8
         virtual: true
         expr: {kind: from_filter, key: collection_name}
+      - name: filter
+        type: Json
+        virtual: true
+        expr: {kind: from_filter, key: filter}
+      - name: exact
+        type: Boolean
+        virtual: true
+        expr: {kind: from_filter, key: exact}
       - name: count
         type: Int64
         nullable: false
