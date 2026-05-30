@@ -20,7 +20,7 @@ use crate::{
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 1;
 pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v2";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v1";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v2";
 
 #[derive(Debug, Clone)]
 pub struct V4SourceManifest {
@@ -1535,17 +1535,18 @@ fn generate_projection(
                 description: input.description.clone(),
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
     let columns = projection_columns(ir, operation);
     let mut name = projection_name(operation, is_search);
     if name.is_empty() {
         name = normalize_identifier(&operation.id, "projection");
     }
+    let guide = projection_guide(&kind, &inputs, &rest.pagination, is_search);
     let projection = Projection {
         name,
         kind,
         description: operation.description.clone(),
-        guide: String::new(),
+        guide,
         surface_id: ir.surface_id.clone(),
         operation_id: operation.id.clone(),
         visibility,
@@ -1563,6 +1564,85 @@ fn generate_projection(
     diagnostics.extend(projection_diagnostics);
     let _ = manifest.projection_policy.default;
     projection
+}
+
+fn projection_guide(
+    kind: &ProjectionKind,
+    inputs: &[ProjectionInput],
+    pagination: &PaginationSpec,
+    is_search: bool,
+) -> String {
+    let exposed_inputs = inputs
+        .iter()
+        .filter(|input| input.sql_exposure != SqlInputExposure::Internal)
+        .collect::<Vec<_>>();
+    let required = exposed_inputs
+        .iter()
+        .filter(|input| input.required)
+        .map(|input| input.name.as_str())
+        .collect::<Vec<_>>();
+    let optional = exposed_inputs
+        .iter()
+        .filter(|input| !input.required)
+        .filter(|input| !matches!(input.name.as_str(), "page" | "per_page"))
+        .map(|input| input.name.as_str())
+        .take(3)
+        .collect::<Vec<_>>();
+
+    let mut sentences = Vec::new();
+    if required.is_empty() {
+        sentences.push(match kind {
+            ProjectionKind::Table => "Works without WHERE filters.".to_string(),
+            ProjectionKind::TableFunction { .. } => "Takes no required arguments.".to_string(),
+        });
+    } else {
+        let required = human_join(&required);
+        sentences.push(match kind {
+            ProjectionKind::Table => format!("Requires {required}."),
+            ProjectionKind::TableFunction { .. } => format!("Requires {required} arguments."),
+        });
+    }
+
+    if !optional.is_empty() {
+        sentences.push(format!(
+            "Most useful optional filters: {}.",
+            optional.join(", ")
+        ));
+    }
+
+    if has_required(inputs, "owner") && has_required(inputs, "repo") {
+        sentences.push(
+            "Keep queries repository-scoped; fan out across repos client-side when you need broader coverage."
+                .to_string(),
+        );
+    }
+
+    if is_search {
+        sentences.push(
+            "Use LIMIT to control result size; GitHub search endpoints are rate-limited."
+                .to_string(),
+        );
+    } else if pagination.mode != PaginationMode::None {
+        sentences
+            .push("Use LIMIT for spot checks; large result sets paginate quickly.".to_string());
+    }
+
+    sentences.join(" ")
+}
+
+fn has_required(inputs: &[ProjectionInput], name: &str) -> bool {
+    inputs
+        .iter()
+        .any(|input| input.name == name && input.required)
+}
+
+fn human_join(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [first, second] => format!("{first} and {second}"),
+        [prefix @ .., last] => format!("{}, and {last}", prefix.join(", ")),
+    }
 }
 
 fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
