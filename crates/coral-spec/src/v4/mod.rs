@@ -1385,6 +1385,26 @@ fn wrapped_list_property(properties: &Map<String, Value>) -> Option<(&str, &Valu
                 .filter(|property| property.get("type").and_then(Value::as_str) == Some("array"))
                 .map(|property| (*name, property))
         })
+        .or_else(|| single_array_payload_property(properties))
+}
+
+fn single_array_payload_property(properties: &Map<String, Value>) -> Option<(&str, &Value)> {
+    let array_properties = properties
+        .iter()
+        .filter(|(_, property)| property.get("type").and_then(Value::as_str) == Some("array"))
+        .filter(|(name, _)| !is_wrapper_metadata_property(name))
+        .collect::<Vec<_>>();
+    match array_properties.as_slice() {
+        [(name, property)] => Some((name.as_str(), *property)),
+        [] | [_, _, ..] => None,
+    }
+}
+
+fn is_wrapper_metadata_property(name: &str) -> bool {
+    matches!(
+        name,
+        "total_count" | "incomplete_results" | "has_more" | "next" | "previous"
+    )
 }
 
 fn required_fields(schema: &Value) -> BTreeSet<String> {
@@ -2157,6 +2177,67 @@ components:
             .find(|projection| projection.operation_id == "listincidents")
             .expect("projection");
         assert_eq!(projection.name, "incidents");
+        assert!(matches!(projection.kind, ProjectionKind::Table));
+    }
+
+    #[test]
+    fn importer_recognizes_single_array_payload_wrappers() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: github
+version: 1.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.github.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /orgs/{org}/actions/permissions/repositories:
+    get:
+      operationId: actions/list-selected-repositories-enabled-github-actions-organization
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  repositories:
+                    type: array
+                    items: {$ref: '#/components/schemas/Repository'}
+components:
+  schemas:
+    Repository:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+"
+            .as_bytes(),
+        )
+        .expect("import");
+        let operation = ir.operations.first().expect("operation");
+        assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+        assert_eq!(operation.output.row_path, vec!["repositories".to_string()]);
+
+        let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+        let projection = catalog.projections.first().expect("projection");
+        assert_eq!(projection.name, "repositories");
         assert!(matches!(projection.kind, ProjectionKind::Table));
     }
 
