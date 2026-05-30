@@ -2,18 +2,17 @@ name: pipedrive
 version: 0.1.0
 dsl_version: 3
 backend: http
-description: >
-  Query your Pipedrive CRM data — deals, persons, organizations, pipelines,
-  stages, activities, notes, leads, products, and users — through SQL.
+description: >-
+  Query deals, persons, organizations, pipelines, stages, activities, notes,
+  leads, products, and users from Pipedrive via the Pipedrive REST API v2.
+base_url: https://api.pipedrive.com/api/v2
 
 inputs:
   PIPEDRIVE_API_TOKEN:
     kind: secret
-    hint: >
+    hint: |
       Your Pipedrive personal API token. Find it at
-      app.pipedrive.com → Settings → Personal preferences → API.
-
-base_url: "https://api.pipedrive.com/v1"
+      Settings → Personal preferences → API in your Pipedrive account.
 
 auth:
   type: HeaderAuth
@@ -27,13 +26,18 @@ test_queries:
   - SELECT id, title, status FROM pipedrive.deals LIMIT 1
 
 tables:
-  # ──────────────────────────────────────────────
-  # PIPELINES
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # pipelines
+  # ──────────────────────────────────────────────────────────────────────────
   - name: pipelines
-    description: >
-      Sales pipelines defined in your Pipedrive account.
-      Each pipeline groups a set of stages and deals.
+    description: >-
+      Sales pipelines defined in your Pipedrive account. Each pipeline groups
+      a set of stages and deals. Join with stages on id = pipeline_id and with
+      deals on id = pipeline_id.
+    guide: |
+      No required filters. Join with `pipedrive.stages` on `id = pipeline_id`
+      to list stages per pipeline. Join with `pipedrive.deals` on
+      `id = pipeline_id` for revenue forecasting per pipeline.
     request:
       method: GET
       path: /pipelines
@@ -41,9 +45,11 @@ tables:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
@@ -51,39 +57,52 @@ tables:
     columns:
       - name: id
         type: Int64
-        description: Unique pipeline ID
+        nullable: false
+        description: Unique pipeline ID.
       - name: name
         type: Utf8
-        description: Name of the pipeline
-      - name: url_title
-        type: Utf8
-        description: URL-safe title
+        nullable: true
+        description: Display name of the pipeline.
       - name: order_nr
         type: Int64
-        description: Display order
-      - name: active
+        nullable: true
+        description: Display order of the pipeline.
+      - name: is_deleted
         type: Boolean
-        description: Whether the pipeline is active
-      - name: deal_probability
+        nullable: true
+        description: True when the pipeline has been soft-deleted.
+      - name: is_deal_probability_enabled
         type: Boolean
-        description: Whether deal probability is enabled
+        nullable: true
+        description: True when deal win probability is enabled for this pipeline.
+      - name: is_selected
+        type: Boolean
+        nullable: true
+        description: True when this is the default selected pipeline.
       - name: add_time
         type: Utf8
-        description: Creation timestamp (ISO 8601)
+        nullable: true
+        description: Creation timestamp (RFC 3339).
       - name: update_time
         type: Utf8
-        description: Last update timestamp (ISO 8601)
-      - name: selected
-        type: Boolean
-        description: Whether this is the selected default pipeline
+        nullable: true
+        description: Last update timestamp (RFC 3339).
 
-  # ──────────────────────────────────────────────
-  # STAGES
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # stages
+  # ──────────────────────────────────────────────────────────────────────────
   - name: stages
-    description: >
-      Pipeline stages. Use the pipeline_id filter to scope to a specific
-      pipeline, or omit it to retrieve all stages across all pipelines.
+    description: >-
+      Pipeline stages. Optionally filter by pipeline_id to scope results to
+      a specific pipeline, or omit the filter to retrieve all stages.
+    guide: |
+      Optional `pipeline_id` filter pushes down to the API. Join with
+      `pipedrive.pipelines` on `pipeline_id = id` for pipeline context. Join
+      with `pipedrive.deals` on `id = stage_id` for stage-level deal counts.
+    filters:
+      - name: pipeline_id
+        type: Int64
+        description: Filter stages by pipeline ID.
     request:
       method: GET
       path: /stages
@@ -91,65 +110,98 @@ tables:
         - name: pipeline_id
           from: filter
           key: pipeline_id
-          required: false
     response:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
         query_param: limit
-    filters:
-      - name: pipeline_id
-        type: Int64
-        description: Filter stages by pipeline ID
     columns:
       - name: id
         type: Int64
-        description: Unique stage ID
-      - name: order_nr
-        type: Int64
-        description: Position within the pipeline
+        nullable: false
+        description: Unique stage ID.
       - name: name
         type: Utf8
-        description: Stage name
-      - name: active_flag
-        type: Boolean
-        description: Whether the stage is active
-      - name: deal_probability
+        nullable: true
+        description: Stage name.
+      - name: order_nr
         type: Int64
-        description: Default deal win probability (0–100)
+        nullable: true
+        description: Position of this stage within its pipeline.
       - name: pipeline_id
         type: Int64
-        description: ID of the parent pipeline
-      - name: pipeline_name
-        type: Utf8
-        description: Name of the parent pipeline
-      - name: rotten_flag
-        type: Boolean
-        description: Whether rotting is enabled for deals in this stage
-      - name: rotten_days
+        nullable: true
+        description: ID of the parent pipeline.
+      - name: deal_probability
         type: Int64
-        description: Number of days before a deal is considered rotten
+        nullable: true
+        description: Default deal win probability for this stage (0–100).
+      - name: is_deal_rot_enabled
+        type: Boolean
+        nullable: true
+        description: True when deal rotting is enabled for this stage.
+      - name: days_to_rotten
+        type: Int64
+        nullable: true
+        description: Number of days before a deal in this stage is considered rotten.
+      - name: is_deleted
+        type: Boolean
+        nullable: true
+        description: True when the stage has been soft-deleted.
       - name: add_time
         type: Utf8
-        description: Creation timestamp (ISO 8601)
+        nullable: true
+        description: Creation timestamp (RFC 3339).
       - name: update_time
         type: Utf8
-        description: Last update timestamp (ISO 8601)
+        nullable: true
+        description: Last update timestamp (RFC 3339).
 
-  # ──────────────────────────────────────────────
-  # DEALS
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # deals
+  # ──────────────────────────────────────────────────────────────────────────
   - name: deals
-    description: >
-      All deals in your Pipedrive account. Supports filtering by status,
-      pipeline, stage, and owner. Joins naturally with persons, organizations,
-      pipelines, and stages.
+    description: >-
+      All deals in your Pipedrive account. Supports optional filtering by
+      status, pipeline, stage, owner, person, and organization. Joins
+      naturally with persons, organizations, pipelines, stages, and users.
+    guide: |
+      No required filters. Optional filters push down to the API:
+      `status` (open, won, lost, deleted), `pipeline_id`, `stage_id`,
+      `owner_id`, `person_id`, `org_id`. Filter locally on `is_deleted`
+      to exclude soft-deleted deals. Join with `pipedrive.persons` on
+      `person_id = id`, `pipedrive.organizations` on `org_id = id`,
+      `pipedrive.pipelines` on `pipeline_id = id`, and `pipedrive.users`
+      on `owner_id = id`.
+    filters:
+      - name: status
+        type: Utf8
+        description: >-
+          Filter by deal status. One of: open, won, lost, deleted.
+          Multiple statuses can be comma-separated. Omit to return all.
+      - name: pipeline_id
+        type: Int64
+        description: Filter deals by pipeline ID.
+      - name: stage_id
+        type: Int64
+        description: Filter deals by stage ID.
+      - name: owner_id
+        type: Int64
+        description: Filter deals by owner user ID.
+      - name: person_id
+        type: Int64
+        description: Filter deals by associated person ID.
+      - name: org_id
+        type: Int64
+        description: Filter deals by associated organization ID.
     request:
       method: GET
       path: /deals
@@ -157,601 +209,581 @@ tables:
         - name: status
           from: filter
           key: status
-          required: false
         - name: pipeline_id
-          from: filter_int
+          from: filter
           key: pipeline_id
-          required: false
         - name: stage_id
-          from: filter_int
+          from: filter
           key: stage_id
-          required: false
-        - name: user_id
-          from: filter_int
-          key: user_id
-          required: false
+        - name: owner_id
+          from: filter
+          key: owner_id
+        - name: person_id
+          from: filter
+          key: person_id
+        - name: org_id
+          from: filter
+          key: org_id
     response:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
         query_param: limit
-    filters:
-      - name: status
-        type: Utf8
-        description: >
-          Filter by deal status. One of: open, won, lost, deleted, all_not_deleted.
-          Defaults to all_not_deleted.
-      - name: pipeline_id
-        type: Int64
-        description: Filter deals by pipeline ID
-      - name: stage_id
-        type: Int64
-        description: Filter deals by stage ID
-      - name: user_id
-        type: Int64
-        description: Filter deals by owner user ID
     columns:
       - name: id
         type: Int64
-        description: Unique deal ID
+        nullable: false
+        description: Unique deal ID.
       - name: title
         type: Utf8
-        description: Deal title
+        nullable: true
+        description: Deal title.
       - name: status
         type: Utf8
-        description: Deal status (open, won, lost, deleted)
+        nullable: true
+        description: "Deal status: open, won, lost, deleted."
       - name: value
         type: Float64
-        description: Deal value
+        nullable: true
+        description: Deal value.
       - name: currency
         type: Utf8
-        description: Currency code (e.g. USD)
-      - name: weighted_value
-        type: Float64
-        description: Value × probability
-      - name: weighted_value_currency
-        type: Utf8
-        description: Currency of weighted_value
+        nullable: true
+        description: Currency code (e.g. USD).
       - name: probability
         type: Float64
-        description: Win probability (0–100)
+        nullable: true
+        description: Win probability (0–100).
+      - name: acv
+        type: Float64
+        nullable: true
+        description: Annual contract value.
+      - name: arr
+        type: Float64
+        nullable: true
+        description: Annual recurring revenue.
+      - name: mrr
+        type: Float64
+        nullable: true
+        description: Monthly recurring revenue.
       - name: pipeline_id
         type: Int64
-        description: ID of the pipeline this deal belongs to
+        nullable: true
+        description: ID of the pipeline this deal belongs to.
       - name: stage_id
         type: Int64
-        description: ID of the current stage
-      - name: stage_order_nr
+        nullable: true
+        description: ID of the current stage.
+      - name: person_id
         type: Int64
-        description: Stage order number within its pipeline
-      - name: person_id__value
+        nullable: true
+        description: ID of the associated person (contact).
+      - name: org_id
         type: Int64
-        description: ID of the associated person (contact)
-      - name: person_name
+        nullable: true
+        description: ID of the associated organization.
+      - name: owner_id
+        type: Int64
+        nullable: true
+        description: ID of the deal owner (user).
+      - name: creator_user_id
+        type: Int64
+        nullable: true
+        description: ID of the user who created the deal.
+      - name: label_ids
         type: Utf8
-        description: Name of the associated person
-      - name: org_id__value
-        type: Int64
-        description: ID of the associated organization
-      - name: org_name
-        type: Utf8
-        description: Name of the associated organization
-      - name: user_id__value
-        type: Int64
-        description: ID of the deal owner (user)
-      - name: user_id__name
-        type: Utf8
-        description: Name of the deal owner
-      - name: creator_user_id__value
-        type: Int64
-        description: ID of the user who created the deal
-      - name: creator_user_id__name
-        type: Utf8
-        description: Name of the user who created the deal
+        nullable: true
+        description: Array of label IDs applied to this deal.
+      - name: is_deleted
+        type: Boolean
+        nullable: true
+        description: True when the deal has been soft-deleted.
       - name: expected_close_date
         type: Utf8
-        description: Expected close date (YYYY-MM-DD)
+        nullable: true
+        description: Expected close date (YYYY-MM-DD).
       - name: close_time
         type: Utf8
-        description: Actual close timestamp (ISO 8601)
+        nullable: true
+        description: Actual close timestamp (RFC 3339).
       - name: won_time
         type: Utf8
-        description: Timestamp when the deal was marked won
+        nullable: true
+        description: Timestamp when the deal was marked won (RFC 3339).
       - name: lost_time
         type: Utf8
-        description: Timestamp when the deal was marked lost
+        nullable: true
+        description: Timestamp when the deal was marked lost (RFC 3339).
       - name: lost_reason
         type: Utf8
-        description: Reason the deal was lost
-      - name: add_time
-        type: Utf8
-        description: Creation timestamp (ISO 8601)
-      - name: update_time
-        type: Utf8
-        description: Last update timestamp (ISO 8601)
+        nullable: true
+        description: Reason the deal was lost.
       - name: stage_change_time
         type: Utf8
-        description: Timestamp of the last stage change
-      - name: active
-        type: Boolean
-        description: Whether the deal is currently active
-      - name: deleted
-        type: Boolean
-        description: Whether the deal has been deleted
-      - name: visible_to
+        nullable: true
+        description: Timestamp of the last stage change (RFC 3339).
+      - name: add_time
         type: Utf8
-        description: Visibility setting
-      - name: activities_count
+        nullable: true
+        description: Creation timestamp (RFC 3339).
+      - name: update_time
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (RFC 3339).
+      - name: visible_to
         type: Int64
-        description: Total number of activities linked to this deal
-      - name: done_activities_count
-        type: Int64
-        description: Number of completed activities
-      - name: undone_activities_count
-        type: Int64
-        description: Number of pending activities
-      - name: notes_count
-        type: Int64
-        description: Number of notes on this deal
-      - name: files_count
-        type: Int64
-        description: Number of files attached to this deal
-      - name: followers_count
-        type: Int64
-        description: Number of followers
-      - name: email_messages_count
-        type: Int64
-        description: Number of email messages
+        nullable: true
+        description: Visibility setting (integer).
+      - name: local_won_date
+        type: Utf8
+        nullable: true
+        description: Local date when the deal was won (YYYY-MM-DD).
+      - name: local_lost_date
+        type: Utf8
+        nullable: true
+        description: Local date when the deal was lost (YYYY-MM-DD).
+      - name: local_close_date
+        type: Utf8
+        nullable: true
+        description: Local close date (YYYY-MM-DD).
+      - name: origin
+        type: Utf8
+        nullable: true
+        description: Origin of the deal (e.g. ManuallyCreated, API).
 
-  # ──────────────────────────────────────────────
-  # PERSONS
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # persons
+  # ──────────────────────────────────────────────────────────────────────────
   - name: persons
-    description: >
+    description: >-
       Contacts (persons) in your Pipedrive account. Each person can be
       associated with an organization and linked to one or more deals.
+    guide: |
+      No required filters. Optional `owner_id` and `org_id` filters push down
+      to the API. Join with `pipedrive.organizations` on `org_id = id` for
+      account context. Join with `pipedrive.deals` on `id = person_id` for
+      deal history per contact.
+    filters:
+      - name: owner_id
+        type: Int64
+        description: Filter persons by owner user ID.
+      - name: org_id
+        type: Int64
+        description: Filter persons by associated organization ID.
     request:
       method: GET
       path: /persons
       query:
-        - name: user_id
-          from: filter_int
-          key: user_id
-          required: false
+        - name: owner_id
+          from: filter
+          key: owner_id
+        - name: org_id
+          from: filter
+          key: org_id
     response:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
         query_param: limit
-    filters:
-      - name: user_id
-        type: Int64
-        description: Filter persons by owner user ID
     columns:
       - name: id
         type: Int64
-        description: Unique person ID
+        nullable: false
+        description: Unique person ID.
       - name: name
         type: Utf8
-        description: Full name
+        nullable: true
+        description: Full name.
       - name: first_name
         type: Utf8
-        description: First name
+        nullable: true
+        description: First name.
       - name: last_name
         type: Utf8
-        description: Last name
-      - name: org_id__value
+        nullable: true
+        description: Last name.
+      - name: org_id
         type: Int64
-        description: ID of the associated organization
-      - name: org_name
+        nullable: true
+        description: ID of the associated organization.
+      - name: owner_id
+        type: Int64
+        nullable: true
+        description: ID of the owning user.
+      - name: label_ids
         type: Utf8
-        description: Name of the associated organization
-      - name: owner_id__value
-        type: Int64
-        description: ID of the owning user
-      - name: owner_id__name
-        type: Utf8
-        description: Name of the owning user
-      - name: open_deals_count
-        type: Int64
-        description: Number of open deals
-      - name: closed_deals_count
-        type: Int64
-        description: Number of closed deals
-      - name: won_deals_count
-        type: Int64
-        description: Number of won deals
-      - name: lost_deals_count
-        type: Int64
-        description: Number of lost deals
-      - name: activities_count
-        type: Int64
-        description: Total activities
-      - name: done_activities_count
-        type: Int64
-        description: Completed activities
-      - name: undone_activities_count
-        type: Int64
-        description: Pending activities
-      - name: notes_count
-        type: Int64
-        description: Number of notes
-      - name: files_count
-        type: Int64
-        description: Number of attached files
-      - name: followers_count
-        type: Int64
-        description: Number of followers
-      - name: email_messages_count
-        type: Int64
-        description: Number of email messages
-      - name: active_flag
+        nullable: true
+        description: Array of label IDs applied to this person.
+      - name: is_deleted
         type: Boolean
-        description: Whether the person is active
+        nullable: true
+        description: True when the person has been soft-deleted.
       - name: visible_to
-        type: Utf8
-        description: Visibility setting
+        type: Int64
+        nullable: true
+        description: Visibility setting (integer).
       - name: add_time
         type: Utf8
-        description: Creation timestamp (ISO 8601)
+        nullable: true
+        description: Creation timestamp (RFC 3339).
       - name: update_time
         type: Utf8
-        description: Last update timestamp (ISO 8601)
+        nullable: true
+        description: Last update timestamp (RFC 3339).
 
-  # ──────────────────────────────────────────────
-  # ORGANIZATIONS
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # organizations
+  # ──────────────────────────────────────────────────────────────────────────
   - name: organizations
-    description: >
-      Companies and organizations in your Pipedrive account.
-      Organizations group persons and deals together.
+    description: >-
+      Companies and organizations in your Pipedrive account. Organizations
+      group persons and deals together.
+    guide: |
+      No required filters. Optional `owner_id` filter pushes down to the API.
+      Join with `pipedrive.persons` on `id = org_id` for people per org.
+      Join with `pipedrive.deals` on `id = org_id` for deal pipeline per
+      account. Use `address__country` for geographic segmentation.
+    filters:
+      - name: owner_id
+        type: Int64
+        description: Filter organizations by owner user ID.
     request:
       method: GET
       path: /organizations
       query:
-        - name: user_id
-          from: filter_int
-          key: user_id
-          required: false
+        - name: owner_id
+          from: filter
+          key: owner_id
     response:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
         query_param: limit
-    filters:
-      - name: user_id
-        type: Int64
-        description: Filter organizations by owner user ID
     columns:
       - name: id
         type: Int64
-        description: Unique organization ID
+        nullable: false
+        description: Unique organization ID.
       - name: name
         type: Utf8
-        description: Organization name
-      - name: owner_id__value
+        nullable: true
+        description: Organization name.
+      - name: owner_id
         type: Int64
-        description: ID of the owning user
-      - name: owner_id__name
+        nullable: true
+        description: ID of the owning user.
+      - name: label_ids
         type: Utf8
-        description: Name of the owning user
-      - name: people_count
-        type: Int64
-        description: Number of persons linked to this organization
-      - name: open_deals_count
-        type: Int64
-        description: Number of open deals
-      - name: closed_deals_count
-        type: Int64
-        description: Number of closed deals
-      - name: won_deals_count
-        type: Int64
-        description: Number of won deals
-      - name: lost_deals_count
-        type: Int64
-        description: Number of lost deals
-      - name: activities_count
-        type: Int64
-        description: Total activities
-      - name: done_activities_count
-        type: Int64
-        description: Completed activities
-      - name: undone_activities_count
-        type: Int64
-        description: Pending activities
-      - name: notes_count
-        type: Int64
-        description: Number of notes
-      - name: files_count
-        type: Int64
-        description: Number of attached files
-      - name: followers_count
-        type: Int64
-        description: Number of followers
-      - name: email_messages_count
-        type: Int64
-        description: Number of email messages
-      - name: active_flag
+        nullable: true
+        description: Array of label IDs applied to this organization.
+      - name: is_deleted
         type: Boolean
-        description: Whether the organization is active
+        nullable: true
+        description: True when the organization has been soft-deleted.
       - name: visible_to
+        type: Int64
+        nullable: true
+        description: Visibility setting (integer).
+      - name: address__value
         type: Utf8
-        description: Visibility setting
-      - name: address
+        nullable: true
+        description: Full address string.
+      - name: address__country
         type: Utf8
-        description: Full address string
-      - name: address_street_number
+        nullable: true
+        description: Country component of the address.
+      - name: address__locality
         type: Utf8
-        description: Street number component of address
-      - name: address_route
+        nullable: true
+        description: City component of the address.
+      - name: address__postal_code
         type: Utf8
-        description: Street name component of address
-      - name: address_sublocality
+        nullable: true
+        description: Postal/ZIP code component of the address.
+      - name: address__admin_area_level_1
         type: Utf8
-        description: Sub-locality (neighborhood) component
-      - name: address_locality
-        type: Utf8
-        description: City component of address
-      - name: address_admin_area_level_1
-        type: Utf8
-        description: State or province
-      - name: address_admin_area_level_2
-        type: Utf8
-        description: County or district
-      - name: address_country
-        type: Utf8
-        description: Country component of address
-      - name: address_postal_code
-        type: Utf8
-        description: Postal/ZIP code
+        nullable: true
+        description: State or province component of the address.
       - name: add_time
         type: Utf8
-        description: Creation timestamp (ISO 8601)
+        nullable: true
+        description: Creation timestamp (RFC 3339).
       - name: update_time
         type: Utf8
-        description: Last update timestamp (ISO 8601)
+        nullable: true
+        description: Last update timestamp (RFC 3339).
 
-  # ──────────────────────────────────────────────
-  # ACTIVITIES
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # activities
+  # ──────────────────────────────────────────────────────────────────────────
   - name: activities
-    description: >
+    description: >-
       Activities (calls, meetings, tasks, emails, etc.) in your Pipedrive
-      account. Can be filtered by done status, type, and owner.
+      account. Supports optional filtering by done status, type, and owner.
+    guide: |
+      No required filters. Optional filters push down to the API: `done`
+      (true/false), `owner_id`, `type`. Join with `pipedrive.deals` on
+      `deal_id = id` for deal activity timelines. Join with
+      `pipedrive.users` on `owner_id = id` to report activity per rep.
+    filters:
+      - name: done
+        type: Boolean
+        description: Filter by completion status. true = done, false = not done.
+      - name: owner_id
+        type: Int64
+        description: Filter activities by owner user ID.
+      - name: type
+        type: Utf8
+        description: >-
+          Filter by activity type key (e.g. call, meeting, task, email, lunch).
     request:
       method: GET
       path: /activities
       query:
         - name: done
-          from: filter_int
+          from: filter
           key: done
-          required: false
-        - name: user_id
-          from: filter_int
-          key: user_id
-          required: false
+        - name: owner_id
+          from: filter
+          key: owner_id
         - name: type
           from: filter
           key: type
-          required: false
     response:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
         query_param: limit
-    filters:
-      - name: done
-        type: Int64
-        description: >
-          Filter by completion status. 0 = not done, 1 = done.
-          Omit to return all activities.
-      - name: user_id
-        type: Int64
-        description: Filter activities by owner user ID
-      - name: type
-        type: Utf8
-        description: >
-          Filter by activity type key (e.g. call, meeting, task, email, lunch).
     columns:
       - name: id
         type: Int64
-        description: Unique activity ID
+        nullable: false
+        description: Unique activity ID.
       - name: subject
         type: Utf8
-        description: Activity subject/title
+        nullable: true
+        description: Activity subject/title.
       - name: type
         type: Utf8
-        description: Activity type key (call, meeting, task, email, lunch, etc.)
+        nullable: true
+        description: Activity type key (call, meeting, task, email, lunch, etc.).
       - name: done
         type: Boolean
-        description: Whether the activity is marked done
+        nullable: true
+        description: True when the activity is marked done.
       - name: due_date
         type: Utf8
-        description: Due date (YYYY-MM-DD)
+        nullable: true
+        description: Due date (YYYY-MM-DD).
       - name: due_time
         type: Utf8
-        description: Due time (HH:MM)
+        nullable: true
+        description: Due time (HH:MM).
       - name: duration
         type: Utf8
-        description: Duration in HH:MM format
+        nullable: true
+        description: Duration in HH:MM format.
       - name: deal_id
         type: Int64
-        description: ID of the linked deal
-      - name: deal_title
-        type: Utf8
-        description: Title of the linked deal
+        nullable: true
+        description: ID of the linked deal.
       - name: person_id
         type: Int64
-        description: ID of the linked person
-      - name: person_name
-        type: Utf8
-        description: Name of the linked person
+        nullable: true
+        description: ID of the linked person.
       - name: org_id
         type: Int64
-        description: ID of the linked organization
-      - name: org_name
-        type: Utf8
-        description: Name of the linked organization
-      - name: user_id__value
+        nullable: true
+        description: ID of the linked organization.
+      - name: owner_id
         type: Int64
-        description: ID of the activity owner
-      - name: user_id__name
-        type: Utf8
-        description: Name of the activity owner
-      - name: assigned_to_user_id
+        nullable: true
+        description: ID of the activity owner.
+      - name: creator_user_id
         type: Int64
-        description: ID of the user this activity is assigned to
+        nullable: true
+        description: ID of the user who created the activity.
       - name: note
         type: Utf8
-        description: Activity note/description
+        nullable: true
+        description: Activity note/description.
       - name: public_description
         type: Utf8
-        description: Public description visible to guests
-      - name: location
+        nullable: true
+        description: Public description visible to guests.
+      - name: location__value
         type: Utf8
-        description: Address or location string
-      - name: active_flag
+        nullable: true
+        description: Full location/address string.
+      - name: busy
         type: Boolean
-        description: Whether the activity is active
+        nullable: true
+        description: True when the user is marked busy during this activity.
+      - name: is_deleted
+        type: Boolean
+        nullable: true
+        description: True when the activity has been soft-deleted.
       - name: add_time
         type: Utf8
-        description: Creation timestamp (ISO 8601)
+        nullable: true
+        description: Creation timestamp (RFC 3339).
       - name: update_time
         type: Utf8
-        description: Last update timestamp (ISO 8601)
+        nullable: true
+        description: Last update timestamp (RFC 3339).
       - name: marked_as_done_time
         type: Utf8
-        description: Timestamp when the activity was marked done
-      - name: busy_flag
-        type: Boolean
-        description: Whether the user is marked busy during this activity
+        nullable: true
+        description: Timestamp when the activity was marked done (RFC 3339). Null if not done.
 
-  # ──────────────────────────────────────────────
-  # NOTES
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # notes
+  # ──────────────────────────────────────────────────────────────────────────
   - name: notes
-    description: >
+    description: >-
       Notes attached to deals, persons, or organizations in your Pipedrive
-      account.
+      account. Supports optional filtering by linked entity.
+    guide: |
+      No required filters. Optional filters push down to the API: `deal_id`,
+      `person_id`, `org_id`, `owner_id`. Filter locally on `pinned_to_deal_flag`
+      to surface pinned notes. Join with `pipedrive.deals` on `deal_id = id`
+      for deal context.
+    filters:
+      - name: deal_id
+        type: Int64
+        description: Filter notes by linked deal ID.
+      - name: person_id
+        type: Int64
+        description: Filter notes by linked person ID.
+      - name: org_id
+        type: Int64
+        description: Filter notes by linked organization ID.
+      - name: owner_id
+        type: Int64
+        description: Filter notes by author user ID.
     request:
       method: GET
       path: /notes
       query:
         - name: deal_id
-          from: filter_int
+          from: filter
           key: deal_id
-          required: false
         - name: person_id
-          from: filter_int
+          from: filter
           key: person_id
-          required: false
         - name: org_id
-          from: filter_int
+          from: filter
           key: org_id
-          required: false
-        - name: user_id
-          from: filter_int
-          key: user_id
-          required: false
+        - name: owner_id
+          from: filter
+          key: owner_id
     response:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
         query_param: limit
-    filters:
-      - name: deal_id
-        type: Int64
-        description: Filter notes by deal ID
-      - name: person_id
-        type: Int64
-        description: Filter notes by person ID
-      - name: org_id
-        type: Int64
-        description: Filter notes by organization ID
-      - name: user_id
-        type: Int64
-        description: Filter notes by author user ID
     columns:
       - name: id
         type: Int64
-        description: Unique note ID
+        nullable: false
+        description: Unique note ID.
       - name: content
         type: Utf8
-        description: Note body (may contain HTML)
+        nullable: true
+        description: Note body (may contain HTML).
       - name: deal_id
         type: Int64
-        description: ID of the linked deal
+        nullable: true
+        description: ID of the linked deal.
       - name: person_id
         type: Int64
-        description: ID of the linked person
+        nullable: true
+        description: ID of the linked person.
       - name: org_id
         type: Int64
-        description: ID of the linked organization
-      - name: user_id__value
+        nullable: true
+        description: ID of the linked organization.
+      - name: owner_id
         type: Int64
-        description: ID of the note author
-      - name: user_id__name
-        type: Utf8
-        description: Name of the note author
+        nullable: true
+        description: ID of the note author.
       - name: active_flag
         type: Boolean
-        description: Whether the note is active
+        nullable: true
+        description: True when the note is active.
       - name: pinned_to_deal_flag
         type: Boolean
-        description: Whether this note is pinned on the deal
+        nullable: true
+        description: True when this note is pinned on the deal.
       - name: pinned_to_person_flag
         type: Boolean
-        description: Whether this note is pinned on the person
+        nullable: true
+        description: True when this note is pinned on the person.
       - name: pinned_to_organization_flag
         type: Boolean
-        description: Whether this note is pinned on the organization
+        nullable: true
+        description: True when this note is pinned on the organization.
       - name: add_time
         type: Utf8
-        description: Creation timestamp (ISO 8601)
+        nullable: true
+        description: Creation timestamp (RFC 3339).
       - name: update_time
         type: Utf8
-        description: Last update timestamp (ISO 8601)
-      - name: last_update_user_id
-        type: Int64
-        description: ID of the last user to edit the note
+        nullable: true
+        description: Last update timestamp (RFC 3339).
 
-  # ──────────────────────────────────────────────
-  # LEADS
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # leads
+  # ──────────────────────────────────────────────────────────────────────────
   - name: leads
-    description: >
+    description: >-
       Pre-qualified leads held in Pipedrive's Leads Inbox before being
       converted to deals. Returns all leads visible to the authenticated user.
+    guide: |
+      No required filters. Filter locally on `is_archived` to exclude
+      archived leads. Join with `pipedrive.persons` on `person_id = id`
+      and `pipedrive.organizations` on `organization_id = id` for contact
+      and account context.
     request:
       method: GET
       path: /leads
@@ -759,9 +791,11 @@ tables:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
@@ -769,54 +803,69 @@ tables:
     columns:
       - name: id
         type: Utf8
-        description: Unique lead ID (UUID)
+        nullable: false
+        description: Unique lead ID (UUID).
       - name: title
         type: Utf8
-        description: Lead title
+        nullable: true
+        description: Lead title.
       - name: owner_id
         type: Int64
-        description: ID of the owning user
+        nullable: true
+        description: ID of the owning user.
       - name: creator_id
         type: Int64
-        description: ID of the user who created the lead
-      - name: label_ids
-        type: Utf8
-        description: Comma-separated list of label IDs
+        nullable: true
+        description: ID of the user who created the lead.
       - name: person_id
         type: Int64
-        description: ID of the associated person
+        nullable: true
+        description: ID of the associated person.
       - name: organization_id
         type: Int64
-        description: ID of the associated organization
+        nullable: true
+        description: ID of the associated organization.
       - name: source_name
         type: Utf8
-        description: Source channel (e.g. ManuallyCreated, API)
+        nullable: true
+        description: Source channel (e.g. ManuallyCreated, API).
       - name: is_archived
         type: Boolean
-        description: Whether the lead has been archived
+        nullable: true
+        description: True when the lead has been archived.
       - name: was_seen
         type: Boolean
-        description: Whether the lead has been viewed
+        nullable: true
+        description: True when the lead has been viewed.
       - name: expected_close_date
         type: Utf8
-        description: Expected close date (YYYY-MM-DD)
+        nullable: true
+        description: Expected close date (YYYY-MM-DD).
       - name: next_activity_id
         type: Int64
-        description: ID of the next scheduled activity
+        nullable: true
+        description: ID of the next scheduled activity.
       - name: add_time
         type: Utf8
-        description: Creation timestamp (ISO 8601)
+        nullable: true
+        description: Creation timestamp (RFC 3339).
       - name: update_time
         type: Utf8
-        description: Last update timestamp (ISO 8601)
+        nullable: true
+        description: Last update timestamp (RFC 3339).
 
-  # ──────────────────────────────────────────────
-  # PRODUCTS
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # products
+  # ──────────────────────────────────────────────────────────────────────────
   - name: products
-    description: >
+    description: >-
       Products defined in your Pipedrive product catalog. Products can be
       attached to deals with specific quantities and prices.
+    guide: |
+      No required filters. Filter locally on `is_deleted` to exclude
+      soft-deleted products and on `is_linkable` to find products that can
+      be attached to deals. Join with `pipedrive.users` on `owner_id = id`
+      to resolve product ownership.
     request:
       method: GET
       path: /products
@@ -824,9 +873,11 @@ tables:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
@@ -834,63 +885,68 @@ tables:
     columns:
       - name: id
         type: Int64
-        description: Unique product ID
+        nullable: false
+        description: Unique product ID.
       - name: name
         type: Utf8
-        description: Product name
+        nullable: true
+        description: Product name.
       - name: code
         type: Utf8
-        description: Product code / SKU
+        nullable: true
+        description: Product code / SKU.
       - name: description
         type: Utf8
-        description: Product description
+        nullable: true
+        description: Product description.
       - name: unit
         type: Utf8
-        description: Unit of measurement (e.g. pcs, hours)
+        nullable: true
+        description: Unit of measurement (e.g. pcs, hours).
       - name: tax
         type: Float64
-        description: Tax percentage
+        nullable: true
+        description: Tax percentage.
       - name: category
         type: Utf8
-        description: Product category
-      - name: active_flag
+        nullable: true
+        description: Product category.
+      - name: is_deleted
         type: Boolean
-        description: Whether the product is active
-      - name: selectable
+        nullable: true
+        description: True when the product has been soft-deleted.
+      - name: is_linkable
         type: Boolean
-        description: Whether the product can be selected when adding to a deal
+        nullable: true
+        description: True when the product can be linked to deals.
       - name: visible_to
-        type: Utf8
-        description: Visibility setting
-      - name: owner_id__value
         type: Int64
-        description: ID of the product owner
-      - name: owner_id__name
-        type: Utf8
-        description: Name of the product owner
-      - name: deals_count
+        nullable: true
+        description: Visibility setting (integer).
+      - name: owner_id
         type: Int64
-        description: Number of deals this product is attached to
-      - name: files_count
-        type: Int64
-        description: Number of files attached
-      - name: followers_count
-        type: Int64
-        description: Number of followers
+        nullable: true
+        description: ID of the product owner.
       - name: add_time
         type: Utf8
-        description: Creation timestamp (ISO 8601)
+        nullable: true
+        description: Creation timestamp (RFC 3339).
       - name: update_time
         type: Utf8
-        description: Last update timestamp (ISO 8601)
+        nullable: true
+        description: Last update timestamp (RFC 3339).
 
-  # ──────────────────────────────────────────────
-  # USERS
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # users
+  # ──────────────────────────────────────────────────────────────────────────
   - name: users
-    description: >
+    description: >-
       Users (team members) in your Pipedrive company account. Useful for
-      resolving owner names or filtering data by rep.
+      resolving owner names or filtering data by sales rep.
+    guide: |
+      No required filters. Join with `pipedrive.deals` on `id = owner_id`,
+      `pipedrive.activities` on `id = owner_id`, or `pipedrive.persons` on
+      `id = owner_id` to resolve user names across any entity.
     request:
       method: GET
       path: /users
@@ -898,9 +954,11 @@ tables:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
+      mode: cursor
+      cursor_path:
+        - additional_data
+        - next_cursor
+      cursor_param: cursor
       page_size:
         default: 100
         max: 500
@@ -908,59 +966,63 @@ tables:
     columns:
       - name: id
         type: Int64
-        description: Unique user ID
+        nullable: false
+        description: Unique user ID.
       - name: name
         type: Utf8
-        description: Full name
+        nullable: true
+        description: Full name.
       - name: email
         type: Utf8
-        description: Email address
-      - name: phone
-        type: Utf8
-        description: Phone number
+        nullable: true
+        description: Email address.
       - name: activated
         type: Boolean
-        description: Whether the user account is activated
+        nullable: true
+        description: True when the user account is activated.
       - name: active_flag
         type: Boolean
-        description: Whether the user is active
+        nullable: true
+        description: True when the user is active.
       - name: is_admin
         type: Int64
-        description: Admin level (1 = admin)
+        nullable: true
+        description: Admin level (1 = admin).
       - name: role_id
         type: Int64
-        description: ID of the user's role
+        nullable: true
+        description: ID of the user's role.
       - name: timezone_name
         type: Utf8
-        description: User's timezone (e.g. America/New_York)
-      - name: timezone_offset
-        type: Utf8
-        description: UTC offset string
+        nullable: true
+        description: User's timezone (e.g. America/New_York).
       - name: locale
         type: Utf8
-        description: User locale (e.g. en_US)
-      - name: lang
-        type: Int64
-        description: Language code
+        nullable: true
+        description: User locale (e.g. en_US).
       - name: default_currency
         type: Utf8
-        description: User's default currency code
+        nullable: true
+        description: User's default currency code.
       - name: last_login
         type: Utf8
-        description: Timestamp of last login (ISO 8601)
+        nullable: true
+        description: Timestamp of last login (RFC 3339).
       - name: created
         type: Utf8
-        description: Account creation timestamp (ISO 8601)
+        nullable: true
+        description: Account creation timestamp (RFC 3339).
       - name: modified
         type: Utf8
-        description: Last modification timestamp (ISO 8601)
+        nullable: true
+        description: Last modification timestamp (RFC 3339).
 
 functions:
-  # ──────────────────────────────────────────────
-  # SEARCH FUNCTIONS
-  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # search_deals
+  # ──────────────────────────────────────────────────────────────────────────
   - name: search_deals
-    description: >
+    description: >-
       Search deals by term across title, notes, and custom fields.
       Returns provider-ranked results. Use for discovery before filtering
       the deals table.
@@ -976,9 +1038,8 @@ functions:
           from: arg
           key: term
         - name: exact_match
-          from: arg_bool
+          from: arg
           key: exact_match
-          required: false
     response:
       rows_path:
         - data
@@ -986,43 +1047,46 @@ functions:
     args:
       - name: term
         type: Utf8
-        description: >
+        required: true
+        description: >-
           Search term (minimum 2 characters). Matched against deal titles,
           notes, and custom fields.
-        required: true
       - name: exact_match
         type: Boolean
-        description: >
-          When true, only exact full-string matches are returned. Case-insensitive.
         required: false
+        description: >-
+          When true, only exact full-string matches are returned. Case-insensitive.
     columns:
       - name: result_score
         type: Float64
-        description: Provider relevance score
+        description: Provider relevance score.
       - name: item__id
         type: Int64
-        description: Deal ID
+        description: Deal ID.
       - name: item__title
         type: Utf8
-        description: Deal title
+        description: Deal title.
       - name: item__status
         type: Utf8
-        description: Deal status (open, won, lost)
+        description: Deal status (open, won, lost).
       - name: item__value
         type: Float64
-        description: Deal value
+        description: Deal value.
       - name: item__currency
         type: Utf8
-        description: Currency code
+        description: Currency code.
       - name: item__stage__name
         type: Utf8
-        description: Current stage name
+        description: Current stage name.
       - name: item__owner__name
         type: Utf8
-        description: Owner name
+        description: Owner name.
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # search_persons
+  # ──────────────────────────────────────────────────────────────────────────
   - name: search_persons
-    description: >
+    description: >-
       Search persons (contacts) by name, email, phone, or notes.
       Returns provider-ranked results.
     kind: search
@@ -1037,13 +1101,11 @@ functions:
           from: arg
           key: term
         - name: exact_match
-          from: arg_bool
+          from: arg
           key: exact_match
-          required: false
-        - name: org_id
-          from: arg_int
-          key: org_id
-          required: false
+        - name: organization_id
+          from: arg
+          key: organization_id
     response:
       rows_path:
         - data
@@ -1051,40 +1113,43 @@ functions:
     args:
       - name: term
         type: Utf8
-        description: >
+        required: true
+        description: >-
           Search term (minimum 2 characters). Matched against name, email,
           phone, and notes.
-        required: true
       - name: exact_match
         type: Boolean
+        required: false
         description: When true, only exact full-string matches are returned.
-        required: false
-      - name: org_id
+      - name: organization_id
         type: Int64
-        description: Limit results to persons belonging to this organization ID.
         required: false
+        description: Limit results to persons belonging to this organization ID.
     columns:
       - name: result_score
         type: Float64
-        description: Provider relevance score
+        description: Provider relevance score.
       - name: item__id
         type: Int64
-        description: Person ID
+        description: Person ID.
       - name: item__name
         type: Utf8
-        description: Full name
+        description: Full name.
       - name: item__organization__id
         type: Int64
-        description: Organization ID
+        description: Organization ID.
       - name: item__organization__name
         type: Utf8
-        description: Organization name
+        description: Organization name.
       - name: item__owner__name
         type: Utf8
-        description: Owner name
+        description: Owner name.
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # search_organizations
+  # ──────────────────────────────────────────────────────────────────────────
   - name: search_organizations
-    description: >
+    description: >-
       Search organizations by name, address, or notes.
       Returns provider-ranked results.
     kind: search
@@ -1099,9 +1164,8 @@ functions:
           from: arg
           key: term
         - name: exact_match
-          from: arg_bool
+          from: arg
           key: exact_match
-          required: false
     response:
       rows_path:
         - data
@@ -1109,27 +1173,27 @@ functions:
     args:
       - name: term
         type: Utf8
-        description: >
+        required: true
+        description: >-
           Search term (minimum 2 characters). Matched against name, address,
           and notes.
-        required: true
       - name: exact_match
         type: Boolean
-        description: When true, only exact full-string matches are returned.
         required: false
+        description: When true, only exact full-string matches are returned.
     columns:
       - name: result_score
         type: Float64
-        description: Provider relevance score
+        description: Provider relevance score.
       - name: item__id
         type: Int64
-        description: Organization ID
+        description: Organization ID.
       - name: item__name
         type: Utf8
-        description: Organization name
+        description: Organization name.
       - name: item__address
         type: Utf8
-        description: Address
+        description: Address string.
       - name: item__owner__name
         type: Utf8
-        description: Owner name
+        description: Owner name.
