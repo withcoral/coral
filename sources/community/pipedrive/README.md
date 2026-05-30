@@ -21,7 +21,7 @@ In Pipedrive, navigate to:
 
 **Settings → Personal preferences → API**
 
-Copy your personal API token.
+Copy your personal API token and note your company domain from the URL.
 
 > **Note:** this source uses personal API token authentication via the
 > `x-api-token` header. OAuth access tokens are not supported in this version.
@@ -32,11 +32,12 @@ Copy your personal API token.
 export PIPEDRIVE_API_TOKEN="<your-pipedrive-api-token>"
 export PIPEDRIVE_COMPANY_DOMAIN="<your-company-domain>"
 ```
-If your Pipedrive URL is:
-https://coral-testing.pipedrive.com
 
-Set:
-export PIPEDRIVE_COMPANY_DOMAIN=coral-testing
+If your Pipedrive URL is `https://coral-testing.pipedrive.com`, set:
+
+```sh
+export PIPEDRIVE_COMPANY_DOMAIN="coral-testing"
+```
 
 ### 3. Add the source
 
@@ -74,25 +75,44 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
 All tables are read-only. This source does not create, update, or delete
 Pipedrive data.
 
-## API version
+## API versions
 
-This source uses **Pipedrive REST API** endpoints through your company domain: (`https://<company>.pipedrive.com`)
-Key differences in Pipedrive API behavior across endpoints:
+This source uses a mix of Pipedrive API v1 and v2 endpoints, all accessed
+through your company domain (`https://<company>.pipedrive.com`).
 
-- Pagination varies by endpoint.
-- Some endpoints use offset pagination, while others use provider-defined pagination modes.
-- Coral normalizes pagination internally and exposes results as a single continuous stream.
-- Coral handles pagination automatically during query execution.
-- All timestamps are RFC 3339 format (e.g. `2024-01-01T00:00:00Z`)
-- Related object fields (`user_id`, `person_id`, `org_id`) return plain IDs, not embedded objects
-- `user_id` on deals renamed to `owner_id`; `active_flag` replaced by `is_deleted` (negated)
-- `busy_flag` on activities renamed to `busy`
-- Organization and activity `address`/`location` fields are nested objects
+| Table / Function | Endpoint version | Pagination |
+|---|---|---|
+| `pipelines` | v2 | cursor |
+| `stages` | v2 | cursor |
+| `deals` | v2 | cursor |
+| `persons` | v2 | cursor |
+| `organizations` | v2 | cursor |
+| `activities` | v2 | cursor |
+| `products` | v2 | cursor |
+| `notes` | v1 | offset (`start` / `limit`) |
+| `leads` | v1 | offset (`start` / `limit`) |
+| `users` | v1 | none — returns all users in a single response |
+| `search_deals` | v2 | cursor |
+| `search_persons` | v2 | cursor |
+| `search_organizations` | v2 | cursor |
+
+`notes`, `leads`, and `users` use v1 endpoints because Pipedrive has not
+published v2 equivalents for these resources.
+
+Key v2 behavioral notes:
+
+- Timestamps are RFC 3339 format (e.g. `2024-01-01T00:00:00Z`)
+- Related object fields (`person_id`, `org_id`, `owner_id`) return plain integer IDs, not embedded objects
+- `user_id` on deals and activities is renamed to `owner_id` in v2
+- `active_flag` is replaced by `is_deleted` (negated semantics) on v2 resources
+- `busy_flag` on activities is renamed to `busy` in v2
+- `address` on organizations and `location` on activities are nested objects, flattened with double-underscore notation (e.g. `address__country`, `location__value`)
+- The `users` table exposes an `access` column containing the raw `access[]` JSON array per the documented v1 response shape; use this to determine admin status per application instead of a scalar `is_admin` field
 
 ## Search functions
 
-All search functions require a non-empty `term`.
-This is enforced in the manifest; omitting it will cause a validation error before the request is sent.
+All search functions require a non-empty `term`. Omitting it will cause a
+validation error before the request is sent.
 
 | Function | Description |
 |---|---|
@@ -100,8 +120,9 @@ This is enforced in the manifest; omitting it will cause a validation error befo
 | `search_persons(term)` | Search persons by name, email, phone, and notes |
 | `search_organizations(term)` | Search organizations by name, address, and notes |
 
-Search functions return provider-ranked results from Pipedrive's search API
-and are ideal for discovery before querying the main tables.
+Search functions use Pipedrive v2 search endpoints with cursor pagination and
+return provider-ranked results. They are ideal for discovery before querying
+the main tables.
 
 ## Example queries
 
@@ -236,7 +257,7 @@ cargo run -p coral-cli -- sql "SELECT id, title, status, value FROM pipedrive.de
 cargo run -p coral-cli -- sql "SELECT id, name, org_id FROM pipedrive.persons LIMIT 5"
 cargo run -p coral-cli -- sql "SELECT id, name, owner_id FROM pipedrive.organizations LIMIT 5"
 cargo run -p coral-cli -- sql "SELECT id, subject, type, done FROM pipedrive.activities LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, deal_id, owner_id FROM pipedrive.notes LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, deal_id, user_id FROM pipedrive.notes LIMIT 5"
 cargo run -p coral-cli -- sql "SELECT id, title, source_name FROM pipedrive.leads LIMIT 5"
 cargo run -p coral-cli -- sql "SELECT id, name, code FROM pipedrive.products LIMIT 5"
 cargo run -p coral-cli -- sql "SELECT id, name, email FROM pipedrive.users LIMIT 5"
@@ -259,12 +280,12 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 
 ## Notes
 
-- Uses Pipedrive REST API endpoints through your company domain
 - Authenticates with `x-api-token` header (personal API token only)
-- Pagination varies by endpoint and is handled automatically by Coral using provider-defined pagination strategies.
-- Timestamps are RFC 3339 format throughout
+- v2 tables use cursor pagination; v1 tables (`notes`, `leads`) use offset pagination; `users` returns all records in a single response
 - `is_deleted = true` means soft-deleted; entities are fully deleted 30 days after last activity
-- Nested fields like `address` and `location` are flattened with double-underscore notation (e.g. `address__country`)
+- Nested fields like `address` and `location` are flattened with double-underscore notation (e.g. `address__country`, `location__value`)
+- The `notes` table `owner_id` filter maps to the `user_id` query parameter on the v1 API
+- The `access` column on `users` is a raw JSON array — parse it to determine per-application admin status
 - API permissions and data visibility depend on the authenticated user's role
 - Large CRM accounts should always use `LIMIT` when querying
 
