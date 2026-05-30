@@ -23,6 +23,7 @@ inputs:
       Found in the current_organization field of GET /users/me.
   CALENDLY_ORG_UUID:
     kind: variable
+    default: ""
     hint: >
       The UUID portion of your organization URI — the trailing segment after
       /organizations/. For example, if your org URI is
@@ -554,9 +555,10 @@ tables:
 
   - name: webhook_subscriptions
     description: >
-      Webhook subscriptions configured for the organization. Shows all active
-      endpoints, their subscribed event types, and delivery state. Useful for
-      auditing integrations. Requires a Professional plan or above.
+      Webhook subscriptions configured for the organization. Each row shows the
+      callback URL, delivery state, scope, and subscribed event types in the
+      events column. Useful for auditing integrations. Requires a paid Standard,
+      Teams, or Enterprise plan.
     request:
       method: GET
       path: /webhook_subscriptions
@@ -605,6 +607,11 @@ tables:
         type: Utf8
         nullable: true
         description: URI of the user who created this subscription.
+      - name: events
+        type: Json
+        description: >
+          JSON array of Calendly webhook event names this subscription listens
+          for, e.g. invitee.created and invitee.canceled.
       - name: created_at
         type: Timestamp
         description: When this webhook subscription was created (UTC).

@@ -48,7 +48,7 @@ functions in the manifest):
 | `scheduled_events:read` | `calendly.scheduled_events`, `calendly.event_invitees`, `calendly.scheduled_event_hosts` |
 | `organizations:read` | `calendly.organization_memberships`, `calendly.organization_invitations` |
 | `routing_forms:read` | `calendly.routing_forms`, `calendly.routing_form_submissions` (Teams+) |
-| `webhooks:read` | `calendly.webhook_subscriptions` (Professional+) |
+| `webhooks:read` | `calendly.webhook_subscriptions` (paid Standard+) |
 
 Those six scopes are **sufficient for read-only Coral usage**.
 
@@ -58,9 +58,9 @@ Those six scopes are **sufficient for read-only Coral usage**.
 # From the coral repo root:
 CALENDLY_API_TOKEN=your_token \
 CALENDLY_ORG_URI=https://api.calendly.com/organizations/AAAAAAAAAAAAAAAA \
-CALENDLY_ORG_UUID=AAAAAAAAAAAAAAAA \
 coral source add --file sources/community/calendly/manifest.yaml
 
+# Optional: set CALENDLY_ORG_UUID only when querying organization_invitations
 coral source test calendly
 ```
 
@@ -68,6 +68,7 @@ Or interactively:
 
 ```bash
 coral source add --interactive --file sources/community/calendly/manifest.yaml
+coral source test calendly
 ```
 
 ## Tables
@@ -78,7 +79,7 @@ coral source add --interactive --file sources/community/calendly/manifest.yaml
 | `calendly.scheduled_events` | Booked meetings — active and canceled | Free |
 | `calendly.organization_memberships` | Members of the organization with role and contact details | Free |
 | `calendly.routing_forms` | Routing forms for the organization | Teams+ |
-| `calendly.webhook_subscriptions` | Active webhook endpoints and their subscribed event types | Professional+ |
+| `calendly.webhook_subscriptions` | Active webhook endpoints and subscribed event types (`events` column) | Paid Standard+ |
 | `calendly.organization_invitations` | Pending and accepted invitations to join the org | Free (requires `CALENDLY_ORG_UUID`) |
 
 ## Table functions
@@ -214,8 +215,8 @@ JOIN calendly.scheduled_events se ON se.uri = rs.event
 WHERE se.min_start_time = '2024-01-01T00:00:00Z'
   AND se.max_start_time = '2030-12-31T23:59:59Z';
 
--- Webhook subscriptions (Professional+; empty if none configured)
-SELECT callback_url, state, scope, created_at
+-- Webhook subscriptions (paid Standard+; empty if none configured)
+SELECT callback_url, state, scope, events, created_at
 FROM calendly.webhook_subscriptions
 ORDER BY created_at DESC;
 
@@ -253,19 +254,19 @@ only their own events. `event_types` is always scoped to the org.
 prefix (`https://api.calendly.com/scheduled_events/` or
 `https://api.calendly.com/routing_forms/`) to get the UUID string.
 
-**`CALENDLY_ORG_UUID`.** Required only for `organization_invitations`. It is the
-final path segment of `CALENDLY_ORG_URI`. If you skip it, the other five tables
-and all three table functions still work.
+**`CALENDLY_ORG_UUID`.** Optional at install (defaults to empty). Set it only
+when querying `organization_invitations`; it is the final path segment of
+`CALENDLY_ORG_URI`.
 
 **Plan requirements.** `routing_forms` and `routing_form_submissions` require a
-Teams plan. `webhook_subscriptions` requires a Professional plan. All other
-tables and functions work on the free plan.
+Teams plan. `webhook_subscriptions` requires a paid Standard, Teams, or
+Enterprise plan. All other tables and functions work on the free plan.
 
 **Routing form submissions.** Calendly lists submissions at
 `GET /routing_form_submissions` with the `form` query parameter set to the full
 routing form URI (Coral builds that URI from `form_uuid`). The form must be
-**active** (not `draft`), and you need at least one public submission before
-rows appear.
+**published** (not `draft`), and submissions appear after someone completes the
+public form.
 
 **`questions_and_answers` columns.** Both `event_invitees` and
 `routing_form_submissions` expose a `questions_and_answers` column of type
