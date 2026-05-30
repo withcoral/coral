@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0
 **Backend:** HTTP
-**Tables:** 4
+**Tables:** 5
 **Base URL:** your CouchDB HTTP endpoint (set via `COUCHDB_URL`)
 
 Inspect a CouchDB instance's server info, per-database document counts and
@@ -61,11 +61,26 @@ the [CouchDB authentication docs](https://docs.couchdb.org/en/stable/api/server/
 | `server` | Server welcome banner, version, and vendor info | `GET /` |
 | `databases` | Per-database document counts and storage sizes | `GET /_dbs_info` |
 | `active_tasks` | Running indexing, replication, and compaction tasks | `GET /_active_tasks` |
-| `scheduler` | Replication scheduler jobs and their current state | `GET /_scheduler/jobs` |
+| `scheduler` | Currently active replication scheduler jobs | `GET /_scheduler/jobs` |
+| `scheduler_docs` | Replication documents and their full lifecycle state | `GET /_scheduler/docs` |
 
 No table requires or accepts SQL filters; filter with a `WHERE` clause after
-fetching. `scheduler` uses `skip`/`limit` page-based pagination; the other
-tables return all results in a single request.
+fetching. `databases`, `scheduler`, and `scheduler_docs` page through results
+with `skip`/`limit`, which Coral drives automatically; `server` and
+`active_tasks` return all results in a single request.
+
+### `scheduler` vs `scheduler_docs`
+
+`scheduler` (`/_scheduler/jobs`) lists only the replication jobs the scheduler
+currently holds in memory — running or recently active. It does **not** include
+finished, failed, or not-yet-scheduled replications, so it is not a complete
+picture of replication health.
+
+`scheduler_docs` (`/_scheduler/docs`) is the authoritative view: one row per
+replication document with a `state` covering the whole lifecycle
+(`initializing`, `running`, `pending`, `crashing`, `error`, `failed`,
+`completed`) plus `error_count`. Use this table to find unhealthy
+replications.
 
 ## Notes
 
@@ -77,10 +92,12 @@ tables return all results in a single request.
   `source`, `target`, `docs_read`, and `docs_written` are populated only for
   replication tasks; `design_document` only for indexer tasks.
 - `scheduler.history` is ordered most-recent-first, so `latest_event` and
-  `latest_event_at` reflect each job's current state (`started`, `crashed`,
-  `added`, etc.). Live progress is in the `info` JSON column.
-- `started_on`/`updated_on` (active tasks) and `start_time`/`latest_event_at`
-  (scheduler) are real `Timestamp` columns.
+  `latest_event_at` reflect each job's latest scheduler event (`started`,
+  `crashed`, `added`, etc.). For authoritative replication state use
+  `scheduler_docs.state` instead. Live progress is in the `info` JSON column.
+- `started_on`/`updated_on` (active tasks), `start_time`/`latest_event_at`
+  (scheduler), and `last_updated`/`start_time` (scheduler_docs) are real
+  `Timestamp` columns.
 
 ## Example Queries
 
@@ -117,21 +134,30 @@ FROM couchdb.active_tasks
 ORDER BY progress ASC
 ```
 
-### Replication jobs that are not healthy
+### Replications that are not healthy
 
 ```sql
-SELECT doc_id, source, target, node, latest_event, latest_event_at
-FROM couchdb.scheduler
-WHERE latest_event <> 'started'
-ORDER BY latest_event_at DESC
+SELECT doc_id, database, state, error_count, source, target, last_updated
+FROM couchdb.scheduler_docs
+WHERE state NOT IN ('running', 'completed')
+ORDER BY error_count DESC, last_updated DESC
 ```
 
 ### Replication progress
 
 ```sql
-SELECT doc_id,
+SELECT doc_id, state,
        json_get_int(info, 'docs_read') AS docs_read,
        json_get_int(info, 'docs_written') AS docs_written,
        json_get_int(info, 'changes_pending') AS changes_pending
+FROM couchdb.scheduler_docs
+WHERE state = 'running'
+```
+
+### Currently active scheduler jobs
+
+```sql
+SELECT doc_id, source, target, node, latest_event, latest_event_at
 FROM couchdb.scheduler
+ORDER BY latest_event_at DESC
 ```

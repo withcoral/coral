@@ -87,12 +87,13 @@ tables:
     description: Per-database document counts and storage sizes.
     guide: |
       Returns one row per database from `GET /_dbs_info`, which reports the same
-      metadata as `GET /{db}` for every database in one request. Requires
-      CouchDB 3.2 or newer (the bodyless `GET /_dbs_info`) and server-admin
-      access. `disk_size` is the on-disk file size; `active_size` is the live
-      data size; the difference indicates reclaimable space from compaction.
-      `update_seq` and `purge_seq` are opaque sequence strings on clustered
-      CouchDB and are exposed as text.
+      metadata as `GET /{db}` for every database. Requires CouchDB 3.2 or newer
+      (the bodyless `GET /_dbs_info`) and server-admin access. The endpoint is
+      paginated with `skip`/`limit`, which Coral drives automatically so large
+      instances are not fetched in one expensive request. `disk_size` is the
+      on-disk file size; `active_size` is the live data size; the difference
+      indicates reclaimable space from compaction. `update_seq` and `purge_seq`
+      are opaque sequence strings on clustered CouchDB and are exposed as text.
     request:
       method: GET
       path: /_dbs_info
@@ -100,7 +101,13 @@ tables:
       rows_path: []
       row_strategy: direct
     pagination:
-      mode: none
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
     columns:
       - name: name
         type: Utf8
@@ -279,24 +286,21 @@ tables:
           expr: {kind: path, path: [updated_on]}
 
   - name: scheduler
-    description: Replication scheduler jobs and their current state.
+    description: Currently active replication scheduler jobs.
     guide: |
-      Returns one row per replication job from `GET /_scheduler/jobs`. Requires
-      server-admin access. Each job's `history` is ordered most-recent-first,
-      so `latest_event` and `latest_event_at` reflect the job's current state
-      (e.g. `started`, `crashed`, `added`). `info` carries live replication
-      progress (docs read/written, pending changes). Use page-based pagination
-      via `skip`/`limit`.
+      Returns one row per replication job the scheduler currently holds in
+      memory (running or recently active) from `GET /_scheduler/jobs`. Requires
+      server-admin access. This is NOT a complete view of replication health:
+      finished, failed, or not-yet-started replications are not listed here —
+      query the `scheduler_docs` table for full replication-document state.
+      Each job's `history` is ordered most-recent-first, so `latest_event` and
+      `latest_event_at` reflect the job's latest scheduler event (e.g.
+      `started`, `crashed`, `added`). `info` carries live replication progress
+      (docs read/written, pending changes). The endpoint is paginated with
+      `skip`/`limit`, which Coral drives automatically.
     request:
       method: GET
       path: /_scheduler/jobs
-      query:
-        - name: skip
-          from: literal
-          value: 0
-        - name: limit
-          from: literal
-          value: 100
     response:
       rows_path:
         - jobs
@@ -381,3 +385,98 @@ tables:
         nullable: true
         description: Job event history, most recent first
         expr: {kind: path, path: [history]}
+
+  - name: scheduler_docs
+    description: Replication documents and their current scheduler state.
+    guide: |
+      Returns one row per replication document across all replicator databases
+      from `GET /_scheduler/docs`. Requires server-admin access. Unlike the
+      `scheduler` table (which only lists jobs the scheduler currently holds in
+      memory), this is the authoritative view of replication health: `state`
+      covers the full lifecycle — `initializing`, `running`, `pending`,
+      `crashing`, `error`, `failed`, and `completed`. Use `error_count` and
+      `error_msg` to triage failing replications. `info` carries live progress
+      for running replications or the error reason for failed ones. The
+      endpoint is paginated with `skip`/`limit`, which Coral drives
+      automatically.
+    request:
+      method: GET
+      path: /_scheduler/docs
+    response:
+      rows_path:
+        - docs
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: doc_id
+        type: Utf8
+        nullable: true
+        description: ID of the replication document
+        expr: {kind: path, path: [doc_id]}
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Replicator database holding the replication document
+        expr: {kind: path, path: [database]}
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Internal replication job ID (null until the job is scheduled)
+        expr: {kind: path, path: [id]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Replication state: initializing, running, pending, crashing, error,
+          failed, or completed
+        expr: {kind: path, path: [state]}
+      - name: error_count
+        type: Int64
+        nullable: true
+        description: Consecutive error count for this replication
+        expr: {kind: path, path: [error_count]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Replication source endpoint
+        expr: {kind: path, path: [source]}
+      - name: target
+        type: Utf8
+        nullable: true
+        description: Replication target endpoint
+        expr: {kind: path, path: [target]}
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Cluster node running the replication, if scheduled
+        expr: {kind: path, path: [node]}
+      - name: last_updated
+        type: Timestamp
+        nullable: true
+        description: When the replication state was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_updated]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: When the replication started
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [start_time]}
+      - name: info
+        type: Json
+        nullable: true
+        description: >-
+          Live replication progress for running jobs, or the error reason for
+          failed ones
+        expr: {kind: path, path: [info]}
