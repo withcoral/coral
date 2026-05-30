@@ -394,11 +394,11 @@ tables:
       `scheduler` table (which only lists jobs the scheduler currently holds in
       memory), this is the authoritative view of replication health: `state`
       covers the full lifecycle — `initializing`, `running`, `pending`,
-      `crashing`, `error`, `failed`, and `completed`. Use `error_count` and
-      `error_msg` to triage failing replications. `info` carries live progress
-      for running replications or the error reason for failed ones. The
-      endpoint is paginated with `skip`/`limit`, which Coral drives
-      automatically.
+      `crashing`, `error`, `failed`, and `completed`. Use `error_count` and the
+      `info` column to triage failing replications: `info` carries live progress
+      for running replications (e.g. `docs_read`, `docs_written`) or the error
+      reason for failed ones (e.g. `json_get_str(info, 'error')`). The endpoint
+      is paginated with `skip`/`limit`, which Coral drives automatically.
     request:
       method: GET
       path: /_scheduler/docs
