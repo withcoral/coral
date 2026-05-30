@@ -42,7 +42,7 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.members LIMIT 5"
 | `shortcut.members` | Workspace members | — | — |
 | `shortcut.workflows` | Workspace workflows | — | — |
 | `shortcut.epics` | Epics in the workspace | — | — |
-| `shortcut.stories` | Stories discovered via search API | — | `query` |
+| `shortcut.stories` | Stories discovered via search API | `query` | — |
 | `shortcut.iterations` | Iterations (sprints) | — | — |
 | `shortcut.objectives` | Objectives (replaces deprecated milestones) | — | — |
 
@@ -72,8 +72,7 @@ Lists all epics in the workspace. Use `state` to filter locally:
 
 ### `stories`
 
-Lists stories discovered via the Shortcut search API. The optional `query`
-filter is pushed down to the API and accepts Shortcut search operators:
+Stories are discovered via the Shortcut Search API. The `query` filter is required and is pushed down to the API using Shortcut search operators.
 
 | Example | Meaning |
 |---|---|
@@ -83,9 +82,6 @@ filter is pushed down to the API and accepts Shortcut search operators:
 | `is:completed` | Completed stories |
 | `epic:my-epic` | Stories in a specific epic |
 | `iteration:current` | Stories in the current iteration |
-
-Without a `query` filter, all stories are returned. Results are paginated
-with a maximum of 25 stories per page.
 
 `cycle_time` is returned in seconds from story start to completion.
 
@@ -230,17 +226,16 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 
 - **Rate limits:** the Shortcut API enforces a limit of 200 requests per
   minute per token. Reduce query frequency or add retries if you hit limits.
-- **`detail=full` on stories:** the stories table sends `detail=full` to
-  the Shortcut search API to ensure all declared columns including
-  `cycle_time` are populated in the response.
+- **`detail=full`** is used on `/search/stories` to ensure all fields required for analytics
+  (including `cycle_time`, `estimate`, and workflow metadata) are included in the response.
+  This increases payload size but guarantees full column availability.
 - **Auth header:** this source uses `Shortcut-Token: <token>` not
   `Authorization: Bearer`. Generate the token at
   https://app.shortcut.com/settings/account/api-tokens.
 - **`email` field:** sourced from `profile.email_address` in the API
   response, not a top-level field.
-- **`stories` pagination:** the Shortcut search API returns a maximum of
-  25 stories per page with cursor-based pagination. Always use `LIMIT`
-  for large workspaces.
+- **`stories` pagination:** Results are returned in paginated batches (up to 250 records per request) 
+  using cursor-based pagination via `next` tokens.
 - **`query` filter on stories:** accepts Shortcut search operators. Without
   a query, all stories are returned. See
   https://help.shortcut.com/hc/en-us/articles/360000046646-Search-Operators
