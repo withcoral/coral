@@ -33,9 +33,9 @@ targets the **Cluster API v2**, because:
 ### Requirements
 
 - Network access to a CockroachDB node's HTTP interface (default port `8080`).
-- A Cluster API session token (secure clusters). The login user needs a role
-  with the `VIEWCLUSTERMETADATA` and `VIEWACTIVITY` system privileges, or
-  membership in `admin`.
+- A Cluster API session token (secure clusters). The Cluster API v2 only
+  authenticates SQL users that are members of the `admin` role and have a
+  password and the `LOGIN` privilege.
 
 ### Get a session token (secure clusters)
 
@@ -88,26 +88,29 @@ method this source uses.
 
 | Table | Description | Endpoint |
 |---|---|---|
-| `health` | Per-node liveness/readiness from the node-liveness map | `/api/v2/nodes/` |
+| `health` | Per-node liveness/readiness (`liveness_status`) | `/api/v2/nodes/` |
 | `nodes` | Per-node status, addresses, and build information | `/api/v2/nodes/` |
 | `databases` | Databases known to the cluster | `/api/v2/databases/` |
-| `metrics` | Selected per-node metrics plus the full metrics map | `/api/v2/nodes/` |
+| `metrics` | Selected per-node metrics plus the full metrics maps | `/api/v2/nodes/` |
 
 No table requires or accepts SQL filters; filter with a `WHERE` clause after
-fetching. Result sets are cluster-scale (one row per node or database) and are
-returned in a single request.
+fetching. `/api/v2/nodes/` returns all nodes in a single response, so `health`,
+`nodes`, and `metrics` are not paginated; `databases` pages through results with
+`limit`/`offset`, which Coral drives automatically.
 
 ## Notes
 
-- `health.liveness` is CockroachDB's `NodeLivenessStatus`, vended either as an
-  enum name (e.g. `LIVE`) or its numeric code: `0` UNKNOWN, `1` DEAD,
-  `2` UNAVAILABLE, `3` LIVE, `4` DECOMMISSIONING, `5` DECOMMISSIONED.
+- `health.liveness_status` is CockroachDB's `NodeLivenessStatus` numeric code:
+  `0` UNKNOWN, `1` DEAD, `2` UNAVAILABLE, `3` LIVE, `4` DECOMMISSIONING,
+  `5` DECOMMISSIONED. The same column is also on the `nodes` table.
 - `nodes.started_at` and `nodes.updated_at` are epoch **nanoseconds**
   (Int64). Divide by 1,000,000,000 for Unix seconds.
-- `metrics` named columns cover common health signals. Metric keys vary across
-  major versions, so a named column may be NULL while the value is still
-  present in the `metrics` JSON column — read any gauge with
-  `json_get_float(metrics, 'sql.conns')`.
+- `metrics` named columns cover common node-level health signals. Metric keys
+  vary across major versions, so a named column may be NULL while the value is
+  still present in the `metrics` JSON column — read any gauge with
+  `json_get_float(metrics, 'sql.conns')`. Per-store gauges (ranges, replicas,
+  capacity, livebytes) are in the `store_metrics` JSON column keyed by store ID,
+  e.g. `json_get_float(store_metrics, '1', 'ranges')`.
 - `databases` lists names only. The Cluster API does not return per-database
   sizes; use a SQL client and `SHOW DATABASES` for storage details.
 
@@ -116,7 +119,7 @@ returned in a single request.
 ### Cluster membership and liveness
 
 ```sql
-SELECT node_id, liveness
+SELECT node_id, liveness_status
 FROM cockroachdb.health
 ORDER BY node_id
 ```
@@ -151,6 +154,17 @@ ORDER BY sql_conns DESC
 SELECT node_id,
        json_get_float(metrics, 'sys.uptime') AS uptime_seconds,
        json_get_float(metrics, 'sql.txn.commit.count') AS txn_commits
+FROM cockroachdb.metrics
+ORDER BY node_id
+```
+
+### Per-store ranges, replicas, and capacity (store ID 1)
+
+```sql
+SELECT node_id,
+       json_get_float(store_metrics, '1', 'ranges') AS ranges,
+       json_get_float(store_metrics, '1', 'replicas') AS replicas,
+       json_get_float(store_metrics, '1', 'capacity.available') AS capacity_available
 FROM cockroachdb.metrics
 ORDER BY node_id
 ```
