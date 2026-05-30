@@ -2,13 +2,13 @@ name: github_v4
 version: 0.1.0
 dsl_version: 4
 description: >-
-  Preview DSL v4 source for exercising generated projections against a
-  bundled GitHub OpenAPI slice and the live GitHub REST API endpoint.
+  Query GitHub REST API entities generated from the live GitHub OpenAPI
+  description.
 surfaces:
   - id: rest
     type: openapi
-    file: openapi.yaml
-    sha256: 6884ab37f1bbccf6e9240473e710147d02594bb94f702d342ba56a3670dd40fa
+    url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml
+    sha256: c2c6a2c838581cf3915d7d61c0c2bb48b128faf748bebf77a3ac2f0742975c96
     inputs:
       GITHUB_TOKEN:
         kind: secret
@@ -34,6 +34,6 @@ surfaces:
         from: literal
         value: coral-dsl-v4
 test_queries:
-  - SELECT id, number, title, state FROM github_v4.issues WHERE owner = 'octocat' AND repo = 'Hello-World' LIMIT 5
-  - SELECT id, number, title FROM github_v4.get_issue(owner => 'octocat', repo => 'Hello-World', issue_number => 1)
-  - SELECT id, number, title FROM github_v4.search_issues(q => 'repo:octocat/Hello-World is:issue') LIMIT 5
+  - SELECT id, number, title, state FROM github_v4.issues__5708b516 WHERE owner = 'octocat' AND repo = 'Hello-World' LIMIT 5
+  - SELECT id, number, title FROM github_v4.get_issue__deda00a2(owner => 'octocat', repo => 'Hello-World', issue_number => 1)
+  - SELECT id, number, title FROM github_v4.search_issue_search_result_items(q => 'repo:octocat/Hello-World is:issue') LIMIT 5
