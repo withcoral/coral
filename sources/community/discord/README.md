@@ -8,27 +8,26 @@ Query Discord bot identity, guilds, channels, messages, members, and roles from 
 
 1. Go to https://discord.com/developers/applications and create a new application.
 2. Navigate to the **Bot** section and click **Reset Token** to generate a bot token.
-3. Under **Privileged Gateway Intents**, enable the intents your queries need:
-   - **`GUILD_MEMBERS`** — required for the `members` table. Without it, `GET /guilds/{guild.id}/members` returns an empty result.
-   - **`MESSAGE_CONTENT`** — required to read `content`, `embeds`, and `attachments` from the `messages` table. Without it, those fields return empty values regardless of permissions.
+3. Invite the bot to your server using the OAuth2 URL Generator with the `bot` scope and the permissions listed below. Use the **Bot Permissions** text-field calculator in the Developer Portal to compute the integer.
 
-### 2. Required bot permissions
+Configure the following by table:
 
-When inviting the bot to your server, use the OAuth2 URL Generator with:
-- **Scope**: `bot` (and `applications.commands` if you plan to use slash commands alongside Coral)
-- **Bot permissions**: the following are needed depending on which tables you query:
+| Table | Requires | Privileged intent | Bot permissions |
+|---|---|---|---|
+| `current_user` | Token only | none | none |
+| `guilds` | Token only | none | none |
+| `channels` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`) |
+| `messages` | `channel_id` filter | `MESSAGE_CONTENT` | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`) |
+| `members` | `guild_id` filter | `GUILD_MEMBERS` | `VIEW_CHANNEL` (`0x400`) |
+| `roles` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`) |
 
-| Permission | Flag | Required for |
-|---|---|---|
-| Read Messages / View Channels | `0x400` | All guild-scoped tables (channels, messages, members, roles) |
-| Read Message History | `0x10000` | `messages` table |
-| Send Messages | `0x800` | Not required for querying; only needed if the bot posts messages |
+**Privileged intents** are enabled in the Developer Portal under **Bot → Privileged Gateway Intents**. Without `GUILD_MEMBERS`, `GET /guilds/{guild.id}/members` returns an empty result. Without `MESSAGE_CONTENT`, the `content`, `embeds`, and `attachments` columns return empty values.
 
-The `members` table additionally requires the `GUILD_MEMBERS` privileged intent (configured in step 1.3), but no extra bot permission beyond `VIEW_CHANNEL`.
+The minimal bot permission integer for read-only queries across all tables is `0x10400` (`VIEW_CHANNEL` + `READ_MESSAGE_HISTORY`). No bot permission is needed for reading guild members — only the `GUILD_MEMBERS` privileged intent controls access.
 
-The minimal permission integer for read-only queries is `0x10400` (View Channels + Read Message History).
+The `bot` scope is always required. The `applications.commands` scope is optional and only needed if the bot uses slash commands alongside Coral.
 
-### 3. Set the bot token
+### 2. Set the bot token
 
 ```shell
 export DISCORD_BOT_TOKEN=your_bot_token_here
@@ -36,7 +35,7 @@ export DISCORD_BOT_TOKEN=your_bot_token_here
 
 When adding the source, the token must be marked as `kind: secret` in the manifest (already configured). Coral will pass it as `Authorization: Bot {{token}}` on every request.
 
-### 4. Discover guild and channel IDs
+### 3. Discover guild and channel IDs
 
 After adding the source, discover IDs by querying:
 
@@ -111,14 +110,6 @@ WHERE channel_id = '123456789012345678'
 ORDER BY timestamp DESC
 LIMIT 20;
 
--- Messages within a time window
-SELECT id, author__username, content, timestamp
-FROM discord.messages
-WHERE channel_id = '123456789012345678'
-  AND timestamp >= '2026-05-01'
-  AND timestamp < '2026-06-01'
-ORDER BY timestamp DESC;
-
 -- Members who are actively boosting
 SELECT user__username, nick, premium_since, joined_at
 FROM discord.members
@@ -154,7 +145,7 @@ Discord uses Snowflake-based cursor pagination via `before`, `after`, and `aroun
 | `messages` | `before`, `after`, `around` (message ID, mutually exclusive) | 100 |
 | `members` | `after` (by user ID) | 1000 |
 
-Messages are returned newest-first. To page through results, use the last row's ID as a cursor:
+Messages are returned newest-first. The source returns at most one page per query (up to `page_size` rows, default 50 for messages and 1000 for members). To fetch subsequent pages, pass the last row's ID as a cursor filter in a separate query:
 
 ```sql
 -- Get the first page
@@ -171,22 +162,6 @@ WHERE channel_id = '123456789012345678'
 ORDER BY timestamp DESC LIMIT 50;
 ```
 
-### Snowflake time filtering
-
-Discord Snowflakes embed timestamps. When you set `LIMIT` and `OFFSET`, the source automatically handles cursor continuation behind the scenes.
-
-You can also filter messages by their `timestamp` column directly, which maps to the ISO 8601 creation timestamp from the API:
-
-```sql
-SELECT id, content, timestamp
-FROM discord.messages
-WHERE channel_id = '123456789012345678'
-  AND timestamp >= '2026-05-01T00:00:00Z'
-ORDER BY timestamp DESC;
-```
-
-For Snowflake-range filtering, use the `after`/`before` cursor filters with Snowflake IDs corresponding to approximate timestamps.
-
 ### Rate limits
 
 The source declares the standard Discord rate-limit response headers in its manifest:
@@ -201,16 +176,27 @@ Coral reads these headers and automatically pauses or retries when a rate limit 
 
 ## Privileged intents vs bot permissions
 
-Privileged gateway intents are distinct from bot permissions and must be enabled in the Discord Developer Portal under **Bot → Privileged Gateway Intents**:
+Privileged gateway intents and bot permissions are distinct controls. Both must be
+configured, but they are set in different places:
 
-- **`GUILD_MEMBERS`** — required to query the `members` table. Granting the `Read Members` bot permission alone is insufficient.
-- **`MESSAGE_CONTENT`** — required to read `content`, `embeds`, and `attachments` from the `messages` table. Without this intent, those fields will be empty regardless of the `Read Message History` permission.
+- **Bot permissions** are granted during OAuth2 invite (via the `bot` scope) and
+  control what the bot is allowed to do in a guild. The `bot` scope alone grants
+  zero permissions — you must specify the `VIEW_CHANNEL` and
+  `READ_MESSAGE_HISTORY` flags explicitly.
+- **Privileged intents** are toggled in the Developer Portal under
+  **Bot → Privileged Gateway Intents** and control access to sensitive API
+  endpoints and gateway events. `MESSAGE_CONTENT` and `GUILD_MEMBERS` are
+  privileged intents.
+
+See the per-table requirements table in [Prerequisites](#prerequisites) for which
+permissions and intents each table needs.
 
 ## Validation
 
-The following output was captured from a live Discord bot at setup time to confirm that
-the source connects, authenticates, and returns real data from all six tables. IDs,
-names, and message content are anonymized to placeholders.
+The following output was captured from a live Discord bot at setup time. The manifest
+test queries (`current_user`, `guilds`) passed validation. The `coral sql` examples
+below demonstrate manual queries against all six tables using a bot that was a
+member of one guild. IDs, names, and message content are anonymized.
 
 ```shell
 # Add the source
