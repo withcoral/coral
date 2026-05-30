@@ -15,6 +15,11 @@ inputs:
       https://app.shortcut.com/settings/account/api-tokens.
       The token is sent as the Shortcut-Token request header.
 
+      IMPORTANT: Shortcut tokens provide complete access to your workspace
+      for the creating user — treat them like a password. For read-only
+      access, generate the token as an Observer-role member.
+      See https://help.shortcut.com/hc/en-us/articles/360000413023-The-Observer-Role
+
 auth:
   type: HeaderAuth
   headers:
@@ -299,17 +304,18 @@ tables:
       search syntax pushdown.
     guide: |
       The `query` filter is required because this table is backed by
-      Shortcut’s Search API (/search/stories), which does not support
+      Shortcut's Search API (/search/stories), which does not support
       unfiltered story listing.
 
       Use Shortcut search operators such as `is:started`, `type:bug`,
       `epic:my-epic`, or `iteration:current`.
 
-      Results are returned from Shortcut’s paginated search endpoint
-      and retrieved using cursor-based pagination via the `next` token
-      returned in the API response.
-
-      Maximum page size is 250 records per request.
+      PAGINATION NOTE: Shortcut's StorySearchResults.next field is a
+      full URL string (path + query string), not a bare cursor token.
+      Coral's cursor_query mode cannot extract the token from a full URL,
+      so this table returns the first page only (up to 250 records per
+      request). Use a narrow `query` filter to stay within one page.
+      Full multi-page pagination is out of scope for v1.
 
       Use `epic_id` to join with `shortcut.epics` and `iteration_id`
       to join with `shortcut.iterations`.
@@ -330,14 +336,7 @@ tables:
       rows_path:
         - data
     pagination:
-      mode: cursor_query
-      cursor_param: next
-      response_cursor_path:
-        - next
-      page_size:
-        default: 100
-        max: 250
-        query_param: page_size
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -406,7 +405,7 @@ tables:
       - name: cycle_time
         type: Int64
         nullable: true
-        description: Cycle time in seconds from start to completion.
+        description: Cycle time in seconds from story start to completion.
         expr:
           kind: path
           path:
@@ -472,7 +471,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Search query passed to Shortcut search API
+        description: Search query passed to Shortcut search API.
         expr:
           kind: from_filter
           key: query

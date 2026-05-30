@@ -17,6 +17,15 @@ bundled **Linear**, **GitHub**, and **Jira** sources.
 1. Go to [https://app.shortcut.com/settings/account/api-tokens](https://app.shortcut.com/settings/account/api-tokens)
 2. Click **Generate Token**, give it a name, and copy the token.
 
+> **Security note:** Shortcut API tokens provide **complete workspace access**
+> for the user who created them — read and write access to all workspace data.
+> Treat the token like a password: store it in an environment variable or
+> secrets manager, never in source code. For read-only access, generate the
+> token as a member with the **Observer role**, which limits write permissions
+> while retaining broad workspace visibility.
+> See [The Observer Role](https://help.shortcut.com/hc/en-us/articles/360000413023-The-Observer-Role)
+> and [API Tokens](https://help.shortcut.com/hc/en-us/articles/205701199-Shortcut-API-Tokens).
+
 ### 2. Set your token
 
 ```sh
@@ -42,7 +51,7 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.members LIMIT 5"
 | `shortcut.members` | Workspace members | — | — |
 | `shortcut.workflows` | Workspace workflows | — | — |
 | `shortcut.epics` | Epics in the workspace | — | — |
-| `shortcut.stories` | Stories retrieved via Shortcut Search API (/search/stories) | `query` | — |
+| `shortcut.stories` | Stories retrieved via Shortcut Search API (/search/stories) — first page only | `query` | — |
 | `shortcut.iterations` | Iterations (sprints) | — | — |
 | `shortcut.objectives` | Objectives (replaces deprecated milestones) | — | — |
 
@@ -72,7 +81,8 @@ Lists all epics in the workspace. Use `state` to filter locally:
 
 ### `stories`
 
-Stories are discovered via the Shortcut Search API. The `query` filter is required and is pushed down to the API using Shortcut search operators.
+Stories are discovered via the Shortcut Search API. The `query` filter is
+required and is pushed down to the API using Shortcut search operators.
 
 | Example | Meaning |
 |---|---|
@@ -84,6 +94,13 @@ Stories are discovered via the Shortcut Search API. The `query` filter is requir
 | `iteration:current` | Stories in the current iteration |
 
 `cycle_time` is returned in seconds from story start to completion.
+
+**Pagination limitation:** Shortcut's `StorySearchResults.next` field is a
+full URL string (path + query string), not a bare cursor token. Coral's
+`cursor_query` pagination mode cannot extract a bare token from a full URL,
+so this table returns the **first page only** (up to 250 records per request).
+Use a narrow `query` filter to keep results within one page. Full multi-page
+pagination support is out of scope for v1.
 
 ### `iterations`
 
@@ -97,7 +114,9 @@ Lists all iterations (sprints). Use `status` to filter locally:
 
 ### `objectives`
 
-Lists all objectives. Shortcut deprecated `GET /milestones` in favour of `GET /objectives`. Use `state` to filter locally: `to do`, `in progress`, or `done`.
+Lists all objectives. Shortcut deprecated `GET /milestones` in favour of
+`GET /objectives`. Use `state` to filter locally: `to do`, `in progress`,
+or `done`.
 
 ## Example queries
 
@@ -160,7 +179,7 @@ ORDER BY e.name, s.id
 LIMIT 20;
 ```
 
-Current iteration stories with member names:
+Current iteration stories with iteration name:
 
 ```sql
 SELECT s.id, s.name, s.story_type, i.name AS iteration_name, i.status
@@ -205,7 +224,7 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.workflows LIMIT 5"
 # epics — no required filters
 cargo run -p coral-cli -- sql "SELECT id, name, state, created_at FROM shortcut.epics LIMIT 5"
 
-# stories — query is required (Search API)
+# stories — query is required (Search API); first page only
 cargo run -p coral-cli -- sql "SELECT id, name, story_type, epic_id, created_at FROM shortcut.stories WHERE query = 'type:bug' LIMIT 5"
 
 # iterations — no required filters
@@ -224,18 +243,23 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 
 ## Notes
 
+- **Token security:** Shortcut tokens provide complete workspace access for
+  the creating user. Store them in environment variables or a secrets manager.
+  Use an Observer-role member to limit write exposure.
 - **Rate limits:** the Shortcut API enforces a limit of 200 requests per
   minute per token. Reduce query frequency or add retries if you hit limits.
-- **`detail=full`** is used on `/search/stories` to ensure all fields required for analytics
-  (including `cycle_time`, `estimate`, and workflow metadata) are included in the response.
-  This increases payload size but guarantees full column availability.
+- **`detail=full`** is used on `/search/stories` to ensure all fields required
+  for analytics (including `cycle_time`, `estimate`, and workflow metadata)
+  are included in the response.
 - **Auth header:** this source uses `Shortcut-Token: <token>` not
   `Authorization: Bearer`. Generate the token at
   https://app.shortcut.com/settings/account/api-tokens.
 - **`email` field:** sourced from `profile.email_address` in the API
   response, not a top-level field.
-- **`stories` pagination:** Results are returned in paginated batches (up to 250 records per request) 
-  using cursor-based pagination via `next` tokens.
+- **`stories` pagination:** Shortcut's `StorySearchResults.next` field is a
+  full URL string, not a bare cursor token. Coral cannot extract a bare token
+  from a full URL with `cursor_query`, so `stories` returns the first page
+  only (up to 250 records). Use a narrow `query` to stay within one page.
 - **`query` filter on stories:** required because this table uses Shortcut's
   Search API (/search/stories), which does not support unfiltered listing.
   Accepts Shortcut search operators such as `is:started`, `type:bug`,
@@ -248,6 +272,7 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 
 ## Out of scope for v1
 
+- Multi-page pagination for `stories` (blocked by Shortcut returning `next` as a full URL)
 - Labels table
 - Groups table
 - Story comments
