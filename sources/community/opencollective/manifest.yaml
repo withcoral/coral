@@ -96,7 +96,7 @@ tables:
           key: slug
       - name: name
         type: Utf8
-        nullable: false
+        nullable: true
         description: Display name of the collective.
       - name: description
         type: Utf8
@@ -104,17 +104,17 @@ tables:
         description: Short description of the collective.
       - name: currency
         type: Utf8
-        nullable: false
+        nullable: true
         description: Default currency code (e.g. USD, EUR).
       - name: type
         type: Utf8
-        nullable: false
+        nullable: true
         description: >-
           Entity type on Open Collective
           (e.g. COLLECTIVE, ORGANIZATION, FUND).
       - name: total_amount_received
         type: Float64
-        nullable: false
+        nullable: true
         description: >-
           Total amount received in the collective's default
           currency, across the lifetime of the collective.
@@ -123,7 +123,7 @@ tables:
           path: ["stats", "totalAmountReceived", "value"]
       - name: total_amount_spent
         type: Float64
-        nullable: false
+        nullable: true
         description: >-
           Total amount spent from the collective's balance
           (negative value).
@@ -132,7 +132,7 @@ tables:
           path: ["stats", "totalAmountSpent", "value"]
       - name: balance
         type: Float64
-        nullable: false
+        nullable: true
         description: Current balance of the collective.
         expr:
           kind: path
@@ -146,7 +146,7 @@ tables:
           path: ["stats", "yearlyBudget", "value"]
       - name: contributors_count
         type: Int64
-        nullable: false
+        nullable: true
         description: Total number of unique contributors.
         expr:
           kind: path
@@ -182,7 +182,7 @@ tables:
         description: Tags associated with the collective.
       - name: created_at
         type: Utf8
-        nullable: false
+        nullable: true
         description: ISO 8601 timestamp when the collective was created.
         expr:
           kind: path
