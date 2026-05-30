@@ -264,7 +264,7 @@ tables:
       method: GET
       path: /sys/audit
     response:
-      rows_path: []
+      rows_path: [data]
       row_strategy: dict_entries
     pagination:
       mode: none

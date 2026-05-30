@@ -9,6 +9,12 @@ engineering, security auditing, and compliance inventory workflows.
 It is read-only. It does not call OpenBao `/data/` endpoints and does not expose
 plaintext secret values.
 
+Metadata can still be operationally sensitive. Policy rules can reveal secret
+path structure and granted capabilities, audit device options can reveal audit
+configuration, and KV custom metadata is user-controlled. Treat query results
+from this source as security metadata even though plaintext secret values are
+not returned.
+
 ## Authentication
 
 Create or use an OpenBao token with read access to the metadata you want to
@@ -171,9 +177,10 @@ ORDER BY version DESC;
 - `openbao.audit_devices` lists configured audit devices, not audit log records.
 - `openbao.kv_secret_metadata` and `openbao.kv_secret_versions` require both
   `mount` and `path` filters.
-- Recursive KV path listing is not included in v1 because OpenBao documents that
-  operation as HTTP `LIST`, while Coral's HTTP source DSL currently supports
-  `GET` and `POST`.
+- Recursive KV path listing is intentionally not included in v1. OpenBao
+  supports listing metadata paths, including through `GET` with `?list=true`,
+  but this first version requires known `mount` and `path` filters to avoid
+  broad secret-path enumeration.
 - OpenBao deployments can differ by enabled engines and policy permissions; a
   token that can read system metadata may not be able to read every KV metadata
   path.
@@ -183,7 +190,64 @@ ORDER BY version DESC;
 Local validation for this source:
 
 ```text
-cargo run --locked -p coral-cli -- source lint sources/community/openbao/manifest.yaml
+$ coral source lint sources/community/openbao/manifest.yaml
+Manifest is valid
+```
+
+Selected output from live validation against `openbao/openbao:2.5.4`:
+
+```text
+$ coral source add --file sources/community/openbao/manifest.yaml
+Added source openbao
+
+  ✓ openbao connected successfully
+
+    openbao (7 tables)
+    Query tests
+    2 declared · 2 passed · 0 failed
+
+    ✓ SELECT path, type FROM openbao.mounts LIMIT 5
+      4 rows
+
+    ✓ SELECT path, type FROM openbao.auth_methods LIMIT 5
+      1 row
+
+$ coral source test openbao
+
+  ✓ openbao connected successfully
+
+    openbao (7 tables)
+    Query tests
+    2 declared · 2 passed · 0 failed
+```
+
+Representative queries:
+
+```text
+$ coral sql "SELECT path, type FROM openbao.mounts ORDER BY path LIMIT 5"
++------------+-----------+
+| path       | type      |
++------------+-----------+
+| cubbyhole/ | cubbyhole |
+| identity/  | identity  |
+| secret/    | kv        |
+| sys/       | system    |
++------------+-----------+
+
+$ coral sql "SELECT path, type FROM openbao.audit_devices LIMIT 5"
++------+------+
+| path | type |
++------+------+
++------+------+
+```
+
+The empty `openbao.audit_devices` result is expected for an OpenBao dev server
+without configured audit devices. It verifies that the table reads from the
+response `data` envelope instead of treating response envelope keys as devices.
+
+Before submitting changes, also run:
+
+```text
 make rust-checks
 ```
 
