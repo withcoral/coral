@@ -236,7 +236,12 @@ mod tests {
         features.apply_overrides(&overrides);
         let bundled = load_bundled_source(&github_v4, &features).expect("v4 source");
         assert!(bundled.manifest_yaml.contains("name: github_v4"));
-        assert_eq!(bundled.descriptors.len(), 1);
+        assert!(
+            bundled
+                .manifest_yaml
+                .contains("github/rest-api-description")
+        );
+        assert_eq!(bundled.descriptors.len(), 0);
     }
 
     #[test]
