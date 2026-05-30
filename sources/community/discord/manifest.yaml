@@ -1,0 +1,391 @@
+name: discord
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Discord guilds, channels, messages, and members through the Discord
+  REST API v10. Useful for community CRM workflows that join Discord activity
+  with email, calendar, and contact data.
+inputs:
+  DISCORD_BOT_TOKEN:
+    kind: secret
+    hint: |
+      Discord bot token from the Developer Portal. Create an application at
+      https://discord.com/developers/applications, add a Bot, and copy the
+      token. Enable the "Server Members Intent" for member tables.
+      Invite the bot to your server with appropriate read permissions.
+base_url: https://discord.com/api/v10
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bot {{input.DISCORD_BOT_TOKEN}}
+request_headers:
+  - name: User-Agent
+    from: literal
+    value: CoralDiscordSource (https://github.com/withcoral/coral, 0.1.0)
+  - name: Accept
+    from: literal
+    value: application/json
+rate_limit:
+  extra_statuses: [429]
+  remaining_header: x-ratelimit-remaining
+  reset_header: x-ratelimit-reset
+test_queries:
+  - SELECT id, username FROM discord.current_user LIMIT 1
+  - SELECT id, name FROM discord.guilds LIMIT 1
+tables:
+  - name: current_user
+    description: The authenticated bot user (GET /users/@me).
+    guide: >
+      Returns metadata for the bot account tied to DISCORD_BOT_TOKEN.
+      Use this to verify credentials before querying guilds or channels.
+    request:
+      method: GET
+      path: /users/@me
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Discord snowflake user ID for the bot.
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Bot username without discriminator.
+      - name: global_name
+        type: Utf8
+        nullable: true
+        description: Display name shown in the Discord client.
+      - name: bot
+        type: Boolean
+        nullable: true
+        description: Whether this user is a bot account.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw user object from Discord.
+        expr:
+          kind: current_row
+
+  - name: guilds
+    description: Guilds (servers) the bot belongs to (GET /users/@me/guilds).
+    guide: >
+      Lists every Discord server the bot has been invited to. Pass
+      with_counts=true via the API to include approximate member counts.
+      Use guild id values when querying discord.channels or discord.members.
+    fetch_limit_default: 200
+    request:
+      method: GET
+      path: /users/@me/guilds
+      query:
+        - name: with_counts
+          from: literal
+          value: "true"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Guild snowflake ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Server display name.
+      - name: owner
+        type: Boolean
+        nullable: true
+        description: Whether the bot owner account owns this guild.
+      - name: permissions
+        type: Utf8
+        nullable: true
+        description: Bot permission bitfield as a string.
+      - name: approximate_member_count
+        type: Int64
+        nullable: true
+        description: Approximate member count when with_counts is enabled.
+      - name: approximate_presence_count
+        type: Int64
+        nullable: true
+        description: Approximate online member count when with_counts is enabled.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw guild object from Discord.
+        expr:
+          kind: current_row
+
+  - name: channels
+    description: Channels in a guild (GET /guilds/{guild_id}/channels).
+    guide: >
+      Requires guild_id. Returns text, voice, category, forum, and other
+      channel types for the given server. Use channel id values when querying
+      discord.messages.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/channels
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Channel snowflake ID.
+      - name: guild_id
+        type: Utf8
+        nullable: true
+        description: Parent guild ID when present on the channel object.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Channel name.
+      - name: type
+        type: Int64
+        nullable: true
+        description: >-
+          Discord channel type code. 0=text, 2=voice, 4=category, 5=announcement,
+          15=forum.
+      - name: topic
+        type: Utf8
+        nullable: true
+        description: Channel topic for text channels.
+      - name: position
+        type: Int64
+        nullable: true
+        description: Sort position within the guild or category.
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Category channel ID when nested under a category.
+      - name: nsfw
+        type: Boolean
+        nullable: true
+        description: Whether the channel is age-restricted.
+      - name: guild_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the guild_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: guild_id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw channel object from Discord.
+        expr:
+          kind: current_row
+
+  - name: messages
+    description: Recent messages in a channel (GET /channels/{channel_id}/messages).
+    guide: >
+      Requires channel_id. Returns the most recent messages in a text channel.
+      Optionally filter by limit (1-100, default 50). Useful for CRM signals
+      such as mentions, replies, and community engagement timestamps.
+    filters:
+      - name: channel_id
+        required: true
+      - name: limit
+        required: false
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /channels/{{filter.channel_id}}/messages
+      query:
+        - name: limit
+          from: filter_int
+          key: limit
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Message snowflake ID.
+      - name: channel_id
+        type: Utf8
+        nullable: true
+        description: Channel where the message was posted.
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Message text content (up to 2000 characters).
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: When the message was sent (ISO8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - timestamp
+      - name: edited_timestamp
+        type: Timestamp
+        nullable: true
+        description: When the message was last edited, if ever.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - edited_timestamp
+      - name: author__id
+        type: Utf8
+        nullable: true
+        description: Snowflake ID of the message author.
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author__username
+        type: Utf8
+        nullable: true
+        description: Username of the message author.
+        expr:
+          kind: path
+          path:
+            - author
+            - username
+      - name: author__global_name
+        type: Utf8
+        nullable: true
+        description: Display name of the message author.
+        expr:
+          kind: path
+          path:
+            - author
+            - global_name
+      - name: author__bot
+        type: Boolean
+        nullable: true
+        description: Whether the author is a bot account.
+        expr:
+          kind: path
+          path:
+            - author
+            - bot
+      - name: mention_everyone
+        type: Boolean
+        nullable: true
+        description: Whether the message mentions @everyone or @here.
+      - name: pinned
+        type: Boolean
+        nullable: true
+        description: Whether the message is pinned in the channel.
+      - name: channel_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the channel_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: channel_id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw message object from Discord.
+        expr:
+          kind: current_row
+
+  - name: members
+    description: Guild members (GET /guilds/{guild_id}/members).
+    guide: >
+      Requires guild_id. Returns up to 1000 members from the guild member
+      list. Requires the Server Members Intent for large guilds. Join on
+      author__username or member nicknames against your contact graph.
+    filters:
+      - name: guild_id
+        required: true
+      - name: limit
+        required: false
+    fetch_limit_default: 1000
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/members
+      query:
+        - name: limit
+          from: filter_int
+          key: limit
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user__id
+        type: Utf8
+        nullable: true
+        description: Member user snowflake ID.
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user__username
+        type: Utf8
+        nullable: true
+        description: Member username.
+        expr:
+          kind: path
+          path:
+            - user
+            - username
+      - name: user__global_name
+        type: Utf8
+        nullable: true
+        description: Member display name.
+        expr:
+          kind: path
+          path:
+            - user
+            - global_name
+      - name: nick
+        type: Utf8
+        nullable: true
+        description: Server-specific nickname when set.
+      - name: roles
+        type: Json
+        nullable: true
+        description: Role IDs assigned to this member.
+      - name: joined_at
+        type: Timestamp
+        nullable: true
+        description: When the member joined the guild.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - joined_at
+      - name: guild_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the guild_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: guild_id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw guild member object from Discord.
+        expr:
+          kind: current_row
