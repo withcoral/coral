@@ -2,6 +2,9 @@ name: calendly
 version: 0.1.0
 dsl_version: 3
 backend: http
+description: >-
+  Query Calendly event types, scheduled meetings, organization members,
+  routing forms, webhook subscriptions, and invitees.
 
 # Inputs are collected at install time.
 # Retrieve your organization values by running:
@@ -375,8 +378,8 @@ tables:
   - name: organization_memberships
     description: >
       Members of the configured Calendly organization, including their role,
-      email, and scheduling URL. Join with scheduled_events on
-      user__uri to correlate bookings with team members.
+      email, and scheduling URL. Join with scheduled_event_hosts on
+      user__uri = user to correlate event hosts with team members.
     request:
       method: GET
       path: /organization_memberships
@@ -692,8 +695,8 @@ functions:
       Returns all invitees for a specific scheduled event. Pass the event UUID
       (the trailing path segment of the event URI) as the required argument.
       For example, from https://api.calendly.com/scheduled_events/AAAAAAAAAAAAAAAA
-      use AAAAAAAAAAAAAAAA as event_uuid. Join with scheduled_events on uri to
-      enrich invitee rows with event start times and locations.
+      use AAAAAAAAAAAAAAAA as event_uuid. Join with scheduled_events on
+      event = uri to enrich invitee rows with event start times and locations.
     args:
       - name: event_uuid
         required: true
@@ -719,6 +722,9 @@ functions:
       - name: uri
         type: Utf8
         description: Unique URI for this invitee record.
+      - name: event
+        type: Utf8
+        description: URI of the scheduled event. Joinable with scheduled_events.uri.
       - name: email
         type: Utf8
         description: Invitee's email address.

@@ -13,15 +13,21 @@ org-wide data.
 2. Under **API & Webhooks → Personal Access Tokens**, click **Generate New Token**
 3. Give the token a name and copy it — it is only shown once
 
-You also need your **organization URI**. Retrieve it with:
+You also need your **organization URI**. Export your token first, then retrieve
+the org URI with:
 
 ```bash
+export CALENDLY_API_TOKEN='your_token'
+
 curl -s -H "Authorization: Bearer $CALENDLY_API_TOKEN" \
   https://api.calendly.com/users/me \
-  | grep -o '"current_organization":"[^"]*"'
+  | jq -r '.resource.current_organization'
 ```
 
-The URI looks like `https://api.calendly.com/organizations/AAAAAAAAAAAAAAAA`.
+If `jq` prints `null`, the token is missing/invalid or the response was an error.
+Inspect the full payload with `curl ... | jq .` before filtering.
+
+The value looks like `https://api.calendly.com/organizations/AAAAAAAAAAAAAAAA`.
 
 For the `organization_invitations` table you also need the **organization UUID**
 — the trailing segment of the org URI, e.g. `AAAAAAAAAAAAAAAA`.
@@ -164,10 +170,25 @@ WHERE s.status = 'active'
 GROUP BY t.name
 ORDER BY bookings DESC;
 
--- Invitees for one scheduled event
+-- Discover a scheduled event UUID first (use the trailing segment of uri)
+SELECT uri, name, start_time
+FROM calendly.scheduled_events
+WHERE min_start_time = '2024-01-01T00:00:00Z'
+  AND max_start_time = '2030-12-31T23:59:59Z'
+ORDER BY start_time DESC
+LIMIT 5;
+
+-- Invitees for one scheduled event (replace YOUR_EVENT_UUID)
 SELECT name, email, status, timezone, cancel_url,
        json_get_str(questions_and_answers, '0', 'answer') AS first_answer
-FROM calendly.event_invitees(event_uuid => 'AAAAAAAAAAAAAAAA');
+FROM calendly.event_invitees(event_uuid => 'YOUR_EVENT_UUID');
+
+-- Invitees enriched with event metadata (same YOUR_EVENT_UUID as above)
+SELECT i.name, i.email, i.status, se.name AS event_name, se.start_time
+FROM calendly.event_invitees(event_uuid => 'YOUR_EVENT_UUID') i
+JOIN calendly.scheduled_events se ON se.uri = i.event
+WHERE se.min_start_time = '2024-01-01T00:00:00Z'
+  AND se.max_start_time = '2030-12-31T23:59:59Z';
 
 -- Routing forms (Teams+); status should be active, not draft
 SELECT name, status, heading, created_at
