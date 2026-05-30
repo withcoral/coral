@@ -160,15 +160,19 @@ SELECT
   d.amount_type,
   CASE d.amount_type
     WHEN 'percent' THEN CAST(d.amount AS VARCHAR) || '%'
-    ELSE '$' || CAST(ROUND(d.amount / 100.0, 2) AS VARCHAR)
-  END                      AS discount_value,
-  COUNT(dr.id)             AS redemptions,
-  ROUND(SUM(dr.amount) / 100.0, 2) AS total_savings_usd,
+    ELSE CAST(ROUND(d.amount / 100.0, 2) AS VARCHAR)
+  END                               AS discount_value,
+  s.currency                        AS store_currency,
+  COUNT(dr.id)                      AS redemptions,
+  ROUND(SUM(dr.amount) / 100.0, 2) AS total_savings,
   d.status
 FROM lemon_squeezy.discounts d
-LEFT JOIN lemon_squeezy.discount_redemptions dr ON dr.discount_id = CAST(d.id AS BIGINT)
+LEFT JOIN lemon_squeezy.discount_redemptions dr
+  ON dr.discount_id = CAST(d.id AS BIGINT)
+JOIN lemon_squeezy.stores s
+  ON s.id = CAST(d.store_id AS VARCHAR)
 WHERE d.status = 'published'
-GROUP BY d.id, d.code, d.amount_type, d.amount, d.status
+GROUP BY d.id, d.code, d.amount_type, d.amount, d.status, s.currency
 ORDER BY redemptions DESC;
 ```
 
