@@ -255,7 +255,17 @@ pub(crate) fn table_to_proto(
     workspace_name: &WorkspaceName,
     table: coral_engine::TableInfo,
 ) -> Table {
-    table_to_proto_with_columns(workspace_name, table)
+    let columns = table.columns.into_iter().map(column_to_proto).collect();
+
+    Table {
+        workspace: Some(workspace_to_proto(workspace_name)),
+        schema_name: table.schema_name,
+        name: table.table_name,
+        description: table.description,
+        columns,
+        required_filters: table.required_filters,
+        guide: table.guide,
+    }
 }
 
 pub(crate) fn table_summary_to_proto(
@@ -391,23 +401,6 @@ pub(crate) fn pagination_to_proto(
         offset,
         has_more,
         next_offset: next_offset.unwrap_or(0),
-    }
-}
-
-fn table_to_proto_with_columns(
-    workspace_name: &WorkspaceName,
-    table: coral_engine::TableInfo,
-) -> Table {
-    let columns = table.columns.into_iter().map(column_to_proto).collect();
-
-    Table {
-        workspace: Some(workspace_to_proto(workspace_name)),
-        schema_name: table.schema_name,
-        name: table.table_name,
-        description: table.description,
-        columns,
-        required_filters: table.required_filters,
-        guide: table.guide,
     }
 }
 
