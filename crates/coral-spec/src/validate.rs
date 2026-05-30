@@ -734,7 +734,7 @@ fn validate_arg_template(
     Ok(())
 }
 
-fn validate_identifier(value: &str, context: &str) -> Result<()> {
+pub(crate) fn validate_identifier(value: &str, context: &str) -> Result<()> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
         return Err(ManifestError::validation(format!(

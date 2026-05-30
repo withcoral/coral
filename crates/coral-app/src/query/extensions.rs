@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use coral_auth_aws::AwsSigV4Authenticator;
 use coral_engine::{
-    EngineExtensions, QuerySource, RequestAuthenticator, SourceInputResolver,
-    SourceInputResolverError,
+    EngineExtensions, QuerySource, RequestAuthenticator, SourceInputResolutionContext,
+    SourceInputResolver, SourceInputResolverError,
 };
 use coral_spec::ManifestInputKind;
 
@@ -89,7 +89,7 @@ impl fmt::Debug for CredentialRefreshingInputResolver {
 impl SourceInputResolver for CredentialRefreshingInputResolver {
     async fn resolve_inputs(
         &self,
-        source: &QuerySource,
+        source: &SourceInputResolutionContext,
     ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
         let source_name = SourceName::parse(source.source_name())
             .map_err(|error| SourceInputResolverError::invalid_input(error.to_string()))?;
@@ -105,7 +105,7 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
                         &self.workspace_name,
                         &credential_set_id,
                         credential_storage,
-                        source.source_spec().declared_inputs(),
+                        source.declared_inputs(),
                     )
                     .await
                     .map_err(source_input_error)?
@@ -120,7 +120,6 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
             }
         }
         let missing_secrets: Vec<String> = source
-            .source_spec()
             .required_secret_names()
             .into_iter()
             .filter(|name| !resolved.contains_key(name))
@@ -141,22 +140,17 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
 }
 
 fn resolve_from_material(
-    source: &QuerySource,
+    source: &SourceInputResolutionContext,
     material: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
-    coral_spec::resolve_inputs(
-        source.source_spec().declared_inputs(),
-        material,
-        source.variables(),
-    )
+    coral_spec::resolve_inputs(source.declared_inputs(), material, source.variables())
 }
 
 fn source_with_refreshed_secrets(
-    source: &QuerySource,
+    source: &SourceInputResolutionContext,
     material: &BTreeMap<String, String>,
-) -> QuerySource {
+) -> SourceInputResolutionContext {
     let refreshed_secrets = source
-        .source_spec()
         .declared_inputs()
         .iter()
         .filter(|input| input.kind == ManifestInputKind::Secret)
@@ -167,11 +161,7 @@ fn source_with_refreshed_secrets(
                 .map(|value| (input.key.clone(), value))
         })
         .collect();
-    QuerySource::new(
-        source.source_spec().clone(),
-        source.variables().clone(),
-        refreshed_secrets,
-    )
+    source.with_secrets(refreshed_secrets)
 }
 
 pub(crate) fn engine_extensions_for_providers(

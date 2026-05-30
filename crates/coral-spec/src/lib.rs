@@ -105,7 +105,7 @@ pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
-    ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
+    ManifestOAuthEndpointUrls, ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
     ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
     ManifestOAuthScopeSpec, ManifestOAuthScopesSpec, resolve_inputs,
 };
@@ -117,5 +117,6 @@ pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToke
 pub(crate) use validate::{
     DetailHintDeclaringSurface, DetailHintTargetTable, validate_columns,
     validate_detail_hint_references, validate_filters_and_column_exprs, validate_http_function,
-    validate_http_function_names, validate_http_table, validate_table_names,
+    validate_http_function_names, validate_http_table, validate_identifier, validate_table_names,
+    validate_unique_values,
 };

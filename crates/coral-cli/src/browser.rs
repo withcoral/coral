@@ -1,7 +1,7 @@
 //! Browser opener helpers for CLI-owned interactive flows.
 
 use std::io;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Copy)]
 enum BrowserOpener {
@@ -29,7 +29,11 @@ impl BrowserOpener {
 /// Returns an error if the platform opener cannot be launched or exits
 /// unsuccessfully.
 pub(crate) fn open_url(url: &str) -> Result<(), io::Error> {
-    let status = browser_command(BrowserOpener::current(), url).status()?;
+    let status = browser_command(BrowserOpener::current(), url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
 
     if status.success() {
         Ok(())
