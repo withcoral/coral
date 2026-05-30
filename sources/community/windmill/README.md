@@ -3,16 +3,25 @@
 Query Windmill scripts, flows, apps, and schedules through Coral SQL using the
 [Windmill HTTP API](https://app.windmill.dev/openapi.html).
 
-This source is read-only and metadata-only. It intentionally excludes workflow
-payloads and secret-bearing values.
+This source exposes read-only SQL tables with selected metadata columns. The
+configured Windmill list endpoints may still transfer unmapped operational
+fields to Coral before projection, including script source, flow definitions,
+and schedule arguments.
 
 ## Setup
 
 ### 1. Create a Windmill token
 
-Create a [Windmill user token](https://www.windmill.dev/docs/core_concepts/user_tokens)
-or service token with the minimum workspace read permissions needed to list
-scripts, flows, apps, and schedules.
+Create a [Windmill user token](https://www.windmill.dev/docs/core_concepts/user_tokens).
+Enable **Limit token permissions** and the read-only token restriction, then
+grant these scopes:
+
+- `scripts:read`
+- `flows:read`
+- `apps:read`
+- `schedules:read`
+
+These permissions were validated against all four tables in this source.
 
 ### 2. Add the source
 
@@ -45,11 +54,13 @@ coral source test windmill
 
 ### `windmill.scripts`
 
-List script inventory without script source code.
+List selected script metadata columns. Script source code is not exposed as a
+SQL column.
 
 | Column | Type | Description |
 |---|---|---|
 | `path` | Utf8 | Workspace-relative script path |
+| `hash` | Utf8 | Stable script version identifier |
 | `summary` | Utf8 | Script summary |
 | `description` | Utf8 | Script description |
 | `language` | Utf8 | Script language |
@@ -65,7 +76,8 @@ List script inventory without script source code.
 
 ### `windmill.flows`
 
-List flow inventory without raw flow definitions.
+List selected flow metadata columns. Raw flow definitions are not exposed as
+SQL columns.
 
 | Column | Type | Description |
 |---|---|---|
@@ -86,7 +98,8 @@ List flow inventory without raw flow definitions.
 
 ### `windmill.apps`
 
-List app inventory without raw app definitions.
+List selected app metadata columns. Raw app definitions are not exposed as SQL
+columns.
 
 | Column | Type | Description |
 |---|---|---|
@@ -105,7 +118,8 @@ List app inventory without raw app definitions.
 
 ### `windmill.schedules`
 
-List schedule inventory without arguments or permission maps.
+List selected schedule metadata columns. Arguments and permission maps are not
+exposed as SQL columns.
 
 | Column | Type | Description |
 |---|---|---|
@@ -156,7 +170,7 @@ coral source lint sources/community/windmill/manifest.yaml
 coral source add --file sources/community/windmill/manifest.yaml
 coral source test windmill
 coral sql "SELECT * FROM coral.tables WHERE schema_name = 'windmill'"
-coral sql "SELECT path, language, created_at FROM windmill.scripts LIMIT 5"
+coral sql "SELECT path, hash, language, created_at FROM windmill.scripts LIMIT 5"
 coral sql "SELECT path, script_path, enabled FROM windmill.schedules LIMIT 5"
 ```
 
@@ -164,15 +178,20 @@ coral sql "SELECT path, script_path, enabled FROM windmill.schedules LIMIT 5"
 
 - **Read-only.** This source does not create, update, execute, archive, or
   delete Windmill resources.
-- **Metadata-only.** Raw script source, raw flow definitions, app definitions,
-  schedule args, permission maps, errors, email fields, resource values,
-  variable values, job history, logs, and result payloads are not exposed.
+- **Selected metadata columns only.** Raw script source, raw flow definitions,
+  app definitions, schedule args, permission maps, errors, email fields,
+  resource values, variable values, job history, logs, and result payloads are
+  not exposed as SQL columns.
+- **Provider responses may contain unmapped fields.** Windmill list endpoints
+  may still transfer workflow definitions, schedule arguments, and other
+  operational fields to Coral before unmapped fields are discarded.
 - **Metadata may still be sensitive.** Paths, descriptions, labels, editor
   identities, and schedule targets can reveal operational details.
 - **Workspace-scoped.** Configure one `WINDMILL_WORKSPACE` per Coral source
   registration.
-- **Minimum privileges recommended.** Use a token scoped to the workspace
-  metadata that Coral needs to inspect.
+- **Minimum privileges recommended.** Enable Windmill's read-only token
+  restriction and grant only `scripts:read`, `flows:read`, `apps:read`, and
+  `schedules:read`.
 
 ## Out of scope for v1
 

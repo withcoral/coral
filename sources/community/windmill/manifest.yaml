@@ -5,8 +5,9 @@ dsl_version: 3
 backend: http
 description: >-
   Query Windmill scripts, flows, apps, and schedules through Coral SQL using
-  the Windmill HTTP API. Read-only and metadata-only; workflow payloads and
-  secret-bearing values are intentionally not exposed.
+  the Windmill HTTP API. Read-only SQL tables expose selected metadata columns.
+  Windmill API list responses may still transfer unmapped operational fields to
+  Coral before they are discarded.
 
 inputs:
   WINDMILL_BASE_URL:
@@ -22,7 +23,9 @@ inputs:
   WINDMILL_TOKEN:
     kind: secret
     required: true
-    hint: Windmill user token or service token with read access to metadata.
+    hint: >-
+      Windmill user token with read-only enabled and scripts:read, flows:read,
+      apps:read, and schedules:read scopes.
 
 base_url: "{{input.WINDMILL_BASE_URL}}/api"
 
@@ -39,18 +42,19 @@ request_headers:
     value: application/json
 
 test_queries:
-  - SELECT path, language, created_at FROM windmill.scripts LIMIT 5
+  - SELECT path, hash, language, created_at FROM windmill.scripts LIMIT 5
   - SELECT path, edited_at FROM windmill.flows LIMIT 5
   - SELECT path, execution_mode, edited_at FROM windmill.apps LIMIT 5
   - SELECT path, script_path, enabled FROM windmill.schedules LIMIT 5
 
 tables:
   - name: scripts
-    description: Windmill scripts without script source code.
+    description: Windmill script metadata columns.
     guide: |
       Each row is one script visible in the configured workspace. Use
       `path` to narrow the upstream request. This table intentionally omits
-      script source code and permission maps.
+      script source code and permission maps from the SQL table. Windmill's API
+      response may still transfer unmapped fields to Coral before projection.
     filters:
       - name: path
     request:
@@ -82,6 +86,14 @@ tables:
           kind: path
           path:
             - path
+      - name: hash
+        type: Utf8
+        nullable: false
+        description: Stable script version identifier.
+        expr:
+          kind: path
+          path:
+            - hash
       - name: summary
         type: Utf8
         nullable: true
@@ -167,11 +179,12 @@ tables:
             - labels
 
   - name: flows
-    description: Windmill flow inventory without raw flow definitions.
+    description: Windmill flow metadata columns.
     guide: |
       Each row is one flow visible in the configured workspace. Use
       `path` to narrow the upstream request. This table intentionally omits raw
-      flow definitions and permission maps.
+      flow definitions and permission maps from the SQL table. Windmill's API
+      response may still transfer unmapped fields to Coral before projection.
     filters:
       - name: path
     request:
@@ -296,11 +309,12 @@ tables:
             - labels
 
   - name: apps
-    description: Windmill app inventory without raw app definitions.
+    description: Windmill app metadata columns.
     guide: |
       Each row is one app visible in the configured workspace. Use
       `path` to narrow the upstream request. This table intentionally omits raw
-      app definitions and permission maps.
+      app definitions and permission maps from the SQL table. Windmill's API
+      response may still transfer unmapped fields to Coral before projection.
     filters:
       - name: path
     request:
@@ -409,13 +423,14 @@ tables:
             - labels
 
   - name: schedules
-    description: Windmill schedules without args or permission maps.
+    description: Windmill schedule metadata columns.
     guide: |
       Each row is one schedule visible in the configured workspace. Use `path`
       to filter the schedule record path, `script_path` to filter the target
       script or flow path, or `is_flow` to filter the target kind. This table
       intentionally omits args, permission maps, errors, email fields, and
-      callback arguments.
+      callback arguments from the SQL table. Windmill's API response may still
+      transfer unmapped fields to Coral before projection.
     filters:
       - name: path
       - name: script_path
