@@ -9,14 +9,12 @@ test_queries:
   - SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
 
 tables:
-  # ==========================================
-  # CHROME TABLES (Defines the Anchors)
-  # ==========================================
   - name: chrome_bookmarks
     description: "Lists Google Chrome bookmarks and folders."
     request: { method: GET, path: /chrome/bookmarks }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: &bookmark_cols
       - { name: id, type: Utf8, nullable: false }
       - { name: title, type: Utf8, nullable: true }
@@ -29,6 +27,7 @@ tables:
     request: { method: GET, path: /chrome/history }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: &history_cols
       - { name: id, type: Int64, nullable: false }
       - { name: url, type: Utf8, nullable: false }
@@ -41,6 +40,7 @@ tables:
     request: { method: GET, path: /chrome/downloads }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: &download_cols
       - { name: id, type: Int64, nullable: false }
       - { name: target_path, type: Utf8, nullable: false }
@@ -53,6 +53,7 @@ tables:
     request: { method: GET, path: /chrome/extensions }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: &extension_cols
       - { name: id, type: Utf8, nullable: false }
       - { name: name, type: Utf8, nullable: true }
@@ -63,6 +64,7 @@ tables:
     request: { method: GET, path: /chrome/top_sites }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: &topsite_cols
       - { name: url_rank, type: Int64, nullable: false }
       - { name: url, type: Utf8, nullable: false }
@@ -73,17 +75,16 @@ tables:
     request: { method: GET, path: /chrome/tabs }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: &tab_cols
       - { name: url, type: Utf8, nullable: false }
 
-  # ==========================================
-  # EDGE TABLES (References the Anchors)
-  # ==========================================
   - name: edge_bookmarks
     description: "Lists Microsoft Edge bookmarks and folders."
     request: { method: GET, path: /edge/bookmarks }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *bookmark_cols
 
   - name: edge_history
@@ -91,6 +92,7 @@ tables:
     request: { method: GET, path: /edge/history }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *history_cols
 
   - name: edge_downloads
@@ -98,6 +100,7 @@ tables:
     request: { method: GET, path: /edge/downloads }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *download_cols
 
   - name: edge_extensions
@@ -105,6 +108,7 @@ tables:
     request: { method: GET, path: /edge/extensions }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *extension_cols
 
   - name: edge_top_sites
@@ -112,6 +116,7 @@ tables:
     request: { method: GET, path: /edge/top_sites }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *topsite_cols
 
   - name: edge_tabs
@@ -119,16 +124,15 @@ tables:
     request: { method: GET, path: /edge/tabs }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *tab_cols
 
-  # ==========================================
-  # BRAVE TABLES (References the Anchors)
-  # ==========================================
   - name: brave_bookmarks
     description: "Lists Brave Browser bookmarks and folders."
     request: { method: GET, path: /brave/bookmarks }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *bookmark_cols
 
   - name: brave_history
@@ -136,6 +140,7 @@ tables:
     request: { method: GET, path: /brave/history }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *history_cols
 
   - name: brave_downloads
@@ -143,6 +148,7 @@ tables:
     request: { method: GET, path: /brave/downloads }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *download_cols
 
   - name: brave_extensions
@@ -150,6 +156,7 @@ tables:
     request: { method: GET, path: /brave/extensions }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *extension_cols
 
   - name: brave_top_sites
@@ -157,6 +164,7 @@ tables:
     request: { method: GET, path: /brave/top_sites }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *topsite_cols
 
   - name: brave_tabs
@@ -164,4 +172,5 @@ tables:
     request: { method: GET, path: /brave/tabs }
     response: { rows_path: [data] }
     pagination: { mode: none }
+    fetch_limit_default: 500
     columns: *tab_cols
