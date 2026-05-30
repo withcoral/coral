@@ -12,7 +12,7 @@ use coral_spec::{BodySpec, PageSizeSpec, ValidatedPagination, ValidatedPaginatio
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PageState {
-    pub(super) cursor: Option<String>,
+    pub(super) cursor: Option<Value>,
     pub(super) page: i64,
     pub(super) offset: i64,
     pub(super) next_url: Option<String>,
@@ -43,7 +43,13 @@ pub(super) fn apply_pagination_query_pairs(
                         "cursor_query pagination requires cursor_param".to_string(),
                     )
                 })?;
-                params.push((name, cursor.clone()));
+                let cursor_str = match cursor {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => cursor.to_string(),
+                };
+                params.push((name, cursor_str));
             }
         }
         ValidatedPaginationMode::Page => {
@@ -107,7 +113,7 @@ pub(super) fn apply_pagination_body_fields(
                 "cursor_body pagination requires cursor_body_path".to_string(),
             ));
         }
-        set_path_value(root, &target.pagination().cursor_body_path, json!(cursor))?;
+        set_path_value(root, &target.pagination().cursor_body_path, cursor.clone())?;
     }
 
     Ok(())
@@ -131,7 +137,13 @@ pub(super) fn pagination_state_values(state: &PageState) -> HashMap<String, Stri
     values.insert("page".to_string(), state.page.to_string());
     values.insert("offset".to_string(), state.offset.to_string());
     if let Some(cursor) = &state.cursor {
-        values.insert("cursor".to_string(), cursor.clone());
+        let cursor_str = match cursor {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => cursor.to_string(),
+        };
+        values.insert("cursor".to_string(), cursor_str);
     }
     values
 }

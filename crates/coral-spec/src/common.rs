@@ -267,6 +267,8 @@ pub struct SourceTableFunctionSpec {
 pub struct TableFunctionArgSpec {
     pub name: String,
     #[serde(default)]
+    pub description: String,
+    #[serde(default)]
     pub required: bool,
     #[serde(default)]
     pub values: Vec<String>,
@@ -440,6 +442,11 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<i64>,
     },
+    FilterFloat {
+        key: String,
+        #[serde(default)]
+        default: Option<f64>,
+    },
     FilterBool {
         key: String,
         #[serde(default)]
@@ -464,6 +471,11 @@ pub enum ValueSourceSpec {
         key: String,
         #[serde(default)]
         default: Option<i64>,
+    },
+    ArgFloat {
+        key: String,
+        #[serde(default)]
+        default: Option<f64>,
     },
     ArgBool {
         key: String,

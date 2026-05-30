@@ -58,11 +58,11 @@ functions:
           from: arg
           key: vector
         - path: [limit]
-          from: arg
+          from: arg_int
           key: limit
           default: 10
         - path: [score_threshold]
-          from: arg
+          from: arg_float
           key: score_threshold
         - path: [with_payload]
           from: literal
@@ -126,7 +126,7 @@ functions:
           from: arg
           key: negative
         - path: [limit]
-          from: arg
+          from: arg_int
           key: limit
           default: 10
         - path: [strategy]
@@ -403,7 +403,7 @@ tables:
       - name: write_locked
         type: Boolean
         nullable: true
-        expr: {kind: path, path: [write_locked]}
+        expr: {kind: path, path: [write]}
       - name: error_message
         type: Utf8
         nullable: true
@@ -590,11 +590,11 @@ tables:
           from: filter
           key: vector
         - path: [limit]
-          from: filter
+          from: filter_int
           key: limit
           default: 10
         - path: [score_threshold]
-          from: filter
+          from: filter_float
           key: score_threshold
         - path: [filter]
           from: filter
@@ -673,7 +673,7 @@ tables:
           from: filter
           key: negative
         - path: [limit]
-          from: filter
+          from: filter_int
           key: limit
           default: 10
         - path: [strategy]
@@ -738,7 +738,7 @@ tables:
           from: filter
           key: context
         - path: [limit]
-          from: filter
+          from: filter_int
           key: limit
           default: 10
         - path: [filter]
@@ -793,7 +793,7 @@ tables:
           from: filter
           key: filter
         - path: [exact]
-          from: filter
+          from: filter_bool
           key: exact
     response:
       row_strategy: direct

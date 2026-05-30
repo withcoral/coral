@@ -88,7 +88,16 @@ pub(crate) fn resolve_value_source(
         ValueSourceSpec::FilterInt { key, default } => {
             parse_i64_value(context, RuntimeValueNamespace::Filter, key, *default)
         }
+        ValueSourceSpec::FilterFloat { key, default } => {
+            parse_f64_value(context, RuntimeValueNamespace::Filter, key, *default)
+        }
         ValueSourceSpec::ArgInt { key, default } => parse_i64_value(
+            context,
+            RuntimeValueNamespace::FunctionArgument,
+            key,
+            *default,
+        ),
+        ValueSourceSpec::ArgFloat { key, default } => parse_f64_value(
             context,
             RuntimeValueNamespace::FunctionArgument,
             key,
@@ -208,6 +217,24 @@ fn parse_i64_value(
         let label = namespace.label();
         DataFusionError::Execution(format!(
             "{label} '{key}' value '{raw}' is not a valid i64: {error}"
+        ))
+    })?;
+    Ok(Some(json!(parsed)))
+}
+
+fn parse_f64_value(
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
+    key: &str,
+    default: Option<f64>,
+) -> Result<Option<Value>> {
+    let Some(raw) = namespace.values(context).get(key) else {
+        return Ok(default.map(|value| json!(value)));
+    };
+    let parsed = raw.parse::<f64>().map_err(|error| {
+        let label = namespace.label();
+        DataFusionError::Execution(format!(
+            "{label} '{key}' value '{raw}' is not a valid f64: {error}"
         ))
     })?;
     Ok(Some(json!(parsed)))
@@ -396,11 +423,13 @@ pub(crate) fn validate_value_source_inputs(
         ValueSourceSpec::Literal { .. }
         | ValueSourceSpec::Filter { .. }
         | ValueSourceSpec::FilterInt { .. }
+        | ValueSourceSpec::FilterFloat { .. }
         | ValueSourceSpec::FilterBool { .. }
         | ValueSourceSpec::FilterSplit { .. }
         | ValueSourceSpec::FilterSplitInt { .. }
         | ValueSourceSpec::Arg { .. }
         | ValueSourceSpec::ArgInt { .. }
+        | ValueSourceSpec::ArgFloat { .. }
         | ValueSourceSpec::ArgBool { .. }
         | ValueSourceSpec::ArgSplit { .. }
         | ValueSourceSpec::ArgSplitInt { .. }
@@ -470,6 +499,42 @@ mod tests {
         .expect("integer filter should resolve");
 
         assert_eq!(value, Some(json!(1_700_000_000_000_000_i64)));
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_floats_as_numbers() {
+        let filters = HashMap::from([("threshold".to_string(), "0.85".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterFloat {
+                key: "threshold".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("float filter should resolve");
+
+        assert_eq!(value, Some(json!(0.85)));
+    }
+
+    #[test]
+    fn resolve_value_source_reject_invalid_filter_floats() {
+        let filters = HashMap::from([("threshold".to_string(), "not-a-float".to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterFloat {
+                key: "threshold".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("invalid float filter should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("filter 'threshold' value 'not-a-float' is not a valid f64")
+        );
     }
 
     #[test]

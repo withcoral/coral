@@ -2271,3 +2271,59 @@ async fn filter_bracketed_invalid_json_falls_back_to_string() {
     assert_eq!(rows, vec![json!({"id": 2, "name": "Bob"})]);
 }
 
+#[tokio::test]
+async fn pagination_numeric_cursor() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+
+    Mock::given(method("POST"))
+        .and(path("/api/users"))
+        .and(body_json(json!({ "limit": 10 })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "data": &rows[..2], "next_cursor": 2 })),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/users"))
+        .and(body_json(json!({ "limit": 10, "offset": 2 })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "data": &rows[2..], "next_cursor": null })),
+        )
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_cursor", &server.uri());
+    manifest["tables"][0]["request"] = json!({
+        "method": "POST",
+        "path": "/api/users",
+        "body": [
+            {
+                "path": ["limit"],
+                "from": "literal",
+                "value": 10
+            }
+        ]
+    });
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "cursor_body",
+        "cursor_body_path": ["offset"],
+        "response_cursor_path": ["next_cursor"]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_cursor.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
