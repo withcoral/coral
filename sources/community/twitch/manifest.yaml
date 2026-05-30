@@ -35,7 +35,13 @@ request_headers:
 test_queries:
   - SELECT id, login, display_name FROM twitch.users WHERE login = 'twitch' LIMIT 1
   - SELECT id, user_name, game_name FROM twitch.streams LIMIT 1
+  - SELECT broadcaster_id, broadcaster_login FROM twitch.channels WHERE broadcaster_id = '141981764' LIMIT 1
+  - SELECT id, name FROM twitch.games WHERE name = 'Fortnite' LIMIT 1
   - SELECT id, name FROM twitch.top_games LIMIT 1
+  - SELECT id, title FROM twitch.videos WHERE user_id = '141981764' LIMIT 1
+  - SELECT id, title FROM twitch.clips WHERE broadcaster_id = '141981764' LIMIT 1
+  - SELECT id, display_name FROM twitch.search_channels(query => 'twitchdev') LIMIT 1
+  - SELECT id, name FROM twitch.search_categories(query => 'Fortnite') LIMIT 1
 
 tables:
   - name: users
@@ -104,6 +110,8 @@ tables:
     description: Twitch channel information for one or more broadcasters.
     guide: |
       Requires `broadcaster_id`, for example `WHERE broadcaster_id = '1234'`.
+      Twitch accepts repeated broadcaster IDs, so `IN (...)` or `OR` predicates
+      can batch lookup several known channels.
     filters:
       - name: broadcaster_id
         required: true
@@ -493,7 +501,8 @@ tables:
       Twitch requires exactly one of `id`, `broadcaster_id`, or `game_id`.
       `started_at`, `ended_at`, and `is_featured` are valid only with
       `broadcaster_id` or `game_id`; use a narrow time window because Twitch
-      caps paginated clip access.
+      caps paginated clip access. Pass `is_featured` as a SQL boolean, for
+      example `is_featured = true`.
     fetch_limit_default: 100
     filters:
       - name: id
@@ -522,7 +531,7 @@ tables:
           from: filter
           key: ended_at
         - name: is_featured
-          from: filter
+          from: filter_bool
           key: is_featured
     response:
       rows_path: [data]
