@@ -5,27 +5,40 @@
 **Tables:** 6
 **Base URL:** `https://api.rootly.com/v1`
 
-Query incidents, services, users, teams, alerts, and on-call schedules from
-Rootly via SQL. Designed for incident analytics: MTTR reporting, response
-time tracking, on-call coverage visibility, and cross-source joins with the
-bundled **Jira**, **Linear**, **GitHub**, and **Shortcut** sources.
+Query incidents, services, users, teams, alerts, and on-call schedules from Rootly via SQL.
+
+Designed for **incident lifecycle analytics and operational reliability workflows**, including:
+
+* Incident detection → acknowledgment → mitigation → resolution tracking
+* MTTR / MTTD / MTTA analysis
+* On-call coverage and ownership visibility
+* Alert correlation and incident causality analysis
+* Cross-source joins with Jira, Linear, GitHub, and Shortcut
+
+---
 
 ## Setup
 
 ### 1. Generate a Rootly API key
 
-1. In your Rootly workspace, go to
+1. In your Rootly workspace, go to:
    **Organization Settings → API Keys**
-2. Click **Generate API Key**, give it a name, and copy the key.
+2. Generate a new API key and copy it.
 
-> This source also works with Rootly OAuth 2.0 access tokens — paste
-> the OAuth token the same way as an API key.
+> The API key must have **read access to incidents, services, teams, users, alerts, and schedules**.
+> Keys are **workspace-scoped** and inherit permissions based on the role that created them.
+
+Rootly also supports OAuth 2.0 tokens — both API keys and OAuth tokens can be used interchangeably via the same `Authorization: Bearer` header.
+
+---
 
 ### 2. Set your token
 
 ```sh
-export ROOTLY_TOKEN="<your-api-key>"
+export ROOTLY_TOKEN="<your-api-key-or-oauth-token>"
 ```
+
+---
 
 ### 3. Add the source
 
@@ -33,81 +46,129 @@ export ROOTLY_TOKEN="<your-api-key>"
 cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.yaml
 ```
 
-### 4. Verify
+---
 
-```sh
-cargo run -p coral-cli -- sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
+### 4. First successful query (recommended)
+
+Use this to verify your setup and immediately see operational data:
+
+```sql
+SELECT id, title, status, severity_name, started_at
+FROM rootly.incidents
+ORDER BY started_at DESC
+LIMIT 5;
 ```
+
+Or validate service ingestion:
+
+```sql
+SELECT id, name, slug, github_repository_name
+FROM rootly.services
+LIMIT 5;
+```
+
+---
 
 ## Tables
 
-| Table | Description | Required filters |
-|---|---|---|
-| `rootly.users` | Users in the organization | — |
-| `rootly.services` | Services defined in the organization | — |
-| `rootly.teams` | Teams in the organization | — |
-| `rootly.incidents` | Incidents in the organization | — |
-| `rootly.alerts` | Alerts in the organization | — |
-| `rootly.schedules` | On-call schedules | — |
+| Table              | Description                                 | Required filters |
+| ------------------ | ------------------------------------------- | ---------------- |
+| `rootly.users`     | Users in the organization                   | —                |
+| `rootly.services`  | Services defined in the organization        | —                |
+| `rootly.teams`     | Teams in the organization                   | —                |
+| `rootly.incidents` | Incident lifecycle records (MTTR/MTTD/MTTA) | —                |
+| `rootly.alerts`    | Alerts from external monitoring systems     | —                |
+| `rootly.schedules` | On-call schedules                           | —                |
 
-All tables are read-only. This source does not create, modify, or delete any
-Rootly data.
+All tables are **read-only**. This source does not create, modify, or delete Rootly data.
 
-> **Note:** Rootly uses JSON:API format. All resource fields are sourced
-> from the nested `attributes` object in each response item. `id` is at
-> the top level of each item.
+---
 
-### `users`
+## API Behavior
 
-Lists all users in the organization. Join `email` to `linear.users` or
-`github.members` for cross-source team analytics.
+### JSON:API format
 
-### `services`
+Rootly uses JSON:API. All fields are nested under `attributes`, while `id` is at the top level.
 
-Lists all services. Use `pagerduty_id` or `opsgenie_id` to join with
-PagerDuty or OpsGenie sources. Use `github_repository_name` to join with
-`github.repos`.
+---
 
-### `teams`
+### Pagination
 
-Lists all teams. Use `pagerduty_id` to join with PagerDuty teams.
+Rootly uses **page-based pagination across all endpoints**:
 
-### `incidents`
+* `page[number]`
+* `page[size]`
+* Default page size: 25
+* Maximum page size: 100
 
-Lists all incidents. Use `status` to filter locally:
+Pagination is consistent across all resources (users, incidents, services, alerts, etc.). Large datasets (especially incidents and alerts) should always expect multiple pages.
 
-| Value | Meaning |
-|---|---|
-| `started` | Incident is active |
-| `mitigated` | Incident has been mitigated |
-| `resolved` | Incident is resolved |
-| `cancelled` | Incident was cancelled |
+---
 
-Use `jira_issue_key`, `linear_issue_id`, `github_issue_id`, or
-`shortcut_story_id` for cross-source joins. Use `started_at`,
-`mitigated_at`, and `resolved_at` for MTTR and response-time analytics.
+### Date filtering behavior
 
-### `alerts`
+For performance and operational use cases, always filter large datasets by time:
 
-Lists all alerts. Use `source` to filter by the originating alert system.
+Supported timestamp fields:
 
-### `schedules`
+* `started_at`
+* `created_at`
+* `resolved_at`
+* `mitigated_at`
 
-Lists all on-call schedules. Use `owner_user_id` to join with
-`rootly.users.id`. Use `all_time_coverage` to identify 24/7 schedules.
+For incident-heavy workloads, use date ranges (e.g. last 7/30/90 days) to avoid large pagination scans.
+
+---
+
+### Rate limits
+
+Rootly enforces **workspace-level API rate limits**.
+
+* Requests may be throttled during high incident activity
+* `429 Too Many Requests` responses should be retried with exponential backoff
+* Long-running incident queries may hit limits in large organizations
+
+---
+
+## Search functions
+
+All search functions require a non-empty `term`.
+
+| Function                     | Description                                   |
+| ---------------------------- | --------------------------------------------- |
+| `search_deals(term)`         | Search deals by title and fields (if enabled) |
+| `search_persons(term)`       | Search people by name and metadata            |
+| `search_organizations(term)` | Search organizations by name and attributes   |
+
+---
 
 ## Example queries
 
-List all users:
+### Active incidents
 
 ```sql
-SELECT id, full_name, email, role_id, time_zone
-FROM rootly.users
-ORDER BY full_name
+SELECT id, title, severity_name, status, started_at
+FROM rootly.incidents
+WHERE status = 'started'
+ORDER BY started_at DESC
 LIMIT 20;
 ```
 
-List services with GitHub repository connections:
+---
+
+### Resolved incidents (MTTR analysis)
+
+```sql
+SELECT id, title, severity_name, started_at, mitigated_at, resolved_at
+FROM rootly.incidents
+WHERE status = 'resolved'
+ORDER BY resolved_at DESC
+LIMIT 50;
+```
+
+---
+
+### Services with GitHub mapping
 
 ```sql
 SELECT id, name, slug, github_repository_name, github_repository_branch
@@ -117,56 +178,15 @@ ORDER BY name
 LIMIT 20;
 ```
 
-Active incidents by severity:
+---
 
-```sql
-SELECT id, title, severity_name, status, started_at, slack_channel_name
-FROM rootly.incidents
-WHERE status = 'started'
-ORDER BY started_at DESC
-LIMIT 20;
-```
-
-Resolved incidents for MTTR analysis:
-
-```sql
-SELECT
-  id,
-  title,
-  severity_name,
-  started_at,
-  mitigated_at,
-  resolved_at
-FROM rootly.incidents
-WHERE status = 'resolved'
-ORDER BY resolved_at DESC
-LIMIT 50;
-```
-
-Incidents linked to Jira issues (cross-source):
-
-```sql
-SELECT
-  i.id,
-  i.title,
-  i.severity_name,
-  i.status,
-  i.jira_issue_key,
-  i.started_at
-FROM rootly.incidents i
-WHERE i.jira_issue_key IS NOT NULL
-ORDER BY i.started_at DESC
-LIMIT 20;
-```
-
-On-call schedules with owner details:
+### On-call ownership view
 
 ```sql
 SELECT
   s.id,
   s.name,
   s.all_time_coverage,
-  s.shift_report_time_zone,
   u.full_name AS owner_name,
   u.email AS owner_email
 FROM rootly.schedules s
@@ -175,7 +195,9 @@ ORDER BY s.name
 LIMIT 20;
 ```
 
-Alerts by source system:
+---
+
+### Alerts by source system
 
 ```sql
 SELECT source, COUNT(*) AS alert_count
@@ -185,65 +207,56 @@ ORDER BY alert_count DESC
 LIMIT 10;
 ```
 
+---
+
 ## Validation
 
-Lint the manifest:
+### Lint manifest
 
 ```sh
 cargo run -p coral-cli -- source lint sources/community/rootly/manifest.yaml
 ```
 
-Add the source and validate each table:
+---
+
+### Add source
 
 ```sh
 export ROOTLY_TOKEN="<your-api-key>"
 cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.yaml
-
-# users — no required filters
-cargo run -p coral-cli -- sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
-
-# services — no required filters
-cargo run -p coral-cli -- sql "SELECT id, name, slug, pagerduty_id FROM rootly.services LIMIT 5"
-
-# teams — no required filters
-cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.teams LIMIT 5"
-
-# incidents — no required filters
-cargo run -p coral-cli -- sql "SELECT id, title, status, severity_name, started_at, resolved_at FROM rootly.incidents LIMIT 5"
-
-# alerts — no required filters
-cargo run -p coral-cli -- sql "SELECT id, alert_id, source, created_at FROM rootly.alerts LIMIT 5"
-
-# schedules — no required filters
-cargo run -p coral-cli -- sql "SELECT id, name, owner_user_id, all_time_coverage FROM rootly.schedules LIMIT 5"
 ```
 
-Inspect registered tables and columns:
+---
+
+### Validate tables
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'rootly'"
-cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'rootly' ORDER BY table_name, ordinal_position"
+cargo run -p coral-cli -- sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.services LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.teams LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, title, status, severity_name FROM rootly.incidents LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, alert_id, source FROM rootly.alerts LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, name, owner_user_id FROM rootly.schedules LIMIT 5"
 ```
+
+---
 
 ## Notes
 
-- **JSON:API format:** Rootly uses JSON:API. All resource fields are nested
-  under `attributes` in the API response. `id` is at the top level of each
-  item. This is handled transparently by the column path expressions.
-- **Auth:** both Rootly API keys and OAuth 2.0 access tokens work with
-  `Authorization: Bearer`. Rootly detects the token type automatically.
-- **`Content-Type`:** Rootly requires `application/vnd.api+json` not
-  `application/json`.
-- **Pagination:** all tables use `page[number]` and `page[size]` query
-  parameters. Default page size is 25; maximum is 100.
-- **Cross-source joins:** `incidents` exposes `jira_issue_key`,
-  `linear_issue_id`, `github_issue_id`, and `shortcut_story_id` for
-  joining with other Coral sources.
+* **JSON:API format:** all fields are under `attributes`, `id` is top-level
+* **Auth:** API keys and OAuth tokens both use `Authorization: Bearer`
+* **Pagination:** consistent page-based pagination across all endpoints
+* **Rate limits:** workspace-level limits; retry on 429 with backoff
+* **Date fields:** timestamps are ISO8601 format
+* **Cross-source joins:** incidents expose Jira, Linear, GitHub, Shortcut IDs for correlation
+* **Operational use case:** optimized for incident lifecycle and reliability analytics
+
+---
 
 ## Out of scope for v1
 
-- Incident action items and timeline events
-- Retrospectives
-- Workflows and playbooks
-- OAuth authorization-code flow (deferred — use API key for now)
-- Write operations of any kind
+* Incident timeline events / retrospectives
+* Workflow automation / playbooks
+* Write operations (create/update/delete)
+* OAuth authorization code flow
+* Advanced incident mutation APIs
