@@ -1450,30 +1450,14 @@ pub fn generate_projection_catalog(
 ) -> Result<ProjectionCatalog> {
     let mut projections = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut names = HashSet::new();
     for ir in surfaces {
         for operation in &ir.operations {
             let projection = generate_projection(manifest, ir, operation, &mut diagnostics);
-            let mut projection = projection;
-            if !names.insert(projection.name.clone()) {
-                let suffix = stable_suffix(&format!(
-                    "{}/{}/{}",
-                    manifest.common.name, ir.surface_id, operation.id
-                ));
-                projection.name = format!("{}__{}", projection.name, suffix);
-                projection.diagnostics.push(Diagnostic {
-                    code: "PROJECTION_NAME_COLLISION_RESOLVED".to_string(),
-                    severity: DiagnosticSeverity::Warning,
-                    message: format!("projection name collision resolved with suffix {suffix}"),
-                    surface_id: Some(ir.surface_id.clone()),
-                    operation_id: Some(operation.id.clone()),
-                    projection_name: Some(projection.name.clone()),
-                });
-            }
             projections.push(projection);
         }
         diagnostics.extend(ir.diagnostics.clone());
     }
+    resolve_projection_name_collisions(manifest, surfaces, &mut projections);
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),
@@ -1584,6 +1568,150 @@ fn generate_projection(
     diagnostics.extend(projection_diagnostics);
     let _ = manifest.projection_policy.default;
     projection
+}
+
+fn resolve_projection_name_collisions(
+    manifest: &V4SourceManifest,
+    surfaces: &[SemanticIr],
+    projections: &mut [Projection],
+) {
+    let operations = surfaces
+        .iter()
+        .flat_map(|ir| {
+            ir.operations
+                .iter()
+                .map(move |operation| ((ir.surface_id.as_str(), operation.id.as_str()), operation))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (index, projection) in projections.iter().enumerate() {
+        groups
+            .entry(projection.name.clone())
+            .or_default()
+            .push(index);
+    }
+
+    let mut keep_base_name = HashSet::new();
+    for indexes in groups.values() {
+        let keep = indexes
+            .iter()
+            .copied()
+            .max_by_key(|index| {
+                let projection = &projections[*index];
+                operations
+                    .get(&(
+                        projection.surface_id.as_str(),
+                        projection.operation_id.as_str(),
+                    ))
+                    .map_or(0, |operation| {
+                        projection_name_priority(projection, operation)
+                    })
+            })
+            .expect("group has at least one projection");
+        keep_base_name.insert(keep);
+    }
+
+    let mut used_names = HashSet::new();
+    for index in keep_base_name.iter().copied() {
+        used_names.insert(projections[index].name.clone());
+    }
+
+    for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
+        for index in indexes {
+            if keep_base_name.contains(index) {
+                continue;
+            }
+            let projection = &projections[*index];
+            let operation = operations.get(&(
+                projection.surface_id.as_str(),
+                projection.operation_id.as_str(),
+            ));
+            let base_name = projection.name.clone();
+            let mut name = operation.map_or_else(
+                || normalize_identifier(&projection.operation_id, "projection"),
+                |operation| contextual_projection_name(&base_name, operation),
+            );
+            if name == base_name || used_names.contains(&name) {
+                let suffix = stable_suffix(&format!(
+                    "{}/{}/{}",
+                    manifest.common.name, projection.surface_id, projection.operation_id
+                ));
+                name = format!("{name}__{suffix}");
+            }
+            used_names.insert(name.clone());
+            projections[*index].name = name.clone();
+            projections[*index].diagnostics.push(Diagnostic {
+                code: "PROJECTION_NAME_COLLISION_RESOLVED".to_string(),
+                severity: DiagnosticSeverity::Warning,
+                message: format!("projection name collision resolved as '{name}'"),
+                surface_id: Some(projections[*index].surface_id.clone()),
+                operation_id: Some(projections[*index].operation_id.clone()),
+                projection_name: Some(name),
+            });
+        }
+    }
+}
+
+fn projection_name_priority(projection: &Projection, operation: &IrOperation) -> i32 {
+    let mut priority = 0;
+    if projection.visibility == ProjectionVisibility::Published {
+        priority += 1_000;
+    }
+    if matches!(projection.kind, ProjectionKind::Table) {
+        priority += 100;
+    }
+    if is_repository_scoped(operation) {
+        priority += 500;
+    }
+    if operation.id.contains("_list_for_repo") || operation.id.contains("_list_for_repository") {
+        priority += 300;
+    }
+    if operation.id.contains("authenticated_user") {
+        priority -= 200;
+    }
+    if operation.inputs.iter().all(|input| !input.required) {
+        priority -= 100;
+    }
+    priority
+}
+
+fn contextual_projection_name(base_name: &str, operation: &IrOperation) -> String {
+    let context = projection_context(operation);
+    if context.is_empty() {
+        return normalize_identifier(&operation.id, base_name);
+    }
+    if base_name.starts_with(&format!("{context}_")) {
+        base_name.to_string()
+    } else {
+        format!("{context}_{base_name}")
+    }
+}
+
+fn projection_context(operation: &IrOperation) -> &'static str {
+    if operation.id.contains("authenticated_user") {
+        return "authenticated_user";
+    }
+    if operation.id.contains("_for_org") || has_operation_input(operation, "org") {
+        return "organization";
+    }
+    if operation.id.contains("_for_enterprise") || has_operation_input(operation, "enterprise") {
+        return "enterprise";
+    }
+    if operation.id.contains("_for_user") || has_operation_input(operation, "username") {
+        return "user";
+    }
+    if is_repository_scoped(operation) {
+        return "repository";
+    }
+    ""
+}
+
+fn has_operation_input(operation: &IrOperation, name: &str) -> bool {
+    operation.inputs.iter().any(|input| input.name == name)
+}
+
+fn is_repository_scoped(operation: &IrOperation) -> bool {
+    has_operation_input(operation, "owner") && has_operation_input(operation, "repo")
 }
 
 fn projection_guide(
@@ -1722,7 +1850,7 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
 fn projection_name(operation: &IrOperation, is_search: bool) -> String {
     let entity = operation.entity.as_ref().map_or_else(
         || normalize_identifier(&operation.id, "projection"),
-        |entity| normalize_identifier(&entity.name, "projection"),
+        |_| projection_entity_name(operation, is_search),
     );
     if is_search {
         return format!("search_{}", pluralize(&entity));
@@ -1736,6 +1864,43 @@ fn projection_name(operation: &IrOperation, is_search: bool) -> String {
         OutputCardinality::None | OutputCardinality::Unknown => {
             normalize_identifier(&operation.id, "projection")
         }
+    }
+}
+
+fn projection_entity_name(operation: &IrOperation, is_search: bool) -> String {
+    if is_search && let Some(search_entity) = search_entity_from_operation_id(&operation.id) {
+        return search_entity;
+    }
+    if operation.id.starts_with("pulls_") {
+        return "pull".to_string();
+    }
+    if operation.id.starts_with("issues_") {
+        return "issue".to_string();
+    }
+    if operation.id.starts_with("repos_") {
+        return "repository".to_string();
+    }
+    operation.entity.as_ref().map_or_else(
+        || normalize_identifier(&operation.id, "projection"),
+        |entity| normalize_entity_identifier(&entity.name),
+    )
+}
+
+fn search_entity_from_operation_id(operation_id: &str) -> Option<String> {
+    let mut raw = operation_id.strip_prefix("search_")?;
+    raw = raw.strip_suffix("_and_pull_requests").unwrap_or(raw);
+    raw = raw.strip_suffix("_result_items").unwrap_or(raw);
+    Some(singularize(raw))
+}
+
+fn normalize_entity_identifier(raw: &str) -> String {
+    let normalized = normalize_identifier(raw, "projection");
+    let mut tokens = normalized.split('_').collect::<Vec<_>>();
+    tokens.retain(|token| !matches!(*token, "minimal" | "simple" | "base" | "short"));
+    if tokens.is_empty() {
+        normalized
+    } else {
+        tokens.join("_")
     }
 }
 
@@ -2239,6 +2404,109 @@ components:
         let projection = catalog.projections.first().expect("projection");
         assert_eq!(projection.name, "repositories");
         assert!(matches!(projection.kind, ProjectionKind::Table));
+    }
+
+    #[test]
+    fn projection_names_prefer_repository_lists_and_contextual_collisions() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: github
+version: 1.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.github.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /issues:
+    get:
+      operationId: issues/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Issue'}}
+  /orgs/{org}/issues:
+    get:
+      operationId: issues/list-for-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Issue'}}
+  /repos/{owner}/{repo}/issues:
+    get:
+      operationId: issues/list-for-repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Issue'}}
+  /repos/{owner}/{repo}/pulls:
+    get:
+      operationId: pulls/list
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/PullRequestSimple'}}
+components:
+  schemas:
+    Issue:
+      type: object
+      properties:
+        id: {type: integer}
+    PullRequestSimple:
+      type: object
+      properties:
+        id: {type: integer}
+"
+            .as_bytes(),
+        )
+        .expect("import");
+        let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+        let names_by_operation = catalog
+            .projections
+            .iter()
+            .map(|projection| {
+                (
+                    projection.operation_id.as_str(),
+                    (projection.name.as_str(), &projection.kind),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(names_by_operation["issues_list"].0, "issues_list");
+        assert_eq!(
+            names_by_operation["issues_list_for_org"].0,
+            "organization_issues"
+        );
+        assert_eq!(names_by_operation["issues_list_for_repo"].0, "issues");
+        assert_eq!(names_by_operation["pulls_list"].0, "pulls");
+        assert!(matches!(
+            names_by_operation["pulls_list"].1,
+            ProjectionKind::Table
+        ));
     }
 
     #[test]
