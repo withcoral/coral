@@ -316,6 +316,7 @@ tables:
       mode: cursor
       cursor:
         next_path:
+          - user
           - id
         query_param: after
       page_size:
