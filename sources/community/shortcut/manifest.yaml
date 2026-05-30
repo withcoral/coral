@@ -298,14 +298,21 @@ tables:
       search API. Each row is one story. Use query filter for Shortcut
       search syntax pushdown.
     guide: |
-      The query filter is required and is pushed down to the Shortcut 
-      Search API using search operators. Use Shortcut search operators 
-      such as `is:started`, `type:bug`, `epic:my-epic`, or 
-      `iteration:current`. Without a query filter, returns all stories. 
-      Results are paginated with a maximum of 250 records per request at 
-      the connector level using cursor-based pagination via next tokens. 
-      Use `epic_id` to join with `shortcut.epics` and `iteration_id` to 
-      join with `shortcut.iterations`.
+      The `query` filter is required because this table is backed by
+      Shortcut’s Search API (/search/stories), which does not support
+      unfiltered story listing.
+
+      Use Shortcut search operators such as `is:started`, `type:bug`,
+      `epic:my-epic`, or `iteration:current`.
+
+      Results are returned from Shortcut’s paginated search endpoint
+      and retrieved using cursor-based pagination via the `next` token
+      returned in the API response.
+
+      Maximum page size is 250 records per request.
+
+      Use `epic_id` to join with `shortcut.epics` and `iteration_id`
+      to join with `shortcut.iterations`.
     filters:
       - name: query
         required: true

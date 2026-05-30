@@ -42,7 +42,7 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.members LIMIT 5"
 | `shortcut.members` | Workspace members | — | — |
 | `shortcut.workflows` | Workspace workflows | — | — |
 | `shortcut.epics` | Epics in the workspace | — | — |
-| `shortcut.stories` | Stories discovered via search API | `query` | — |
+| `shortcut.stories` | Stories retrieved via Shortcut Search API (/search/stories) | `query` | — |
 | `shortcut.iterations` | Iterations (sprints) | — | — |
 | `shortcut.objectives` | Objectives (replaces deprecated milestones) | — | — |
 
@@ -205,8 +205,8 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.workflows LIMIT 5"
 # epics — no required filters
 cargo run -p coral-cli -- sql "SELECT id, name, state, created_at FROM shortcut.epics LIMIT 5"
 
-# stories — no required filters, optional query pushdown
-cargo run -p coral-cli -- sql "SELECT id, name, story_type, epic_id, created_at FROM shortcut.stories LIMIT 5"
+# stories — query is required (Search API)
+cargo run -p coral-cli -- sql "SELECT id, name, story_type, epic_id, created_at FROM shortcut.stories WHERE query = 'type:bug' LIMIT 5"
 
 # iterations — no required filters
 cargo run -p coral-cli -- sql "SELECT id, name, status, start_date, end_date FROM shortcut.iterations LIMIT 5"
@@ -236,10 +236,10 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
   response, not a top-level field.
 - **`stories` pagination:** Results are returned in paginated batches (up to 250 records per request) 
   using cursor-based pagination via `next` tokens.
-- **`query` filter on stories:** accepts Shortcut search operators. Without
-  a query, all stories are returned. See
-  https://help.shortcut.com/hc/en-us/articles/360000046646-Search-Operators
-  for the full list of operators.
+- **`query` filter on stories:** required because this table uses Shortcut's
+  Search API (/search/stories), which does not support unfiltered listing.
+  Accepts Shortcut search operators such as `is:started`, `type:bug`,
+  `epic:my-epic`, and `iteration:current`.
 - **`cycle_time`** is returned in seconds from story start to completion.
   Divide by 3600 for hours or 86400 for days.
 - **`members`, `workflows`, `epics`, `iterations`, `objectives`** return
