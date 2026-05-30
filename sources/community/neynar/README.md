@@ -127,7 +127,7 @@ The `/cast/search` endpoint requires a **paid Neynar API plan**. Free API keys r
 
 ### Search-function semantics
 
-This source uses `kind: search`. Search criteria are passed as function arguments — `q`, `author_fid`, `channel_id`, `mode`, `sort_type` — not SQL `WHERE` clauses, so you cannot filter by an output column such as `WHERE author__username = '...'`. Results are reverse-chronological by default; pass `sort_type => 'algorithmic'` for Neynar's engagement-and-time ordering. Use `author_fid` or keywords in `q` to scope by author.
+This source uses `kind: search`. **Provider-side** search criteria are passed as function arguments — `q`, `author_fid`, `channel_id`, `mode`, `sort_type` — which is how you narrow what Neynar fetches and ranks. You can still apply ordinary SQL predicates on output columns (e.g. `WHERE author__username = '...'`), but those filter the returned result set **locally, after retrieval** — they are not pushed to Neynar, so they don't change which casts the provider ranks and returns (and they only see the casts already fetched for that call). Results are reverse-chronological by default; pass `sort_type => 'algorithmic'` for Neynar's engagement-and-time ordering. Scope by author with the `author_fid` argument or keywords in `q`.
 
 ### Result limits
 
@@ -135,7 +135,7 @@ SQL `LIMIT` controls how many results the Neynar API returns per page (default 2
 
 ### Rate limits
 
-Neynar rate limits depend on your plan tier.
+Neynar applies a separate, lower rate limit to `/cast/search` than its global per-key limit. By plan tier: **Starter 60 RPM, Growth 120 RPM, Scale 240 RPM**, Enterprise custom. Each `search_casts(...)` call is a single request (`max_calls_per_query: 1`), so size pages with `LIMIT` (max 100) and add retry/backoff if you fan out many searches. See [Neynar rate limits](https://docs.neynar.com/reference/what-are-the-rate-limits-on-neynar-apis).
 
 ---
 
