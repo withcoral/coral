@@ -27,20 +27,27 @@ test_queries:
   - SELECT * FROM qdrant.cluster_info
 functions:
   - name: search_points
-    description: Vector similarity search on Qdrant points
+    description: >-
+      Vector similarity search on Qdrant points. Pass a vector as a
+      JSON array and get back the closest matches by cosine/dot/etc.
     args:
       - name: collection_name
         required: true
+        description: Name of the Qdrant collection to search.
         bind:
           arg: collection_name
       - name: vector
         required: true
+        description: >-
+          Query vector as a JSON array, e.g. '[0.05, 0.61, 0.76]'.
         bind:
           arg: vector
       - name: limit
+        description: Maximum number of results (default 10).
         bind:
           arg: limit
       - name: score_threshold
+        description: Minimum similarity score threshold.
         bind:
           arg: score_threshold
     request:
@@ -70,18 +77,22 @@ functions:
       - name: id
         type: Json
         nullable: false
+        description: Point identifier (integer or UUID).
         expr: {kind: path, path: [id]}
       - name: score
         type: Float64
         nullable: false
+        description: Similarity score for this result.
         expr: {kind: path, path: [score]}
       - name: payload
         type: Json
         nullable: true
+        description: Full JSON payload attached to the point.
         expr: {kind: path, path: [payload]}
       - name: vector
         type: Json
         nullable: true
+        description: Vector embedding of the point.
         expr: {kind: path, path: [vector]}
 
   - name: recommend_points
@@ -151,8 +162,10 @@ functions:
 tables:
   # 1. Collections List
   - name: collections
-    description: List names of all Qdrant collections
-    guide: "Shows names of all collections."
+    description: List names of all Qdrant collections.
+    guide: >-
+      Use `SELECT * FROM qdrant.collections` to list all collection
+      names. No filters required. Use collection_details for config.
     request:
       method: GET
       path: /collections
@@ -163,15 +176,22 @@ tables:
       - name: name
         type: Utf8
         nullable: false
+        description: Name of the collection.
         expr: {kind: path, path: [name]}
 
   # 2. Collection Details
   - name: collection_details
-    description: Detailed configuration and status for a specific collection
-    guide: "Requires collection_name filter to fetch detailed settings."
+    description: >-
+      Detailed configuration and status for a specific collection,
+      including vector dimensions, distance metric, and point counts.
+    guide: >-
+      Use `SELECT * FROM qdrant.collection_details WHERE
+      collection_name = 'my_collection'` to inspect vector config,
+      indexing status, and segment/point counts.
     filters:
       - name: collection_name
         required: true
+        description: Name of the collection to inspect.
     request:
       method: GET
       path: /collections/{{filter.collection_name}}
@@ -418,10 +438,17 @@ tables:
 
   # 11. Scroll Points
   - name: points
-    description: Scroll points from a collection with pagination support
+    description: >-
+      Scroll through all points in a collection with automatic
+      cursor-based pagination. Returns IDs, vectors, and payloads.
+    guide: >-
+      Use `SELECT id, payload FROM qdrant.points WHERE
+      collection_name = 'my_collection' LIMIT 100` to browse points.
+      Pagination is handled automatically via cursor.
     filters:
       - name: collection_name
         required: true
+        description: Name of the collection to scroll.
     request:
       method: POST
       path: /collections/{{filter.collection_name}}/points/scroll
@@ -479,12 +506,20 @@ tables:
 
   # 12. Points by ID
   - name: points_by_id
-    description: Fetch points by specific list of IDs
+    description: Fetch specific points by a JSON array of IDs.
+    guide: >-
+      Use `SELECT * FROM qdrant.points_by_id WHERE collection_name
+      = 'my_collection' AND ids = '[1, 2, 3]'` to fetch specific
+      points. IDs can be integers or UUIDs in a JSON array.
     filters:
       - name: collection_name
         required: true
+        description: Name of the collection.
       - name: ids
         required: true
+        description: >-
+          JSON array of point IDs, e.g. '[1, 2, 3]' or
+          '["uuid1", "uuid2"]'.
     request:
       method: POST
       path: /collections/{{filter.collection_name}}/points
@@ -521,18 +556,32 @@ tables:
 
   # 13. Points Search Table
   - name: points_search
-    description: Query vector similarity search as a SQL table
+    description: >-
+      Vector similarity search exposed as a SQL table. Pass a query
+      vector and get back the closest matching points with scores.
+    guide: >-
+      Use `SELECT id, score, payload FROM qdrant.points_search
+      WHERE collection_name = 'my_collection' AND vector =
+      '[0.05, 0.61, 0.76]'` to find similar vectors.
     filters:
       - name: collection_name
         required: true
+        description: Name of the collection to search.
       - name: vector
         required: true
+        description: >-
+          Query vector as a JSON array, e.g. '[0.05, 0.61, 0.76]'.
       - name: limit
         required: false
+        description: Max results to return (default 10).
       - name: score_threshold
         required: false
+        description: Minimum similarity score threshold.
       - name: filter
         required: false
+        description: >-
+          Qdrant payload filter as a JSON object, e.g.
+          '{"must":[{"key":"city","match":{"value":"Berlin"}}]}'.
     request:
       method: POST
       path: /collections/{{filter.collection_name}}/points/search

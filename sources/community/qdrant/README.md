@@ -1,179 +1,133 @@
-# Qdrant
+# Qdrant (qdrant)
 
-Query collections, points, cluster information, snapshots, locks, and perform vector similarity search, recommendations, and point discovery in Qdrant.
+**Version:** 1.0.0
+**Backend:** HTTP
+**Tables:** 16
+**Functions:** 2
+**Base URL:** Configurable (`QDRANT_HOST`, default `http://localhost:6333`)
 
-## Setup
-
-### Run Qdrant Locally
-
-If you don't have a Qdrant instance running, you can start one using Docker:
-
-```bash
-docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant
-```
-
-### Add the Source
-
-Add the Qdrant community source to Coral:
+Query collections, points, cluster information, snapshots, locks, and perform
+vector similarity search, recommendations, and point discovery in
+[Qdrant](https://qdrant.tech/) — the open-source vector database.
 
 ```bash
 coral source add --file sources/community/qdrant/manifest.yaml
 ```
 
-When prompted:
-1. Provide your Qdrant host URL as `QDRANT_HOST` (defaults to `http://localhost:6333`).
-2. Provide your API Key as `QDRANT_API_KEY`. If your Qdrant instance is running locally without an API key, enter a dummy value such as `none`.
+## Configuration
+
+| Input | Kind | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `QDRANT_HOST` | variable | No | `http://localhost:6333` | Host URL of your Qdrant instance |
+| `QDRANT_API_KEY` | secret | Yes | — | API key (use `none` for local without auth) |
+
+### Run Qdrant locally
+
+```bash
+docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant
+```
 
 ## Tables
 
-### `collections`
-List names of all Qdrant collections.
-
-### `collection_details`
-Detailed configuration and status for a specific collection.
-- **Requires filter:** `collection_name`
-
-### `collection_cluster_info`
-Cluster shard details for a specific collection.
-- **Requires filter:** `collection_name`
-
-### `aliases`
-List all collection aliases globally.
-
-### `collection_aliases`
-List aliases for a specific collection.
-- **Requires filter:** `collection_name`
-
-### `snapshots`
-List all storage snapshots in Qdrant.
-
-### `collection_snapshots`
-List snapshots for a specific collection.
-- **Requires filter:** `collection_name`
-
-### `cluster_info`
-Check the cluster configuration and state.
-
-### `locks`
-Get active lock configurations for the node.
-
-### `telemetry`
-Fetch node telemetry data.
-
-### `points`
-Scroll points from a collection with pagination support.
-- **Requires filter:** `collection_name`
-
-### `points_by_id`
-Fetch points by specific list of IDs.
-- **Requires filters:** `collection_name`, `ids`
-
-### `points_search`
-Query vector similarity search as a SQL table.
-- **Requires filters:** `collection_name`, `vector`
-- **Optional filters:** `limit`, `score_threshold`, `filter`
-
-### `points_recommend`
-Query points recommendation as a SQL table based on positive and negative example IDs or vectors.
-- **Requires filters:** `collection_name`, `positive`
-- **Optional filters:** `negative`, `limit`, `strategy`, `filter`
-
-### `points_discover`
-Query points discovery as a SQL table (find point closest to target while keeping away from context).
-- **Requires filters:** `collection_name`, `target`, `context`
-- **Optional filters:** `limit`, `filter`
-
-### `points_count`
-Get the total count of points matching a payload filter.
-- **Requires filter:** `collection_name`
-- **Optional filters:** `filter`, `exact`
+| Table | Description | Key filters |
+| --- | --- | --- |
+| `qdrant.collections` | List all collection names | — |
+| `qdrant.collection_details` | Config, status, and vector dimensions | `collection_name` |
+| `qdrant.collection_cluster_info` | Cluster shard details | `collection_name` |
+| `qdrant.aliases` | List all collection aliases | — |
+| `qdrant.collection_aliases` | Aliases for a specific collection | `collection_name` |
+| `qdrant.snapshots` | List all storage snapshots | — |
+| `qdrant.collection_snapshots` | Snapshots for a specific collection | `collection_name` |
+| `qdrant.cluster_info` | Cluster configuration and state | — |
+| `qdrant.locks` | Active lock configurations | — |
+| `qdrant.telemetry` | Node telemetry data | — |
+| `qdrant.points` | Scroll points with cursor pagination | `collection_name` |
+| `qdrant.points_by_id` | Fetch specific points by ID | `collection_name`, `ids` |
+| `qdrant.points_search` | Vector similarity search | `collection_name`, `vector` |
+| `qdrant.points_recommend` | Point recommendation | `collection_name`, `positive` |
+| `qdrant.points_discover` | Point discovery | `collection_name`, `target`, `context` |
+| `qdrant.points_count` | Count points matching a filter | `collection_name` |
 
 ## Functions
 
-### `search_points`
-Vector similarity search on Qdrant points.
-- **Arguments:**
-  - `collection_name` (string, required)
-  - `vector` (array, required)
-  - `limit` (integer, optional)
-  - `score_threshold` (float, optional)
+| Function | Description | Key args |
+| --- | --- | --- |
+| `qdrant.search_points()` | Vector similarity search | `collection_name`, `vector` |
+| `qdrant.recommend_points()` | Point recommendation | `collection_name`, `positive` |
 
-### `recommend_points`
-Point recommendation based on positive and negative examples.
-- **Arguments:**
-  - `collection_name` (string, required)
-  - `positive` (array, required)
-  - `negative` (array, optional)
-  - `limit` (integer, optional)
-  - `strategy` (string, optional)
-
-## Authentication
-
-The source accesses the Qdrant REST API using header-based authentication:
-
-```text
-api-key: <QDRANT_API_KEY>
-```
-
-For local development without security enabled, supply `none` as the API key.
-
-## Limits
-
-- This source exposes read-only API endpoints.
-- Collection management (creating collections, deleting collections, updating vector configuration) and point modification (upserting, deleting points) are out of scope.
-- Timestamps and JSON fields are parsed in their native types.
-
-## Example Queries
-
-### List collections
+## Example queries
 
 ```sql
-SELECT name FROM qdrant.collections
-```
+-- List all collections
+SELECT name FROM qdrant.collections;
 
-### Inspect collection details
-
-```sql
-SELECT status, optimizer_status, points_count, config__params__vectors__distance
+-- Inspect collection configuration
+SELECT status, points_count, config__params__vectors__distance
 FROM qdrant.collection_details
-WHERE collection_name = 'test_collection'
-```
+WHERE collection_name = 'my_collection';
 
-### Vector search using points_search table
-
-```sql
-SELECT id, score, payload, payload__title
+-- Vector similarity search (table syntax)
+SELECT id, score, payload
 FROM qdrant.points_search
-WHERE collection_name = 'test_collection'
+WHERE collection_name = 'my_collection'
   AND vector = '[0.05, 0.61, 0.76, 0.15]'
-  AND limit = 5
-```
+  AND limit = 5;
 
-### Vector search using search_points function
-
-```sql
+-- Vector similarity search (function syntax)
 SELECT id, score, payload
 FROM qdrant.search_points(
-  collection_name => 'test_collection',
+  collection_name => 'my_collection',
   vector => '[0.05, 0.61, 0.76, 0.15]',
   limit => 5
-)
-```
+);
 
-### Recommend points based on positive examples
+-- Search with payload filter
+SELECT id, score, payload
+FROM qdrant.points_search
+WHERE collection_name = 'my_collection'
+  AND vector = '[0.05, 0.61, 0.76, 0.15]'
+  AND filter = '{"must":[{"key":"city","match":{"value":"Berlin"}}]}';
 
-```sql
+-- Recommend similar points
 SELECT id, score, payload
 FROM qdrant.points_recommend
-WHERE collection_name = 'test_collection'
-  AND positive = '["1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"]'
-  AND limit = 3
+WHERE collection_name = 'my_collection'
+  AND positive = '["point-uuid-1", "point-uuid-2"]'
+  AND limit = 3;
+
+-- Count points in a collection
+SELECT count FROM qdrant.points_count
+WHERE collection_name = 'my_collection';
 ```
 
-### Count points in a collection
+## Pagination
 
-```sql
-SELECT count
-FROM qdrant.points_count
-WHERE collection_name = 'test_collection'
+The `points` table uses cursor-based pagination, handled automatically
+by Coral. Default page size is 100 (max 1000). Other tables return
+fixed result sets and do not require pagination.
+
+## Notes
+
+- **Read-only.** This source only exposes read endpoints. Collection
+  management and point modification are out of scope.
+- **JSON inputs.** Vector search requires passing vectors as JSON arrays
+  (e.g. `'[0.05, 0.61, 0.76]'`) and payload filters as JSON objects.
+  The engine parses these automatically.
+- **Point IDs.** Qdrant supports both integer and UUID point IDs. The
+  `id` column uses `Json` type to handle both formats.
+- **Payload fields.** The `points` and `points_search` tables expose
+  common payload fields (`payload__name`, `payload__title`, etc.) for
+  convenience, alongside the full `payload` JSON column.
+- **Cloud compatible.** Works with both self-hosted Qdrant and
+  [Qdrant Cloud](https://cloud.qdrant.io/) — just set `QDRANT_HOST`
+  to your cloud endpoint.
+
+## Validation
+
+```bash
+coral source lint sources/community/qdrant/manifest.yaml
+coral source add --file sources/community/qdrant/manifest.yaml
+coral source test qdrant
+coral sql "SELECT * FROM coral.tables WHERE schema_name = 'qdrant'"
+coral sql "SELECT name FROM qdrant.collections LIMIT 5"
 ```
