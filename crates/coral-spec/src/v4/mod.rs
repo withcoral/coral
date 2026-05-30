@@ -1666,6 +1666,9 @@ fn projection_name_priority(projection: &Projection, operation: &IrOperation) ->
     if operation.id.contains("_list_for_repo") || operation.id.contains("_list_for_repository") {
         priority += 300;
     }
+    if operation.id.ends_with("_list") {
+        priority += 300;
+    }
     if operation.id.contains("authenticated_user") {
         priority -= 200;
     }
@@ -1871,18 +1874,16 @@ fn projection_entity_name(operation: &IrOperation, is_search: bool) -> String {
     if is_search && let Some(search_entity) = search_entity_from_operation_id(&operation.id) {
         return search_entity;
     }
-    if operation.id.starts_with("pulls_") {
-        return "pull".to_string();
-    }
-    if operation.id.starts_with("issues_") {
-        return "issue".to_string();
-    }
-    if operation.id.starts_with("repos_") {
-        return "repository".to_string();
-    }
     operation.entity.as_ref().map_or_else(
         || normalize_identifier(&operation.id, "projection"),
-        |entity| normalize_entity_identifier(&entity.name),
+        |entity| {
+            let entity_name = normalize_entity_identifier(&entity.name);
+            if operation.id.starts_with("pulls_") && entity_name == "pull_request" {
+                "pull".to_string()
+            } else {
+                entity_name
+            }
+        },
     )
 }
 
@@ -1894,7 +1895,7 @@ fn search_entity_from_operation_id(operation_id: &str) -> Option<String> {
 }
 
 fn normalize_entity_identifier(raw: &str) -> String {
-    let normalized = normalize_identifier(raw, "projection");
+    let normalized = normalize_identifier(&entity_identifier_seed(raw), "projection");
     let mut tokens = normalized.split('_').collect::<Vec<_>>();
     tokens.retain(|token| !matches!(*token, "minimal" | "simple" | "base" | "short"));
     if tokens.is_empty() {
@@ -1902,6 +1903,24 @@ fn normalize_entity_identifier(raw: &str) -> String {
     } else {
         tokens.join("_")
     }
+}
+
+fn entity_identifier_seed(raw: &str) -> String {
+    let mut seed = String::new();
+    let mut previous_was_lowercase_or_digit = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_uppercase() && previous_was_lowercase_or_digit {
+            seed.push('_');
+        }
+        if ch == '-' || ch == ' ' {
+            seed.push('_');
+            previous_was_lowercase_or_digit = false;
+        } else {
+            seed.push(ch.to_ascii_lowercase());
+            previous_was_lowercase_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        }
+    }
+    seed
 }
 
 fn is_search_operation(operation: &IrOperation) -> bool {
