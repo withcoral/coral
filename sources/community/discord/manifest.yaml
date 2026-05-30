@@ -34,6 +34,7 @@ rate_limit:
   reset_header: X-RateLimit-Reset
 test_queries:
   - SELECT * FROM discord.current_user LIMIT 1
+  - SELECT id, name FROM discord.guilds LIMIT 10
 tables:
   # ──────────────────────────────────────────────────────────────────────
   # current_user

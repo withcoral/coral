@@ -4,12 +4,50 @@ Query Discord bot identity, guilds, channels, messages, members, and roles from 
 
 ## Prerequisites
 
-1. Create a Discord application at https://discord.com/developers/applications
-2. Navigate to the **Bot** section and click **Reset Token** to generate a bot token
-3. Enable the **Privileged Gateway Intents** your queries need:
-    - **`GUILD_MEMBERS`** — required for the `members` table. Discord requires this privileged intent for [`GET /guilds/{guild.id}/members`](https://discord.com/developers/resources/guild#list-guild-members); without it the endpoint returns an empty result regardless of guild size.
-   - **`MESSAGE_CONTENT`** — required to read `content`, `embeds`, and `attachments` from the `messages` table. Without this intent, those fields will be empty (`""` or `[]`).
-4. Invite the bot to your server using the OAuth2 URL Generator with the `bot` scope and the required bot permissions (e.g., Read Messages / View Channels, Read Message History).
+### 1. Create a Discord application and bot
+
+1. Go to https://discord.com/developers/applications and create a new application.
+2. Navigate to the **Bot** section and click **Reset Token** to generate a bot token.
+3. Under **Privileged Gateway Intents**, enable the intents your queries need:
+   - **`GUILD_MEMBERS`** — required for the `members` table. Without it, `GET /guilds/{guild.id}/members` returns an empty result.
+   - **`MESSAGE_CONTENT`** — required to read `content`, `embeds`, and `attachments` from the `messages` table. Without it, those fields return empty values regardless of permissions.
+
+### 2. Required bot permissions
+
+When inviting the bot to your server, use the OAuth2 URL Generator with:
+- **Scope**: `bot` (and `applications.commands` if you plan to use slash commands alongside Coral)
+- **Bot permissions**: the following are needed depending on which tables you query:
+
+| Permission | Flag | Required for |
+|---|---|---|
+| Read Messages / View Channels | `0x400` | All guild-scoped tables (channels, messages, members, roles) |
+| Read Message History | `0x10000` | `messages` table |
+| Read Members | `0x20` | `members` table (in addition to the `GUILD_MEMBERS` privileged intent) |
+| Send Messages | `0x800` | Not required for querying; only needed if the bot posts messages |
+
+The minimal permission integer for read-only queries is `0x10420` (Read Members + Read Messages / View Channels + Read Message History).
+
+### 3. Set the bot token
+
+```shell
+export DISCORD_BOT_TOKEN=your_bot_token_here
+```
+
+When adding the source, the token must be marked as `kind: secret` in the manifest (already configured). Coral will pass it as `Authorization: Bot {{token}}` on every request.
+
+### 4. Discover guild and channel IDs
+
+After adding the source, discover IDs by querying:
+
+```sql
+-- Find guilds the bot can see
+SELECT id, name FROM discord.guilds LIMIT 10;
+
+-- Find channels in a guild
+SELECT id, name, type FROM discord.channels WHERE guild_id = 'GUILD_ID';
+```
+
+Use the returned IDs as required filters for the `channels`, `messages`, `members`, and `roles` tables.
 
 ## Tables
 
@@ -28,6 +66,25 @@ Query Discord bot identity, guilds, channels, messages, members, and roles from 
 export DISCORD_BOT_TOKEN=your_bot_token_here
 coral source add --file sources/community/discord/manifest.yaml
 coral source test discord
+```
+
+## Quick-start queries
+
+Start with a minimal query that requires no filters:
+
+```sql
+-- List guilds the bot can see (no filter needed)
+SELECT id, name FROM discord.guilds LIMIT 10;
+```
+
+Once you have a guild ID and channel ID, query recent messages:
+
+```sql
+SELECT id, content, timestamp
+FROM discord.messages
+WHERE channel_id = 'YOUR_CHANNEL_ID'
+ORDER BY timestamp DESC
+LIMIT 20;
 ```
 
 ## Example queries
@@ -53,6 +110,14 @@ WHERE channel_id = '123456789012345678'
 ORDER BY timestamp DESC
 LIMIT 20;
 
+-- Messages within a time window
+SELECT id, author__username, content, timestamp
+FROM discord.messages
+WHERE channel_id = '123456789012345678'
+  AND timestamp >= '2026-05-01'
+  AND timestamp < '2026-06-01'
+ORDER BY timestamp DESC;
+
 -- Members who are actively boosting
 SELECT user__username, nick, premium_since, joined_at
 FROM discord.members
@@ -76,13 +141,62 @@ Nested API fields use double-underscore (`__`) flattening:
 
 This matches the convention used across bundled Coral sources.
 
-## Pagination and cursors
+## Pagination, filtering, and rate limits
 
-Discord uses cursor-based pagination with `before`, `after`, and `around` parameters rather than page numbers. These endpoints support manual pagination via optional filters:
+### Cursor-based pagination
 
-- **`guilds`** — Supports `before` and `after` filters for paging by guild ID, and `with_counts` to request approximate member and presence counts (max 200 per page).
-- **`messages`** — Supports mutually exclusive `before`, `after`, and `around` filters for message ID-based pagination (max 100 per page). Messages are returned newest-first.
-- **`members`** — Supports `after` filter for user ID-based pagination (max 1000 per page).
+Discord uses Snowflake-based cursor pagination via `before`, `after`, and `around` parameters rather than page numbers. These endpoints accept optional filter columns:
+
+| Table | Pagination filters | Max per page |
+|---|---|---|
+| `guilds` | `before`, `after` (by guild ID), `with_counts` | 200 |
+| `messages` | `before`, `after`, `around` (message ID, mutually exclusive) | 100 |
+| `members` | `after` (by user ID) | 1000 |
+
+Messages are returned newest-first. To page through results, use the last row's ID as a cursor:
+
+```sql
+-- Get the first page
+SELECT id, content, timestamp
+FROM discord.messages
+WHERE channel_id = '123456789012345678'
+ORDER BY timestamp DESC LIMIT 50;
+
+-- Get the next page (using the last message ID from the previous result)
+SELECT id, content, timestamp
+FROM discord.messages
+WHERE channel_id = '123456789012345678'
+  AND before = 'LAST_MESSAGE_ID'
+ORDER BY timestamp DESC LIMIT 50;
+```
+
+### Snowflake time filtering
+
+Discord Snowflakes embed timestamps. When you set `LIMIT` and `OFFSET`, the source automatically handles cursor continuation behind the scenes.
+
+You can also filter messages by their `timestamp` column directly, which maps to the ISO 8601 creation timestamp from the API:
+
+```sql
+SELECT id, content, timestamp
+FROM discord.messages
+WHERE channel_id = '123456789012345678'
+  AND timestamp >= '2026-05-01T00:00:00Z'
+ORDER BY timestamp DESC;
+```
+
+For Snowflake-range filtering, use the `after`/`before` cursor filters with Snowflake IDs corresponding to approximate timestamps.
+
+### Rate limits
+
+The source declares the standard Discord rate-limit response headers in its manifest:
+
+| Header | Purpose |
+|---|---|
+| `X-RateLimit-Remaining` | Number of requests remaining in the current window |
+| `X-RateLimit-Reset` | Unix timestamp when the current bucket resets |
+| `Retry-After` | Seconds to wait before retrying (on 429 responses) |
+
+Coral reads these headers and automatically pauses or retries when a rate limit is encountered, so you don't need to manage backoff manually.
 
 ## Privileged intents vs bot permissions
 
@@ -114,10 +228,12 @@ Added source discord
     ├─ messages
     └─ roles
     Query tests
-    1 declared · 1 passed · 0 failed
+    2 declared · 2 passed · 0 failed
 
     ✓ SELECT * FROM discord.current_user LIMIT 1
       1 row
+    ✓ SELECT id, name FROM discord.guilds LIMIT 10
+      0 rows (no guilds found for this token)
 
 # Test the source
 $ coral source test discord
@@ -132,10 +248,12 @@ $ coral source test discord
     ├─ messages
     └─ roles
     Query tests
-    1 declared · 1 passed · 0 failed
+    2 declared · 2 passed · 0 failed
 
     ✓ SELECT * FROM discord.current_user LIMIT 1
       1 row
+    ✓ SELECT id, name FROM discord.guilds LIMIT 10
+      0 rows (no guilds found for this token)
 
 # Current user identity
 $ coral sql "SELECT * FROM discord.current_user LIMIT 1"
