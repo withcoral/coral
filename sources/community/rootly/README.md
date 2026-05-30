@@ -43,7 +43,7 @@ export ROOTLY_TOKEN="<your-api-key-or-oauth-token>"
 ### 3. Add the source
 
 ```sh
-cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.yaml
+coral source add --file sources/community/rootly/manifest.yaml
 ```
 
 ---
@@ -107,14 +107,19 @@ Pagination is consistent across all resources (users, incidents, services, alert
 
 ### Date filtering behavior
 
-For performance and operational use cases, always filter large datasets by time:
+For performance and operational use cases, always filter large datasets by time.
+These filters push down to the Rootly API — they are not applied locally.
 
-Supported timestamp fields:
+Supported pushed filters for `incidents`:
 
-* `started_at`
-* `created_at`
-* `resolved_at`
-* `mitigated_at`
+* `status`, `severity`
+* `started_at_gte` / `started_at_lte`
+* `created_at_gte` / `created_at_lte`
+
+Supported pushed filters for `alerts`:
+
+* `status`, `source`
+* `created_at_gte` / `created_at_lte`
 
 For incident-heavy workloads, use date ranges (e.g. last 7/30/90 days) to avoid large pagination scans.
 
@@ -127,18 +132,6 @@ Rootly enforces **workspace-level API rate limits**.
 * Requests may be throttled during high incident activity
 * `429 Too Many Requests` responses should be retried with exponential backoff
 * Long-running incident queries may hit limits in large organizations
-
----
-
-## Search functions
-
-All search functions require a non-empty `term`.
-
-| Function                     | Description                                   |
-| ---------------------------- | --------------------------------------------- |
-| `search_deals(term)`         | Search deals by title and fields (if enabled) |
-| `search_persons(term)`       | Search people by name and metadata            |
-| `search_organizations(term)` | Search organizations by name and attributes   |
 
 ---
 
@@ -164,6 +157,18 @@ FROM rootly.incidents
 WHERE status = 'resolved'
 ORDER BY resolved_at DESC
 LIMIT 50;
+```
+
+---
+
+### Incidents in a time window
+
+```sql
+SELECT id, title, severity_name, status, started_at
+FROM rootly.incidents
+WHERE started_at_gte = '2025-01-01T00:00:00Z'
+  AND started_at_lte = '2025-03-31T23:59:59Z'
+ORDER BY started_at DESC;
 ```
 
 ---
@@ -209,12 +214,24 @@ LIMIT 10;
 
 ---
 
+### Alerts with external correlation
+
+```sql
+SELECT id, external_id, external_url, source, status, created_at
+FROM rootly.alerts
+WHERE status = 'triggered'
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+---
+
 ## Validation
 
 ### Lint manifest
 
 ```sh
-cargo run -p coral-cli -- source lint sources/community/rootly/manifest.yaml
+coral source lint sources/community/rootly/manifest.yaml
 ```
 
 ---
@@ -223,7 +240,7 @@ cargo run -p coral-cli -- source lint sources/community/rootly/manifest.yaml
 
 ```sh
 export ROOTLY_TOKEN="<your-api-key>"
-cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.yaml
+coral source add --file sources/community/rootly/manifest.yaml
 ```
 
 ---
@@ -231,12 +248,12 @@ cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.ya
 ### Validate tables
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.services LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.teams LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, title, status, severity_name FROM rootly.incidents LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, alert_id, source FROM rootly.alerts LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, owner_user_id FROM rootly.schedules LIMIT 5"
+coral sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
+coral sql "SELECT id, name, slug FROM rootly.services LIMIT 5"
+coral sql "SELECT id, name, slug FROM rootly.teams LIMIT 5"
+coral sql "SELECT id, title, status, severity_name FROM rootly.incidents LIMIT 5"
+coral sql "SELECT id, external_id, source, status FROM rootly.alerts LIMIT 5"
+coral sql "SELECT id, name, owner_user_id FROM rootly.schedules LIMIT 5"
 ```
 
 ---
@@ -247,7 +264,8 @@ cargo run -p coral-cli -- sql "SELECT id, name, owner_user_id FROM rootly.schedu
 * **Auth:** API keys and OAuth tokens both use `Authorization: Bearer`
 * **Pagination:** consistent page-based pagination across all endpoints
 * **Rate limits:** workspace-level limits; retry on 429 with backoff
-* **Date fields:** timestamps are ISO8601 format
+* **Date fields:** timestamps are ISO 8601 format
+* **Pushed filters:** `incidents` and `alerts` support server-side filtering by status, source, and date range — use these for large workspaces
 * **Cross-source joins:** incidents expose Jira, Linear, GitHub, Shortcut IDs for correlation
 * **Operational use case:** optimized for incident lifecycle and reliability analytics
 
