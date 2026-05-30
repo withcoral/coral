@@ -1,0 +1,167 @@
+name: chromium
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query local bookmarks, history, downloads, extensions, top sites, and tabs for Chrome, Edge, and Brave.
+base_url: "http://127.0.0.1:8765"
+test_queries:
+  - SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
+
+tables:
+  # ==========================================
+  # CHROME TABLES (Defines the Anchors)
+  # ==========================================
+  - name: chrome_bookmarks
+    description: "Lists Google Chrome bookmarks and folders."
+    request: { method: GET, path: /chrome/bookmarks }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: &bookmark_cols
+      - { name: id, type: Utf8, nullable: false }
+      - { name: title, type: Utf8, nullable: true }
+      - { name: url, type: Utf8, nullable: true }
+      - { name: type, type: Utf8, nullable: false }
+      - { name: date_added, type: Utf8, nullable: true }
+
+  - name: chrome_history
+    description: "Lists Google Chrome browsing history records."
+    request: { method: GET, path: /chrome/history }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: &history_cols
+      - { name: id, type: Int64, nullable: false }
+      - { name: url, type: Utf8, nullable: false }
+      - { name: title, type: Utf8, nullable: true }
+      - { name: visit_count, type: Int64, nullable: false }
+      - { name: last_visit_time, type: Utf8, nullable: true }
+
+  - name: chrome_downloads
+    description: "Lists Google Chrome file download history records."
+    request: { method: GET, path: /chrome/downloads }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: &download_cols
+      - { name: id, type: Int64, nullable: false }
+      - { name: target_path, type: Utf8, nullable: false }
+      - { name: received_bytes, type: Int64, nullable: false }
+      - { name: total_bytes, type: Int64, nullable: false }
+      - { name: start_time, type: Utf8, nullable: true }
+
+  - name: chrome_extensions
+    description: "Lists installed Google Chrome extensions."
+    request: { method: GET, path: /chrome/extensions }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: &extension_cols
+      - { name: id, type: Utf8, nullable: false }
+      - { name: name, type: Utf8, nullable: true }
+      - { name: version, type: Utf8, nullable: true }
+
+  - name: chrome_top_sites
+    description: "Lists most frequently visited websites on Google Chrome."
+    request: { method: GET, path: /chrome/top_sites }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: &topsite_cols
+      - { name: url_rank, type: Int64, nullable: false }
+      - { name: url, type: Utf8, nullable: false }
+      - { name: title, type: Utf8, nullable: true }
+
+  - name: chrome_tabs
+    description: "Lists currently open tabs in Google Chrome active sessions."
+    request: { method: GET, path: /chrome/tabs }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: &tab_cols
+      - { name: url, type: Utf8, nullable: false }
+
+  # ==========================================
+  # EDGE TABLES (References the Anchors)
+  # ==========================================
+  - name: edge_bookmarks
+    description: "Lists Microsoft Edge bookmarks and folders."
+    request: { method: GET, path: /edge/bookmarks }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *bookmark_cols
+
+  - name: edge_history
+    description: "Lists Microsoft Edge browsing history records."
+    request: { method: GET, path: /edge/history }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *history_cols
+
+  - name: edge_downloads
+    description: "Lists Microsoft Edge file download history records."
+    request: { method: GET, path: /edge/downloads }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *download_cols
+
+  - name: edge_extensions
+    description: "Lists installed Microsoft Edge extensions."
+    request: { method: GET, path: /edge/extensions }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *extension_cols
+
+  - name: edge_top_sites
+    description: "Lists most frequently visited websites on Microsoft Edge."
+    request: { method: GET, path: /edge/top_sites }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *topsite_cols
+
+  - name: edge_tabs
+    description: "Lists currently open tabs in Microsoft Edge active sessions."
+    request: { method: GET, path: /edge/tabs }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *tab_cols
+
+  # ==========================================
+  # BRAVE TABLES (References the Anchors)
+  # ==========================================
+  - name: brave_bookmarks
+    description: "Lists Brave Browser bookmarks and folders."
+    request: { method: GET, path: /brave/bookmarks }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *bookmark_cols
+
+  - name: brave_history
+    description: "Lists Brave Browser browsing history records."
+    request: { method: GET, path: /brave/history }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *history_cols
+
+  - name: brave_downloads
+    description: "Lists Brave Browser file download history records."
+    request: { method: GET, path: /brave/downloads }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *download_cols
+
+  - name: brave_extensions
+    description: "Lists installed Brave Browser extensions."
+    request: { method: GET, path: /brave/extensions }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *extension_cols
+
+  - name: brave_top_sites
+    description: "Lists most frequently visited websites on Brave Browser."
+    request: { method: GET, path: /brave/top_sites }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *topsite_cols
+
+  - name: brave_tabs
+    description: "Lists currently open tabs in Brave Browser active sessions."
+    request: { method: GET, path: /brave/tabs }
+    response: { rows_path: [data] }
+    pagination: { mode: none }
+    columns: *tab_cols
