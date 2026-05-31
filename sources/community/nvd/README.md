@@ -37,8 +37,8 @@ Core CVE records. Each row is one CVE.
 | ------------------- | ------ | ------------------------------------------------ |
 | `cve_id`            | `Utf8` | CVE identifier (e.g. `CVE-2021-44228`)           |
 | `source_identifier` | `Utf8` | Source organization that assigned the CVE        |
-| `published`         | `Utf8` | Publication date and time (ISO 8601)             |
-| `last_modified`     | `Utf8` | Last modified date and time (ISO 8601)           |
+| `published`         | `Timestamp` | Publication date and time (ISO 8601)             |
+| `last_modified`     | `Timestamp` | Last modified date and time (ISO 8601)           |
 | `vuln_status`       | `Utf8` | Analysis status (Analyzed, Awaiting Analysis...) |
 | `description`       | `Utf8` | English-language vulnerability description       |
 
@@ -121,7 +121,7 @@ CVEs published in a 30-day window (use pub_start_date + pub_end_date together, m
 SELECT cve_id, published, vuln_status
 FROM nvd.vulnerabilities
 WHERE pub_start_date = '2024-01-01T00:00:00.000'
-AND pub_end_date = '2024-01-31T23:59:59.999'
+AND pub_end_date = '2024-01-30T23:59:59.999'
 ORDER BY published DESC
 LIMIT 20;
 ```
@@ -155,6 +155,7 @@ WHERE v.cve_id = 'CVE-2021-44228';
 - The NVD contains 350,000+ CVE records. Always scope queries with `cve_id`, a `pub_start_date`/`pub_end_date` pair, or `cvss_v3_severity`. Unscoped queries page through the full corpus.
 - Date filters (`pub_start_date`/`pub_end_date` and `last_mod_start_date`/`last_mod_end_date`) must be supplied in pairs. NVD caps any date window at 120 consecutive days.
 - Date values use ISO 8601 format: `2024-01-01T00:00:00.000`.
+- `keyword_search` does exact whole-word matching — `buffer` matches but `buf` does not. It is not a substring or fuzzy search.
 - CVSS metric columns are nullable — a row is returned for every fetched CVE, but the `metrics` column is null when NVD has not assigned that metric version.
 - Most CVEs published after 2019 use CVSS v3.1 (`cvss_v3_1_metrics`). Older CVEs may only have CVSS v3.0 (`cvss_v3_0_metrics`) or v2 (`cvss_v2_metrics`) scores.
 - The `metrics` column is a JSON array. Each element has `source`, `type`, `cvssData`, `exploitabilityScore`, and `impactScore` fields. Do not rely on array position — NVD may return multiple entries per CVE. Select the authoritative score by checking `source = 'nvd@nist.gov'` and `type = 'Primary'` on each element.
