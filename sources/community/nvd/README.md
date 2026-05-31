@@ -7,6 +7,8 @@
 
 Query CVE records, CVSS severity scores, and advisory references from the [NIST National Vulnerability Database](https://nvd.nist.gov/) — the U.S. government repository of standards-based vulnerability management data. No authentication required.
 
+API docs: [CVE API 2.0](https://nvd.nist.gov/developers/vulnerabilities) · [Rate limits and best practices](https://nvd.nist.gov/developers/start-here)
+
 > **CVSS v4.0 out of scope:** This source covers CVSS v2, v3.0, and v3.1 metrics only. CVSS v4.0 metrics are not yet included.
 
 ```bash
