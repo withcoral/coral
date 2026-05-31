@@ -1,0 +1,79 @@
+name: npm_downloads
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Download counts from the public npm downloads API (api.npmjs.org): total
+  downloads over the trailing week and the trailing month for a package, one row
+  per package, filtered by `package_name`. No authentication required. Useful
+  for popularity and short-term trend detection. Package metadata lives on a
+  different host (registry.npmjs.org) and is a separate source spec, `npm`.
+
+inputs:
+  NPM_DOWNLOADS_BASE:
+    kind: variable
+    default: https://api.npmjs.org
+    hint: Base URL for the npm download-counts API
+
+base_url: "{{input.NPM_DOWNLOADS_BASE}}"
+
+test_queries:
+  - SELECT downloads FROM npm_downloads.downloads_last_month WHERE package_name = 'lodash' LIMIT 1
+  - SELECT downloads FROM npm_downloads.downloads_last_week WHERE package_name = 'lodash' LIMIT 1
+
+tables:
+  - name: downloads_last_month
+    description: >
+      Total downloads in the trailing 30 days for a package. One row per
+      package. Filter on package_name (required).
+    filters:
+      - name: package_name
+        required: true
+    request:
+      method: GET
+      path: "/downloads/point/last-month/{{filter.package_name}}"
+    response:
+      rows_path: []
+      row_strategy: direct
+    columns:
+      - name: package_name
+        type: Utf8
+        description: Package name queried (echoes the WHERE filter)
+      - name: package
+        type: Utf8
+        description: Canonical package name returned by the API
+      - name: downloads
+        type: Int64
+        description: Total downloads in the period
+      - name: start
+        type: Utf8
+        description: First day of the counted window (YYYY-MM-DD)
+      - name: end
+        type: Utf8
+        description: Last day of the counted window (YYYY-MM-DD)
+
+  - name: downloads_last_week
+    description: >
+      Total downloads in the trailing 7 days for a package. One row per
+      package. Useful for short-term trend detection.
+    filters:
+      - name: package_name
+        required: true
+    request:
+      method: GET
+      path: "/downloads/point/last-week/{{filter.package_name}}"
+    response:
+      rows_path: []
+      row_strategy: direct
+    columns:
+      - name: package_name
+        type: Utf8
+        description: Package name queried (echoes the WHERE filter)
+      - name: package
+        type: Utf8
+      - name: downloads
+        type: Int64
+      - name: start
+        type: Utf8
+      - name: end
+        type: Utf8
