@@ -63,7 +63,6 @@ tables:
                   }
                   tags
                   createdAt
-                  totalFinancialContributors
                   stats {
                     totalAmountReceived {
                       value
@@ -81,6 +80,7 @@ tables:
                       value
                       currency
                     }
+                    contributorsCount
                   }
                 }
               }
@@ -150,10 +150,10 @@ tables:
       - name: contributors_count
         type: Int64
         nullable: true
-        description: Total number of financial contributors.
+        description: Total number of unique contributors.
         expr:
           kind: path
-          path: ["totalFinancialContributors"]
+          path: ["stats", "contributorsCount"]
       - name: website
         type: Utf8
         nullable: true
