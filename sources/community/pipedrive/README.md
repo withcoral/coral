@@ -91,17 +91,13 @@ through your company domain (`https://<company>.pipedrive.com`).
 | `products` | v2 | cursor |
 | `notes` | v1 | offset (`start` / `limit`) |
 | `leads` | v1 | offset (`start` / `limit`) |
-| `users` | v1 | none (all users returned in a single response) |
+| `users` | v1 | offset (`start` / `limit`) |
 | `search_deals` | v2 | cursor |
 | `search_persons` | v2 | cursor |
 | `search_organizations` | v2 | cursor |
 
 `notes`, `leads`, and `users` use v1 endpoints because Pipedrive has not
 published v2 equivalents for these resources.
-
-`users` is unpaginated — `GET /api/v1/users` does not document `start` or
-`limit` query parameters, and the endpoint returns all users in a single
-response.
 
 Key v2 behavioral notes:
 
@@ -285,8 +281,8 @@ coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE sc
 ## Notes
 
 - Authenticates with `x-api-token` header (personal API token only)
-- v2 tables use cursor pagination; v1 tables (`notes`, `leads`) use offset pagination (`start` / `limit`)
-- `users` is unpaginated — `GET /api/v1/users` returns all users in a single response with no documented pagination parameters
+- v2 tables use cursor pagination; v1 tables (`notes`, `leads`, `users`) use offset pagination (`start` / `limit`)
+- v1 tables (`notes`, `leads`, `users`) use offset pagination (`start` / `limit`)
 - `is_deleted = true` means soft-deleted; entities are fully deleted 30 days after last activity
 - Nested fields like `address` and `location` are flattened with double-underscore notation (e.g. `address__country`, `location__value`)
 - The `notes` table `owner_id` filter maps to the `user_id` query parameter on the v1 API
