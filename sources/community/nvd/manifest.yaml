@@ -121,7 +121,10 @@ tables:
         expr: {kind: path, path: [cve, vulnStatus]}
       - name: description
         type: Utf8
-        description: English-language description of the vulnerability. Taken from the first entry with lang = 'en' in the descriptions array; falls back to the first entry if no English entry is present.
+        description: >-
+          Description of the vulnerability from the first entry in the NVD
+          descriptions array. NVD typically places the English entry first,
+          but this expression does not filter by lang.
         nullable: true
         expr:
           kind: first_array_item_path
