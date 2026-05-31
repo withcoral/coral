@@ -6,6 +6,8 @@ description: >-
   Query Chargebee subscription billing data as SQL tables. Inspect
   subscriptions, customers, invoices, and plans. Join with Freshdesk
   tickets or Linear issues for customer health and churn intelligence.
+  This first version targets Chargebee Product Catalog v1 (plans). Sites on
+  Product Catalog v2 (items / item prices) are not yet covered.
 
 base_url: "https://{{input.CHARGEBEE_SITE}}.chargebee.com"
 
@@ -48,9 +50,20 @@ tables:
       plan, MRR, billing cycle, and term dates. Use customer_id to join
       with chargebee.customers and plan_id to join with chargebee.plans.
     guide: |
-      Use status, customer_id, and plan_id filters to push conditions to the
-      Chargebee API so fewer pages are fetched. Without filters, all
-      subscriptions in the site are returned (up to fetch_limit_default).
+      Use the status, customer_id, and updated_after filters to push
+      conditions to the Chargebee API so fewer pages are fetched. Without
+      filters, all subscriptions in the site are returned (up to
+      fetch_limit_default).
+
+      updated_after takes a Unix epoch second value and maps to Chargebee's
+      updated_at[after] operator. Use it for incremental "changed since"
+      queries: an updated_at predicate in SQL alone only filters the rows that
+      were already fetched, so pair it with updated_after to push the time
+      bound to the API.
+
+      To filter by plan, select plan_id in SQL and add a WHERE plan_id = '...'
+      clause (evaluated client-side); Chargebee's documented PCv1 subscription
+      list does not expose a plan_id list operator, so it is not pushed.
 
       status values:
         active        — currently active and billing
@@ -68,7 +81,7 @@ tables:
         required: false
       - name: customer_id
         required: false
-      - name: plan_id
+      - name: updated_after
         required: false
     request:
       method: GET
@@ -80,9 +93,9 @@ tables:
         - name: "customer_id[is]"
           from: filter
           key: customer_id
-        - name: "plan_id[is]"
+        - name: "updated_at[after]"
           from: filter
-          key: plan_id
+          key: updated_after
     response:
       rows_path:
         - list
@@ -285,6 +298,17 @@ tables:
           path:
             - subscription
             - updated_at
+      - name: updated_after
+        type: Int64
+        nullable: true
+        virtual: true
+        description: >-
+          Filter only (not returned by the API). Add WHERE updated_after =
+          <unix_seconds> to push Chargebee's updated_at[after] operator to the
+          API for incremental "changed since" queries.
+        expr:
+          kind: from_filter
+          key: updated_after
 
   - name: customers
     description: >-
@@ -292,9 +316,13 @@ tables:
       auto-collection setting, and MRR. Use id to join with
       chargebee.subscriptions and chargebee.invoices.
     guide: |
-      Use the email filter to push a condition to the Chargebee API and look
-      up a specific customer. Without filters, all customers in the site are
-      returned (up to fetch_limit_default).
+      Use the email and updated_after filters to push conditions to the
+      Chargebee API. Without filters, all customers in the site are returned
+      (up to fetch_limit_default).
+
+      updated_after takes a Unix epoch second value and maps to Chargebee's
+      updated_at[after] operator for incremental "changed since" queries; an
+      updated_at predicate in SQL alone only filters the rows already fetched.
 
       auto_collection values: on (automatic charging), off (manual collection)
       taxability values: taxable, exempt
@@ -303,6 +331,8 @@ tables:
     filters:
       - name: email
         required: false
+      - name: updated_after
+        required: false
     request:
       method: GET
       path: /api/v2/customers
@@ -310,6 +340,9 @@ tables:
         - name: "email[is]"
           from: filter
           key: email
+        - name: "updated_at[after]"
+          from: filter
+          key: updated_after
     response:
       rows_path:
         - list
@@ -431,6 +464,17 @@ tables:
           path:
             - customer
             - updated_at
+      - name: updated_after
+        type: Int64
+        nullable: true
+        virtual: true
+        description: >-
+          Filter only (not returned by the API). Add WHERE updated_after =
+          <unix_seconds> to push Chargebee's updated_at[after] operator to the
+          API for incremental "changed since" queries.
+        expr:
+          kind: from_filter
+          key: updated_after
 
   - name: invoices
     description: >-
@@ -438,9 +482,14 @@ tables:
       and payment timestamps. Use customer_id and subscription_id to join
       with other chargebee tables.
     guide: |
-      Use status and customer_id filters to push conditions to the Chargebee
-      API so fewer pages are fetched. Without filters, all invoices in the
-      site are returned (up to fetch_limit_default).
+      Use the status, customer_id, and updated_after filters to push
+      conditions to the Chargebee API so fewer pages are fetched. Without
+      filters, all invoices in the site are returned (up to
+      fetch_limit_default).
+
+      updated_after takes a Unix epoch second value and maps to Chargebee's
+      updated_at[after] operator for incremental queries; an updated_at
+      predicate in SQL alone only filters the rows already fetched.
 
       status values:
         paid         — fully paid
@@ -459,6 +508,8 @@ tables:
         required: false
       - name: customer_id
         required: false
+      - name: updated_after
+        required: false
     request:
       method: GET
       path: /api/v2/invoices
@@ -469,6 +520,9 @@ tables:
         - name: "customer_id[is]"
           from: filter
           key: customer_id
+        - name: "updated_at[after]"
+          from: filter
+          key: updated_after
     response:
       rows_path:
         - list
@@ -635,6 +689,17 @@ tables:
           path:
             - invoice
             - updated_at
+      - name: updated_after
+        type: Int64
+        nullable: true
+        virtual: true
+        description: >-
+          Filter only (not returned by the API). Add WHERE updated_after =
+          <unix_seconds> to push Chargebee's updated_at[after] operator to the
+          API for incremental "changed since" queries.
+        expr:
+          kind: from_filter
+          key: updated_after
 
   - name: plans
     description: >-
