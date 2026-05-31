@@ -552,7 +552,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 5
+      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -679,7 +679,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 5
+      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -1006,7 +1006,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 5
+      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -1210,7 +1210,7 @@ tables:
           from: filter
           key: status
         - name: "filter[refunded]"
-          from: filter
+          from: filter_bool
           key: refunded
     response:
       rows_path:
@@ -1224,7 +1224,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 5
+      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -1552,7 +1552,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 5
+      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -1719,7 +1719,7 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 5
+      fetch_limit_default: 500
     filters:
       - name: discount_id
         type: Int64

@@ -58,10 +58,10 @@ decimal amount.
 
 > **Note on fetch limits:** High-cardinality tables (`orders`, `customers`,
 > `subscriptions`, `subscription_invoices`, `license_keys`,
-> `discount_redemptions`) default to fetching 5 pages (up to 500 rows) per
-> unfiltered query to avoid exhausting the 300 req/min rate limit. Use filters
-> to scope queries to a specific store, subscription, or date range where
-> possible.
+> `discount_redemptions`) default to fetching up to 500 rows per unfiltered
+> query to avoid exhausting the 300 req/min rate limit.
+> Use filters to scope queries to a specific store, subscription, or date range
+> where possible.
 
 ## Filters
 
