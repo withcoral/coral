@@ -128,6 +128,9 @@ LIMIT 50;
 - Socket's org-scoped PURL endpoint consumes 100 quota units per request.
   Check `socket_dev.quota` before package lookups, keep package queries narrow,
   and expect provider rate-limit responses when quota is exhausted.
+- Package lookups accept optional `poll` and `timeout_sec` filters. Set
+  `poll = 'true'` to wait for Socket package analysis; `timeout_sec` maps to
+  Socket's `timeoutSec` query parameter and must be between 1 and 1200 seconds.
 - Socket's older npm score and npm issues endpoints are deprecated. This source
   uses the org-scoped PURL endpoint instead so it supports multiple package
   ecosystems.

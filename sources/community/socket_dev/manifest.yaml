@@ -130,7 +130,8 @@ tables:
         expr:
           kind: path
           path:
-            - _key
+            - _value
+            - slug
       - name: name
         type: Utf8
         nullable: true
@@ -333,6 +334,8 @@ tables:
       to include alert metadata in the raw payload and alert-priority fields.
       Socket's org-scoped PURL endpoint consumes 100 quota units per request,
       so check `socket_dev.quota` first and keep package lookups narrow.
+      Optional `poll = 'true'` waits for package analysis. If you set
+      `timeout_sec`, Socket accepts values from 1 through 1200 seconds.
     filters:
       - name: org_slug
         required: true
@@ -615,6 +618,8 @@ tables:
       org-scoped PURL endpoint consumes 100 quota units per request, so check
       `socket_dev.quota` first and expect provider rate-limit responses when
       quota is exhausted.
+      Optional `poll = 'true'` waits for package analysis. If you set
+      `timeout_sec`, Socket accepts values from 1 through 1200 seconds.
     filters:
       - name: org_slug
         required: true
