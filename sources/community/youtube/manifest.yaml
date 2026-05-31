@@ -1007,7 +1007,10 @@ tables:
       - name: id
         type: Utf8
         nullable: false
-        description: Comment thread ID (commentThreads.id). To fetch replies via youtube.comments, pass top_comment__id (snippet.topLevelComment.id) — NOT this column.
+        description: >-
+          Comment thread ID (commentThreads.id). To fetch replies via
+          youtube.comments, pass top_comment__id (snippet.topLevelComment.id)
+          — NOT this column.
         expr:
           kind: path
           path:
