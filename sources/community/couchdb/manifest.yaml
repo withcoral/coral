@@ -1,0 +1,516 @@
+name: couchdb
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Inspect a CouchDB instance's server info, per-database document counts and
+  sizes, running background tasks, and replication scheduler jobs through the
+  HTTP-native REST API.
+inputs:
+  COUCHDB_URL:
+    kind: variable
+    default: http://localhost:5984
+    hint: |
+      Base URL of your CouchDB HTTP endpoint, including scheme and port, e.g.
+      `http://localhost:5984` or `https://couchdb.example.com`. Do not include
+      a trailing slash.
+  COUCHDB_USERNAME:
+    kind: variable
+    hint: |
+      CouchDB username. Server-level metadata endpoints (`/_dbs_info`,
+      `/_active_tasks`, `/_scheduler/jobs`, `/_scheduler/docs`) require a
+      server admin or a user with the relevant role. See
+      https://docs.couchdb.org/en/stable/api/server/authn.html
+  COUCHDB_PASSWORD:
+    kind: secret
+    hint: Password for the CouchDB user.
+base_url: "{{input.COUCHDB_URL}}"
+auth:
+  type: BasicAuth
+  username: "{{input.COUCHDB_USERNAME}}"
+  password: "{{input.COUCHDB_PASSWORD}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM couchdb.server LIMIT 1
+  - SELECT * FROM couchdb.databases LIMIT 1
+  - SELECT * FROM couchdb.active_tasks LIMIT 1
+  - SELECT * FROM couchdb.scheduler LIMIT 1
+  - SELECT * FROM couchdb.scheduler_docs LIMIT 1
+
+tables:
+  - name: server
+    description: Server welcome banner, version, and vendor information from the root endpoint.
+    guide: >
+      Returns a single row from `GET /`. Good first query to confirm
+      connectivity and check the CouchDB version. `features` lists enabled
+      server capabilities (e.g. scheduler, partitioned) as a JSON array.
+    request:
+      method: GET
+      path: /
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: couchdb
+        type: Utf8
+        nullable: true
+        description: Welcome message (always "Welcome" on a healthy node)
+        expr: {kind: path, path: [couchdb]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: CouchDB server version
+        expr: {kind: path, path: [version]}
+      - name: git_sha
+        type: Utf8
+        nullable: true
+        description: Git commit the server was built from
+        expr: {kind: path, path: [git_sha]}
+      - name: uuid
+        type: Utf8
+        nullable: true
+        description: Server instance UUID
+        expr: {kind: path, path: [uuid]}
+      - name: vendor_name
+        type: Utf8
+        nullable: true
+        description: Distribution vendor name
+        expr: {kind: path, path: [vendor, name]}
+      - name: features
+        type: Json
+        nullable: true
+        description: Enabled server features as a JSON array of strings
+        expr: {kind: path, path: [features]}
+
+  - name: databases
+    description: Per-database document counts and storage sizes.
+    guide: |
+      Returns one row per database from `GET /_dbs_info`, which reports the same
+      metadata as `GET /{db}` for every database. Requires CouchDB 3.2 or newer
+      (the bodyless `GET /_dbs_info`) and server-admin access. The endpoint is
+      paginated with `skip`/`limit`, which Coral drives automatically so large
+      instances are not fetched in one expensive request. `disk_size` is the
+      on-disk file size; `active_size` is the live data size; the difference
+      indicates reclaimable space from compaction. `update_seq` and `purge_seq`
+      are opaque sequence strings on clustered CouchDB and are exposed as text.
+    request:
+      method: GET
+      path: /_dbs_info
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Database name
+        expr:
+          kind: coalesce
+          exprs:
+            - {kind: path, path: [key]}
+            - {kind: path, path: [info, db_name]}
+      - name: doc_count
+        type: Int64
+        nullable: true
+        description: Number of live (non-deleted) documents
+        expr: {kind: path, path: [info, doc_count]}
+      - name: doc_del_count
+        type: Int64
+        nullable: true
+        description: Number of deleted documents (tombstones)
+        expr: {kind: path, path: [info, doc_del_count]}
+      - name: disk_size
+        type: Int64
+        nullable: true
+        description: On-disk size of the database file, in bytes
+        expr: {kind: path, path: [info, sizes, file]}
+      - name: external_size
+        type: Int64
+        nullable: true
+        description: Uncompressed size of the JSON data, in bytes
+        expr: {kind: path, path: [info, sizes, external]}
+      - name: active_size
+        type: Int64
+        nullable: true
+        description: Size of live data and indexes, in bytes
+        expr: {kind: path, path: [info, sizes, active]}
+      - name: update_seq
+        type: Utf8
+        nullable: true
+        description: Current update sequence for the database
+        expr: {kind: path, path: [info, update_seq]}
+      - name: purge_seq
+        type: Utf8
+        nullable: true
+        description: Current purge sequence for the database
+        expr: {kind: path, path: [info, purge_seq]}
+      - name: compact_running
+        type: Boolean
+        nullable: true
+        description: Whether a compaction is currently running on the database
+        expr: {kind: path, path: [info, compact_running]}
+      - name: disk_format_version
+        type: Int64
+        nullable: true
+        description: On-disk format version of the database file
+        expr: {kind: path, path: [info, disk_format_version]}
+      - name: cluster_q
+        type: Int64
+        nullable: true
+        description: Number of shards (q) for the database
+        expr: {kind: path, path: [info, cluster, q]}
+      - name: cluster_n
+        type: Int64
+        nullable: true
+        description: Number of replicas (n) of each shard
+        expr: {kind: path, path: [info, cluster, n]}
+      - name: cluster_w
+        type: Int64
+        nullable: true
+        description: Write quorum (w) for the database
+        expr: {kind: path, path: [info, cluster, w]}
+      - name: cluster_r
+        type: Int64
+        nullable: true
+        description: Read quorum (r) for the database
+        expr: {kind: path, path: [info, cluster, r]}
+      - name: instance_start_time
+        type: Utf8
+        nullable: true
+        description: Database instance start time (always "0" on CouchDB 2.x+)
+        expr: {kind: path, path: [info, instance_start_time]}
+
+  - name: active_tasks
+    description: Running background tasks such as indexing, replication, and compaction.
+    guide: |
+      Returns one row per running task from `GET /_active_tasks`. Requires
+      server-admin access. Returns an empty result when the node is idle.
+      `type` identifies the task kind (e.g. `indexer`, `replication`,
+      `database_compaction`, `view_compaction`). `progress` is a 0-100 percent
+      value, and `process_status` (e.g. `running`, `waiting`) is the live
+      status signal on CouchDB 2.x/3.x — the documented `task` and `status`
+      fields are null there. Many columns are populated only for specific task
+      types: `source`, `target`, `docs_read`, and `docs_written` for
+      replication; `design_document` for indexing.
+    request:
+      method: GET
+      path: /_active_tasks
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Task type: indexer, replication, database_compaction, etc."
+        expr: {kind: path, path: [type]}
+      - name: task
+        type: Utf8
+        nullable: true
+        description: >-
+          Human-readable task label from CouchDB's documented active-task
+          schema. Populated on older CouchDB releases; null on CouchDB 3.x,
+          which reports liveness through process_status plus the type-specific
+          fields below.
+        expr: {kind: path, path: [task]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Human-readable status line from CouchDB's documented active-task
+          schema. Like task, this is null on CouchDB 3.x — use process_status
+          there.
+        expr: {kind: path, path: [status]}
+      - name: process_status
+        type: Utf8
+        nullable: true
+        description: >-
+          Live Erlang process status of the task on CouchDB 2.x/3.x (e.g.
+          running, waiting) — the current "what is it doing" signal.
+        expr: {kind: path, path: [process_status]}
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Database the task is operating on
+        expr: {kind: path, path: [database]}
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Cluster node running the task
+        expr: {kind: path, path: [node]}
+      - name: pid
+        type: Utf8
+        nullable: true
+        description: Erlang process ID handling the task
+        expr: {kind: path, path: [pid]}
+      - name: progress
+        type: Int64
+        nullable: true
+        description: Task completion percentage (0-100)
+        expr: {kind: path, path: [progress]}
+      - name: changes_done
+        type: Int64
+        nullable: true
+        description: Number of changes processed so far
+        expr: {kind: path, path: [changes_done]}
+      - name: total_changes
+        type: Int64
+        nullable: true
+        description: Total number of changes to process
+        expr: {kind: path, path: [total_changes]}
+      - name: design_document
+        type: Utf8
+        nullable: true
+        description: Design document being indexed (indexer tasks)
+        expr: {kind: path, path: [design_document]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Replication source (replication tasks)
+        expr: {kind: path, path: [source]}
+      - name: target
+        type: Utf8
+        nullable: true
+        description: Replication target (replication tasks)
+        expr: {kind: path, path: [target]}
+      - name: docs_read
+        type: Int64
+        nullable: true
+        description: Documents read so far (replication tasks)
+        expr: {kind: path, path: [docs_read]}
+      - name: docs_written
+        type: Int64
+        nullable: true
+        description: Documents written so far (replication tasks)
+        expr: {kind: path, path: [docs_written]}
+      - name: started_on
+        type: Timestamp
+        nullable: true
+        description: When the task started
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [started_on]}
+      - name: updated_on
+        type: Timestamp
+        nullable: true
+        description: When the task status was last updated
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [updated_on]}
+
+  - name: scheduler
+    description: Currently active replication scheduler jobs.
+    guide: |
+      Returns one row per replication job the scheduler currently holds in
+      memory (running or recently active) from `GET /_scheduler/jobs`. Requires
+      server-admin access. This is NOT a complete view of replication health:
+      finished, failed, or not-yet-started replications are not listed here —
+      query the `scheduler_docs` table for full replication-document state.
+      Each job's `history` is ordered most-recent-first, so `latest_event` and
+      `latest_event_at` reflect the job's latest scheduler event (e.g.
+      `started`, `crashed`, `added`). `info` carries live replication progress
+      (docs read/written, pending changes). The endpoint is paginated with
+      `skip`/`limit`, which Coral drives automatically.
+    request:
+      method: GET
+      path: /_scheduler/jobs
+    response:
+      rows_path:
+        - jobs
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Internal replication job ID
+        expr: {kind: path, path: [id]}
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Replicator database holding the replication document
+        expr: {kind: path, path: [database]}
+      - name: doc_id
+        type: Utf8
+        nullable: true
+        description: ID of the replication document
+        expr: {kind: path, path: [doc_id]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Replication source endpoint
+        expr: {kind: path, path: [source]}
+      - name: target
+        type: Utf8
+        nullable: true
+        description: Replication target endpoint
+        expr: {kind: path, path: [target]}
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Cluster node running the job
+        expr: {kind: path, path: [node]}
+      - name: pid
+        type: Utf8
+        nullable: true
+        description: Erlang process ID running the job
+        expr: {kind: path, path: [pid]}
+      - name: user
+        type: Utf8
+        nullable: true
+        description: User that owns the replication, if any
+        expr: {kind: path, path: [user]}
+      - name: latest_event
+        type: Utf8
+        nullable: true
+        description: Most recent history event type, reflecting current state
+        expr: {kind: path, path: [history, "0", type]}
+      - name: latest_event_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the most recent history event
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [history, "0", timestamp]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: When the job started
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [start_time]}
+      - name: info
+        type: Json
+        nullable: true
+        description: Live replication progress (docs read/written, pending changes)
+        expr: {kind: path, path: [info]}
+      - name: history
+        type: Json
+        nullable: true
+        description: Job event history, most recent first
+        expr: {kind: path, path: [history]}
+
+  - name: scheduler_docs
+    description: Replication documents and their current scheduler state.
+    guide: |
+      Returns one row per replication document across all replicator databases
+      from `GET /_scheduler/docs`. Requires server-admin access. Unlike the
+      `scheduler` table (which only lists jobs the scheduler currently holds in
+      memory), this is the authoritative view of replication health: `state`
+      covers the full lifecycle — `initializing`, `running`, `pending`,
+      `crashing`, `error`, `failed`, and `completed`. Use `error_count` and the
+      `info` column to triage failing replications: `info` carries live progress
+      for running replications (e.g. `docs_read`, `docs_written`) or the error
+      reason for failed ones (e.g. `json_get_str(info, 'error')`). The endpoint
+      is paginated with `skip`/`limit`, which Coral drives automatically. On a
+      cluster that has never run a replication the `_replicator` database may
+      not exist yet, so CouchDB returns HTTP 404 for this endpoint; Coral treats
+      that as an empty result rather than an error.
+    request:
+      method: GET
+      path: /_scheduler/docs
+    response:
+      rows_path:
+        - docs
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: offset
+      offset_param: skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: doc_id
+        type: Utf8
+        nullable: true
+        description: ID of the replication document
+        expr: {kind: path, path: [doc_id]}
+      - name: database
+        type: Utf8
+        nullable: true
+        description: Replicator database holding the replication document
+        expr: {kind: path, path: [database]}
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Internal replication job ID (null until the job is scheduled)
+        expr: {kind: path, path: [id]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Replication state: initializing, running, pending, crashing, error,
+          failed, or completed
+        expr: {kind: path, path: [state]}
+      - name: error_count
+        type: Int64
+        nullable: true
+        description: Consecutive error count for this replication
+        expr: {kind: path, path: [error_count]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Replication source endpoint
+        expr: {kind: path, path: [source]}
+      - name: target
+        type: Utf8
+        nullable: true
+        description: Replication target endpoint
+        expr: {kind: path, path: [target]}
+      - name: node
+        type: Utf8
+        nullable: true
+        description: Cluster node running the replication, if scheduled
+        expr: {kind: path, path: [node]}
+      - name: last_updated
+        type: Timestamp
+        nullable: true
+        description: When the replication state was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_updated]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: When the replication started
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [start_time]}
+      - name: info
+        type: Json
+        nullable: true
+        description: >-
+          Live replication progress for running jobs, or the error reason for
+          failed ones
+        expr: {kind: path, path: [info]}
