@@ -90,9 +90,9 @@ tables:
   - name: organizations
     description: Socket organizations associated with the configured API token.
     guide: |
-      Use this table to inspect Socket organizations visible to the configured
-      token. Package lookup tables in this source use Socket's PURL endpoint
-      directly and do not require an organization slug.
+      Use this table to discover the `slug` value required by org-scoped
+      package lookup tables such as `socket_dev.package_artifacts` and
+      `socket_dev.package_alerts`.
     request:
       method: GET
       path: /organizations
@@ -172,7 +172,8 @@ tables:
     guide: |
       Requires `limit` and `offset`. Use this table to page through
       dependencies Socket has observed for the organization. Include `purl` to
-      narrow results to one Package URL.
+      narrow results to one Package URL. Socket accepts `limit` values from
+      1 through 100, and `offset` must be 0 or greater.
     filters:
       - name: limit
         required: true
@@ -295,7 +296,7 @@ tables:
         type: Int64
         nullable: false
         virtual: true
-        description: Requested page size.
+        description: Requested page size. Socket accepts values from 1 through 100.
         expr:
           kind: from_filter
           key: limit
@@ -303,7 +304,7 @@ tables:
         type: Int64
         nullable: false
         virtual: true
-        description: Requested page offset.
+        description: Requested page offset. Must be 0 or greater.
         expr:
           kind: from_filter
           key: offset
@@ -325,11 +326,16 @@ tables:
   - name: package_artifacts
     description: Socket package metadata, scores, links, and alert summaries by PURL.
     guide: |
-      Requires one package URL in `purl`, for example `pkg:npm/express@4.19.2`,
-      `pkg:pypi/django@5.0.6`, or `pkg:maven/log4j/log4j@1.2.17`. Set
-      `alerts = 'true'` to include alert metadata in the raw payload and
-      alert-priority fields.
+      Requires `org_slug` and one package URL in `purl`, for example
+      `pkg:npm/express@4.19.2`, `pkg:pypi/django@5.0.6`, or
+      `pkg:maven/log4j/log4j@1.2.17`. Use `socket_dev.organizations` to
+      discover organization slugs visible to the token. Set `alerts = 'true'`
+      to include alert metadata in the raw payload and alert-priority fields.
+      Socket's org-scoped PURL endpoint consumes 100 quota units per request,
+      so check `socket_dev.quota` first and keep package lookups narrow.
     filters:
+      - name: org_slug
+        required: true
       - name: purl
         required: true
       - name: alerts
@@ -342,7 +348,7 @@ tables:
         required: false
     request:
       method: POST
-      path: /purl
+      path: /orgs/{{filter.org_slug}}/purl
       headers:
         - name: Accept
           from: literal
@@ -577,6 +583,14 @@ tables:
           kind: path
           path:
             - alerts
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Socket organization slug used for this request.
+        expr:
+          kind: from_filter
+          key: org_slug
       - name: purl
         type: Utf8
         nullable: false
@@ -595,10 +609,15 @@ tables:
   - name: package_alerts
     description: Socket alerts for one package artifact by PURL.
     guide: |
-      Requires `purl`. This table calls the same PURL endpoint as
-      `package_artifacts` with `alerts=true`, then expands the returned
-      artifact's alert array into one row per alert.
+      Requires `org_slug` and `purl`. This table calls the same org-scoped
+      PURL endpoint as `package_artifacts` with `alerts=true`, then expands
+      the returned artifact's alert array into one row per alert. Socket's
+      org-scoped PURL endpoint consumes 100 quota units per request, so check
+      `socket_dev.quota` first and expect provider rate-limit responses when
+      quota is exhausted.
     filters:
+      - name: org_slug
+        required: true
       - name: purl
         required: true
       - name: poll
@@ -607,7 +626,7 @@ tables:
         required: false
     request:
       method: POST
-      path: /purl
+      path: /orgs/{{filter.org_slug}}/purl
       headers:
         - name: Accept
           from: literal
@@ -748,6 +767,14 @@ tables:
           kind: path
           path:
             - actionSource
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Socket organization slug used for this request.
+        expr:
+          kind: from_filter
+          key: org_slug
       - name: purl
         type: Utf8
         nullable: false

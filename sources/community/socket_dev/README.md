@@ -27,6 +27,8 @@ environment.
 - [Socket API authentication](https://docs.socket.dev/reference/authentication)
 - [Socket OpenAPI document](https://api.socket.dev/v0/openapi)
 - [Get Packages by PURL](https://docs.socket.dev/reference/batchpackagefetch)
+- [Get Packages by PURL, org scoped](https://docs.socket.dev/reference/batchpackagefetchbyorg)
+- [Get quota](https://docs.socket.dev/reference/getquota)
 - [Search dependencies](https://docs.socket.dev/reference/searchdependencies)
 - [Package scores](https://docs.socket.dev/docs/package-scores)
 - [Alert categories](https://docs.socket.dev/docs/package-issues)
@@ -39,11 +41,11 @@ environment.
 | `quota` | none | Current Socket API quota for the configured token |
 | `organizations` | none | Socket organizations visible to the configured token |
 | `dependency_search` | `limit`, `offset` | Dependencies observed in the authenticated organization |
-| `package_artifacts` | `purl` | Package metadata, scores, alert summaries, and raw artifact data |
-| `package_alerts` | `purl` | One row per Socket alert for a package artifact |
+| `package_artifacts` | `org_slug`, `purl` | Package metadata, scores, alert summaries, and raw artifact data |
+| `package_alerts` | `org_slug`, `purl` | One row per Socket alert for a package artifact |
 
 Use `socket_dev.organizations` first to discover the `org_slug` required by
-org-scoped Socket workflows outside this v1 source.
+the package lookup tables.
 
 ## Example queries
 
@@ -76,7 +78,8 @@ SELECT
   score_maintenance,
   score_license
 FROM socket_dev.package_artifacts
-WHERE purl = 'pkg:npm/express@4.19.2'
+WHERE org_slug = 'your-org-slug'
+  AND purl = 'pkg:npm/express@4.19.2'
 LIMIT 1;
 ```
 
@@ -85,7 +88,8 @@ Fetch alerts for one package:
 ```sql
 SELECT type, severity, category, action, props
 FROM socket_dev.package_alerts
-WHERE purl = 'pkg:npm/express@4.19.2'
+WHERE org_slug = 'your-org-slug'
+  AND purl = 'pkg:npm/express@4.19.2'
 LIMIT 20;
 ```
 
@@ -94,7 +98,8 @@ Query a scoped npm package with PURL syntax:
 ```sql
 SELECT name, version, score_overall, score_supply_chain
 FROM socket_dev.package_artifacts
-WHERE purl = 'pkg:npm/%40babel/core@7.24.0'
+WHERE org_slug = 'your-org-slug'
+  AND purl = 'pkg:npm/%40babel/core@7.24.0'
 LIMIT 1;
 ```
 
@@ -108,6 +113,8 @@ WHERE limit = 50
 LIMIT 50;
 ```
 
+`limit` must be between 1 and 100. `offset` must be 0 or greater.
+
 ## Notes
 
 - Socket package lookups use Package URLs (PURLs), such as
@@ -115,11 +122,15 @@ LIMIT 50;
   `pkg:maven/log4j/log4j@1.2.17`.
 - Scoped npm packages should use encoded scope syntax in the PURL path, such
   as `pkg:npm/%40babel/core@7.24.0`.
-- `package_artifacts` and `package_alerts` call Socket's PURL endpoint, which
-  returns newline-delimited JSON. The manifest decodes that response with
-  Coral's `json_each_row` response format.
+- `package_artifacts` and `package_alerts` call Socket's org-scoped PURL
+  endpoint, which returns newline-delimited JSON. The manifest decodes that
+  response with Coral's `json_each_row` response format.
+- Socket's org-scoped PURL endpoint consumes 100 quota units per request.
+  Check `socket_dev.quota` before package lookups, keep package queries narrow,
+  and expect provider rate-limit responses when quota is exhausted.
 - Socket's older npm score and npm issues endpoints are deprecated. This source
-  uses the PURL endpoint instead so it supports multiple package ecosystems.
+  uses the org-scoped PURL endpoint instead so it supports multiple package
+  ecosystems.
 - `alerts`, `alert_priorities`, `authors`, `dependencies`, `manifest_files`,
   `props`, `fix`, `reachability`, and `action_source` are JSON columns because
   the upstream payloads are nested or alert-type-specific.
