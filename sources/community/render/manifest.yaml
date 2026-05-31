@@ -423,6 +423,18 @@ tables:
         nullable: true
         description: Raw event-specific details object. Query with json_get_str().
         expr: { kind: path, path: [event, details] }
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: Start of the time window (RFC3339), echoed from the filter when provided.
+        virtual: true
+        expr: { kind: from_filter, key: start_time }
+      - name: end_time
+        type: Utf8
+        nullable: true
+        description: End of the time window (RFC3339), echoed from the filter when provided.
+        virtual: true
+        expr: { kind: from_filter, key: end_time }
       - name: cursor
         type: Utf8
         nullable: true
