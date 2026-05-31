@@ -258,14 +258,15 @@ coral sql "SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMI
 coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '<message-id>' LIMIT 1"
 ```
 
-Expected output shape — replace with your sanitized run (tokens and addresses redacted):
+Sanitized output from a successful local run (OAuth desktop app; addresses redacted):
 
 ```text
 $ coral source test gmail
 
   ✓ gmail connected successfully
+  Secrets: keychain
 
-    gmail (6 tables, 1 search function)
+    gmail (6 tables)
     ├─ drafts
     ├─ labels
     ├─ message_details
@@ -281,31 +282,25 @@ $ coral source test gmail
       5 rows
     ✓ SELECT id, name, type FROM gmail.labels LIMIT 5
       5 rows
-    ✓ SELECT function_name FROM coral.table_functions WHERE schema_name = 'gmail' ...
+    ✓ SELECT function_name FROM coral.table_functions WHERE schema_name = 'gmail' ORDER BY function_name LIMIT 1
       1 row
     ✓ SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3
       3 rows
 
-$ coral sql "SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3"
-+----------+------------+
-| id       | thread_id  |
-+----------+------------+
-| 18f3…a01 | 18f3…a01   |
-| 18f2…b92 | 18f2…b92   |
-| 18f1…c44 | 18f1…c44   |
-+----------+------------+
+$ coral sql "SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 1"
++------------------+------------------+
+| id               | thread_id        |
++------------------+------------------+
+| 19e7ce58923bbae8 | 19e7ce58923bbae8 |
++------------------+------------------+
 
-$ coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '18f3…a01' LIMIT 1"
-+-------------+---------------------------+------------------+---------------------+
-| message_id  | from_header               | subject          | internal_date       |
-+-------------+---------------------------+------------------+---------------------+
-| 18f3…a01    | Example <user@example.com>| Invoice attached | 2026-05-30T12:00:00 |
-+-------------+---------------------------+------------------+---------------------+
+$ coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '19e7ce58923bbae8' LIMIT 1"
++------------------+-------------------------------+--------------------------------------+----------------------------+
+| message_id       | from_header                   | subject                              | internal_date              |
++------------------+-------------------------------+--------------------------------------+----------------------------+
+| 19e7ce58923bbae8 | Example Sender <user@example.com> | Submit Your Projects NOW - Last Day! | 2026-05-31T07:17:56Z       |
++------------------+-------------------------------+--------------------------------------+----------------------------+
 ```
-
-Replace truncated ids and sample rows with your own `coral source test` / `coral sql`
-output before merge, or paste equivalent sanitized output in the pull request
-description for reviewers.
 
 ## Provider docs
 
