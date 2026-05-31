@@ -1,428 +1,147 @@
 # Chromium Local Source
 
-Query your local Chromium-based browser data (**Google Chrome**, **Microsoft Edge**, and **Brave**) using SQL through Coral.
+Query local Chromium-based browser data (Google Chrome, Microsoft Edge, and Brave) using SQL through Coral.
 
-Because browsers do not expose personal data through public REST APIs, this source uses a lightweight, zero-dependency local Python server. The server automatically locates active browser profiles, safely reads SQLite databases and JSON files, and serves the data to Coral through localhost.
+Because browsers do not expose personal data through public REST APIs, this source uses a lightweight local Python server. The local server never uploads your data to any remote server. However, query results are returned to the Coral client and any connected agent or MCP layer, and may appear in those tools' logs or conversation history.
 
-> All processing happens entirely on your machine. No data ever leaves your computer.
+The local server (`browser_server.py`) is not managed by Coral. You must start it manually before querying and stop it when done. If the server is not running, all queries will fail with a connection error.
 
----
+## Quick Start
 
-# Features
-
-| Feature | Description |
-|----------|-------------|
-| Multi-Browser Support | Query Chrome, Edge, and Brave seamlessly. |
-| Deep Profile Scanning | Automatically detects the most recently used profile (Default, Profile 1, Profile 2, etc.). |
-| Zero Dependencies | Uses only Python standard libraries. No additional packages required. |
-| Graceful Fallbacks | If a browser is not installed, queries return an empty table instead of failing. |
-
----
-
-# Extracted Data
-
-This source extracts the following data across all supported browsers.
-
-| Data Type | Description |
-|------------|-------------|
-| Bookmarks | Saved bookmarks, URLs, and folder structures |
-| History | Browsing history, titles, visit counts, and timestamps |
-| Downloads | Download history, file paths, and file sizes |
-| Extensions | Installed browser extensions and versions |
-| Top Sites | Browser-ranked frequently visited websites |
-| Tabs | Currently open tabs from active browser sessions |
-
----
-
-# Setup
-
-## 1. Start the Local Browser Server
-
-Run the included Python script and keep it running in the background while using Coral.
+1. Start the local server and keep this terminal open. If you have not set `CHROME_API_KEY` in the environment, the server will generate one and print it so you can copy it into your Coral shell.
 
 ```bash
 python sources/community/chromium/browser_server.py
 ```
 
-The server runs locally at:
+The server listens on `http://127.0.0.1:8765` (fixed). When started without an existing `CHROME_API_KEY`, the server prints an API token and instructions showing how to set `CHROME_API_KEY` in your Coral shell (PowerShell or bash).
 
-```text
-http://127.0.0.1:8765
+2. In your Coral shell, set `CHROME_API_KEY` to the value printed by the server (example):
+
+PowerShell (temporary for current session):
+
+```powershell
+$env:CHROME_API_KEY = "<PASTE_TOKEN_HERE>"
 ```
 
----
+bash/zsh:
 
-## 2. Add the Source to Coral
+```bash
+export CHROME_API_KEY=<PASTE_TOKEN_HERE>
+```
 
-Register the source using the Coral CLI.
+3. Add the source:
 
 ```bash
 coral source add --file sources/community/chromium/manifest.yaml
 ```
 
-No API keys or interactive prompts are required.
+4. Test the source:
 
----
+   ```bash
+   coral source test chromium
+   ```
 
-# Available Tables
+   Expected: the test query succeeds against `chromium.chrome_bookmarks`. If Chrome is not installed or no profile can be resolved, the server returns HTTP 503 with an actionable profile message.
 
-Replace `[browser]` with:
+5. Run a representative query:
 
-- `chrome`
-- `edge`
-- `brave`
+   ```bash
+   coral sql "SELECT title, url FROM chromium.chrome_history ORDER BY last_visit_time DESC LIMIT 10"
+   ```
+
+6. Stop the server with `Ctrl-C` in the server terminal.
+
+## Configuration
+
+| Environment variable | Purpose |
+| --- | --- |
+| `CHROME_API_KEY` | Required bearer token used by Coral and the local server. |
+| `CHROME_SERVER_PORT` | Optional server port. Defaults to `8767`. |
+| `CHROME_PROFILE_PATH` | Optional full path to the Chrome profile directory to query. |
+| `EDGE_PROFILE_PATH` | Optional full path to the Edge profile directory to query. |
+| `BRAVE_PROFILE_PATH` | Optional full path to the Brave profile directory to query. |
+
+Profile paths should point at the profile directory itself, such as `C:\Users\you\AppData\Local\Google\Chrome\User Data\Default` or `/Users/you/Library/Application Support/Google/Chrome/Default`.
+
+By default, the server reads each browser's `Local State` file and uses `profile.last_used`. If that cannot identify a single profile, set the browser-specific profile path above. The server does not guess based on filesystem modification time.
+
+## Available Tables
+
+Replace `[browser]` with `chrome`, `edge`, or `brave`.
 
 | Table | Description |
-|---------|-------------|
-| `chromium.[browser]_bookmarks` | Saved bookmarks, folders, and timestamps |
-| `chromium.[browser]_history` | Browsing history with visit counts |
-| `chromium.[browser]_downloads` | Download history and local file paths |
-| `chromium.[browser]_extensions` | Installed extensions and versions |
-| `chromium.[browser]_top_sites` | Most frequently visited websites |
-| `chromium.[browser]_tabs` | Currently open browser tabs |
+| --- | --- |
+| `chromium.[browser]_bookmarks` | Bookmarks and folders. |
+| `chromium.[browser]_history` | Most recent 5,000 history records. |
+| `chromium.[browser]_downloads` | Most recent 2,000 download records. |
+| `chromium.[browser]_extensions` | Installed extensions and versions. |
+| `chromium.[browser]_top_sites` | Top 100 browser-ranked frequently visited sites. |
+| `chromium.[browser]_tabs` | URLs from persisted browser session files. |
 
----
-
-# Supported Browser Prefixes
-
-| Browser | Prefix |
-|----------|---------|
-| Google Chrome | `chrome_` |
-| Microsoft Edge | `edge_` |
-| Brave Browser | `brave_` |
-
----
-
-# Core Commands
-
-## Lint the Source Manifest
-
-Validates `manifest.yaml` for syntax and schema errors before installation.
-
-```bash
-./coral.exe source lint ./sources/community/chromium/manifest.yaml
-```
-
-## Add the Source to Coral
-
-Registers the source and all its tables in your local Coral environment.
-
-```bash
-./coral.exe source add --file ./sources/community/chromium/manifest.yaml
-```
-
-## Remove the Source
-
-Removes the source from Coral if you need to cleanly reset or delete it.
-
-```bash
-./coral.exe source remove chromium
-```
-
----
-
-# Example Queries
-
-## Chrome Bookmarks
+## Examples
 
 ```sql
-SELECT
-    title,
-    url,
-    date_added
+SELECT title, url, date_added
 FROM chromium.chrome_bookmarks
-WHERE type = 'url';
+WHERE type = 'url'
+LIMIT 10;
 ```
 
-## Brave History
-
 ```sql
-SELECT
-    title,
-    url,
-    visit_count
+SELECT title, url, visit_count, last_visit_time
 FROM chromium.brave_history
 ORDER BY visit_count DESC
 LIMIT 10;
 ```
 
----
-
-# Browser Query Commands
-
-Run these commands directly from the Coral CLI to query browser data.
-
----
-
-## Google Chrome
-
-### View Bookmarks
-
-```bash
-./coral.exe sql "SELECT title, url, date_added FROM chromium.chrome_bookmarks LIMIT 5"
-```
-
-### View History (Sorted by Visits)
-
-```bash
-./coral.exe sql "SELECT title, url, visit_count FROM chromium.chrome_history ORDER BY visit_count DESC LIMIT 5"
-```
-
-### View Downloads
-
-```bash
-./coral.exe sql "SELECT target_path, received_bytes FROM chromium.chrome_downloads ORDER BY start_time DESC LIMIT 5"
-```
-
-### View Installed Extensions
-
-```bash
-./coral.exe sql "SELECT name, version FROM chromium.chrome_extensions"
-```
-
-### View Top Sites
-
-```bash
-./coral.exe sql "SELECT title, url_rank FROM chromium.chrome_top_sites LIMIT 5"
-```
-
-### View Active Open Tabs
-
-```bash
-./coral.exe sql "SELECT url FROM chromium.chrome_tabs"
-```
-
----
-
-## Microsoft Edge
-
-### View Bookmarks
-
-```bash
-./coral.exe sql "SELECT title, url, date_added FROM chromium.edge_bookmarks LIMIT 5"
-```
-
-### View History (Sorted by Visits)
-
-```bash
-./coral.exe sql "SELECT title, url, visit_count FROM chromium.edge_history ORDER BY visit_count DESC LIMIT 5"
-```
-
-### View Downloads
-
-```bash
-./coral.exe sql "SELECT target_path, received_bytes FROM chromium.edge_downloads ORDER BY start_time DESC LIMIT 5"
-```
-
-### View Installed Extensions
-
-```bash
-./coral.exe sql "SELECT name, version FROM chromium.edge_extensions"
-```
-
-### View Top Sites
-
-```bash
-./coral.exe sql "SELECT title, url_rank FROM chromium.edge_top_sites LIMIT 5"
-```
-
-### View Active Open Tabs
-
-```bash
-./coral.exe sql "SELECT url FROM chromium.edge_tabs"
-```
-
----
-
-## Brave Browser
-
-### View Bookmarks
-
-```bash
-./coral.exe sql "SELECT title, url, date_added FROM chromium.brave_bookmarks LIMIT 5"
-```
-
-### View History (Sorted by Visits)
-
-```bash
-./coral.exe sql "SELECT title, url, visit_count FROM chromium.brave_history ORDER BY visit_count DESC LIMIT 5"
-```
-
-### View Downloads
-
-```bash
-./coral.exe sql "SELECT target_path, received_bytes FROM chromium.brave_downloads ORDER BY start_time DESC LIMIT 5"
-```
-
-### View Installed Extensions
-
-```bash
-./coral.exe sql "SELECT name, version FROM chromium.brave_extensions"
-```
-
-### View Top Sites
-
-```bash
-./coral.exe sql "SELECT title, url_rank FROM chromium.brave_top_sites LIMIT 5"
-```
-
-### View Active Open Tabs
-
-```bash
-./coral.exe sql "SELECT url FROM chromium.brave_tabs"
-```
-
----
-
-
-## Additional Features
-
-| Feature | Description |
-|----------|-------------|
-| Deterministic Profile Resolution | Automatically scans browser User Data directories and consistently selects the most recently used profile, preventing data from being mixed across multiple profiles. |
-| Safe SQLite Extraction | Copies database files together with associated `-wal` and `-shm` files to avoid locking issues and ensure complete reads while browsers remain open. |
-
----
-
-## Updated Data Sources Added
-
-| Category | Description |
-|-----------|-------------|
-| Bookmarks | Saved bookmarks and folder hierarchy |
-| History | Browsing history, URLs, titles, and visit counts with WebKit timestamps converted to ISO 8601 UTC |
-| Downloads | Download records, local file paths, file sizes, and timestamps converted from WebKit epochs to ISO 8601 UTC |
-| Extensions | Installed browser extensions |
-| Top Sites | Browser-ranked frequently visited sites |
-| Tabs | URLs extracted from browser session-restore state. Includes persisted navigation state rather than only visually open tabs. |
-
----
-
-## Data Extraction Notes
-
-| Data Type | Implementation Notes |
-|------------|---------------------|
-| Profiles | Automatically resolves the most recently used browser profile |
-| SQLite Databases | Read safely using temporary copies |
-| WAL Databases | Copies `-wal` and `-shm` sidecar files to preserve consistency |
-| History Timestamps | Converted from Chromium WebKit epoch to ISO 8601 UTC |
-| Download Timestamps | Converted from Chromium WebKit epoch to ISO 8601 UTC |
-| Extensions | Enumerated deterministically using extension metadata |
-| Tabs | Extracted from Chromium session-restore state files |
-
----
-
-## Additional Validation
-
-Verified:
-
-- Automatic profile discovery
-- Multiple profile environments
-- SQLite WAL database handling
-- Empty browser installations
-- Browser-not-installed fallback behavior
-- Session-restore tab extraction
-
----
-
-## Additional Failure Handling
-
-| Scenario | Behavior |
-|-----------|-----------|
-| Browser Running | Reads succeed through copied database snapshots |
-| Missing WAL/SHM Files | Falls back gracefully |
-| Multiple Profiles Present | Automatically selects most recently used profile |
-| Browser Not Installed | Returns empty table |
-| Profile Not Found | Returns empty table |
-| Missing Database | Returns empty table |
-| Empty Browser Data | Returns 0 rows |
-| Missing Browser Files | No source crash |
-
----
-
-## Additional Privacy & Security Details
-
-| Aspect | Details |
-|----------|----------|
-| Database Access | Read-only |
-| Browser Can Remain Open | Yes |
-| Local Server | `127.0.0.1:8765` |
-| Data Processing | Fully local |
-| Network Access | Localhost only |
-| External Services | None |
-| Cloud Uploads | None |
-| Third-Party Dependencies | None |
-| User Data Transmission | Never leaves the machine |
-
-
-# Advanced Analytics
-
-## Largest Files Downloaded via Edge
-
 ```sql
-SELECT
-    target_path,
-    total_bytes,
-    start_time
+SELECT target_path, total_bytes, start_time
 FROM chromium.edge_downloads
-ORDER BY total_bytes DESC
-LIMIT 5;
+ORDER BY start_time DESC
+LIMIT 10;
 ```
 
-## Installed Chrome Extensions
-
 ```sql
-SELECT
-    name,
-    version
+SELECT name, version
 FROM chromium.chrome_extensions
 ORDER BY name ASC;
 ```
 
-## Currently Open Brave Tabs
+## Validation
 
-```sql
-SELECT
-    url
-FROM chromium.brave_tabs;
-```
-
----
-
-# Troubleshooting
-
-## Query Returns 0 Rows
-
-If a query returns an empty table:
-
-- The browser may not be installed.
-- The browser profile may not have been detected.
-- The requested data file may be empty.
-
-Check the terminal running `browser_server.py` for real-time logs showing which paths are being scanned.
-
-## Schema Validation Errors
-
-Ensure you are using the latest version of the Coral CLI.
+Lint the manifest before installing:
 
 ```bash
-coral update
+coral source lint sources/community/chromium/manifest.yaml
 ```
 
-or upgrade Coral using the installation method appropriate for your environment.
+Use `--file` when installing this community source:
 
----
+```bash
+coral source add --file sources/community/chromium/manifest.yaml
+```
 
-# Security & Privacy
+Then run:
 
-| Aspect | Details |
-|----------|----------|
-| Data Processing | Entirely local |
-| Network Access | Localhost only (`127.0.0.1`) |
-| External APIs | None |
-| Data Transmission | No browser data leaves your machine |
-| Dependencies | Python standard library only |
+```bash
+coral source test chromium
+```
 
-This source is designed with a privacy-first approach, ensuring all browser data remains under your control.
+## Security Notes
 
+Every request to the local server must include `Authorization: Bearer <CHROME_API_KEY>`. The server also validates `Host`, `Origin`, and `Sec-Fetch-Site` headers and sends `Cache-Control: no-store` plus `X-Content-Type-Options: nosniff` on responses.
 
-# Contributions By github.com/GaneshBamalwa and github.com/sidshivam625
+SQLite browser databases are copied to a temporary file before querying so Chrome, Edge, and Brave can remain open while Coral reads history, downloads, and top sites.
+
+## Troubleshooting
+
+If a query fails with HTTP 503, check the message from the server. It usually means the browser is not installed, `Local State` did not identify a profile, or the relevant `*_PROFILE_PATH` variable points at the wrong directory.
+
+If a query fails with HTTP 401, confirm `CHROME_API_KEY` is set to the same value in the server terminal and in the shell where you run `coral source add --file` or `coral source test`.
+
+If you changed `CHROME_SERVER_PORT`, restart the server and re-add the source so Coral stores the updated port input.
+
+## Contributions
+
+Contributions by github.com/GaneshBamalwa and github.com/sidshivam625.
