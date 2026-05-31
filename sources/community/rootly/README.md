@@ -39,7 +39,7 @@ export ROOTLY_TOKEN="<your-api-key-or-oauth-token>"
 ### 3. Add the source
 
 ```sh
-coral source add --file sources/community/rootly/manifest.yaml
+cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.yaml
 ```
 
 ### 4. First successful query (recommended)
@@ -106,10 +106,10 @@ For large organizations always supply a time filter to avoid unbounded paginatio
 
 ### Rate limits
 
-Rootly's default rate limit is **5 GET requests per API key per 60 seconds**. Contact your Rootly Customer Success Manager to increase this.
+Rootly's default rate limit is **3000 GET, HEAD, and OPTIONS calls per API key per minute**, calculated over a 1-minute sliding window. Contact your Rootly Customer Success Manager to increase this threshold.
 
 * `429 Too Many Requests` responses should be retried with exponential backoff
-* For bulk analytics queries, space out requests accordingly
+* `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers are included in every response
 
 ---
 
@@ -207,32 +207,32 @@ LIMIT 20;
 ### Lint manifest
 
 ```sh
-coral source lint sources/community/rootly/manifest.yaml
+cargo run -p coral-cli -- source lint sources/community/rootly/manifest.yaml
 ```
 
 ### Add source
 
 ```sh
 export ROOTLY_TOKEN="<your-api-key>"
-coral source add --file sources/community/rootly/manifest.yaml
+cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.yaml
 ```
 
 ### Validate tables
 
 ```sh
-coral sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
-coral sql "SELECT id, name, slug FROM rootly.services LIMIT 5"
-coral sql "SELECT id, name, slug FROM rootly.teams LIMIT 5"
-coral sql "SELECT id, title, status, severity__slug FROM rootly.incidents LIMIT 5"
-coral sql "SELECT id, short_id, summary, source, status FROM rootly.alerts LIMIT 5"
-coral sql "SELECT id, name, owner_user_id FROM rootly.schedules LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.services LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.teams LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, title, status, severity__slug FROM rootly.incidents LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, short_id, summary, source, status FROM rootly.alerts LIMIT 5"
+cargo run -p coral-cli -- sql "SELECT id, name, owner_user_id FROM rootly.schedules LIMIT 5"
 ```
 
 ### Inspect registered tables and columns
 
 ```sh
-coral sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'rootly'"
-coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'rootly' ORDER BY table_name, ordinal_position"
+cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'rootly'"
+cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'rootly' ORDER BY table_name, ordinal_position"
 ```
 
 ---
@@ -243,10 +243,10 @@ coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE sc
 * **Auth:** API keys and OAuth tokens both use `Authorization: Bearer`
 * **Pagination:** consistent page-based pagination (`page[number]` / `page[size]`) across all endpoints; default 25, max 100
 * **Pushed filters:** `incidents` and `alerts` support API-side filtering by status, severity/source, and date range — always use these for large workspaces
-* **Rate limits:** default 5 GET requests per API key per 60 seconds; retry on 429 with backoff
+* **Rate limits:** default 3000 GET requests per API key per minute; retry on 429 with backoff
 * **Timestamps:** ISO 8601 format throughout
 * **Severity:** nested JSON:API relationship on incidents — access via `severity__name` and `severity__slug`; use the `severity` filter with the slug value
-* **Alert fields:** mapped from the documented Rootly alert schema (`short_id`, `summary`, `description`, `external_id`, `external_url`, `deduplication_key`, `notification_target_type`, `notification_target_id`)
+* **Alert fields:** mapped from the documented Rootly alert schema (`short_id`, `summary`, `description`, `external_id`, `external_url`, `deduplication_key`, `notification_target_id`)
 * **Cross-source joins:** incidents expose `jira_issue_key`, `linear_issue_id`, `github_issue_id`, and `shortcut_story_id` for correlation
 
 ---

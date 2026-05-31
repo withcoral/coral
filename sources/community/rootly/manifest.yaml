@@ -882,18 +882,6 @@ tables:
           path:
             - attributes
             - deduplication_key
-      - name: notification_target_type
-        type: Utf8
-        nullable: true
-        description: >-
-          Type of the notification target (User, Group, EscalationPolicy,
-          Service, Functionality). Only present for organizations with
-          Rootly On-Call enabled.
-        expr:
-          kind: path
-          path:
-            - attributes
-            - notification_target_type
       - name: notification_target_id
         type: Utf8
         nullable: true
