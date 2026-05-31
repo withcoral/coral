@@ -30,12 +30,12 @@ request_headers:
     value: application/vnd.api+json
 
 test_queries:
-  - SELECT id, full_name, email FROM rootly.users LIMIT 5
-  - SELECT id, name, slug FROM rootly.services LIMIT 5
+  - SELECT id, title, status FROM rootly.incidents LIMIT 1
+  - SELECT id, name, slug FROM rootly.services LIMIT 1
 
 tables:
   # ──────────────────────────────────────────────────────────────────────────
-  # users — users in the organization
+  # users
   # ──────────────────────────────────────────────────────────────────────────
   - name: users
     description: >-
@@ -155,7 +155,7 @@ tables:
               - updated_at
 
   # ──────────────────────────────────────────────────────────────────────────
-  # services — services defined in the organization
+  # services
   # ──────────────────────────────────────────────────────────────────────────
   - name: services
     description: >-
@@ -305,7 +305,7 @@ tables:
               - updated_at
 
   # ──────────────────────────────────────────────────────────────────────────
-  # teams — teams in the organization
+  # teams
   # ──────────────────────────────────────────────────────────────────────────
   - name: teams
     description: >-
@@ -428,7 +428,7 @@ tables:
               - updated_at
 
   # ──────────────────────────────────────────────────────────────────────────
-  # incidents — incidents in the organization
+  # incidents
   # ──────────────────────────────────────────────────────────────────────────
   - name: incidents
     description: >-
@@ -440,13 +440,19 @@ tables:
 
       Common filter patterns:
       - `status` = started | mitigated | resolved | cancelled
-      - `severity` = sev0 | sev1 | sev2 | sev3
+      - `severity` = slug of the severity (e.g. sev0, sev1, critical, high)
       - `started_at_gte` / `started_at_lte` for time-bounded incident windows
       - `created_at_gte` / `created_at_lte` for creation date ranges
 
       For large organizations always supply a time filter to avoid
-      unbounded pagination scans. Use `jira_issue_key`, `linear_issue_id`,
-      or `github_issue_id` for cross-source joins.
+      unbounded pagination scans.
+
+      Severity is a nested JSON:API object in the response. Use
+      `severity__name` and `severity__slug` to access the severity name
+      and slug. The `filter[severity]` pushdown accepts the severity slug.
+
+      Use `jira_issue_key`, `linear_issue_id`, or `github_issue_id` for
+      cross-source joins.
     filters:
       - name: status
         type: Utf8
@@ -456,7 +462,8 @@ tables:
       - name: severity
         type: Utf8
         description: >-
-          Filter by severity slug, e.g. sev0, sev1, sev2, sev3.
+          Filter by severity slug (e.g. sev0, sev1, critical, high).
+          Matches against the severity slug field.
       - name: started_at_gte
         type: Utf8
         description: Return incidents with started_at >= this ISO8601 timestamp.
@@ -539,15 +546,35 @@ tables:
           path:
             - attributes
             - status
-      - name: severity_name
+      - name: severity__name
         type: Utf8
         nullable: true
-        description: Severity name such as sev0, sev1, sev2, or sev3.
+        description: >-
+          Name of the severity (e.g. SEV0, SEV1). Sourced from
+          attributes.severity.data.attributes.name in the JSON:API response.
         expr:
           kind: path
           path:
             - attributes
-            - severity_name
+            - severity
+            - data
+            - attributes
+            - name
+      - name: severity__slug
+        type: Utf8
+        nullable: true
+        description: >-
+          Slug of the severity (e.g. sev0, sev1). Sourced from
+          attributes.severity.data.attributes.slug in the JSON:API response.
+          Use this value with the severity filter.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - severity
+            - data
+            - attributes
+            - slug
       - name: kind
         type: Utf8
         nullable: true
@@ -706,7 +733,7 @@ tables:
               - updated_at
 
   # ──────────────────────────────────────────────────────────────────────────
-  # alerts — alerts in the organization
+  # alerts
   # ──────────────────────────────────────────────────────────────────────────
   - name: alerts
     description: >-
@@ -717,12 +744,12 @@ tables:
       No required filters. All filters push down to the Rootly API.
 
       Common filter patterns:
-      - `status` for alert lifecycle state
+      - `status` for alert lifecycle state (open, triggered, acknowledged, resolved, deferred)
       - `source` to narrow by originating system
       - `created_at_gte` / `created_at_lte` for time-bounded windows
 
       For large organizations always supply a time filter to avoid
-      unbounded pagination scans. Use `alert_id` to correlate with
+      unbounded pagination scans. Use `external_id` to correlate with
       the external system's alert identifier.
     filters:
       - name: status
@@ -774,6 +801,15 @@ tables:
           kind: path
           path:
             - id
+      - name: short_id
+        type: Utf8
+        nullable: true
+        description: Human-readable short identifier for the alert.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - short_id
       - name: source
         type: Utf8
         nullable: true
@@ -786,39 +822,89 @@ tables:
       - name: status
         type: Utf8
         nullable: true
-        description: Alert lifecycle status.
+        description: "Alert lifecycle status: open, triggered, acknowledged, resolved, deferred."
         expr:
           kind: path
           path:
             - attributes
             - status
-      - name: alert_id
+      - name: summary
         type: Utf8
         nullable: true
-        description: External alert identifier from the source system (attributes.alert_id).
+        description: Summary of the alert.
         expr:
           kind: path
           path:
             - attributes
-            - alert_id
-      - name: details
+            - summary
+      - name: description
         type: Utf8
         nullable: true
-        description: Alert details as returned by the Rootly API.
+        description: Description of the alert.
         expr:
           kind: path
           path:
             - attributes
-            - details
-      - name: user_id
+            - description
+      - name: noise
         type: Utf8
         nullable: true
-        description: ID of the user associated with the alert. Join to rootly.users.id.
+        description: Whether the alert is marked as noise. One of noise, not_noise.
         expr:
           kind: path
           path:
             - attributes
-            - user_id
+            - noise
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: External alert identifier from the source system.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - external_id
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: URL linking back to the alert in the source system.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - external_url
+      - name: deduplication_key
+        type: Utf8
+        nullable: true
+        description: Deduplication key used to group related alerts.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - deduplication_key
+      - name: notification_target_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Type of the notification target (User, Group, EscalationPolicy,
+          Service, Functionality). Only present for organizations with
+          Rootly On-Call enabled.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - notification_target_type
+      - name: notification_target_id
+        type: Utf8
+        nullable: true
+        description: >-
+          ID of the notification target object. Only present for organizations
+          with Rootly On-Call enabled.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - notification_target_id
       - name: started_at
         type: Timestamp
         nullable: true
@@ -869,7 +955,7 @@ tables:
               - updated_at
 
   # ──────────────────────────────────────────────────────────────────────────
-  # schedules — on-call schedules in the organization
+  # schedules
   # ──────────────────────────────────────────────────────────────────────────
   - name: schedules
     description: >-
