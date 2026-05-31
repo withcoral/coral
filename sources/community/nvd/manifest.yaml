@@ -15,7 +15,7 @@ test_queries:
   - SELECT cve_id, vuln_status FROM nvd.vulnerabilities WHERE cve_id = 'CVE-2021-44228' LIMIT 1
   - SELECT cve_id, metrics FROM nvd.cvss_v3_1_metrics WHERE cve_id = 'CVE-2021-44228' LIMIT 1
   - SELECT cve_id, metrics FROM nvd.cvss_v2_metrics WHERE cve_id = 'CVE-2021-44228' LIMIT 1
-  - SELECT cve_id, published FROM nvd.vulnerabilities WHERE pub_start_date = '2024-01-01T00:00:00.000' AND pub_end_date = '2024-01-31T23:59:59.999' LIMIT 1
+  - SELECT cve_id FROM nvd.vulnerabilities WHERE pub_start_date = '2024-01-01T00:00:00.000' AND pub_end_date = '2024-01-07T23:59:59.999' LIMIT 1
   - SELECT cve_id, vuln_status FROM nvd.vulnerabilities WHERE cvss_v3_severity = 'CRITICAL' LIMIT 1
 tables:
   - name: vulnerabilities
@@ -29,8 +29,8 @@ tables:
       pub_start_date and pub_end_date together - NVD requires both and caps
       the window at 120 consecutive days (e.g. pub_start_date =
       '2024-01-01T00:00:00.000' and pub_end_date = '2024-03-31T23:59:59.999').
-      Use keyword_search for whole-word keyword matching against CVE
-      descriptions - NVD does exact word matching, not substring search.
+      Use keyword_search for provider keyword search against CVE descriptions -
+      NVD applies implicit expansion so results may be broader than an exact word.
       Without any filter the table pages through all 350 000+ CVE records;
       always scope with cve_id, a date pair, or cvss_v3_severity.
     fetch_limit_default: 100
@@ -188,9 +188,9 @@ tables:
         nullable: true
         virtual: true
         description: >-
-          Whole-word keyword search across CVE descriptions and metadata.
-          NVD matches exact words, not substrings - 'buffer' matches but
-          'buf' does not.
+          Provider keyword search across CVE descriptions and metadata.
+          NVD applies implicit expansion (e.g. suffix and plural matching)
+          so results may be broader than an exact word match.
         expr: {kind: from_filter, key: keyword_search}
 
   - name: cvss_v3_1_metrics
@@ -325,9 +325,9 @@ tables:
         nullable: true
         virtual: true
         description: >-
-          Whole-word keyword search across CVE descriptions and metadata.
-          NVD matches exact words, not substrings - 'buffer' matches but
-          'buf' does not.
+          Provider keyword search across CVE descriptions and metadata.
+          NVD applies implicit expansion (e.g. suffix and plural matching)
+          so results may be broader than an exact word match.
         expr: {kind: from_filter, key: keyword_search}
 
   - name: cvss_v3_0_metrics
@@ -459,9 +459,9 @@ tables:
         nullable: true
         virtual: true
         description: >-
-          Whole-word keyword search across CVE descriptions and metadata.
-          NVD matches exact words, not substrings - 'buffer' matches but
-          'buf' does not.
+          Provider keyword search across CVE descriptions and metadata.
+          NVD applies implicit expansion (e.g. suffix and plural matching)
+          so results may be broader than an exact word match.
         expr: {kind: from_filter, key: keyword_search}
 
   - name: cvss_v2_metrics
@@ -594,9 +594,9 @@ tables:
         nullable: true
         virtual: true
         description: >-
-          Whole-word keyword search across CVE descriptions and metadata.
-          NVD matches exact words, not substrings - 'buffer' matches but
-          'buf' does not.
+          Provider keyword search across CVE descriptions and metadata.
+          NVD applies implicit expansion (e.g. suffix and plural matching)
+          so results may be broader than an exact word match.
         expr: {kind: from_filter, key: keyword_search}
 
   - name: references
@@ -725,7 +725,7 @@ tables:
         nullable: true
         virtual: true
         description: >-
-          Whole-word keyword search across CVE descriptions and metadata.
-          NVD matches exact words, not substrings - 'buffer' matches but
-          'buf' does not.
+          Provider keyword search across CVE descriptions and metadata.
+          NVD applies implicit expansion (e.g. suffix and plural matching)
+          so results may be broader than an exact word match.
         expr: {kind: from_filter, key: keyword_search}

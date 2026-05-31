@@ -155,7 +155,7 @@ WHERE v.cve_id = 'CVE-2021-44228';
 - The NVD contains 350,000+ CVE records. Always scope queries with `cve_id`, a `pub_start_date`/`pub_end_date` pair, or `cvss_v3_severity`. Unscoped queries page through the full corpus.
 - Date filters (`pub_start_date`/`pub_end_date` and `last_mod_start_date`/`last_mod_end_date`) must be supplied in pairs. NVD caps any date window at 120 consecutive days.
 - Date values use ISO 8601 format: `2024-01-01T00:00:00.000`.
-- `keyword_search` does exact whole-word matching — `buffer` matches but `buf` does not. It is not a substring or fuzzy search.
+- `keyword_search` uses NVD's provider keyword search with implicit expansion — results may include suffix and plural variants, so matches can be broader than an exact word.
 - CVSS metric columns are nullable — a row is returned for every fetched CVE, but the `metrics` column is null when NVD has not assigned that metric version.
 - Most CVEs published after 2019 use CVSS v3.1 (`cvss_v3_1_metrics`). Older CVEs may only have CVSS v3.0 (`cvss_v3_0_metrics`) or v2 (`cvss_v2_metrics`) scores.
 - The `metrics` column is a JSON array. Each element has `source`, `type`, `cvssData`, `exploitabilityScore`, and `impactScore` fields. Do not rely on array position — NVD may return multiple entries per CVE. Select the authoritative score by checking `source = 'nvd@nist.gov'` and `type = 'Primary'` on each element.
