@@ -204,12 +204,14 @@ tables:
       Returns one row per node with a curated set of node-level metrics pulled
       from each node's `metrics` map on `GET /api/v2/nodes/`. The named columns
       cover common health signals; the `metrics` JSON column contains the
-      complete node-level map and `store_metrics` contains per-store gauges
-      (ranges, replicas, capacity, livebytes, ...) keyed by store ID, so you
-      can read any other value with `json_get_float(metrics, 'sql.conns')`.
-      Metric values are doubles. Some metric keys differ across major
-      CockroachDB versions, so a named column may be NULL while the value is
-      still present under a slightly different key in the maps. The endpoint
+      complete node-level map, so you can read any other value with
+      `json_get_float(metrics, 'sql.conns')`. Metric values are doubles. Some
+      metric keys differ across major CockroachDB versions, so a named column
+      may be NULL while the value is still present under a slightly different
+      key in the map. `store_metrics` is a best-effort extra: it carries
+      per-store gauges (ranges, replicas, capacity, livebytes, ...) keyed by
+      store ID, but it is NOT part of the documented Cluster API v2 response
+      schema, so treat it as nullable and version-dependent. The endpoint
       returns all nodes in a single response.
     request:
       method: GET
@@ -269,5 +271,8 @@ tables:
       - name: store_metrics
         type: Json
         nullable: true
-        description: Per-store metrics keyed by store ID (ranges, replicas, capacity, ...)
+        description: >-
+          Best-effort per-store metrics keyed by store ID (ranges, replicas,
+          capacity, livebytes, ...). Not part of the documented Cluster API v2
+          schema; may be NULL on some CockroachDB versions.
         expr: {kind: path, path: [store_metrics]}

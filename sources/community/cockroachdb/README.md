@@ -108,9 +108,13 @@ fetching. `/api/v2/nodes/` returns all nodes in a single response, so `health`,
 - `metrics` named columns cover common node-level health signals. Metric keys
   vary across major versions, so a named column may be NULL while the value is
   still present in the `metrics` JSON column — read any gauge with
-  `json_get_float(metrics, 'sql.conns')`. Per-store gauges (ranges, replicas,
-  capacity, livebytes) are in the `store_metrics` JSON column keyed by store ID,
-  e.g. `json_get_float(store_metrics, '1', 'ranges')`.
+  `json_get_float(metrics, 'sql.conns')`.
+- `store_metrics` is a **best-effort** column. It carries per-store gauges
+  (ranges, replicas, capacity, livebytes) keyed by store ID, e.g.
+  `json_get_float(store_metrics, '1', 'ranges')`, but it is **not** part of the
+  documented [Cluster API v2 response schema](https://www.cockroachlabs.com/docs/api/cluster/v2.html)
+  (which guarantees the node `metrics` map). Treat it as nullable and
+  version-dependent; it may be absent on some CockroachDB versions.
 - `databases` lists names only. The Cluster API does not return per-database
   sizes; use a SQL client and `SHOW DATABASES` for storage details.
 
