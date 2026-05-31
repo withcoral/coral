@@ -722,7 +722,7 @@ tables:
       - `created_at_gte` / `created_at_lte` for time-bounded windows
 
       For large organizations always supply a time filter to avoid
-      unbounded pagination scans. Use `external_id` to correlate with
+      unbounded pagination scans. Use `alert_id` to correlate with
       the external system's alert identifier.
     filters:
       - name: status
@@ -774,33 +774,6 @@ tables:
           kind: path
           path:
             - id
-      - name: external_id
-        type: Utf8
-        nullable: true
-        description: External alert identifier from the source system (attributes.external_id).
-        expr:
-          kind: path
-          path:
-            - attributes
-            - external_id
-      - name: external_url
-        type: Utf8
-        nullable: true
-        description: URL linking back to the alert in the source system.
-        expr:
-          kind: path
-          path:
-            - attributes
-            - external_url
-      - name: deduplication_key
-        type: Utf8
-        nullable: true
-        description: Deduplication key used to group related alerts.
-        expr:
-          kind: path
-          path:
-            - attributes
-            - deduplication_key
       - name: source
         type: Utf8
         nullable: true
@@ -819,10 +792,19 @@ tables:
           path:
             - attributes
             - status
+      - name: alert_id
+        type: Utf8
+        nullable: true
+        description: External alert identifier from the source system (attributes.alert_id).
+        expr:
+          kind: path
+          path:
+            - attributes
+            - alert_id
       - name: details
         type: Utf8
         nullable: true
-        description: Alert details.
+        description: Alert details as returned by the Rootly API.
         expr:
           kind: path
           path:
