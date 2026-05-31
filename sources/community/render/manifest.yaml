@@ -1,0 +1,994 @@
+name: render
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query services, deploys, events, logs, projects, environments, Postgres
+  databases, and Key Value instances from Render — the managed cloud platform for
+  web services, static sites, background workers, cron jobs, and private services.
+  Useful for correlating deploys, build/runtime logs, and service health with
+  source-control activity from other sources.
+base_url: https://api.render.com/v1
+
+inputs:
+  RENDER_API_KEY:
+    kind: secret
+    hint: >-
+      Render API key (a bearer token). Create one under Account Settings →
+      API Keys at https://dashboard.render.com/u/settings#api-keys. A read-only
+      key is sufficient for these tables. The key authorizes access to every
+      workspace your Render account can see.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste Render API key
+          description: Provide a Render API key via the RENDER_API_KEY environment variable or prompt.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.RENDER_API_KEY}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+tables:
+  - name: services
+    description: >
+      Lists Render services (web services, static sites, background workers,
+      cron jobs, private services) for every workspace the API key can access.
+      Each row includes the linked Git repo, branch, auto-deploy setting, type,
+      and lifecycle timestamps.
+    guide: >
+      Start with `SELECT id, name, type, repo, branch FROM render.services
+      LIMIT 20`. Filter by `type` (web_service, static_site, background_worker,
+      cron_job, private_service) or `owner_id` for a specific workspace. The
+      `service_details` column is the raw provider JSON; use
+      `json_get_str(service_details, 'region')` to dig in. Join `id` against
+      `render.deploys.service_id` to pull a service's deploy history.
+    filters:
+      - name: name
+      - name: type
+      - name: environment_id
+      - name: region
+      - name: suspended
+      - name: owner_id
+      - name: created_before
+      - name: created_after
+      - name: updated_before
+      - name: updated_after
+      - name: include_previews
+    request:
+      method: GET
+      path: /services
+      query:
+        - name: name
+          from: filter
+          key: name
+        - name: type
+          from: filter
+          key: type
+        - name: environmentId
+          from: filter
+          key: environment_id
+        - name: region
+          from: filter
+          key: region
+        - name: suspended
+          from: filter
+          key: suspended
+        - name: ownerId
+          from: filter
+          key: owner_id
+        - name: createdBefore
+          from: filter
+          key: created_before
+        - name: createdAfter
+          from: filter
+          key: created_after
+        - name: updatedBefore
+          from: filter
+          key: updated_before
+        - name: updatedAfter
+          from: filter
+          key: updated_after
+        - name: includePreviews
+          from: filter
+          key: include_previews
+    response:
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      # Render returns the next-page cursor on each array element; the cursor to
+      # advance with is the LAST element of a full page. Coral's path walker has
+      # no "last" selector, so we index the last slot of a full page (page_size
+      # 100 -> index 99). A partial/last page has no index 99 -> pagination stops.
+      response_cursor_path:
+        - "99"
+        - cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique service identifier (e.g. srv-xxxxxxxx).
+        expr: { kind: path, path: [service, id] }
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Service name.
+        expr: { kind: path, path: [service, name] }
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Service type (web_service, static_site, background_worker, cron_job, private_service).
+        expr: { kind: path, path: [service, type] }
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Workspace (owner) ID that the service belongs to.
+        expr: { kind: path, path: [service, ownerId] }
+      - name: repo
+        type: Utf8
+        nullable: true
+        description: Connected Git repository URL.
+        expr: { kind: path, path: [service, repo] }
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Git branch that deploys are tracked from.
+        expr: { kind: path, path: [service, branch] }
+      - name: auto_deploy
+        type: Utf8
+        nullable: true
+        description: Whether auto-deploy on push is enabled (yes/no).
+        expr: { kind: path, path: [service, autoDeploy] }
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL-friendly service slug.
+        expr: { kind: path, path: [service, slug] }
+      - name: suspended
+        type: Utf8
+        nullable: true
+        description: Suspension state (suspended / not_suspended).
+        expr: { kind: path, path: [service, suspended] }
+      - name: environment_id
+        type: Utf8
+        nullable: true
+        description: Environment the service belongs to.
+        expr: { kind: path, path: [service, environmentId] }
+      - name: image_path
+        type: Utf8
+        nullable: true
+        description: Image path for image-backed services.
+        expr: { kind: path, path: [service, imagePath] }
+      - name: root_dir
+        type: Utf8
+        nullable: true
+        description: Root directory used for builds.
+        expr: { kind: path, path: [service, rootDir] }
+      - name: notify_on_fail
+        type: Utf8
+        nullable: true
+        description: Failure notification setting.
+        expr: { kind: path, path: [service, notifyOnFail] }
+      - name: dashboard_url
+        type: Utf8
+        nullable: true
+        description: URL of the service in the Render dashboard.
+        expr: { kind: path, path: [service, dashboardUrl] }
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Service creation time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [service, createdAt] } }
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Service last-updated time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [service, updatedAt] } }
+      - name: service_details
+        type: Json
+        nullable: true
+        description: Raw service-details object (plan, region, runtime, url, etc.). Query with json_get_str().
+        expr: { kind: path, path: [service, serviceDetails] }
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Opaque pagination cursor for this row.
+        expr: { kind: path, path: [cursor] }
+
+  - name: deploys
+    description: >
+      Lists deploys for a Render service, newest first, including build/deploy
+      status, the triggering commit, image reference, and lifecycle timestamps.
+      Requires a service_id.
+    guide: >
+      Requires `service_id`. Example:
+      `SELECT id, status, trigger, commit_message, finished_at
+      FROM render.deploys WHERE service_id = 'srv-xxxx' LIMIT 20`.
+      Filter `status` to find failures (build_failed, update_failed, canceled).
+      Join `commit_id` against your source-control source to correlate a failed
+      deploy with the pull request or commit that caused it.
+    filters:
+      - name: service_id
+        required: true
+      - name: status
+      - name: created_before
+      - name: created_after
+      - name: updated_before
+      - name: updated_after
+      - name: finished_before
+      - name: finished_after
+    request:
+      method: GET
+      path: /services/{{filter.service_id}}/deploys
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: createdBefore
+          from: filter
+          key: created_before
+        - name: createdAfter
+          from: filter
+          key: created_after
+        - name: updatedBefore
+          from: filter
+          key: updated_before
+        - name: updatedAfter
+          from: filter
+          key: updated_after
+        - name: finishedBefore
+          from: filter
+          key: finished_before
+        - name: finishedAfter
+          from: filter
+          key: finished_after
+    response:
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      # Render returns the next-page cursor on each array element; the cursor to
+      # advance with is the LAST element of a full page. Coral's path walker has
+      # no "last" selector, so we index the last slot of a full page (page_size
+      # 100 -> index 99). A partial/last page has no index 99 -> pagination stops.
+      response_cursor_path:
+        - "99"
+        - cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique deploy identifier (e.g. dep-xxxxxxxx).
+        expr: { kind: path, path: [deploy, id] }
+      - name: service_id
+        type: Utf8
+        nullable: false
+        description: Service this deploy belongs to (echoed from the filter).
+        virtual: true
+        expr: { kind: from_filter, key: service_id }
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >
+          Deploy status: created, queued, build_in_progress, update_in_progress,
+          live, deactivated, build_failed, update_failed, canceled,
+          pre_deploy_in_progress, pre_deploy_failed.
+        expr: { kind: path, path: [deploy, status] }
+      - name: trigger
+        type: Utf8
+        nullable: true
+        description: >
+          What triggered the deploy: api, blueprint_sync, deploy_hook,
+          deployed_by_render, manual, other, new_commit, rollback,
+          service_resumed, service_updated.
+        expr: { kind: path, path: [deploy, trigger] }
+      - name: commit_id
+        type: Utf8
+        nullable: true
+        description: SHA of the commit that was deployed.
+        expr: { kind: path, path: [deploy, commit, id] }
+      - name: commit_message
+        type: Utf8
+        nullable: true
+        description: Message of the deployed commit.
+        expr: { kind: path, path: [deploy, commit, message] }
+      - name: commit_created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the deployed commit.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [deploy, commit, createdAt] } }
+      - name: image_ref
+        type: Utf8
+        nullable: true
+        description: Image reference deployed (image-backed services).
+        expr: { kind: path, path: [deploy, image, ref] }
+      - name: image_sha
+        type: Utf8
+        nullable: true
+        description: Resolved image SHA (image-backed services).
+        expr: { kind: path, path: [deploy, image, sha] }
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: When the deploy started.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [deploy, startedAt] } }
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: When the deploy finished.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [deploy, finishedAt] } }
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the deploy was created.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [deploy, createdAt] } }
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the deploy was last updated.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [deploy, updatedAt] } }
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Opaque pagination cursor for this row.
+        expr: { kind: path, path: [cursor] }
+
+  - name: events
+    description: >
+      Lists recent events for a Render service (deploy started/ended, builds,
+      restarts, scaling, suspensions, and other lifecycle activity). Requires a
+      service_id.
+    guide: >
+      Requires `service_id`. Example:
+      `SELECT id, type, timestamp FROM render.events
+      WHERE service_id = 'srv-xxxx' LIMIT 50`. The `details` column is the raw
+      provider JSON for the event; use json_get_str(details, '<key>') to inspect
+      event-specific fields.
+    filters:
+      - name: service_id
+        required: true
+    request:
+      method: GET
+      path: /services/{{filter.service_id}}/events
+    response:
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      # Render returns the next-page cursor on each array element; the cursor to
+      # advance with is the LAST element of a full page. Coral's path walker has
+      # no "last" selector, so we index the last slot of a full page (page_size
+      # 100 -> index 99). A partial/last page has no index 99 -> pagination stops.
+      response_cursor_path:
+        - "99"
+        - cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique event identifier (e.g. evt-xxxxxxxx).
+        expr: { kind: path, path: [event, id] }
+      - name: service_id
+        type: Utf8
+        nullable: false
+        description: Service this event belongs to (echoed from the filter).
+        virtual: true
+        expr: { kind: from_filter, key: service_id }
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Event type (e.g. deploy_started, deploy_ended, build_started, server_failed).
+        expr: { kind: path, path: [event, type] }
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: When the event occurred.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [event, timestamp] } }
+      - name: details
+        type: Json
+        nullable: true
+        description: Raw event-specific details object. Query with json_get_str().
+        expr: { kind: path, path: [event, details] }
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Opaque pagination cursor for this row.
+        expr: { kind: path, path: [cursor] }
+
+  - name: logs
+    description: >
+      Searches application, build, and request logs for one or more Render
+      resources within a time window. Requires owner_id and resource. This is
+      the table to use for diagnosing why a build or deploy failed.
+    guide: >
+      Requires `owner_id` (workspace, tea-xxxx) and `resource` (service/postgres/
+      key-value id, srv-xxxx). Example:
+      `SELECT timestamp, message FROM render.logs
+      WHERE owner_id = 'tea-xxxx' AND resource = 'srv-xxxx' AND level = 'error'
+      ORDER BY timestamp DESC`. Filter `level` (info, warning, error, critical,
+      debug) or `text` (substring/regex match on the message) to narrow results.
+      Defaults to the last hour; widen with `start_time`/`end_time` (RFC3339,
+      within the last 30 days). Returns up to 100 lines (newest first); the raw
+      `labels` JSON holds the resource, level, type, host, and other labels.
+      Note: the upstream `type` filter (app/request/build) is inconsistent on
+      Render's API and may return no rows; prefer `level`/`text`, or read the
+      `type` value out of the `labels` JSON.
+    filters:
+      - name: owner_id
+        required: true
+      - name: resource
+        required: true
+      - name: text
+      - name: level
+      - name: type
+      - name: start_time
+      - name: end_time
+      - name: direction
+    request:
+      method: GET
+      path: /logs
+      query:
+        - name: ownerId
+          from: filter
+          key: owner_id
+        - name: resource
+          from: filter
+          key: resource
+        - name: text
+          from: filter
+          key: text
+        - name: level
+          from: filter
+          key: level
+        - name: type
+          from: filter
+          key: type
+        - name: startTime
+          from: filter
+          key: start_time
+        - name: endTime
+          from: filter
+          key: end_time
+        - name: direction
+          from: filter
+          key: direction
+        - name: limit
+          from: literal
+          value: "100"
+    response:
+      rows_path:
+        - logs
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique log-entry identifier.
+        expr: { kind: path, path: [id] }
+      - name: owner_id
+        type: Utf8
+        nullable: false
+        description: Workspace (owner) ID searched (echoed from the filter).
+        virtual: true
+        expr: { kind: from_filter, key: owner_id }
+      - name: resource
+        type: Utf8
+        nullable: false
+        description: Resource ID the log line belongs to (echoed from the filter).
+        virtual: true
+        expr: { kind: from_filter, key: resource }
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: When the log line was emitted.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [timestamp] } }
+      - name: message
+        type: Utf8
+        nullable: true
+        description: The log line text.
+        expr: { kind: path, path: [message] }
+      - name: level
+        type: Utf8
+        nullable: true
+        description: Severity level filtered on (info, warning, error), echoed from the filter when provided.
+        virtual: true
+        expr: { kind: from_filter, key: level }
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Log type filtered on (app, request, build), echoed from the filter when provided.
+        virtual: true
+        expr: { kind: from_filter, key: type }
+      - name: labels
+        type: Json
+        nullable: true
+        description: All log labels as an array of {name, value} (resource, level, type, instance, host, statusCode, etc.). Query with json functions.
+        expr: { kind: path, path: [labels] }
+
+  - name: postgres
+    description: >
+      Lists Render-managed PostgreSQL databases (instances) for every workspace
+      the API key can access, including plan, region, version, status, and
+      connection metadata. Lists database instances; it does not run SQL inside
+      them.
+    guide: >
+      `SELECT id, name, plan, region, version, status FROM render.postgres`.
+      Filter by `owner_id`, `region`, or `suspended`. The `owner` column is the
+      raw owner object as JSON; use json_get_str(owner, 'id'). Join `id` against
+      `render.logs.resource` to read a database's logs.
+    filters:
+      - name: name
+      - name: region
+      - name: suspended
+      - name: owner_id
+      - name: environment_id
+      - name: include_replicas
+      - name: created_before
+      - name: created_after
+      - name: updated_before
+      - name: updated_after
+    request:
+      method: GET
+      path: /postgres
+      query:
+        - name: name
+          from: filter
+          key: name
+        - name: region
+          from: filter
+          key: region
+        - name: suspended
+          from: filter
+          key: suspended
+        - name: ownerId
+          from: filter
+          key: owner_id
+        - name: environmentId
+          from: filter
+          key: environment_id
+        - name: includeReplicas
+          from: filter
+          key: include_replicas
+        - name: createdBefore
+          from: filter
+          key: created_before
+        - name: createdAfter
+          from: filter
+          key: created_after
+        - name: updatedBefore
+          from: filter
+          key: updated_before
+        - name: updatedAfter
+          from: filter
+          key: updated_after
+    response:
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      # Render returns the next-page cursor on each array element; the cursor to
+      # advance with is the LAST element of a full page. Coral's path walker has
+      # no "last" selector, so we index the last slot of a full page (page_size
+      # 100 -> index 99). A partial/last page has no index 99 -> pagination stops.
+      response_cursor_path:
+        - "99"
+        - cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique database identifier (e.g. dpg-xxxxxxxx).
+        expr: { kind: path, path: [postgres, id] }
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Database name.
+        expr: { kind: path, path: [postgres, name] }
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Workspace (owner) ID, extracted from the owner object.
+        expr: { kind: path, path: [postgres, owner, id] }
+      - name: plan
+        type: Utf8
+        nullable: true
+        description: Pricing plan.
+        expr: { kind: path, path: [postgres, plan] }
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Deployment region.
+        expr: { kind: path, path: [postgres, region] }
+      - name: version
+        type: Utf8
+        nullable: true
+        description: PostgreSQL major version.
+        expr: { kind: path, path: [postgres, version] }
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current database status.
+        expr: { kind: path, path: [postgres, status] }
+      - name: database_name
+        type: Utf8
+        nullable: true
+        description: Name of the default database.
+        expr: { kind: path, path: [postgres, databaseName] }
+      - name: database_user
+        type: Utf8
+        nullable: true
+        description: Default database user.
+        expr: { kind: path, path: [postgres, databaseUser] }
+      - name: high_availability_enabled
+        type: Boolean
+        nullable: true
+        description: Whether high availability is enabled.
+        expr: { kind: path, path: [postgres, highAvailabilityEnabled] }
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Role of this instance (primary or replica).
+        expr: { kind: path, path: [postgres, role] }
+      - name: suspended
+        type: Utf8
+        nullable: true
+        description: Suspension state (suspended / not_suspended).
+        expr: { kind: path, path: [postgres, suspended] }
+      - name: disk_size_gb
+        type: Utf8
+        nullable: true
+        description: Provisioned disk size in GB.
+        expr: { kind: path, path: [postgres, diskSizeGB] }
+      - name: environment_id
+        type: Utf8
+        nullable: true
+        description: Environment the database belongs to.
+        expr: { kind: path, path: [postgres, environmentId] }
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: Expiry time for free-tier databases.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [postgres, expiresAt] } }
+      - name: dashboard_url
+        type: Utf8
+        nullable: true
+        description: URL of the database in the Render dashboard.
+        expr: { kind: path, path: [postgres, dashboardUrl] }
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [postgres, createdAt] } }
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last-updated time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [postgres, updatedAt] } }
+      - name: owner
+        type: Json
+        nullable: true
+        description: Raw owner object. Query with json_get_str(owner, 'id').
+        expr: { kind: path, path: [postgres, owner] }
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Opaque pagination cursor for this row.
+        expr: { kind: path, path: [cursor] }
+
+  - name: key_value
+    description: >
+      Lists Render-managed Key Value (Redis-compatible) instances for every
+      workspace the API key can access, including plan, region, version, and
+      status.
+    guide: >
+      `SELECT id, name, plan, region, status FROM render.key_value`. Filter by
+      `owner_id` or `region`. Join `id` against `render.logs.resource` to read an
+      instance's logs.
+    filters:
+      - name: name
+      - name: region
+      - name: owner_id
+      - name: environment_id
+      - name: created_before
+      - name: created_after
+      - name: updated_before
+      - name: updated_after
+    request:
+      method: GET
+      path: /key-value
+      query:
+        - name: name
+          from: filter
+          key: name
+        - name: region
+          from: filter
+          key: region
+        - name: ownerId
+          from: filter
+          key: owner_id
+        - name: environmentId
+          from: filter
+          key: environment_id
+        - name: createdBefore
+          from: filter
+          key: created_before
+        - name: createdAfter
+          from: filter
+          key: created_after
+        - name: updatedBefore
+          from: filter
+          key: updated_before
+        - name: updatedAfter
+          from: filter
+          key: updated_after
+    response:
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      # Render returns the next-page cursor on each array element; the cursor to
+      # advance with is the LAST element of a full page. Coral's path walker has
+      # no "last" selector, so we index the last slot of a full page (page_size
+      # 100 -> index 99). A partial/last page has no index 99 -> pagination stops.
+      response_cursor_path:
+        - "99"
+        - cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique key-value instance identifier.
+        expr: { kind: path, path: [keyValue, id] }
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Instance name.
+        expr: { kind: path, path: [keyValue, name] }
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Workspace (owner) ID, extracted from the owner object.
+        expr: { kind: path, path: [keyValue, owner, id] }
+      - name: plan
+        type: Utf8
+        nullable: true
+        description: Pricing plan.
+        expr: { kind: path, path: [keyValue, plan] }
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Deployment region.
+        expr: { kind: path, path: [keyValue, region] }
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Key Value (Redis) version.
+        expr: { kind: path, path: [keyValue, version] }
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current instance status.
+        expr: { kind: path, path: [keyValue, status] }
+      - name: dashboard_url
+        type: Utf8
+        nullable: true
+        description: URL of the instance in the Render dashboard.
+        expr: { kind: path, path: [keyValue, dashboardUrl] }
+      - name: environment_id
+        type: Utf8
+        nullable: true
+        description: Environment the instance belongs to.
+        expr: { kind: path, path: [keyValue, environmentId] }
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [keyValue, createdAt] } }
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last-updated time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [keyValue, updatedAt] } }
+      - name: owner
+        type: Json
+        nullable: true
+        description: Raw owner object. Query with json_get_str(owner, 'id').
+        expr: { kind: path, path: [keyValue, owner] }
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Opaque pagination cursor for this row.
+        expr: { kind: path, path: [cursor] }
+
+  - name: projects
+    description: >
+      Lists Render projects (logical groupings of environments and services) for
+      every workspace the API key can access.
+    guide: >
+      `SELECT id, name, owner_id FROM render.projects LIMIT 20`. A project groups
+      one or more environments; join `id` against `render.environments.project_id`
+      to list a project's environments, or read `environment_ids` (a JSON array)
+      for a quick membership check. The `owner` column is the raw owner object; use
+      json_get_str(owner, 'id').
+    request:
+      method: GET
+      path: /projects
+    response:
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      # Render returns the next-page cursor on each array element; the cursor to
+      # advance with is the LAST element of a full page. Coral's path walker has
+      # no "last" selector, so we index the last slot of a full page (page_size
+      # 100 -> index 99). A partial/last page has no index 99 -> pagination stops.
+      response_cursor_path:
+        - "99"
+        - cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique project identifier (e.g. prj-xxxxxxxx).
+        expr: { kind: path, path: [project, id] }
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+        expr: { kind: path, path: [project, name] }
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Workspace (owner) ID, extracted from the owner object.
+        expr: { kind: path, path: [project, owner, id] }
+      - name: environment_ids
+        type: Json
+        nullable: true
+        description: Array of environment IDs that belong to this project.
+        expr: { kind: path, path: [project, environmentIds] }
+      - name: owner
+        type: Json
+        nullable: true
+        description: Raw owner object. Query with json_get_str(owner, 'id').
+        expr: { kind: path, path: [project, owner] }
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Project creation time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [project, createdAt] } }
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Project last-updated time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [project, updatedAt] } }
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Opaque pagination cursor for this row.
+        expr: { kind: path, path: [cursor] }
+
+  - name: environments
+    description: >
+      Lists environments for a Render project (isolation boundaries that group
+      services, Postgres databases, and Key Value instances). Requires a
+      project_id.
+    guide: >
+      Requires `project_id` (from render.projects). Example:
+      `SELECT id, name, protected_status FROM render.environments
+      WHERE project_id = 'prj-xxxx'`. The `service_ids`, `database_ids`, and
+      `redis_ids` columns are JSON arrays; join their elements against
+      render.services.id, render.postgres.id, and render.key_value.id to expand an
+      environment's resources.
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: GET
+      path: /environments
+      query:
+        - name: projectId
+          from: filter
+          key: project_id
+    response:
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      # Render returns the next-page cursor on each array element; the cursor to
+      # advance with is the LAST element of a full page. Coral's path walker has
+      # no "last" selector, so we index the last slot of a full page (page_size
+      # 100 -> index 99). A partial/last page has no index 99 -> pagination stops.
+      response_cursor_path:
+        - "99"
+        - cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique environment identifier (e.g. env-xxxxxxxx).
+        expr: { kind: path, path: [environment, id] }
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project this environment belongs to (echoed from the filter).
+        virtual: true
+        expr: { kind: from_filter, key: project_id }
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Environment name.
+        expr: { kind: path, path: [environment, name] }
+      - name: protected_status
+        type: Utf8
+        nullable: true
+        description: Protection state (protected / unprotected).
+        expr: { kind: path, path: [environment, protectedStatus] }
+      - name: network_isolation_enabled
+        type: Boolean
+        nullable: true
+        description: Whether network isolation is enabled for the environment.
+        expr: { kind: path, path: [environment, networkIsolationEnabled] }
+      - name: service_ids
+        type: Json
+        nullable: true
+        description: Array of service IDs in this environment. Join against render.services.id.
+        expr: { kind: path, path: [environment, serviceIds] }
+      - name: database_ids
+        type: Json
+        nullable: true
+        description: Array of Postgres database IDs in this environment. Join against render.postgres.id.
+        expr: { kind: path, path: [environment, databasesIds] }
+      - name: redis_ids
+        type: Json
+        nullable: true
+        description: Array of Key Value IDs in this environment. Join against render.key_value.id.
+        expr: { kind: path, path: [environment, redisIds] }
+      - name: env_group_ids
+        type: Json
+        nullable: true
+        description: Array of environment group IDs linked to this environment.
+        expr: { kind: path, path: [environment, envGroupIds] }
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Opaque pagination cursor for this row.
+        expr: { kind: path, path: [cursor] }
+
+test_queries:
+  - "SELECT id, name, type FROM render.services LIMIT 5"
+  - "SELECT id, name FROM render.projects LIMIT 5"
