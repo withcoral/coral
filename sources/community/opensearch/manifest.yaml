@@ -1,0 +1,74 @@
+name: opensearch
+version: "0.1.0"
+dsl_version: 3
+backend: http
+description: "Query OpenSearch logs using Coral SQL"
+
+inputs:
+  OPENSEARCH_URL:
+    kind: variable
+    default: "http://opensearch:9200"
+    hint: "Base URL for the local OpenSearch container"
+  OPENSEARCH_INDEX:
+    kind: variable
+    default: "logs-*"
+    hint: "Index pattern to query"
+
+base_url: "{{input.OPENSEARCH_URL}}"
+
+tables:
+  - name: logs
+    description: "Application and infrastructure logs"
+    request:
+      method: GET
+      path: "/{{input.OPENSEARCH_INDEX}}/_search"
+      query:
+        - name: size
+          from: literal
+          value: "100"
+    response:
+      rows_path:
+        - hits
+        - hits
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: "Document ID"
+        expr:
+          kind: path
+          path:
+            - _id
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - _source
+            - "@timestamp"
+      - name: level
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - _source
+            - level
+      - name: message
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - _source
+            - message
+      - name: pod_name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - _source
+            - kubernetes
+            - pod_name
