@@ -56,10 +56,24 @@ tables:
     request:
       method: POST
       path: /v2
+      query: []
       body:
-        query: >-
-          { boards(limit: 500, state: active) { id name description board_kind
-          state created_at updated_at workspace { id name } } }
+        - path:
+            - query
+          from: literal
+          value: |
+            query {
+              boards(limit: 500, state: active) {
+                id
+                name
+                description
+                board_kind
+                state
+                created_at
+                updated_at
+                workspace { id name }
+              }
+            }
     response:
       rows_path:
         - data
@@ -161,10 +175,26 @@ tables:
     request:
       method: POST
       path: /v2
+      query: []
       body:
-        query: >-
-          { users(limit: 500, kind: non_guests) { id name email title is_admin
-          is_guest enabled created_at time_zone_identifier location } }
+        - path:
+            - query
+          from: literal
+          value: |
+            query {
+              users(limit: 500, kind: non_guests) {
+                id
+                name
+                email
+                title
+                is_admin
+                is_guest
+                enabled
+                created_at
+                time_zone_identifier
+                location
+              }
+            }
     response:
       rows_path:
         - data
@@ -263,8 +293,9 @@ functions:
   - name: board_items
     description: >-
       Fetch items (rows/tasks) for a specific monday.com board by board ID.
-      Returns up to 500 items including ID, name, state, group, and timestamps.
-      Obtain board IDs from `monday.boards`.
+      Returns ID, name, state, group, and timestamps. Cursor-paginated, so all
+      items on the board are returned across pages. Obtain board IDs from
+      `monday.boards`.
     args:
       - name: board_id
         required: true
@@ -273,11 +304,38 @@ functions:
     request:
       method: POST
       path: /v2
+      query: []
       body:
-        query: >-
-          { boards(ids: [{{arg.board_id}}]) { items_page(limit: 500) { items
-          { id name state created_at updated_at group { id title }
-          column_values { id text value } } } } }
+        - path:
+            - query
+          from: literal
+          value: |
+            query BoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
+              boards(ids: [$boardId]) {
+                items_page(limit: $limit, cursor: $cursor) {
+                  cursor
+                  items {
+                    id
+                    name
+                    state
+                    created_at
+                    updated_at
+                    group { id title }
+                    column_values { id text value }
+                  }
+                }
+              }
+            }
+        - path:
+            - variables
+            - boardId
+          from: arg
+          key: board_id
+        - path:
+            - variables
+            - limit
+          from: literal
+          value: 100
     response:
       rows_path:
         - data
@@ -286,7 +344,22 @@ functions:
         - items_page
         - items
     pagination:
-      mode: none
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - cursor
+      response_cursor_path:
+        - data
+        - boards
+        - "0"
+        - items_page
+        - cursor
+      page_size:
+        default: 100
+        max: 500
+        body_path:
+          - variables
+          - limit
     columns:
       - name: id
         type: Utf8
@@ -369,10 +442,22 @@ functions:
     request:
       method: POST
       path: /v2
+      query: []
       body:
-        query: >-
-          { boards(ids: [{{arg.board_id}}]) { columns { id title type
-          description settings_str } } }
+        - path:
+            - query
+          from: literal
+          value: |
+            query BoardColumns($boardId: ID!) {
+              boards(ids: [$boardId]) {
+                columns { id title type description settings_str }
+              }
+            }
+        - path:
+            - variables
+            - boardId
+          from: arg
+          key: board_id
     response:
       rows_path:
         - data

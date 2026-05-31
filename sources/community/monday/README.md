@@ -43,7 +43,7 @@ prefix.
 
 | Function | Required args | Description |
 | --- | --- | --- |
-| `board_items(board_id)` | `board_id` | Items (rows/tasks) for one board, up to 500 |
+| `board_items(board_id)` | `board_id` | Items (rows/tasks) for one board, cursor-paginated across all pages |
 | `board_columns(board_id)` | `board_id` | Column definitions for one board |
 
 Obtain `board_id` values from `monday.boards`.
@@ -90,15 +90,21 @@ ORDER BY name;
 ### Engineers with open GitHub PRs
 
 ```sql
-SELECT u.name, u.email, COUNT(DISTINCT pr.id) AS open_prs
+WITH open_prs AS (
+  SELECT user__login, number
+  FROM github.pulls
+  WHERE owner = 'your-org' AND repo = 'your-repo' AND state = 'open'
+)
+SELECT u.name, u.email, COUNT(DISTINCT pr.number) AS open_prs
 FROM monday.users u
-LEFT JOIN github.pull_requests pr
-  ON LOWER(pr.author_login) = LOWER(SPLIT_PART(u.email, '@', 1))
-  AND pr.state = 'open'
+LEFT JOIN open_prs pr
+  ON LOWER(pr.user__login) = LOWER(SPLIT_PART(u.email, '@', 1))
 GROUP BY u.name, u.email
 ORDER BY open_prs DESC
 LIMIT 20;
 ```
+
+The bundled GitHub source exposes `github.pulls` (requires `owner` and `repo` filters) and the author column `user__login`.
 
 ### monday.com active items matched against Linear issues
 
@@ -126,22 +132,33 @@ ORDER BY pd.created_at DESC
 LIMIT 10;
 ```
 
-## Validation
+## Verify your install
 
 ```bash
-make lint-sources
 coral source lint sources/community/monday/manifest.yaml
-coral source add --file sources/community/monday/manifest.yaml
+MONDAY_API_TOKEN=eyJhbGciOiJIUzI1NiJ9... \
+  coral source add --file sources/community/monday/manifest.yaml
 coral source test monday
+```
+
+A successful `coral source test monday` lists the `boards` and `users` tables
+and passes the declared test queries. To exercise every surface against your
+own account:
+
+```bash
+coral sql "SELECT id, name, board_kind, workspace_name FROM monday.boards LIMIT 5"
+coral sql "SELECT id, name, email, is_admin FROM monday.users LIMIT 5"
+coral sql "SELECT id, title, type FROM monday.board_columns('<board_id>') LIMIT 10"
+coral sql "SELECT id, name, state, group_title FROM monday.board_items('<board_id>') LIMIT 10"
 ```
 
 ## Limitations
 
 - **GraphQL POST only** — all requests are POST to `https://api.monday.com/v2`;
   monday.com has no REST API.
-- **500-item cap per call** — `board_items` returns at most 500 items; boards
-  larger than 500 items require cursor-based follow-up calls, which are not
-  exposed in v1.
+- **Page size** — `board_items` fetches 100 items per request by default (max
+  500) and follows monday's `items_page` cursor automatically, so all items on
+  a board are returned across pages.
 - **No column values** — item column values (status labels, dates, assignees)
   are not decoded in v1; use the `raw` column and DataFusion JSON functions to
   extract them.
