@@ -31,7 +31,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!
 //! # let source_spec = parse_source_manifest_yaml(
-//! #     "name: demo\nversion: 0.1.0\ndsl_version: 3\nbackend: jsonl\ntables: []",
+//! #     "name: demo\nversion: 0.1.0\ndsl_version: 3\nbackend: file\ntables: []",
 //! # )?;
 //! # let sources = vec![QuerySource::new(
 //! #     source_spec,
@@ -63,7 +63,7 @@ mod runtime;
 pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceTables,
+    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,

@@ -202,12 +202,10 @@ fn render_input_block(out: &mut String, input: &ManifestInputSpec) {
 fn backend_label(manifest: &ValidatedSourceManifest) -> &'static str {
     if manifest.as_http().is_some() {
         "http"
-    } else if manifest.as_parquet().is_some() {
-        "parquet"
-    } else if manifest.as_jsonl().is_some() {
-        "jsonl"
+    } else if manifest.as_file().is_some() {
+        "file"
     } else {
-        // ValidatedSourceManifest covers all three backends; unreachable in
+        // ValidatedSourceManifest covers all current backends; unreachable in
         // practice but we avoid `unreachable!` to keep the generator robust.
         "unknown"
     }
@@ -384,7 +382,7 @@ const INDEX_TYPES: &str = concat!(
     "\n## Supported data source types\n\n",
     "Supported sources fall into two categories.\n\n",
     "- **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.\n",
-    "- **File-backed** — Coral reads local Parquet or JSONL files directly.\n",
+    "- **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.\n",
 );
 
 const INDEX_UPGRADING: &str = concat!(

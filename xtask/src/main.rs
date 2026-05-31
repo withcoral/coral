@@ -8,6 +8,7 @@
 //!     (the regression gate for the SOURCE-465 manifest cleanup).
 //!   - `export-skills` exports installable agent skills from the canonical
 //!     plugin tree into a distribution checkout.
+//!   - `perf-check` runs command-level performance regression checks.
 
 #![allow(
     clippy::print_stderr,
@@ -25,6 +26,7 @@ use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
 mod detect;
 mod nav;
+mod perf;
 mod render;
 mod skills;
 
@@ -43,6 +45,8 @@ enum Command {
     DetectTruncations(DetectArgs),
     /// Export installable skills from plugins/coral/skills.
     ExportSkills(ExportSkillsArgs),
+    /// Run command-level performance regression checks.
+    PerfCheck(perf::Args),
 }
 
 #[derive(Debug, clap::Args)]
@@ -64,6 +68,10 @@ struct GenerateDocsArgs {
     /// Path to the community source catalog page to regenerate.
     #[arg(long, default_value = "docs/reference/community-sources.mdx")]
     community_index: PathBuf,
+
+    /// Skip rendering and checking the community source catalog.
+    #[arg(long)]
+    skip_community_sources: bool,
 
     /// Path to the Mintlify navigation file to update.
     #[arg(long, default_value = "docs/docs.json")]
@@ -135,15 +143,13 @@ fn run(command: &Command) -> Result<bool> {
             detect::run(&paths, args.verbose)
         }
         Command::ExportSkills(args) => skills::export(&args.dest),
+        Command::PerfCheck(args) => perf::run(args),
     }
 }
 
 fn generate_docs(args: &GenerateDocsArgs) -> Result<bool> {
     let manifests = load_manifests(&args.sources_dir)?;
     let index_body = render::index_page(&manifests);
-
-    let community_manifests = load_manifests(&args.community_sources_dir)?;
-    let community_index_body = render::community_sources_page(&community_manifests);
 
     let existing_json = fs::read_to_string(&args.docs_json)
         .with_context(|| format!("reading {}", args.docs_json.display()))?;
@@ -153,15 +159,21 @@ fn generate_docs(args: &GenerateDocsArgs) -> Result<bool> {
         .with_context(|| format!("reading {}", args.changelog_source.display()))?;
     let changelog_body = render::changelog_page(&raw_changelog);
 
-    let outputs = vec![
-        GeneratedFile {
-            path: args.index.clone(),
-            body: index_body,
-        },
-        GeneratedFile {
+    let mut outputs = vec![GeneratedFile {
+        path: args.index.clone(),
+        body: index_body,
+    }];
+
+    if !args.skip_community_sources {
+        let community_manifests = load_manifests(&args.community_sources_dir)?;
+        let community_index_body = render::community_sources_page(&community_manifests);
+        outputs.push(GeneratedFile {
             path: args.community_index.clone(),
             body: community_index_body,
-        },
+        });
+    }
+
+    outputs.extend([
         GeneratedFile {
             path: args.docs_json.clone(),
             body: updated_json,
@@ -170,7 +182,7 @@ fn generate_docs(args: &GenerateDocsArgs) -> Result<bool> {
             path: args.changelog_out.clone(),
             body: changelog_body,
         },
-    ];
+    ]);
 
     if args.check {
         Ok(check_mode(&outputs))
@@ -249,4 +261,102 @@ fn find_manifest_file(dir: &Path) -> Option<PathBuf> {
         .into_iter()
         .map(|name| dir.join(name))
         .find(|path| path.exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{GenerateDocsArgs, generate_docs};
+
+    const MINIMAL_MANIFEST: &str = r"
+name: minimal
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.com
+tables:
+  - name: pings
+    description: Ping events
+    request:
+      method: GET
+      path: /ping
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Ping id
+        expr:
+          kind: path
+          path: [id]
+";
+
+    const MINIMAL_DOCS_JSON: &str = r#"{
+  "navigation": {
+    "groups": [
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/source-spec-reference"
+        ]
+      },
+      {
+        "group": "Project",
+        "pages": []
+      }
+    ]
+  }
+}
+"#;
+
+    #[test]
+    fn generate_docs_check_skips_community_catalog_when_requested() {
+        let root = unique_temp_dir("generate-docs-skip-community");
+        let source_dir = root.join("sources/core/minimal");
+        let docs_reference_dir = root.join("docs/reference");
+        let docs_project_dir = root.join("docs/project");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::create_dir_all(&docs_reference_dir).expect("create reference docs dir");
+        fs::create_dir_all(&docs_project_dir).expect("create project docs dir");
+        fs::write(source_dir.join("manifest.yaml"), MINIMAL_MANIFEST).expect("write manifest");
+
+        let docs_json = root.join("docs/docs.json");
+        let changelog_source = root.join("CHANGELOG.md");
+        let community_index = docs_reference_dir.join("community-sources.mdx");
+        fs::write(&docs_json, MINIMAL_DOCS_JSON).expect("write docs json");
+        fs::write(&changelog_source, "# Changelog\n").expect("write changelog");
+
+        let mut args = GenerateDocsArgs {
+            sources_dir: root.join("sources/core"),
+            index: docs_reference_dir.join("bundled-sources.mdx"),
+            community_sources_dir: root.join("missing-community"),
+            community_index: community_index.clone(),
+            skip_community_sources: true,
+            docs_json,
+            changelog_source,
+            changelog_out: docs_project_dir.join("changelog.mdx"),
+            check: false,
+        };
+
+        assert!(generate_docs(&args).expect("write generated docs"));
+        fs::write(&community_index, "stale community catalog")
+            .expect("write stale community index");
+
+        args.check = true;
+        assert!(generate_docs(&args).expect("check generated docs"));
+
+        fs::remove_dir_all(&root).expect("remove temp dir");
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("coral-xtask-{name}-{}-{nonce}", std::process::id()))
+    }
 }

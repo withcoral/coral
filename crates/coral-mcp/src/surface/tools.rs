@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use coral_api::v1::Source;
 use rmcp::{
     ErrorData,
     model::{CallToolResult, Content, Tool, ToolAnnotations},
@@ -43,10 +42,10 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
-pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
+pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
     Tool::new(
         "sql",
-        sql_tool_description(sources, visible_table_count),
+        sql_tool_description(visible_table_count),
         json_object_schema(&json!({
             "type": "object",
             "required": ["sql"],
@@ -379,7 +378,7 @@ pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorDat
     Ok(result)
 }
 
-fn sql_tool_description(_sources: &[Source], visible_table_count: usize) -> String {
+fn sql_tool_description(visible_table_count: usize) -> String {
     if visible_table_count == 0 {
         "Execute read-only SQL against the Coral database. No user tables are currently visible."
             .to_string()

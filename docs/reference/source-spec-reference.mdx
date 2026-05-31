@@ -7,7 +7,10 @@ Coral is extensible through source specs. These are YAML files that describe how
 
 <Tip>
   For a guided walkthrough, see [Write a custom
-  source](/guides/write-a-custom-source).
+  source](/guides/write-a-custom-source). If you are adding OAuth credential
+  setup, start with [OAuth credential
+  setup](/guides/write-a-custom-source#oauth-credential-setup), then use this
+  page for field-level details.
 </Tip>
 
 ## Top-level fields
@@ -28,7 +31,7 @@ test_queries:
 | `name`        | Source name, also used as the SQL schema name      |
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http`, `jsonl`, or `parquet` |
+| `backend`     | How data is fetched: `http` or `file` |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
 
 ## Test queries
@@ -247,16 +250,18 @@ Column-expression templates do not support `secret`, `variable`, or `state` name
 
 ## File-backed tables
 
-For `jsonl` and `parquet`, each table points at a file location:
+For `backend: file`, each table declares its own `format` and points at a
+location:
 
 ```yaml
 name: local_messages
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: messages
     description: Demo messages
+    format: jsonl
     source:
       location: file:///absolute/path/to/demo-data/
       glob: "**/*.jsonl"
@@ -271,9 +276,125 @@ tables:
 
 Notes:
 
-- `jsonl` currently expects `file://` locations
-- `parquet` supports `file://` and `s3://` locations
-- if you omit `glob`, Coral uses a backend-specific default
+- Supported formats are `parquet`, `jsonl`, `json`, and `csv`
+- Supported transports are `file://` and `s3://` for every file format
+- If you omit `glob`, Coral uses a format-specific default
+
+### JSONL and JSON
+
+`jsonl` reads newline-delimited JSON objects. `json` reads JSON arrays of
+objects.
+
+Tables using either format must declare columns. Declare nested object or array
+fields as `type: Json`; Coral exposes those values as JSON text so they can be
+queried with `json_get_*` functions such as `json_get_str(payload, 'id')`.
+
+### CSV
+
+CSV tables must declare columns. They support `format_options.has_header` and
+`format_options.delimiter`.
+
+### Parquet
+
+Parquet tables can infer columns when `columns: []` is used.
+
+### Shared file table constraints
+
+File-backed tables do not support declared `filters`, virtual columns, or
+`columns[*].expr`; use SQL projections and predicates instead.
+
+For `s3://` locations, declare the S3 object-store policy under the table
+source instead of relying on magic input names:
+
+```yaml
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: us-east-1
+  AWS_ACCESS_KEY_ID:
+    kind: secret
+  AWS_SECRET_ACCESS_KEY:
+    kind: secret
+tables:
+  - name: events
+    description: S3 events
+    format: jsonl
+    source:
+      location: s3://example-bucket/events/
+      object_store:
+        type: s3
+        region: "{{input.AWS_REGION}}"
+        auth:
+          type: access_key
+          access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+          secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+```
+
+Use `auth: { type: instance_profile }` when the runtime should use the host's
+AWS instance profile.
+
+### File path partitions
+
+File-backed tables can expose partition columns derived from object paths. When
+`path` is omitted, partitions use Hive-style path segments:
+
+Partition columns support `Utf8`, `Int64`, `Boolean`, `Float64`, and `Json`;
+`Timestamp` partitions are not supported.
+
+```yaml
+source:
+  location: file:///absolute/path/to/events/
+  glob: "**/*.jsonl"
+  partitions:
+    - name: year
+      type: Int64
+    - name: month
+      type: Int64
+```
+
+This expects paths such as:
+
+```text
+year=2026/month=05/events.jsonl
+```
+
+For JSON and JSONL tables, positional path segments are also supported:
+
+```yaml
+source:
+  location: file:///Users/james/.codex/sessions/
+  glob: "20??/**/*.jsonl"
+  partitions:
+    - name: year
+      type: Int64
+      path:
+        kind: segment
+        index: 0
+    - name: month
+      type: Int64
+      path:
+        kind: segment
+        index: 1
+    - name: day
+      type: Int64
+      path:
+        kind: segment
+        index: 2
+```
+
+This maps paths such as `2026/05/14/session.jsonl` to partition columns
+`year = 2026`, `month = 5`, and `day = 14`. SQL predicates on partition columns
+can prune unrelated files before JSON rows are decoded.
+
+For JSON and JSONL tables, declaring partitions makes the path layout part of
+the table contract. Files that do not provide every declared partition value in
+the configured layout fail the query; matching paths with invalid typed
+partition values also fail the query.
+
+Parquet and CSV tables use DataFusion's native listing table reader and support
+Hive-style partitioning. Positional segment partitioning is currently limited to
+JSON and JSONL tables because those formats already use Coral's custom JSON row
+mapper.
 
 ## HTTP-backed tables
 
@@ -295,8 +416,8 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.API_TOKEN}}
+      from: bearer
+      key: API_TOKEN
 tables:
   - name: messages
     description: Messages from the demo API
@@ -439,11 +560,39 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.API_TOKEN}}
+      from: bearer
+      key: API_TOKEN
 ```
 
-`headers` entries share the same shape as request/table headers, but only `from: literal`, `from: template`, and `from: input` are meaningful here — filter and state tokens have no value at auth time.
+`headers` entries share the same value-source shape as request/table headers,
+but auth is source-scoped: `from: literal`, `from: template`, `from: input`,
+`from: bearer`, and `from: one_of` are meaningful here. Filter, argument, and
+state values have no value at auth time. Use `from: bearer` when Coral stores a
+raw token but the API expects an `Authorization: Bearer <token>` header.
+
+Use `from: one_of` when a source supports multiple credential shapes. Coral
+uses the first value that is present and non-empty:
+
+```yaml
+inputs:
+  API_KEY:
+    kind: secret
+    required: false
+  OAUTH_ACCESS_TOKEN:
+    kind: secret
+    required: false
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: API_KEY
+        - from: bearer
+          key: OAUTH_ACCESS_TOKEN
+```
 
 #### `BasicAuth`
 
@@ -572,6 +721,8 @@ Request query params, body fields, and headers support these `from` values:
 | `arg_split` | Split a source function argument string and serialize one part as a string |
 | `arg_split_int` | Split a source function argument string and serialize one part as a JSON integer |
 | `input` | Read a manifest-declared source input (variable/secret) by key |
+| `bearer` | Read a manifest-declared secret input by key and serialize it as `Bearer <value>` |
+| `one_of` | Resolve nested value sources in order and use the first present, non-empty value |
 | `state` | Read pagination/runtime state |
 | `now_epoch_minus_seconds` | Emit the current Unix epoch seconds minus the configured offset |
 
@@ -717,6 +868,8 @@ pagination:
 
 HTTP source specs can declare the variables and secrets this source needs under a top-level `inputs` map. Inputs are where credentials and other configuration values are set up. They are not where those values are sent. Runtime request fields, such as `auth`, `request_headers`, table request headers, query params, and body fields, decide where stored inputs are used.
 
+### Input map basics
+
 At install time, `coral source add` collects each input from an environment variable matching the key, or prompts interactively when you pass `--interactive`.
 
 - **Variables**: non-secret configuration like base URLs or organization IDs
@@ -737,28 +890,40 @@ auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: template
-      template: Bearer {{input.API_TOKEN}}
+      from: bearer
+      key: API_TOKEN
 ```
 
-Rules:
+### Input rules
 
 - `kind: variable` values are stored with source variables
 - `kind: secret` values are stored with source secrets
 - `default` is allowed only for variables
 - `hint` is optional and shown alongside the input during `coral source add --interactive`
-- references elsewhere in the manifest use `{{input.KEY}}` templates or `from: input`
+- references elsewhere in the manifest use `{{input.KEY}}` templates, `from: input`, or wrappers such as `from: bearer`
 - credential-like inputs such as API keys, tokens, passwords, secrets, private keys, and bearer or authorization values must be `kind: secret`; Coral rejects those names as variables because variable values are visible through source APIs and `coral.inputs`
 - input keys must not start with Coral's reserved internal prefix `__coral`
 - declaring an input does not add it to any request by itself; reference it from `auth`, headers, query params, body fields, or other runtime request configuration where it should be used
 
+### Credential methods
+
 Secret inputs can also declare `credential.methods` metadata for install-time
-credential retrieval choices. When `credential` is omitted, Coral collects the
-secret the same way as `type: source_config`: from an environment variable by
-default, or from an interactive prompt when `coral source add --interactive` is
-used. `credential.methods` only controls how the secret is collected; runtime
-request authentication is still defined by `auth` or request headers that
-reference the input.
+credential retrieval choices. `credential.methods` only controls how the secret
+is collected; runtime request authentication is still defined by `auth` or
+request headers that reference the input.
+
+Supported credential method types:
+
+- `source_config`: read the secret from an environment variable by default, or
+  from an interactive prompt when `coral source add --interactive` is used. When
+  `credential` is omitted, Coral uses this behavior.
+- `oauth`: run an OAuth device-code or authorization-code flow and store the
+  returned access token in the same source secret.
+
+Use `type: oauth` when the provider should issue the source secret through a
+device-code or browser-based OAuth setup instead of asking the user to paste a
+token. If you want to support both flows, list the OAuth method first and add a
+`source_config` fallback for users who already have a token.
 
 ```yaml
 inputs:
@@ -771,16 +936,12 @@ inputs:
           description: Use OAuth instead of pasting a token.
           oauth:
             flow:
-              type: authorization_code
-              pkce: required
-            redirect_uri: http://127.0.0.1:53682/oauth/callback
-            redirect_uri_port_mode: fixed
+              type: device_code
             endpoints:
-              authorization_url: https://github.com/login/oauth/authorize
+              device_authorization_url: https://github.com/login/device/code
               token_url: https://github.com/login/oauth/access_token
             client:
               id:
-                default: coral-owned-client-id
                 input: GITHUB_OAUTH_CLIENT_ID
             scopes:
               scope:
@@ -792,12 +953,43 @@ inputs:
           label: Paste token
 ```
 
-Supported credential method types are `source_config` and `oauth`.
-`source_config` uses the normal source input path: an environment variable by
-default, or an interactive prompt when `coral source add --interactive` is
-used. OAuth currently supports authorization-code flow with a loopback HTTP
-callback URI: `http://127.0.0.1[:<port>]/<path>` or
-`http://localhost[:<port>]/<path>`.
+### OAuth flow and client settings
+
+OAuth supports device-code flow and authorization-code flow.
+
+For device-code flow, declare `flow.type: device_code`,
+`endpoints.device_authorization_url`, `endpoints.token_url`, and a public
+client ID through `client.id.default`, `client.id.input`, or both. Device-code
+OAuth uses a public client ID only: `client.secret` must not be declared, and no
+callback URL, loopback listener, client secret, or PKCE setting is required.
+
+For authorization-code flow, declare `flow.type: authorization_code`, an
+explicit `pkce` of `required` or `disabled`, `redirect_uri`,
+`endpoints.authorization_url`, and `endpoints.token_url`. Public clients can
+declare `client.id.default`, `client.id.input`, or both; an interactive `input`
+value overrides `default`. Authorization-code OAuth methods whose token
+endpoint requires client-secret authentication must prompt for both OAuth
+client values: set `client.id.input`, `client.secret.input`, and a
+`client.secret.transport` of `basic_auth` or `request_body`. Client secrets are
+sent only to the token endpoint and are never included in the authorization URL.
+They may be stored as internal credential metadata so Coral can refresh the
+access token without prompting the user again.
+
+OAuth endpoint URLs may include `{{input.KEY}}` templates for declared
+`kind: variable` inputs, which Coral renders during OAuth credential setup. Use
+this for non-secret endpoint components such as a Microsoft tenant ID or site
+domain. OAuth endpoint templates do not support secret inputs, filters,
+function arguments, state, or inline defaults.
+
+Scopes are declared under `scopes.scope`; `delimiter: space` represents
+`scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral stores OAuth
+metadata alongside the source secret and preserves rotated refresh tokens when
+the provider returns a new one during refresh.
+
+### OAuth redirect URIs
+
+Authorization-code flow currently supports loopback HTTP callback URIs:
+`http://127.0.0.1[:<port>]/<path>` or `http://localhost[:<port>]/<path>`.
 
 `redirect_uri_port_mode` controls how Coral binds the loopback port. When this
 field is omitted, Coral treats `redirect_uri` port `0` as `random`; otherwise it
@@ -809,24 +1001,25 @@ defaults to `fixed`.
   omit the port or use port `0`; Coral sends the effective URI with the assigned
   port in both the authorization request and the token exchange.
 
-When users provide their own OAuth client ID, they must configure the matching
-loopback redirect behavior in the OAuth app. For OAuth methods, Coral starts
-the loopback flow and returns the provider authorization URL. After the
+When users provide their own authorization-code OAuth client ID, they must
+configure the matching loopback redirect behavior in the OAuth app. Coral
+starts the loopback flow and returns the provider authorization URL. After the
 callback, Coral exchanges the code, stores the access token as the source
-secret, and stores any refresh token as internal credential metadata.
+secret, and stores refresh metadata internally. When the provider issues a
+refresh token, Coral uses it transparently for source validation and queries,
+so users should not need to reconnect the source just because a short-lived
+access token expires. If the provider does not issue a refresh token, users may
+need to reconnect the source after the access token expires.
+The CLI also accepts the final loopback redirect URL in the terminal while it
+waits, which lets users complete OAuth when their browser cannot reach the
+machine running Coral directly.
 
-`flow.type` and `pkce` are required. Unspecified protobuf enum values are
-invalid and are rejected rather than treated as defaults. `pkce` is either
-`required` or `disabled`. Public clients can declare
-`client.id.default`, `client.id.input`, or both; an interactive `input` value
-overrides `default`. Confidential clients add `client.secret.input` and a
-required `transport` of `basic_auth` or `request_body`. Client secrets are sent
-only to the token endpoint and are never included in the authorization URL.
+### Inspecting configured inputs
 
-Scopes are declared under `scopes.scope`; `delimiter: space` represents
-`scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral may store
-refresh tokens and OAuth metadata alongside the source secret, but automatic
-token refresh is not implemented yet.
+OAuth stores the token response `access_token` as the source secret value. If a
+runtime auth header needs a bearer value, use `from: bearer` with that input
+key. If the source also accepts a full pasted API-key header, wrap the API-key
+input and OAuth bearer input in `from: one_of`.
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config

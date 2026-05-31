@@ -41,10 +41,11 @@ fn write_fixture_manifest(root: &Path) -> PathBuf {
 name: local_messages
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: events
     description: Fixture events
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -57,6 +58,7 @@ tables:
         type: Utf8
   - name: messages
     description: Fixture messages
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -69,6 +71,7 @@ tables:
         type: Utf8
   - name: sessions
     description: Fixture sessions
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -79,9 +82,6 @@ tables:
         type: Utf8
       - name: text
         type: Utf8
-    filters:
-      - name: sessionId
-        required: true
 "#,
         data_dir.display(),
         data_dir.display(),
@@ -673,9 +673,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let required_columns = required_columns
         .structured_content
         .expect("structured content");
-    assert_eq!(required_columns["total"], 1);
-    assert_eq!(required_columns["columns"][0]["column_name"], "sessionId");
-    assert_eq!(required_columns["columns"][0]["is_required_filter"], true);
+    assert_eq!(required_columns["total"], 0);
     assert_matches_output_schema(list_columns_tool, &required_columns);
 
     let filtered_columns = client

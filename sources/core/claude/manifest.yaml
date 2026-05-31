@@ -1,0 +1,120 @@
+name: claude
+version: 0.1.0
+dsl_version: 3
+backend: file
+description: >-
+  Query local Claude Code transcript events and prompt history from ~/.claude.
+test_queries:
+  - SELECT * FROM claude.events LIMIT 1
+  - SELECT * FROM claude.history LIMIT 1
+tables:
+  - name: events
+    description: Claude Code transcript events partitioned by encoded project path.
+    format: jsonl
+    guide: |
+      Reads Claude Code transcript JSONL files under
+      `~/.claude/projects/<project-slug>/`, including nested subagent
+      transcripts. Filter on `project_slug` to prune project directories.
+
+      Some Claude fields use camelCase names from the on-disk JSON. Quote those
+      identifiers in SQL, for example `"sessionId"` and `"parentUuid"`.
+      Use JSON functions such as `json_get_str(message, 'role')` for nested
+      transcript message fields.
+    source:
+      location: file://~/.claude/projects/
+      glob: "**/*.jsonl"
+      partitions:
+        - name: project_slug
+          type: Utf8
+          path:
+            kind: segment
+            index: 0
+    columns:
+      - name: timestamp
+        type: Utf8
+      - name: type
+        type: Utf8
+      - name: subtype
+        type: Utf8
+      - name: level
+        type: Utf8
+      - name: uuid
+        type: Utf8
+      - name: parentUuid
+        type: Utf8
+      - name: sessionId
+        type: Utf8
+      - name: promptId
+        type: Utf8
+      - name: messageId
+        type: Utf8
+      - name: requestId
+        type: Utf8
+      - name: agentId
+        type: Utf8
+      - name: slug
+        type: Utf8
+      - name: sourceToolAssistantUUID
+        type: Utf8
+      - name: toolUseID
+        type: Utf8
+      - name: parentToolUseID
+        type: Utf8
+      - name: isSidechain
+        type: Boolean
+      - name: isMeta
+        type: Boolean
+      - name: isSnapshotUpdate
+        type: Boolean
+      - name: isApiErrorMessage
+        type: Boolean
+      - name: userType
+        type: Utf8
+      - name: entrypoint
+        type: Utf8
+      - name: cwd
+        type: Utf8
+      - name: version
+        type: Utf8
+      - name: gitBranch
+        type: Utf8
+      - name: permissionMode
+        type: Utf8
+      - name: content
+        type: Utf8
+      - name: lastPrompt
+        type: Utf8
+      - name: message
+        type: Json
+      - name: data
+        type: Json
+      - name: attachment
+        type: Json
+      - name: snapshot
+        type: Json
+      - name: toolUseResult
+        type: Json
+      - name: mcpMeta
+        type: Json
+      - name: error
+        type: Json
+  - name: history
+    description: Claude Code prompt history.
+    format: jsonl
+    guide: |
+      Reads `~/.claude/history.jsonl`. The `timestamp` column is the millisecond
+      epoch value recorded by Claude Code.
+    source:
+      location: file://~/.claude/
+      glob: history.jsonl
+    columns:
+      - name: display
+        type: Utf8
+      - name: timestamp
+        type: Int64
+      - name: project
+        type: Utf8
+      - name: sessionId
+        type: Utf8
+      - name: pastedContents
+        type: Json

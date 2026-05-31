@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.3.0" # x-release-please-version
+version = "0.4.1" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.95"
 
@@ -54,9 +54,12 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
+crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
 datafusion = "53"
+datafusion-datasource = "53"
+datafusion-datasource-json = "53"
 datafusion-functions-json = "0.53"
-datafusion-tracing = "53.0.1"
+datafusion-tracing = "53.0.2"
 dialoguer = "0.12"
 etcetera = "0.11"
 fs2 = "0.4"
@@ -65,6 +68,10 @@ glob = "0.3"
 http-body = "1"
 httpdate = "1.0.3"
 jsonschema = { version = "0.18", default-features = false }
+keyring-core = { version = "1.0.0", default-features = false }
+apple-native-keyring-store = { version = "1.0.0", default-features = false, features = ["keychain"] }
+windows-native-keyring-store = { version = "1.0.0", default-features = false }
+zbus-secret-service-keyring-store = { version = "1.0.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
 object_store = { version = "0.13.2", features = ["aws"] }
 opentelemetry = "0.31.0"
 opentelemetry-appender-tracing = "0.31.0"

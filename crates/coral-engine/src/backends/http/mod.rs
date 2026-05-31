@@ -9,13 +9,13 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
-use crate::RequestAuthenticator;
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, SourceTableFunctions, build_registered_inputs, build_registered_table,
-    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
+    RegisteredSource, RegisteredTable, SourceTableFunctions, build_registered_inputs,
+    build_registered_table, build_registered_table_function, internal_table_function_name,
+    registered_columns_from_specs, required_filter_names,
 };
+use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
@@ -35,29 +35,32 @@ mod trace;
 mod transport;
 mod url;
 
-pub(crate) use client::HttpSourceClient;
+pub(crate) use client::{HttpSourceClient, HttpSourceClientRuntime};
 pub(crate) use error::ProviderQueryError;
 pub(crate) use provider::HttpSourceTableProvider;
 
 #[derive(Debug, Clone)]
 struct HttpCompiledSource {
     manifest: HttpSourceManifest,
-    source_secrets: std::collections::BTreeMap<String, String>,
-    source_variables: std::collections::BTreeMap<String, String>,
+    source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    body_capture_max_bytes: Option<usize>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
 pub(crate) fn compile_source(
     manifest: HttpSourceManifest,
-    source_secrets: std::collections::BTreeMap<String, String>,
-    source_variables: std::collections::BTreeMap<String, String>,
+    source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    body_capture_max_bytes: Option<usize>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
-        source_secrets,
-        source_variables,
+        source_input_resolution,
         request_authenticators,
+        body_capture_max_bytes,
+        source_input_resolver,
     })
 }
 
@@ -67,9 +70,10 @@ pub(crate) fn compile_manifest(
 ) -> Box<dyn CompiledBackendSource> {
     compile_source(
         manifest.clone(),
-        request.source_secrets.clone(),
-        request.source_variables.clone(),
+        SourceInputResolutionContext::from_query_source(request.source),
         request.request_authenticators.clone(),
+        request.runtime_context.http_body_capture_max_bytes,
+        request.source_input_resolver.clone(),
     )
 }
 
@@ -83,12 +87,24 @@ impl CompiledBackendSource for HttpCompiledSource {
         &self.manifest.common.name
     }
 
-    async fn register(&self, _ctx: &SessionContext) -> Result<BackendRegistration> {
-        let backend = HttpSourceClient::from_manifest(
+    async fn register(
+        &self,
+        _ctx: &SessionContext,
+        registration: &BackendRegistrationContext,
+    ) -> Result<BackendRegistration> {
+        let http = client::default_http_client(registration, &self.manifest.common.name)?;
+        let runtime = HttpSourceClientRuntime::new(
+            self.source_input_resolution.clone(),
+            self.source_input_resolver.clone(),
+            self.body_capture_max_bytes,
+            http,
+        );
+        let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
             &self.manifest,
-            &self.source_secrets,
-            &self.source_variables,
+            self.source_input_resolution.secrets(),
+            self.source_input_resolution.variables(),
             &self.request_authenticators,
+            runtime,
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
@@ -122,10 +138,15 @@ impl CompiledBackendSource for HttpCompiledSource {
             ));
         }
 
-        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let secret_keys = self
+            .source_input_resolution
+            .secrets()
+            .keys()
+            .cloned()
+            .collect();
         let inputs = build_registered_inputs(
-            &self.manifest.declared_inputs,
-            &self.source_variables,
+            self.source_input_resolution.declared_inputs(),
+            self.source_input_resolution.variables(),
             &secret_keys,
         );
 
@@ -190,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn required_secret_names_exclude_variable_inputs() {
+    fn required_secret_names_exclude_optional_and_variable_inputs() {
         let manifest = parse_source_manifest_value(json!({
             "dsl_version": 3,
             "name": "alpha",
@@ -198,7 +219,8 @@ mod tests {
             "backend": "http",
             "base_url": "https://api.example.com",
             "inputs": {
-                "API_BASE": { "kind": "variable", "default": "https://api.example.com" }
+                "API_BASE": { "kind": "variable", "default": "https://api.example.com" },
+                "OPTIONAL_TOKEN": { "kind": "secret", "required": false }
             },
             "tables": [{
                 "name": "items",

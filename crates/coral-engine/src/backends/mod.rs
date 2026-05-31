@@ -70,36 +70,38 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{CoreError, QuerySource, RequestAuthenticator};
+use crate::{CoreError, QuerySource, RequestAuthenticator, SourceInputResolver};
 use coral_spec::ValidatedSourceManifest;
 
 pub(crate) mod common;
 pub(crate) use common::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, RegisteredTableFunction, SourceTableFunctions, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
-    partition_columns_to_arrow, registered_columns_from_schema, registered_columns_from_specs,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
+    RegisteredSource, RegisteredTable, RegisteredTableFunction, SourceTableFunctions,
+    build_registered_inputs, build_registered_table, build_registered_table_function,
+    internal_table_function_name, registered_columns_from_schema, registered_columns_from_specs,
     required_filter_names, schema_from_columns,
 };
 
+pub(crate) mod file;
 pub(crate) mod http;
-pub(crate) mod jsonl;
 pub(crate) mod mcp;
-pub(crate) mod parquet;
 pub(crate) mod shared;
 
 pub(crate) fn compile_query_source(
     source: &QuerySource,
     runtime_context: &crate::QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     compile_validated_manifest(
         source.source_spec(),
         &BackendCompileRequest {
+            source,
             runtime_context,
             source_secrets: source.secrets().clone(),
             source_variables: source.variables().clone(),
             request_authenticators,
+            source_input_resolver,
         },
     )
 }
@@ -112,13 +114,20 @@ pub(crate) fn compile_source_manifest(
     runtime_context: &crate::QueryRuntimeContext,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     let request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>> = HashMap::new();
+    let source = QuerySource::new(
+        manifest.clone(),
+        source_variables.clone(),
+        source_secrets.clone(),
+    );
     compile_validated_manifest(
         manifest,
         &BackendCompileRequest {
+            source: &source,
             runtime_context,
             source_secrets,
             source_variables,
             request_authenticators: &request_authenticators,
+            source_input_resolver: None,
         },
     )
 }
@@ -130,11 +139,8 @@ pub(crate) fn compile_validated_manifest(
     if let Some(http_manifest) = manifest.as_http() {
         return Ok(http::compile_manifest(http_manifest, request));
     }
-    if let Some(parquet_manifest) = manifest.as_parquet() {
-        return Ok(parquet::compile_manifest(parquet_manifest, request));
-    }
-    if let Some(jsonl_manifest) = manifest.as_jsonl() {
-        return jsonl::compile_manifest(jsonl_manifest, request);
+    if let Some(file_manifest) = manifest.as_file() {
+        return Ok(file::compile_manifest(file_manifest, request));
     }
     if let Some(mcp_manifest) = manifest.as_mcp() {
         return Ok(mcp::compile_manifest(mcp_manifest, request));

@@ -1,8 +1,10 @@
 use super::*;
-use crate::QuerySource;
 use crate::runtime::catalog;
 use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
 use crate::runtime::source_functions::SourceFunctionRegistry;
+use crate::{
+    QuerySource, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -10,6 +12,7 @@ use rmcp::model::JsonObject;
 use serde_json::Value;
 use serde_json::json;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
 struct FakeMcpCaller {
@@ -107,6 +110,25 @@ impl McpToolCaller for FakePaginatedMcpTableCaller {
     }
 }
 
+#[derive(Debug)]
+struct RotatingInputResolver {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl SourceInputResolver for RotatingInputResolver {
+    async fn resolve_inputs(
+        &self,
+        _source: &SourceInputResolutionContext,
+    ) -> std::result::Result<BTreeMap<String, String>, SourceInputResolverError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(BTreeMap::from([(
+            "API_TOKEN".to_string(),
+            format!("fresh-token-{call}"),
+        )]))
+    }
+}
+
 fn mcp_manifest() -> coral_spec::ValidatedSourceManifest {
     coral_spec::parse_source_manifest_value(json!({
         "dsl_version": 3,
@@ -188,25 +210,35 @@ fn compile_sources(
     manifest: coral_spec::ValidatedSourceManifest,
     caller: Arc<dyn McpToolCaller>,
 ) -> Vec<CompiledQuerySource> {
+    compile_sources_with_inputs(manifest, caller, BTreeMap::new(), None)
+}
+
+fn compile_sources_with_inputs(
+    manifest: coral_spec::ValidatedSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+    secrets: BTreeMap<String, String>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+) -> Vec<CompiledQuerySource> {
     let mcp_manifest = manifest.as_mcp().expect("mcp manifest").clone();
     let variables = BTreeMap::new();
-    let secrets = BTreeMap::new();
+    let source = QuerySource::new(manifest, variables.clone(), secrets);
+    let source_input_resolution = SourceInputResolutionContext::from_query_source(&source);
     let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
         &mcp_manifest.declared_inputs,
-        &secrets,
-        &variables,
+        source_input_resolution.secrets(),
+        source_input_resolution.variables(),
     ));
-    let compiled = compile_source_with_caller(
-        mcp_manifest,
-        secrets.clone(),
-        variables.clone(),
-        resolved_inputs,
-        caller,
-    );
-    vec![CompiledQuerySource {
-        source: QuerySource::new(manifest, variables, secrets),
-        compiled,
-    }]
+    let source_inputs = match source_input_resolver {
+        Some(resolver) => Arc::new(McpSourceInputs::with_resolver(
+            Arc::clone(&resolved_inputs),
+            source_input_resolution.clone(),
+            resolver,
+        )),
+        None => Arc::new(McpSourceInputs::static_inputs(resolved_inputs)),
+    };
+    let compiled =
+        compile_source_with_caller(mcp_manifest, source_input_resolution, source_inputs, caller);
+    vec![CompiledQuerySource { source, compiled }]
 }
 
 #[tokio::test]
@@ -915,6 +947,111 @@ fn mcp_table_with_cursor_pagination_manifest() -> coral_spec::ValidatedSourceMan
     .expect("pagination manifest should parse")
 }
 
+fn mcp_server_env_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "inputs": {
+            "API_TOKEN": { "kind": "secret" }
+        },
+        "server": {
+            "transport": "stdio",
+            "command": "unused",
+            "env": [{
+                "name": "TOKEN",
+                "from": "input",
+                "key": "API_TOKEN"
+            }]
+        },
+        "tables": [{
+            "name": "issues",
+            "description": "issues",
+            "tool": "list_issues",
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("server env manifest should parse")
+}
+
+fn mcp_table_with_input_tool_arg_and_cursor_pagination_manifest()
+-> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "inputs": {
+            "API_TOKEN": { "kind": "secret" }
+        },
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "issues with cursor pagination",
+            "tool": "list_issues",
+            "tool_args": {
+                "token": { "from": "input", "key": "API_TOKEN" }
+            },
+            "pagination": {
+                "cursor_arg": "cursor",
+                "response_cursor_path": ["meta", "nextCursor"],
+                "max_pages": 3
+            },
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("pagination manifest should parse")
+}
+
+#[tokio::test]
+async fn stdio_env_resolves_source_inputs_for_each_tool_call() {
+    let manifest = mcp_server_env_manifest();
+    let mcp_manifest = manifest.as_mcp().expect("mcp manifest").clone();
+    let variables = BTreeMap::new();
+    let secrets = BTreeMap::from([("API_TOKEN".to_string(), "stale-token".to_string())]);
+    let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
+        &mcp_manifest.declared_inputs,
+        &secrets,
+        &variables,
+    ));
+    let resolver_calls = Arc::new(AtomicUsize::new(0));
+    let source = QuerySource::new(manifest, variables, secrets);
+    let source_inputs = Arc::new(McpSourceInputs::with_resolver(
+        resolved_inputs,
+        SourceInputResolutionContext::from_query_source(&source),
+        Arc::new(RotatingInputResolver {
+            calls: Arc::clone(&resolver_calls),
+        }),
+    ));
+    let caller = StdioMcpToolCaller {
+        source_name: mcp_manifest.common.name.clone(),
+        server: mcp_manifest.server,
+        source_inputs,
+    };
+
+    let first = caller
+        .resolved_server_env()
+        .await
+        .expect("first env render");
+    let second = caller
+        .resolved_server_env()
+        .await
+        .expect("second env render");
+
+    assert_eq!(first, [("TOKEN".to_string(), "fresh-token-1".to_string())]);
+    assert_eq!(second, [("TOKEN".to_string(), "fresh-token-2".to_string())]);
+    assert_eq!(resolver_calls.load(Ordering::SeqCst), 2);
+}
+
 #[tokio::test]
 async fn limit_binding_pushes_sql_limit_into_tool_arg() {
     let ctx = SessionContext::new();
@@ -1005,6 +1142,48 @@ async fn limit_binding_omits_arg_when_no_limit_set() {
         "unbounded scan should not pass page_size: {:?}",
         call.1
     );
+}
+
+#[tokio::test]
+async fn mcp_table_tool_args_resolve_source_inputs_for_each_tool_call() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakePaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let resolver_calls = Arc::new(AtomicUsize::new(0));
+    register_test_sources(
+        &ctx,
+        compile_sources_with_inputs(
+            mcp_table_with_input_tool_arg_and_cursor_pagination_manifest(),
+            caller.clone(),
+            BTreeMap::from([("API_TOKEN".to_string(), "stale-token".to_string())]),
+            Some(Arc::new(RotatingInputResolver {
+                calls: Arc::clone(&resolver_calls),
+            })),
+        ),
+    );
+
+    let _ = ctx
+        .sql("SELECT id FROM test_mcp.issues ORDER BY id")
+        .await
+        .expect("pagination query should plan")
+        .collect()
+        .await
+        .expect("pagination query should execute");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 2);
+    let first_call = calls.first().expect("first call");
+    let second_call = calls.get(1).expect("second call");
+    assert_eq!(
+        first_call.1.get("token"),
+        Some(&Value::String("fresh-token-1".to_string()))
+    );
+    assert_eq!(
+        second_call.1.get("token"),
+        Some(&Value::String("fresh-token-2".to_string()))
+    );
+    assert_eq!(resolver_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

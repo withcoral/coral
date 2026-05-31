@@ -10,27 +10,29 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthResponse, CredentialMetadata, DeleteSourceRequest,
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse,
-    OAuthAuthorizationCodeCredentialMethod, OAuthCredentialAuthorization, OAuthCredentialClient,
-    OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialCompleted,
-    OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialRetrieval, OAuthCredentialScope,
-    OAuthCredentialScopes, OauthCredentialClientSecretTransport, OauthCredentialPkceMode,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
+    OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
+    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
+    OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
+    OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
     OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
-    SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod, SourceInfo,
-    SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput,
-    SourceVariable, SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
+    SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
+    SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
+    SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_spec::{
     ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
-    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthPkceMode,
-    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthFlowKind,
+    ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
+use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
@@ -46,6 +48,7 @@ use crate::transport::{
 };
 use crate::workspaces::WorkspaceName;
 use tokio::sync::mpsc;
+use tokio::task;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt as _;
 
@@ -163,11 +166,16 @@ impl SourceServiceApi for SourceService {
                 name: bundled_name,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
-            let installed = sources
-                .create_bundled_source(&workspace_name, &command)
-                .map_err(app_status)?;
+            let response_workspace_name = workspace_name.clone();
+            let installed = run_blocking_source_operation(move || {
+                sources.create_bundled_source(&workspace_name, &command)
+            })
+            .await?;
             Ok(Response::new(CreateBundledSourceResponse {
-                source: Some(installed_source_to_proto(&workspace_name, installed)),
+                source: Some(installed_source_to_proto(
+                    &response_workspace_name,
+                    installed,
+                )),
             }))
         })
         .await
@@ -229,9 +237,10 @@ impl SourceServiceApi for SourceService {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
                 };
-                let installed = sources
-                    .import_source(&workspace_name, &command)
-                    .map_err(app_status)?;
+                let installed = run_blocking_source_operation(move || {
+                    sources.import_source(&workspace_name, &command)
+                })
+                .await?;
                 let response = ImportSourceResponse {
                     event: Some(import_source_response::Event::Source(
                         installed_source_to_proto(&response_workspace_name, installed),
@@ -275,9 +284,10 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            sources
-                .delete_source(&workspace_name, &source_name)
-                .map_err(app_status)?;
+            run_blocking_source_operation(move || {
+                sources.delete_source(&workspace_name, &source_name)
+            })
+            .await?;
             Ok(Response::new(DeleteSourceResponse {}))
         })
         .await
@@ -314,6 +324,18 @@ type CreateBundledSourceWithOAuthResponseStreamBox =
 type ImportSourceResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
+
+async fn run_blocking_source_operation<T, F>(operation: F) -> Result<T, Status>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    let span = tracing::Span::current();
+    task::spawn_blocking(move || span.in_scope(operation))
+        .await
+        .map_err(|error| Status::internal(format!("source operation task failed: {error}")))?
+        .map_err(app_status)
+}
 
 fn import_source_response_stream<F, Fut>(
     response_workspace_name: WorkspaceName,
@@ -454,10 +476,16 @@ fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> Impo
             input_key,
             authorization_url,
             expires_in_seconds,
+            user_code,
+            verification_uri,
+            verification_uri_complete,
         } => import_source_response::Event::OauthAuthorization(OAuthCredentialAuthorization {
             input_key,
             authorization_url,
             expires_in_seconds,
+            user_code: user_code.unwrap_or_default(),
+            verification_uri: verification_uri.unwrap_or_default(),
+            verification_uri_complete: verification_uri_complete.unwrap_or_default(),
         }),
         ImportSourceWithCredentialsEvent::OAuthCompleted {
             input_key,
@@ -491,6 +519,7 @@ fn create_bundled_source_with_o_auth_response_from_import_response(
 }
 
 fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSource) -> Source {
+    let credential_storage = source.credential_storage_for_material();
     Source {
         workspace: Some(workspace_to_proto(workspace_name)),
         name: source.name.as_str().to_string(),
@@ -509,6 +538,7 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
             .map(|(key, value)| SourceVariable { key, value })
             .collect(),
         origin: proto_source_origin(source.origin) as i32,
+        credential_storage: proto_source_credential_storage(credential_storage) as i32,
     }
 }
 
@@ -516,6 +546,16 @@ fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
     match origin {
         SourceOrigin::Bundled => ProtoSourceOrigin::Bundled,
         SourceOrigin::Imported => ProtoSourceOrigin::Imported,
+    }
+}
+
+fn proto_source_credential_storage(
+    storage: Option<CredentialStorageKind>,
+) -> ProtoSourceCredentialStorage {
+    match storage {
+        Some(CredentialStorageKind::File) => ProtoSourceCredentialStorage::File,
+        Some(CredentialStorageKind::Keychain) => ProtoSourceCredentialStorage::Keychain,
+        None => ProtoSourceCredentialStorage::Unspecified,
     }
 }
 
@@ -531,6 +571,7 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
             .collect(),
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
+        credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
     }
 }
 
@@ -568,9 +609,9 @@ fn credential_method_to_proto(
         ManifestCredentialMethodKind::SourceConfig => {
             ProtoCredentialMethod::SourceConfig(SourceConfigCredentialMethod {})
         }
-        ManifestCredentialMethodKind::OAuth => ProtoCredentialMethod::OauthAuthorizationCode(
+        ManifestCredentialMethodKind::OAuth => ProtoCredentialMethod::Oauth(Box::new(
             method.oauth.map(oauth_to_proto).unwrap_or_default(),
-        ),
+        )),
     };
     SourceCredentialMethod {
         label: method.label.unwrap_or_default(),
@@ -579,12 +620,13 @@ fn credential_method_to_proto(
     }
 }
 
-fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthAuthorizationCodeCredentialMethod {
-    OAuthAuthorizationCodeCredentialMethod {
-        redirect_uri: oauth.redirect_uri,
+fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
+    OAuthCredentialMethod {
+        redirect_uri: oauth.redirect_uri.unwrap_or_default(),
         endpoints: Some(OAuthCredentialEndpoints {
-            authorization_url: oauth.authorization_url,
+            authorization_url: oauth.authorization_url.unwrap_or_default(),
             token_url: oauth.token_url,
+            device_authorization_url: oauth.device_authorization_url.unwrap_or_default(),
         }),
         client: Some(OAuthCredentialClient {
             id: Some(OAuthCredentialClientId {
@@ -600,6 +642,7 @@ fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthAuthorizationCodeC
                 }),
         }),
         redirect_uri_port_mode: proto_redirect_uri_port_mode(oauth.redirect_uri_port_mode) as i32,
+        flow: proto_oauth_flow_kind(oauth.flow.kind) as i32,
         scopes: oauth.scopes.map(|scopes| OAuthCredentialScopes {
             scope: Some(OAuthCredentialScope {
                 delimiter: proto_oauth_scope_delimiter(scopes.scope.delimiter) as i32,
@@ -616,6 +659,13 @@ fn proto_redirect_uri_port_mode(
     match mode {
         ManifestOAuthRedirectUriPortMode::Fixed => OauthCredentialRedirectUriPortMode::Fixed,
         ManifestOAuthRedirectUriPortMode::Random => OauthCredentialRedirectUriPortMode::Random,
+    }
+}
+
+fn proto_oauth_flow_kind(kind: ManifestOAuthFlowKind) -> OauthCredentialFlowType {
+    match kind {
+        ManifestOAuthFlowKind::AuthorizationCode => OauthCredentialFlowType::AuthorizationCode,
+        ManifestOAuthFlowKind::DeviceCode => OauthCredentialFlowType::DeviceCode,
     }
 }
 
@@ -682,10 +732,12 @@ mod tests {
                                 kind: ManifestOAuthFlowKind::AuthorizationCode,
                                 pkce: ManifestOAuthPkceMode::Required,
                             },
-                            redirect_uri: "http://127.0.0.1:53682/oauth/callback".to_string(),
+                            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
                             redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
-                            authorization_url: "https://provider.example.com/oauth/authorize"
-                                .to_string(),
+                            authorization_url: Some(
+                                "https://provider.example.com/oauth/authorize".to_string(),
+                            ),
+                            device_authorization_url: None,
                             token_url: "https://provider.example.com/oauth/token".to_string(),
                             client: ManifestOAuthClientSpec {
                                 id: ManifestOAuthClientIdSpec {
@@ -716,7 +768,7 @@ mod tests {
         let credential = secret.credential.expect("credential");
         assert_eq!(credential.methods.len(), 2);
         match credential.methods[0].method.as_ref().expect("method") {
-            ProtoCredentialMethod::OauthAuthorizationCode(oauth) => {
+            ProtoCredentialMethod::Oauth(oauth) => {
                 assert_eq!(oauth.redirect_uri, "http://127.0.0.1:53682/oauth/callback");
                 assert_eq!(
                     OauthCredentialRedirectUriPortMode::try_from(oauth.redirect_uri_port_mode)
