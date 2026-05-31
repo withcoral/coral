@@ -25,10 +25,12 @@ mod status_error;
 
 use std::io::Cursor;
 
+use arrow::csv::WriterBuilder as CsvWriterBuilder;
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::reader::StreamReader;
-use arrow::json::writer::{JsonArray, WriterBuilder};
+use arrow::json::writer::{JsonArray, LineDelimited, WriterBuilder};
 use arrow::record_batch::RecordBatch;
+use arrow::util::display::{ArrayFormatter, FormatOptions};
 use arrow::util::pretty::pretty_format_batches;
 use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
@@ -160,6 +162,156 @@ pub fn batches_to_json_rows(batches: &[RecordBatch]) -> Result<Vec<Value>, Query
     serde_json::from_str(&json).map_err(Into::into)
 }
 
+/// Formats batches as newline-delimited JSON (one object per row).
+///
+/// Each row is a self-contained JSON object terminated by `\n`, matching the
+/// [ndjson.org](https://ndjson.org/) convention. The output is empty when there
+/// are no rows. Suitable for streaming consumers and shell pipelines.
+///
+/// # Errors
+///
+/// Returns [`QueryResultError`] if the batches cannot be encoded as JSON.
+pub fn format_batches_ndjson(batches: &[RecordBatch]) -> Result<String, QueryResultError> {
+    let mut bytes = Vec::new();
+    {
+        let mut writer = WriterBuilder::new()
+            .with_explicit_nulls(true)
+            .build::<_, LineDelimited>(&mut bytes);
+        for batch in batches {
+            writer.write(batch)?;
+        }
+        writer.finish()?;
+    }
+    String::from_utf8(bytes).map_err(Into::into)
+}
+
+/// Formats batches as RFC 4180-compliant CSV with a header row.
+///
+/// The header row is emitted from the first batch's schema; if there are no
+/// batches the output is empty. Null values are rendered as empty fields.
+///
+/// # Errors
+///
+/// Returns [`QueryResultError`] if the batches cannot be encoded as CSV.
+pub fn format_batches_csv(batches: &[RecordBatch]) -> Result<String, QueryResultError> {
+    let mut bytes = Vec::new();
+    {
+        let mut writer = CsvWriterBuilder::new().with_header(true).build(&mut bytes);
+        for batch in batches {
+            writer.write(batch)?;
+        }
+    }
+    String::from_utf8(bytes).map_err(Into::into)
+}
+
+/// Formats batches as a GitHub-flavored markdown table.
+///
+/// The header is taken from the first batch's schema; if `batches` is empty
+/// the output is empty. Cell values use the same display formatting as the
+/// pretty-print table renderer, with markdown-significant characters
+/// (`|`, `\`, newlines) escaped so the table stays well-formed when pasted
+/// into PR comments, issues, or docs.
+///
+/// # Errors
+///
+/// Returns [`QueryResultError`] if a cell value cannot be formatted.
+pub fn format_batches_markdown(batches: &[RecordBatch]) -> Result<String, QueryResultError> {
+    let Some(first) = batches.first() else {
+        return Ok(String::new());
+    };
+    let schema = first.schema();
+    let options = FormatOptions::default().with_null("");
+
+    let header_cells: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|field| escape_markdown_cell(field.name()))
+        .collect();
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for batch in batches {
+        let formatters = batch
+            .columns()
+            .iter()
+            .map(|column| ArrayFormatter::try_new(column.as_ref(), &options))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for row_idx in 0..batch.num_rows() {
+            let mut row = Vec::with_capacity(formatters.len());
+            for formatter in &formatters {
+                let cell = formatter.value(row_idx).try_to_string()?;
+                row.push(escape_markdown_cell(&cell));
+            }
+            rows.push(row);
+        }
+    }
+
+    let widths: Vec<usize> = header_cells
+        .iter()
+        .enumerate()
+        .map(|(col_idx, header)| {
+            let max_data = rows
+                .iter()
+                .map(|row| row.get(col_idx).map_or(0, String::len))
+                .max()
+                .unwrap_or(0);
+            // Separator must have at least three dashes per GFM.
+            header.len().max(max_data).max(3)
+        })
+        .collect();
+
+    let mut out = String::new();
+    push_markdown_row(&mut out, &header_cells, &widths);
+    push_markdown_separator(&mut out, &widths);
+    for row in &rows {
+        push_markdown_row(&mut out, row, &widths);
+    }
+    Ok(out)
+}
+
+fn push_markdown_row(out: &mut String, cells: &[String], widths: &[usize]) {
+    out.push('|');
+    for (idx, width) in widths.iter().enumerate() {
+        let empty = String::new();
+        let cell = cells.get(idx).unwrap_or(&empty);
+        out.push(' ');
+        out.push_str(cell);
+        for _ in 0..width.saturating_sub(cell.len()) {
+            out.push(' ');
+        }
+        out.push(' ');
+        out.push('|');
+    }
+    out.push('\n');
+}
+
+fn push_markdown_separator(out: &mut String, widths: &[usize]) {
+    out.push('|');
+    for width in widths {
+        out.push(' ');
+        for _ in 0..*width {
+            out.push('-');
+        }
+        out.push(' ');
+        out.push('|');
+    }
+    out.push('\n');
+}
+
+fn escape_markdown_cell(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '|' => out.push_str("\\|"),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("<br>"),
+            '\r' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -172,7 +324,8 @@ mod tests {
 
     use super::{
         CollectedQueryResult, batches_to_json_rows, decode_execute_sql_response,
-        format_batches_json, format_batches_table,
+        format_batches_csv, format_batches_json, format_batches_markdown, format_batches_ndjson,
+        format_batches_table,
     };
 
     fn response() -> ExecuteSqlResponse {
@@ -245,6 +398,115 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let row = rows.get(1).expect("second row");
         assert!(row.get("name").is_some_and(Value::is_null));
+    }
+
+    #[test]
+    fn ndjson_emits_one_object_per_row_with_explicit_nulls() {
+        let decoded = decode_execute_sql_response(&response()).expect("decode");
+        let ndjson = format_batches_ndjson(decoded.batches()).expect("ndjson");
+
+        let rows: Vec<Value> = ndjson
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is json"))
+            .collect();
+        assert_eq!(rows.len(), 2, "one line per row, got {ndjson:?}");
+        let first = rows.first().expect("first row");
+        let second = rows.get(1).expect("second row");
+        assert_eq!(first.get("id"), Some(&Value::from(1_i64)));
+        assert_eq!(first.get("name"), Some(&Value::from("a")));
+        assert!(
+            second.get("name").is_some_and(Value::is_null),
+            "explicit null should be preserved"
+        );
+        assert!(
+            ndjson.ends_with('\n'),
+            "ndjson should be newline-terminated"
+        );
+    }
+
+    #[test]
+    fn ndjson_on_empty_input_is_empty() {
+        let ndjson = format_batches_ndjson(&[]).expect("ndjson");
+        assert!(ndjson.is_empty());
+    }
+
+    #[test]
+    fn csv_renders_header_and_quotes_special_characters() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("title", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1_i64, 2])) as _,
+                Arc::new(StringArray::from(vec![
+                    Some("has,comma and \"quote\""),
+                    None,
+                ])) as _,
+            ],
+        )
+        .expect("batch");
+
+        let csv = format_batches_csv(&[batch]).expect("csv");
+        let mut lines = csv.lines();
+        assert_eq!(lines.next(), Some("id,title"));
+        assert_eq!(
+            lines.next(),
+            Some("1,\"has,comma and \"\"quote\"\"\""),
+            "embedded comma and quote must be RFC 4180 escaped"
+        );
+        assert_eq!(lines.next(), Some("2,"), "null cell renders as empty field");
+        assert_eq!(lines.next(), None);
+    }
+
+    #[test]
+    fn csv_on_empty_input_is_empty() {
+        let csv = format_batches_csv(&[]).expect("csv");
+        assert!(csv.is_empty());
+    }
+
+    #[test]
+    fn markdown_renders_table_and_escapes_pipes() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("title", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1_i64, 2])) as _,
+                Arc::new(StringArray::from(vec![Some("a|b"), None])) as _,
+            ],
+        )
+        .expect("batch");
+
+        let md = format_batches_markdown(&[batch]).expect("markdown");
+        let lines: Vec<&str> = md.lines().collect();
+        assert_eq!(lines.len(), 4, "header + separator + 2 data rows: {md}");
+        let header = lines.first().expect("header row");
+        let separator = lines.get(1).expect("separator row");
+        let first_data = lines.get(2).expect("first data row");
+        let second_data = lines.get(3).expect("second data row");
+        assert!(header.starts_with("| id"), "header row");
+        assert!(
+            separator.contains("---"),
+            "separator row must have at least three dashes per column"
+        );
+        assert!(
+            first_data.contains("a\\|b"),
+            "pipe in cell must be escaped, got: {first_data}"
+        );
+        assert!(
+            second_data.ends_with('|'),
+            "null cell still emits a closing column delimiter"
+        );
+    }
+
+    #[test]
+    fn markdown_on_empty_input_is_empty() {
+        let md = format_batches_markdown(&[]).expect("markdown");
+        assert!(md.is_empty());
     }
 
     #[test]
