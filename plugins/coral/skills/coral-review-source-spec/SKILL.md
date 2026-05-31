@@ -18,7 +18,7 @@ Review the source as product surface. Do not spend the review mainly restating C
    - `CONTRIBUTING.md`, especially "Source contributions".
    - The repo `AGENTS.md` and any nearer `AGENTS.md`.
    - Similar existing sources in `sources/core/` and the community example in `sources/community/hn/`.
-3. Compare against existing source patterns, not a generic API-wrapper ideal. Look at nearby sources with similar shape: public no-auth APIs, token APIs, GraphQL APIs, search-heavy APIs, log/time-series APIs, or generated large API sources.
+3. Compare against existing source patterns, not a generic API-wrapper ideal. Look at nearby sources with similar shape: public no-auth APIs, token APIs, OAuth-backed APIs, GraphQL APIs, search-heavy APIs, log/time-series APIs, or generated large API sources.
 4. Produce a code-review style result: findings first, ordered by severity, with file and line references. Include open questions only after findings. If there are no substantive issues, say so and mention residual risks or review gaps.
 
 ## Review Checklist
@@ -41,6 +41,10 @@ These checks should be based on the authoritative API docs for the API the sourc
 - Treat credential-like inputs as secrets, regardless of read-only scope or optional auth mode. Inputs named or described as `API_KEY`, `TOKEN`, `ACCESS_TOKEN`, `PASSWORD`, `SECRET`, `APPLICATION_KEY`, `READ_KEY`, `ADMIN_KEY`, private keys, bearer values, or authorization header values must be `kind: secret`; endpoint/base URL/site/region/domain/org/account/user/email values may be `kind: variable`.
 - Do not make a credential a variable with an empty default to simulate optional authentication. For the current source-spec surface, require the secret or call out the missing optional-auth design explicitly; never expose a token just to support anonymous installs.
 - Auth docs mention required token type, scopes or permissions, and where to get credentials.
+- If a secret declares `credential.methods`, each method matches the provider's supported setup path. OAuth methods use either device-code flow or authorization-code flow. Authorization-code methods need an explicit `pkce` value, loopback redirect URI, correct redirect port mode, and support for SSH, VM, and split-browser setups where the CLI accepts a pasted final localhost redirect URL while waiting for the loopback callback. Device-code methods need `device_authorization_url`, no redirect URI fields, and no client secret. All OAuth methods need correct endpoint URLs, appropriate client ID/default/input behavior, correct client-secret transport when applicable, and least-privilege scopes. OAuth endpoint templates may reference only declared `kind: variable` inputs for non-secret URL components.
+- OAuth methods do not replace runtime auth. The stored secret is still referenced by `auth`, request headers, query params, or body fields where the provider expects it.
+- OAuth setup docs tell users whether they need their own OAuth client, which redirect URI to register, which scopes to grant, and any provider/client settings required to issue refresh tokens. If access tokens are short-lived and the provider will not issue refresh tokens, the source or docs call out that users must reconnect when access tokens expire.
+- When both OAuth and pasted-token setup are supported, the method ordering and labels make the preferred path obvious, usually OAuth first and `source_config` fallback second.
 - Non-trivial sources include README or manifest guides with setup, schema orientation, and example queries.
 - Behavior changes, setup changes, source semantics, and examples are documented in the same PR.
 

@@ -11,11 +11,15 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    ColumnSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestError, ManifestInputKind,
-    ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend,
-    SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
-    TableFunctionArgSpec, ValueSourceSpec, inputs::collect_source_inputs_value, validate_columns,
-    validate_filters_and_column_exprs, validate_test_queries,
+    ColumnSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestError, ManifestInputSpec,
+    PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend, SourceManifestCommon,
+    SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
+    ValueSourceSpec,
+    inputs::{
+        collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
+    },
+    validate_columns, validate_filters_and_column_exprs, validate_identifier,
+    validate_test_queries, validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -329,13 +333,14 @@ impl RawMcpTableSpec {
 }
 
 impl McpSourceManifest {
+    /// Returns all source secrets declared by this manifest.
+    pub fn declared_secret_names(&self) -> BTreeSet<String> {
+        declared_secret_input_names(&self.declared_inputs)
+    }
+
     /// Returns the source secrets required by this manifest.
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        self.declared_inputs
-            .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret)
-            .map(|input| input.key.clone())
-            .collect()
+        required_secret_input_names(&self.declared_inputs)
     }
 
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
@@ -542,13 +547,12 @@ fn validate_mcp_table(source_name: &str, table: &RawMcpTableSpec) -> Result<()> 
         source_name,
         &format!("table '{}'", table.name),
     )?;
-    let known_filters = validate_filters_and_column_exprs(
+    validate_filters_and_column_exprs(
         &table.filter_specs(),
         &table.columns,
         source_name,
         &format!("table '{}'", table.name),
     )?;
-    let _ = known_filters;
 
     let mut bound_tool_args: HashSet<&str> = HashSet::new();
     for (name, source) in &table.tool_args {
@@ -715,6 +719,17 @@ fn validate_table_tool_arg_value_source(
             }
             Ok(())
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for value in values {
+                validate_table_tool_arg_value_source(source_name, table_name, arg_name, value)?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -770,8 +785,20 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
             }
             Ok(())
         }
+        ValueSourceSpec::OneOf { values } => {
+            if values.is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{context} one_of values must not be empty"
+                )));
+            }
+            for value in values {
+                validate_source_scoped_value_source(value, context)?;
+            }
+            Ok(())
+        }
         ValueSourceSpec::Literal { .. }
         | ValueSourceSpec::Input { .. }
+        | ValueSourceSpec::Bearer { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => Ok(()),
     }
 }
@@ -791,45 +818,10 @@ fn validate_function_binding<'a>(
     Ok(())
 }
 
-fn validate_unique_values(values: &[String], context: &str) -> Result<()> {
-    let mut seen = HashSet::new();
-    for value in values {
-        if value.trim().is_empty() {
-            return Err(ManifestError::validation(format!(
-                "{context} values must not contain empty strings"
-            )));
-        }
-        if !seen.insert(value.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "{context} value '{value}' is declared more than once"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_identifier(value: &str, context: &str) -> Result<()> {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return Err(ManifestError::validation(format!(
-            "{context} must not be empty"
-        )));
-    };
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return Err(ManifestError::validation(format!(
-            "{context} '{value}' must start with a letter or underscore"
-        )));
-    }
-    if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
-        return Err(ManifestError::validation(format!(
-            "{context} '{value}' may only contain letters, numbers, and underscores"
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::McpSourceManifest;
     use serde_json::json;
 
@@ -841,7 +833,8 @@ mod tests {
             "version": "0.1.0",
             "backend": "mcp",
             "inputs": {
-                "GITHUB_TOKEN": { "kind": "secret" }
+                "GITHUB_TOKEN": { "kind": "secret" },
+                "OPTIONAL_TOKEN": { "kind": "secret", "required": false }
             },
             "server": {
                 "transport": "stdio",
@@ -868,7 +861,14 @@ mod tests {
         assert_eq!(manifest.common.name, "github_mcp");
         let function = manifest.functions.first().expect("function should parse");
         assert_eq!(function.tool, "search_issues");
-        assert!(manifest.required_secret_names().contains("GITHUB_TOKEN"));
+        assert_eq!(
+            manifest.declared_secret_names(),
+            BTreeSet::from(["GITHUB_TOKEN".to_string(), "OPTIONAL_TOKEN".to_string()])
+        );
+        assert_eq!(
+            manifest.required_secret_names(),
+            BTreeSet::from(["GITHUB_TOKEN".to_string()])
+        );
     }
 
     #[test]

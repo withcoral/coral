@@ -4,12 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bootstrap::AppError;
 use crate::credentials::oauth::{
-    OAuthCredentialManager, OAuthCredentialMaterial, StartOAuthCredentialRequest,
+    OAuthCredentialMaterial, OAuthCredentialService, StartOAuthCredentialRequest,
     material_key_belongs_to_input,
 };
 use crate::credentials::{
-    CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialSnapshot, CredentialSetId,
-    CredentialsError,
+    CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
+    CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::{
@@ -27,7 +27,7 @@ use tracing::warn;
 pub(crate) struct SourceManager {
     config_store: ConfigStore,
     credential_manager: CredentialManager,
-    oauth_manager: OAuthCredentialManager,
+    oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
 }
 
@@ -75,6 +75,9 @@ pub(crate) enum ImportSourceWithCredentialsEvent {
         input_key: String,
         authorization_url: String,
         expires_in_seconds: u64,
+        user_code: Option<String>,
+        verification_uri: Option<String>,
+        verification_uri_complete: Option<String>,
     },
     OAuthCompleted {
         input_key: String,
@@ -132,12 +135,13 @@ struct PersistSourceRequest<'a> {
     manifest_yaml: Option<&'a str>,
     bindings: ValidatedBindings,
     origin: SourceOrigin,
+    credential_storage: Option<CredentialStorageKind>,
 }
 
 struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
-    credential_material: CredentialMaterialSnapshot,
+    credential_material: Option<CredentialMaterialSnapshot>,
 }
 
 impl SourceManager {
@@ -149,7 +153,7 @@ impl SourceManager {
         Self {
             config_store,
             credential_manager,
-            oauth_manager: OAuthCredentialManager::new(),
+            oauth_credential_service: OAuthCredentialService::new(),
             layout,
         }
     }
@@ -205,13 +209,26 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<CandidateSource>, AppError> {
-        let installed = self
-            .config_store
-            .list_workspace_sources(workspace_name)?
-            .into_iter()
-            .map(|source| source.name)
+        let installed_sources = self.config_store.list_workspace_sources(workspace_name)?;
+        let installed = installed_sources
+            .iter()
+            .map(|source| source.name.clone())
             .collect::<BTreeSet<_>>();
-        list_bundled_sources(&installed)
+        let installed_storage = installed_sources
+            .iter()
+            .filter_map(|source| {
+                source
+                    .credential_storage_for_material()
+                    .map(|storage| (source.name.clone(), storage))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut candidates = list_bundled_sources(&installed)?;
+        for candidate in &mut candidates {
+            if let Some(storage) = installed_storage.get(&candidate.name) {
+                candidate.credential_storage = Some(*storage);
+            }
+        }
+        Ok(candidates)
     }
 
     pub(crate) fn create_bundled_source(
@@ -221,21 +238,12 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
-        let stored_material = self.source_material_for_validation(
+        self.install_validated_source(
             workspace_name,
             &candidate,
             &command.bindings,
-            &BTreeSet::new(),
-        )?;
-        let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
-        self.persist_source(
-            workspace_name,
-            PersistSourceRequest {
-                candidate: &candidate,
-                manifest_yaml: None,
-                bindings,
-                origin: SourceOrigin::Bundled,
-            },
+            None,
+            SourceOrigin::Bundled,
         )
     }
 
@@ -247,35 +255,16 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
-        let oauth_input_keys = command
-            .oauth_credential_retrievals
-            .iter()
-            .map(|credential| credential.input_key.clone())
-            .collect::<BTreeSet<_>>();
-        let stored_material = self.source_material_for_validation(
+        self.install_source_with_oauth(
             workspace_name,
             &candidate,
             &command.bindings,
-            &oauth_input_keys,
-        )?;
-        let bindings = self
-            .bindings_with_oauth_material(
-                &candidate,
-                &command.bindings,
-                stored_material,
-                command.oauth_credential_retrievals,
-                events,
-            )
-            .await?;
-        self.persist_source(
-            workspace_name,
-            PersistSourceRequest {
-                candidate: &candidate,
-                manifest_yaml: None,
-                bindings,
-                origin: SourceOrigin::Bundled,
-            },
+            command.oauth_credential_retrievals,
+            events,
+            None,
+            SourceOrigin::Bundled,
         )
+        .await
     }
 
     pub(crate) fn import_source(
@@ -286,21 +275,12 @@ impl SourceManager {
         let mut candidate =
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        let stored_material = self.source_material_for_validation(
+        self.install_validated_source(
             workspace_name,
             &candidate,
             &command.bindings,
-            &BTreeSet::new(),
-        )?;
-        let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
-        self.persist_source(
-            workspace_name,
-            PersistSourceRequest {
-                candidate: &candidate,
-                manifest_yaml: Some(&command.manifest_yaml),
-                bindings,
-                origin: SourceOrigin::Imported,
-            },
+            Some(&command.manifest_yaml),
+            SourceOrigin::Imported,
         )
     }
 
@@ -313,33 +293,107 @@ impl SourceManager {
         let mut candidate =
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        let oauth_input_keys = command
-            .oauth_credential_retrievals
-            .iter()
-            .map(|credential| credential.input_key.clone())
-            .collect::<BTreeSet<_>>();
-        let stored_material = self.source_material_for_validation(
+        self.install_source_with_oauth(
             workspace_name,
             &candidate,
             &command.bindings,
-            &oauth_input_keys,
+            command.oauth_credential_retrievals,
+            events,
+            Some(&command.manifest_yaml),
+            SourceOrigin::Imported,
+        )
+        .await
+    }
+
+    /// Validates `bindings` against any stored credential material and persists
+    /// the source. Shared tail of the non-OAuth install entry points; the
+    /// caller supplies the resolved `candidate` plus the per-origin
+    /// `manifest_yaml`/`origin`.
+    fn install_validated_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        manifest_yaml: Option<&str>,
+        origin: SourceOrigin,
+    ) -> Result<InstalledSource, AppError> {
+        let stored_material = self.source_stored_material_for_validation(
+            workspace_name,
+            candidate,
+            bindings,
+            &BTreeSet::new(),
         )?;
-        let bindings = self
-            .bindings_with_oauth_material(
-                &candidate,
-                &command.bindings,
-                stored_material,
-                command.oauth_credential_retrievals,
-                events,
-            )
-            .await?;
+        let bindings = validate_bindings(candidate, bindings, &stored_material)?;
+        let credential_storage = self.source_persist_storage(
+            workspace_name,
+            &candidate.name,
+            &bindings,
+            !stored_material.is_empty(),
+        )?;
         self.persist_source(
             workspace_name,
             PersistSourceRequest {
-                candidate: &candidate,
-                manifest_yaml: Some(&command.manifest_yaml),
+                candidate,
+                manifest_yaml,
                 bindings,
-                origin: SourceOrigin::Imported,
+                origin,
+                credential_storage,
+            },
+        )
+    }
+
+    /// Resolves OAuth credential material (driving the authorization flow over
+    /// `events`), then validates and persists the source. Shared tail of the
+    /// OAuth install entry points; the caller supplies the resolved `candidate`
+    /// plus the per-origin `manifest_yaml`/`origin`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Shared OAuth install tail for the source-lifecycle entry points; the parameters are the irreducible per-call inputs and a grouping struct would only relocate the list."
+    )]
+    async fn install_source_with_oauth(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+        events: ImportSourceEventSender,
+        manifest_yaml: Option<&str>,
+        origin: SourceOrigin,
+    ) -> Result<InstalledSource, AppError> {
+        let oauth_input_keys = oauth_credential_retrievals
+            .iter()
+            .map(|credential| credential.input_key.clone())
+            .collect::<BTreeSet<_>>();
+        let stored_material = self.source_stored_material_for_validation(
+            workspace_name,
+            candidate,
+            bindings,
+            &oauth_input_keys,
+        )?;
+        let has_stored_material = !stored_material.is_empty();
+        let bindings = self
+            .bindings_with_oauth_material(
+                candidate,
+                bindings,
+                stored_material,
+                oauth_credential_retrievals,
+                events,
+            )
+            .await?;
+        let credential_storage = self.source_persist_storage(
+            workspace_name,
+            &candidate.name,
+            &bindings,
+            has_stored_material,
+        )?;
+        self.persist_source(
+            workspace_name,
+            PersistSourceRequest {
+                candidate,
+                manifest_yaml,
+                bindings,
+                origin,
+                credential_storage,
             },
         )
     }
@@ -353,6 +407,13 @@ impl SourceManager {
         let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
+        let credential_guard = self
+            .credential_manager
+            .material_guard(workspace_name, &credential_set_id)?;
+        let credential_storage = stored.credential_storage_for_material();
+        let credential_material = credential_storage
+            .map(|storage| credential_guard.snapshot_material(storage))
+            .transpose()?;
         let previous = SourceRollbackState {
             source: stored,
             manifest_yaml: match removed.origin {
@@ -361,25 +422,40 @@ impl SourceManager {
                     self.layout.manifest_file(workspace_name, source_name),
                 )?),
             },
-            credential_material: self
-                .credential_manager
-                .snapshot_material(workspace_name, &credential_set_id)?,
+            credential_material,
         };
-        if let Err(error) = self
-            .credential_manager
-            .remove_material(workspace_name, &credential_set_id)
+        if let Some(credential_storage) = credential_storage
+            && let Err(error) = credential_guard.remove_material(credential_storage)
         {
-            self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
+            self.restore_source_rollback_state(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
             return Err(error);
         }
         if source_dir.exists()
             && let Err(error) = std::fs::remove_dir_all(&source_dir)
         {
-            self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
+            self.restore_source_rollback_state(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
             return Err(error.into());
         }
         if let Err(error) = self.config_store.remove_source(workspace_name, source_name) {
-            self.restore_source_rollback_state(workspace_name, source_name, Some(previous));
+            self.restore_source_rollback_state(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
             return Err(error);
         }
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
@@ -406,50 +482,74 @@ impl SourceManager {
         request: PersistSourceRequest<'_>,
     ) -> Result<InstalledSource, AppError> {
         let source_name = request.candidate.name.clone();
-        let previous = self.load_source_rollback_state(workspace_name, &source_name)?;
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let credential_guard = self
+            .credential_manager
+            .material_guard(workspace_name, &credential_set_id)?;
+        let previous =
+            self.load_source_rollback_state(workspace_name, &source_name, &credential_guard)?;
         if let Err(error) =
             self.persist_manifest_artifact(workspace_name, &source_name, request.manifest_yaml)
         {
-            self.restore_source_rollback_state(workspace_name, &source_name, previous);
+            self.restore_source_rollback_state(
+                workspace_name,
+                &source_name,
+                previous,
+                None,
+                &credential_guard,
+            );
             return Err(error);
         }
 
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let mut credential_material = match self
-            .credential_manager
-            .read_material(workspace_name, &credential_set_id)
-        {
-            Ok(material) => material,
-            Err(AppError::Credentials(CredentialsError::Parse(_))) => BTreeMap::new(),
-            Err(error) => {
-                self.restore_source_rollback_state(workspace_name, &source_name, previous);
-                return Err(error);
-            }
-        };
-        let expected_secret_keys = request
-            .candidate
-            .inputs
-            .iter()
-            .filter(|input| input.kind == ManifestInputKind::Secret)
-            .map(|input| input.key.clone())
-            .collect::<BTreeSet<_>>();
-        credential_material
-            .retain(|key, _| material_key_belongs_to_source_secret(key, &expected_secret_keys));
-        for input_key in &request.bindings.replaced_oauth_inputs {
-            credential_material.retain(|key, _| !material_key_belongs_to_input(key, input_key));
-        }
-        credential_material.extend(request.bindings.secrets);
-        let persisted_secret_keys = match self.credential_manager.replace_material(
-            workspace_name,
-            &credential_set_id,
-            &credential_material,
-        ) {
-            Ok(secrets) => secrets,
-            Err(error) => {
-                self.restore_source_rollback_state(workspace_name, &source_name, previous);
-                return Err(error);
-            }
-        };
+        let ValidatedBindings {
+            variables,
+            secrets,
+            replaced_oauth_inputs,
+        } = request.bindings;
+        let (visible_secret_keys, credential_storage) =
+            if let Some(requested_storage) = request.credential_storage {
+                let expected_secret_keys = request
+                    .candidate
+                    .inputs
+                    .iter()
+                    .filter(|input| input.kind == ManifestInputKind::Secret)
+                    .map(|input| input.key.clone())
+                    .collect::<BTreeSet<_>>();
+                let credential_write = match credential_guard.update_material_or_empty_on_parse(
+                    requested_storage,
+                    |mut credential_material| {
+                        credential_material.retain(|key, _| {
+                            material_key_belongs_to_source_secret(key, &expected_secret_keys)
+                        });
+                        for input_key in &replaced_oauth_inputs {
+                            credential_material
+                                .retain(|key, _| !material_key_belongs_to_input(key, input_key));
+                        }
+                        credential_material.extend(secrets.clone());
+                        Ok(credential_material)
+                    },
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        self.restore_source_rollback_state(
+                            workspace_name,
+                            &source_name,
+                            previous,
+                            Some(requested_storage),
+                            &credential_guard,
+                        );
+                        return Err(error);
+                    }
+                };
+                let credential_storage = if credential_write.visible_keys.is_empty() {
+                    None
+                } else {
+                    Some(credential_write.storage)
+                };
+                (credential_write.visible_keys, credential_storage)
+            } else {
+                (Vec::new(), None)
+            };
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
@@ -458,15 +558,22 @@ impl SourceManager {
         let stored = InstalledSource {
             name: source_name.clone(),
             version: persisted_version,
-            variables: request.bindings.variables,
-            secrets: persisted_secret_keys,
+            variables,
+            secrets: visible_secret_keys,
+            credential_storage,
             origin: request.origin,
         };
         if let Err(error) = self
             .config_store
             .upsert_source(workspace_name, stored.clone())
         {
-            self.restore_source_rollback_state(workspace_name, &source_name, previous);
+            self.restore_source_rollback_state(
+                workspace_name,
+                &source_name,
+                previous,
+                credential_storage,
+                &credential_guard,
+            );
             return Err(error);
         }
         let mut resolved = stored;
@@ -489,36 +596,80 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
+        credential_storage: CredentialStorageKind,
     ) -> Result<BTreeMap<String, String>, AppError> {
         let credential_set_id = CredentialSetId::for_source(source_name);
-        match self
-            .credential_manager
-            .read_material(workspace_name, &credential_set_id)
-        {
+        match self.credential_manager.read_material(
+            workspace_name,
+            &credential_set_id,
+            credential_storage,
+        ) {
             Ok(material) => Ok(material),
-            Err(AppError::Credentials(CredentialsError::Parse(_))) => Ok(BTreeMap::new()),
+            Err(AppError::Credentials(CredentialsError::Parse(_)))
+                if credential_storage == CredentialStorageKind::File =>
+            {
+                Ok(BTreeMap::new())
+            }
             Err(error) => Err(error),
         }
     }
 
-    fn source_material_for_validation(
+    fn source_stored_material_for_validation(
         &self,
         workspace_name: &WorkspaceName,
         candidate: &CandidateSource,
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        let supplied_secrets = collect_unique_secrets(&bindings.secrets)?;
-        let needs_stored_material = candidate.inputs.iter().any(|input| {
-            input.kind == ManifestInputKind::Secret
-                && input.required
-                && !supplied_secrets.contains_key(&input.key)
-                && !filled_secret_keys.contains(&input.key)
-        });
-        if needs_stored_material {
-            self.read_source_material(workspace_name, &candidate.name)
-        } else {
-            Ok(BTreeMap::new())
+        if !source_needs_stored_material_for_validation(candidate, bindings, filled_secret_keys)? {
+            return Ok(BTreeMap::new());
+        }
+
+        let credential_storage = match self
+            .config_store
+            .get_source(workspace_name, &candidate.name)
+        {
+            Ok(source) => source.credential_storage_for_material(),
+            Err(AppError::SourceNotFound(_))
+                if self
+                    .layout
+                    .secret_file(workspace_name, &candidate.name)
+                    .exists() =>
+            {
+                Some(CredentialStorageKind::File)
+            }
+            Err(AppError::SourceNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+
+        match credential_storage {
+            Some(credential_storage) => {
+                self.read_source_material(workspace_name, &candidate.name, credential_storage)
+            }
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    fn source_persist_storage(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        bindings: &ValidatedBindings,
+        has_stored_material: bool,
+    ) -> Result<Option<CredentialStorageKind>, AppError> {
+        match self.config_store.get_source(workspace_name, source_name) {
+            Ok(source) if !source.secrets.is_empty() => {
+                Ok(Some(source.effective_credential_storage()))
+            }
+            Ok(_) | Err(AppError::SourceNotFound(_))
+                if bindings.secrets.is_empty() && !has_stored_material =>
+            {
+                Ok(None)
+            }
+            Ok(_) | Err(AppError::SourceNotFound(_)) => {
+                self.credential_manager.default_write_storage().map(Some)
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -527,7 +678,7 @@ impl SourceManager {
         bindings: &SourceBindings,
         stored_material: &BTreeMap<String, String>,
         oauth_credential_retrievals: &[SourceOAuthCredentialRetrieval],
-    ) -> Result<(), AppError> {
+    ) -> Result<ValidatedBindings, AppError> {
         let mut seen = BTreeSet::new();
         let mut validation_material = stored_material.clone();
         for retrieval in oauth_credential_retrievals {
@@ -539,16 +690,24 @@ impl SourceManager {
             }
             let config =
                 source_oauth_config(candidate, &retrieval.input_key, retrieval.method_index)?;
+            validation_material.insert(config.input_key.to_string(), String::new());
+        }
+
+        let bindings = validate_bindings(candidate, bindings, &validation_material)?;
+        for retrieval in oauth_credential_retrievals {
+            let config =
+                source_oauth_config(candidate, &retrieval.input_key, retrieval.method_index)?;
             let credential_inputs = retrieval
                 .credential_inputs
                 .iter()
                 .map(|input| (input.key.clone(), input.value.clone()))
                 .collect();
-            OAuthCredentialManager::validate_credential_inputs(config.oauth, credential_inputs)?;
-            validation_material.insert(config.input_key.to_string(), String::new());
+            OAuthCredentialService::validate_credential_inputs(
+                config.oauth,
+                &bindings.variables,
+                credential_inputs,
+            )?;
         }
-
-        let bindings = validate_bindings(candidate, bindings, &validation_material)?;
         for input_key in seen {
             if bindings.secrets.contains_key(&input_key) {
                 return Err(AppError::InvalidInput(format!(
@@ -556,12 +715,13 @@ impl SourceManager {
                 )));
             }
         }
-        Ok(())
+        Ok(bindings)
     }
 
     async fn retrieve_oauth_material(
         &self,
         candidate: &CandidateSource,
+        source_inputs: &BTreeMap<String, String>,
         oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: ImportSourceEventSender,
     ) -> Result<Vec<OAuthCredentialMaterial>, AppError> {
@@ -585,37 +745,38 @@ impl SourceManager {
             let authorization_input_key = input_key.clone();
             let authorization_events = events.clone();
             let material = self
-                .oauth_manager
+                .oauth_credential_service
                 .authorize(
                     StartOAuthCredentialRequest {
                         input_key: &input_key,
                         oauth: config.oauth,
+                        source_inputs,
                         credential_inputs,
                     },
                     move |authorization| {
                         let events = authorization_events;
                         async move {
-                            send_import_event(
-                                &events,
-                                ImportSourceWithCredentialsEvent::OAuthAuthorization {
+                            events
+                                .send(ImportSourceWithCredentialsEvent::OAuthAuthorization {
                                     input_key: authorization_input_key,
                                     authorization_url: authorization.authorization_url,
                                     expires_in_seconds: authorization.expires_in_seconds,
-                                },
-                            )
-                            .await
+                                    user_code: authorization.user_code,
+                                    verification_uri: authorization.verification_uri,
+                                    verification_uri_complete: authorization
+                                        .verification_uri_complete,
+                                })
+                                .await
                         }
                     },
                 )
                 .await?;
-            send_import_event(
-                &events,
-                ImportSourceWithCredentialsEvent::OAuthCompleted {
+            events
+                .send(ImportSourceWithCredentialsEvent::OAuthCompleted {
                     input_key: material.input_key.clone(),
                     metadata: material.safe_metadata.clone(),
-                },
-            )
-            .await?;
+                })
+                .await?;
             materials.push(material);
         }
         Ok(materials)
@@ -629,14 +790,19 @@ impl SourceManager {
         oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: ImportSourceEventSender,
     ) -> Result<ValidatedBindings, AppError> {
-        Self::validate_oauth_import_preflight(
+        let preflight_bindings = Self::validate_oauth_import_preflight(
             candidate,
             bindings,
             &stored_material,
             &oauth_credential_retrievals,
         )?;
         let oauth_material = self
-            .retrieve_oauth_material(candidate, oauth_credential_retrievals, events)
+            .retrieve_oauth_material(
+                candidate,
+                &preflight_bindings.variables,
+                oauth_credential_retrievals,
+                events,
+            )
             .await?;
         let mut validation_material = stored_material;
         for material in &oauth_material {
@@ -651,16 +817,17 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
+        credential_material: &CredentialMaterialGuard<'_>,
     ) -> Result<Option<SourceRollbackState>, AppError> {
         let source = match self.config_store.get_source(workspace_name, source_name) {
             Ok(source) => source,
             Err(AppError::SourceNotFound(_)) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let credential_set_id = CredentialSetId::for_source(source_name);
-        let credential_material = self
-            .credential_manager
-            .snapshot_material(workspace_name, &credential_set_id)?;
+        let credential_material = source
+            .credential_storage_for_material()
+            .map(|credential_storage| credential_material.snapshot_material(credential_storage))
+            .transpose()?;
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
                 SourceOrigin::Bundled => None,
@@ -678,6 +845,8 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
         previous: Option<SourceRollbackState>,
+        new_material_storage: Option<CredentialStorageKind>,
+        credential_material: &CredentialMaterialGuard<'_>,
     ) {
         if let Some(previous) = previous {
             let manifest_path = self.layout.manifest_file(workspace_name, source_name);
@@ -699,13 +868,19 @@ impl SourceManager {
                 }
                 None => {}
             }
-            let credential_set_id = CredentialSetId::for_source(source_name);
-            if let Err(e) = self.credential_manager.restore_material(
-                workspace_name,
-                &credential_set_id,
-                &previous.credential_material,
-            ) {
-                warn!("rollback: failed to restore source credential material: {e}");
+            match previous.credential_material {
+                Some(snapshot) => {
+                    if let Err(e) = credential_material.restore_material(&snapshot) {
+                        warn!("rollback: failed to restore source credential material: {e}");
+                    }
+                }
+                None => {
+                    if let Some(storage) = new_material_storage
+                        && let Err(e) = credential_material.remove_material(storage)
+                    {
+                        warn!("rollback: failed to remove new source credential material: {e}");
+                    }
+                }
             }
             if let Err(e) = self
                 .config_store
@@ -720,10 +895,8 @@ impl SourceManager {
             {
                 warn!("rollback: failed to remove source directory: {e}");
             }
-            let credential_set_id = CredentialSetId::for_source(source_name);
-            if let Err(e) = self
-                .credential_manager
-                .remove_material(workspace_name, &credential_set_id)
+            if let Some(storage) = new_material_storage
+                && let Err(e) = credential_material.remove_material(storage)
             {
                 warn!("rollback: failed to remove source credential material: {e}");
             }
@@ -851,6 +1024,20 @@ fn validate_bindings(
     })
 }
 
+fn source_needs_stored_material_for_validation(
+    candidate: &CandidateSource,
+    bindings: &SourceBindings,
+    filled_secret_keys: &BTreeSet<String>,
+) -> Result<bool, AppError> {
+    let supplied_secrets = collect_unique_secrets(&bindings.secrets)?;
+    Ok(candidate.inputs.iter().any(|input| {
+        input.kind == ManifestInputKind::Secret
+            && input.required
+            && !supplied_secrets.contains_key(&input.key)
+            && !filled_secret_keys.contains(&input.key)
+    }))
+}
+
 fn material_key_belongs_to_source_secret(
     key: &str,
     expected_secret_keys: &BTreeSet<String>,
@@ -937,13 +1124,6 @@ fn merge_oauth_material_into_bindings(
     Ok(())
 }
 
-async fn send_import_event(
-    events: &ImportSourceEventSender,
-    event: ImportSourceWithCredentialsEvent,
-) -> Result<(), AppError> {
-    events.send(event).await
-}
-
 fn import_stream_closed_message() -> String {
     "source import stream closed".to_string()
 }
@@ -1028,6 +1208,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
+    use std::sync::mpsc as std_mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use tempfile::TempDir;
     use tokio::sync::mpsc;
@@ -1039,7 +1222,10 @@ mod tests {
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
         SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, normalize_binding_key,
     };
-    use crate::credentials::{CredentialManager, CredentialSetId, CredentialStore};
+    use crate::credentials::{
+        CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
+        CredentialStore,
+    };
     use crate::sources::SourceName;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
@@ -1070,6 +1256,27 @@ auth:
 tables:
   - name: messages
     description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#
+        .to_string()
+    }
+
+    fn manifest_without_secrets() -> String {
+        r#"
+name: public_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: "https://example.com"
+tables:
+  - name: messages
+    description: Public messages
     request:
       method: GET
       path: /messages
@@ -1128,6 +1335,40 @@ tables:
         type: Utf8
 "#
         )
+    }
+
+    fn manifest_with_templated_oauth_endpoints(
+        token_url: &str,
+        redirect_port: u16,
+    ) -> (String, String) {
+        let token_url_template = token_url.replace("/token", "/{{input.OUTLOOK_TENANT_ID}}/token");
+        let rendered_token_url = token_url.replace("/token", "/organizations/token");
+        let manifest = manifest_with_oauth_secret(&token_url_template, redirect_port)
+            .replace(
+                "base_url: \"{{input.API_BASE}}\"",
+                "  OUTLOOK_TENANT_ID:\n    kind: variable\nbase_url: \"{{input.API_BASE}}\"",
+            )
+            .replace(
+                "authorization_url: https://provider.example.com/oauth/authorize",
+                "authorization_url: https://provider.example.com/{{input.OUTLOOK_TENANT_ID}}/oauth/authorize",
+            );
+        (manifest, rendered_token_url)
+    }
+
+    fn oauth_import_bindings_with_tenant() -> SourceBindings {
+        SourceBindings {
+            variables: vec![
+                SourceBinding {
+                    key: "API_BASE".to_string(),
+                    value: "https://api.example.test".to_string(),
+                },
+                SourceBinding {
+                    key: "OUTLOOK_TENANT_ID".to_string(),
+                    value: "organizations".to_string(),
+                },
+            ],
+            secrets: Vec::new(),
+        }
     }
 
     #[test]
@@ -1266,6 +1507,149 @@ tables:
     }
 
     #[test]
+    fn import_new_source_uses_keychain_when_auto_probe_succeeds() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::with_available_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Auto,
+        );
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout.clone());
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+
+        let source = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: vec![],
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("import source");
+
+        assert_eq!(
+            source.credential_storage,
+            Some(CredentialStorageKind::Keychain)
+        );
+        assert!(
+            !layout
+                .secret_file(&default_workspace(), &source_name)
+                .exists(),
+            "keychain-routed install should not create plaintext material"
+        );
+        let stored = credential_manager
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::Keychain,
+            )
+            .expect("read keychain material");
+        assert_eq!(
+            stored.get("API_TOKEN").map(String::as_str),
+            Some("secret-token")
+        );
+
+        manager
+            .delete_source(&default_workspace(), &source_name)
+            .expect("delete source");
+        assert!(
+            credential_manager
+                .read_material(
+                    &default_workspace(),
+                    &credential_set_id,
+                    CredentialStorageKind::Keychain,
+                )
+                .expect("read removed keychain material")
+                .is_empty(),
+            "delete should remove keychain-routed material"
+        );
+    }
+
+    #[test]
+    fn import_source_without_secret_material_does_not_probe_keychain() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let source_name = SourceName::parse("public_messages").expect("source");
+
+        let source = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_without_secrets(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import source");
+
+        assert!(source.secrets.is_empty());
+        assert_eq!(source.credential_storage, None);
+        assert!(
+            !layout
+                .secret_file(&default_workspace(), &source_name)
+                .exists(),
+            "credential material should not be created for a source without secrets"
+        );
+        let config_raw =
+            std::fs::read_to_string(layout.config_file()).expect("read rendered config");
+        assert!(
+            !config_raw.contains("credential_storage"),
+            "source without credential material should not persist a storage route"
+        );
+    }
+
+    #[test]
+    fn import_missing_secret_does_not_probe_keychain_for_new_source() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout);
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("missing required secret should fail validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing required source secret 'API_TOKEN'"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn import_replaces_malformed_existing_credential_material() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -1382,6 +1766,7 @@ tables:
             .replace_material(
                 &default_workspace(),
                 &credential_set_id,
+                CredentialStorageKind::File,
                 &BTreeMap::from([
                     ("API_TOKEN".to_string(), "oauth-token".to_string()),
                     (
@@ -1404,7 +1789,11 @@ tables:
 
         assert_eq!(source.secrets, vec!["API_TOKEN"]);
         let material = credential_manager
-            .read_material(&default_workspace(), &credential_set_id)
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
             .expect("read material");
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),
@@ -1469,6 +1858,7 @@ tables:
             .replace_material(
                 &default_workspace(),
                 &credential_set_id,
+                CredentialStorageKind::File,
                 &BTreeMap::from([
                     ("API_TOKEN".to_string(), "oauth-token".to_string()),
                     (
@@ -1500,7 +1890,11 @@ tables:
             .expect("import source");
 
         let material = credential_manager
-            .read_material(&default_workspace(), &credential_set_id)
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
             .expect("read material");
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),
@@ -1511,6 +1905,102 @@ tables:
                 .keys()
                 .any(|key| key.starts_with("__coral_oauth.QVBJX1RPS0VO.")),
             "manual secret replacement should clear stale OAuth metadata"
+        );
+    }
+
+    #[test]
+    fn source_rollback_snapshots_credentials_after_refresh_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store.clone());
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout.clone());
+        let workspace_name = default_workspace();
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "old-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("install source");
+        let refresh_lock = credential_store
+            .credential_refresh_lock(&workspace_name, &credential_set_id)
+            .expect("hold refresh lock");
+        let config_temp_path = layout
+            .config_file()
+            .with_file_name(format!("config.toml.tmp.{}", std::process::id()));
+        std::fs::create_dir_all(&config_temp_path).expect("block config save temp path");
+        let (started_tx, started_rx) = std_mpsc::channel();
+        let import_manager = manager.clone();
+        let import_workspace = workspace_name.clone();
+        let import_handle = thread::spawn(move || {
+            started_tx.send(()).expect("signal import start");
+            import_manager.import_source(
+                &import_workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "manual-token".to_string(),
+                        }],
+                    },
+                },
+            )
+        });
+        started_rx.recv().expect("wait for import thread");
+        thread::sleep(Duration::from_millis(50));
+        credential_store
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([
+                    ("API_TOKEN".to_string(), "refreshed-token".to_string()),
+                    (
+                        "__coral_oauth.QVBJX1RPS0VO.refresh_token".to_string(),
+                        "refreshed-refresh-token".to_string(),
+                    ),
+                ]),
+            )
+            .expect("simulate persisted refresh while lock is held");
+        drop(refresh_lock);
+        import_handle
+            .join()
+            .expect("import thread")
+            .expect_err("blocked config save should fail import");
+        drop(std::fs::remove_dir_all(&config_temp_path));
+
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("refreshed-token")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.refresh_token")
+                .map(String::as_str),
+            Some("refreshed-refresh-token")
         );
     }
 
@@ -1528,19 +2018,22 @@ tables:
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let fixture = OAuthFixture::new();
         let redirect_port = free_loopback_port();
+        let (manifest_yaml, rendered_token_url) =
+            manifest_with_templated_oauth_endpoints(&fixture.token_url, redirect_port);
+        assert!(
+            manifest_yaml.find("  API_TOKEN:").expect("API_TOKEN input")
+                < manifest_yaml
+                    .find("  OUTLOOK_TENANT_ID:")
+                    .expect("tenant input"),
+            "tenant variable should exercise manifest order after the OAuth secret"
+        );
         let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();
         let import = manager.import_source_with_credentials(
             &workspace_name,
             ImportSourceWithCredentialsCommand {
-                manifest_yaml: manifest_with_oauth_secret(&fixture.token_url, redirect_port),
-                bindings: SourceBindings {
-                    variables: vec![SourceBinding {
-                        key: "API_BASE".to_string(),
-                        value: "https://api.example.test".to_string(),
-                    }],
-                    secrets: Vec::new(),
-                },
+                manifest_yaml,
+                bindings: oauth_import_bindings_with_tenant(),
                 oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
                     input_key: "API_TOKEN".to_string(),
                     method_index: 0,
@@ -1564,6 +2057,8 @@ tables:
                 panic!("unexpected import event");
             };
             assert_eq!(input_key, "API_TOKEN");
+            let parsed = Url::parse(&authorization_url).expect("authorization url");
+            assert_eq!(parsed.path(), "/organizations/oauth/authorize");
             callback(&authorization_url, redirect_port).await;
             let event = event_rx
                 .recv()
@@ -1585,7 +2080,11 @@ tables:
             Some("test-code")
         );
         let material = credential_manager
-            .read_material(&default_workspace(), &credential_set_id)
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
             .expect("read material");
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),
@@ -1596,6 +2095,12 @@ tables:
                 .get("__coral_oauth.QVBJX1RPS0VO.method")
                 .map(String::as_str),
             Some("oauth")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.token_url")
+                .map(String::as_str),
+            Some(rendered_token_url.as_str())
         );
     }
 
@@ -1659,7 +2164,11 @@ tables:
             "preflight validation should fail before OAuth retrieval starts"
         );
         let material = credential_manager
-            .read_material(&default_workspace(), &credential_set_id)
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
             .expect("read material");
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),

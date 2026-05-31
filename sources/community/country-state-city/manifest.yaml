@@ -1,0 +1,168 @@
+name: country_state_city
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Retrieve countries, states, and cities using the Country State City API.
+base_url: https://api.countrystatecity.in/v1
+inputs:
+  api_key:
+    kind: secret
+    hint: Free API key from countrystatecity.in (X-CSCAPI-KEY).
+test_queries:
+  - SELECT name, iso2 FROM country_state_city.countries LIMIT 1
+  - SELECT name, iso2 FROM country_state_city.states WHERE ciso = 'US' LIMIT 1
+  - SELECT name FROM country_state_city.cities WHERE ciso = 'US' AND siso = 'CA' LIMIT 1
+tables:
+  - name: countries
+    description: List of all countries.
+    request:
+      method: GET
+      path: /countries
+      headers:
+        - name: X-CSCAPI-KEY
+          from: input
+          key: api_key
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique country ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Country name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: iso2
+        type: Utf8
+        nullable: false
+        description: Country ISO2 code.
+        expr:
+          kind: path
+          path:
+            - iso2
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Country currency code.
+        expr:
+          kind: path
+          path:
+            - currency
+      - name: emoji
+        type: Utf8
+        nullable: true
+        description: Country flag emoji.
+        expr:
+          kind: path
+          path:
+            - emoji
+
+  - name: states
+    description: List of states for a specific country.
+    filters:
+      - name: ciso
+        required: true
+    request:
+      method: GET
+      path: /countries/{{filter.ciso}}/states
+      headers:
+        - name: X-CSCAPI-KEY
+          from: input
+          key: api_key
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique state ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: State name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: iso2
+        type: Utf8
+        nullable: false
+        description: State ISO2 code.
+        expr:
+          kind: path
+          path:
+            - iso2
+      - name: ciso
+        type: Utf8
+        nullable: false
+        description: Country ISO code.
+        expr:
+          kind: from_filter
+          key: ciso
+
+  - name: cities
+    description: List of cities for a specific state and country.
+    filters:
+      - name: ciso
+        required: true
+      - name: siso
+        required: true
+    request:
+      method: GET
+      path: /countries/{{filter.ciso}}/states/{{filter.siso}}/cities
+      headers:
+        - name: X-CSCAPI-KEY
+          from: input
+          key: api_key
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique city ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: City name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: ciso
+        type: Utf8
+        nullable: false
+        description: Country ISO code.
+        expr:
+          kind: from_filter
+          key: ciso
+      - name: siso
+        type: Utf8
+        nullable: false
+        description: State ISO code.
+        expr:
+          kind: from_filter
+          key: siso

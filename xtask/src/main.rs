@@ -8,6 +8,7 @@
 //!     (the regression gate for the SOURCE-465 manifest cleanup).
 //!   - `export-skills` exports installable agent skills from the canonical
 //!     plugin tree into a distribution checkout.
+//!   - `perf-check` runs command-level performance regression checks.
 
 #![allow(
     clippy::print_stderr,
@@ -25,6 +26,7 @@ use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
 mod detect;
 mod nav;
+mod perf;
 mod render;
 mod skills;
 
@@ -43,6 +45,8 @@ enum Command {
     DetectTruncations(DetectArgs),
     /// Export installable skills from plugins/coral/skills.
     ExportSkills(ExportSkillsArgs),
+    /// Run command-level performance regression checks.
+    PerfCheck(perf::Args),
 }
 
 #[derive(Debug, clap::Args)]
@@ -139,6 +143,7 @@ fn run(command: &Command) -> Result<bool> {
             detect::run(&paths, args.verbose)
         }
         Command::ExportSkills(args) => skills::export(&args.dest),
+        Command::PerfCheck(args) => perf::run(args),
     }
 }
 

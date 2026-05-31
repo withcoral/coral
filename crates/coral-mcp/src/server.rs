@@ -28,11 +28,11 @@ use crate::{
     surface::{
         CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
         describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, internal_status, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        initial_instructions, list_catalog_arguments, list_catalog_tool, list_catalog_value,
+        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
+        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -127,15 +127,8 @@ impl CoralMcpServer {
     }
 
     async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
-        self.load_table_summaries(None).await
-    }
-
-    async fn load_table_summaries(
-        &self,
-        schema_name: Option<&str>,
-    ) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         self.load_catalog(
-            schema_name,
+            None,
             CATALOG_KIND_TABLE,
             PaginationRequest {
                 limit: LIST_CATALOG_UNBOUNDED_LIMIT,
@@ -480,12 +473,11 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (sources, visible_table_count, visible_function_count) = self
-                .load_sources_and_catalog_counts()
-                .await
-                .map_err(|status| status_to_error_data(&status))?;
+            let (visible_table_count, visible_function_count) =
+                tokio::try_join!(self.load_table_count(), self.load_table_function_count())
+                    .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
-                sql_tool(&sources, visible_table_count),
+                sql_tool(visible_table_count),
                 list_catalog_tool(visible_table_count, visible_function_count),
                 search_catalog_tool(visible_table_count, visible_function_count),
                 describe_table_tool(),
@@ -559,8 +551,7 @@ impl ServerHandler for CoralMcpServer {
                         .await
                         .map_err(|status| status_to_error_data(&status))?;
                     let text = tables_resource_content(&tables)
-                        .map_err(|error| internal_status(&error))
-                        .map_err(|status| status_to_error_data(&status))?;
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
                     Ok(ReadResourceResult::new(vec![
                         ResourceContents::text(text, request.uri)
                             .with_mime_type("application/json"),

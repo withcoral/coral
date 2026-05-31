@@ -5,6 +5,108 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 {/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
 
+## [0.4.1](https://github.com/withcoral/coral/compare/v0.4.0...v0.4.1) (2026-05-27)
+
+
+### Features
+
+* **cli:** add runtime feature flags ([#784](https://github.com/withcoral/coral/issues/784)) ([862f269](https://github.com/withcoral/coral/commit/862f269de1cf2fbdb04603d0346d147a608c116a))
+* **credentials:** support OAuth device flow ([#360](https://github.com/withcoral/coral/issues/360)) ([1413c2b](https://github.com/withcoral/coral/commit/1413c2b1fe450a01ca69d1406663d09b39cfe048))
+* **sources/community/telegram:** add Telegram Bot API source ([#863](https://github.com/withcoral/coral/issues/863)) ([5a16775](https://github.com/withcoral/coral/commit/5a16775e3fbf40226e08ab1fea18a1430f3af7de))
+* **sources/core/gitlab:** add OAuth credential method ([#411](https://github.com/withcoral/coral/issues/411)) ([8278f33](https://github.com/withcoral/coral/commit/8278f3311356f74bc5b6516358dcb766640b470c))
+* **sources/github:** add OAuth device flow ([#361](https://github.com/withcoral/coral/issues/361)) ([fdd9018](https://github.com/withcoral/coral/commit/fdd90180b83581615ffa1cde8ef8b0768dad2ab5))
+
+
+### Bug Fixes
+
+* **release:** mark promoted releases as latest ([#876](https://github.com/withcoral/coral/issues/876)) ([ea5b53d](https://github.com/withcoral/coral/commit/ea5b53d4db673db303e33f38a5f2af84ae4b263b))
+
+## [0.4.0](https://github.com/withcoral/coral/compare/v0.3.0...v0.4.0) (2026-05-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **file:** add unified file backend ([#453](https://github.com/withcoral/coral/issues/453))
+
+### Features
+
+* **app:** add keychain secret storage ([#761](https://github.com/withcoral/coral/issues/761)) ([6b03b48](https://github.com/withcoral/coral/commit/6b03b48eacd5c6d2901384954285cdcb96a9d2c2))
+* **app:** keep local HTTP body previews off spans ([#376](https://github.com/withcoral/coral/issues/376)) ([20235d0](https://github.com/withcoral/coral/commit/20235d07a5468037f44bcb16d95c736da6f65b75))
+* **community:** add OpenSSF Scorecard source — security health checks for any GitHub repo ([#832](https://github.com/withcoral/coral/issues/832)) ([a0d40dd](https://github.com/withcoral/coral/commit/a0d40dd3173f5f47a168bd2cb0f834c732a73d4f))
+* **file:** add unified file backend ([#453](https://github.com/withcoral/coral/issues/453)) ([0ddaabc](https://github.com/withcoral/coral/commit/0ddaabc30de02913e6c0cf8c76b83115cc936297))
+* **mcp:** add MCP-backed source support ([#402](https://github.com/withcoral/coral/issues/402)) ([a7f167f](https://github.com/withcoral/coral/commit/a7f167fca549cbc59f38560316f0ca293a5da580))
+* **sources/community/advice-slip:** add Advice Slip source ([#857](https://github.com/withcoral/coral/issues/857)) ([cb3979f](https://github.com/withcoral/coral/commit/cb3979fdb6ac9e7c9e6d3f28bad6b32f1ec35da3))
+* **sources/community/adzuna:** add Adzuna search community source ([#815](https://github.com/withcoral/coral/issues/815)) ([099b42e](https://github.com/withcoral/coral/commit/099b42e409d3bb81e43eaabce83a8141815f6bfb))
+* **sources/community/auth0:** add Auth0 community source ([#719](https://github.com/withcoral/coral/issues/719)) ([20caa73](https://github.com/withcoral/coral/commit/20caa73fe01f6e9a823280a922937da115a9a9fc))
+* **sources/community/axiom:** add Axiom community source ([#628](https://github.com/withcoral/coral/issues/628)) ([59e4b95](https://github.com/withcoral/coral/commit/59e4b95ef19f999aacce9f935c84468e8f9d7df0))
+* **sources/community/bitbucket:** add bitbucket community source ([#744](https://github.com/withcoral/coral/issues/744)) ([9aac12b](https://github.com/withcoral/coral/commit/9aac12b8dd60f42f05d49e7f681a87995e740d72))
+* **sources/community/checkly:** add Checkly community source ([#630](https://github.com/withcoral/coral/issues/630)) ([826fbe1](https://github.com/withcoral/coral/commit/826fbe1ad449a8e2ac3a13e193f6b000752f99e7))
+* **sources/community/chucknorris:** add Chuck Norris API community source ([#770](https://github.com/withcoral/coral/issues/770)) ([985e6c3](https://github.com/withcoral/coral/commit/985e6c36892de95c0a1e8a444acc58d7917b255d))
+* **sources/community/coingecko:** add CoinGecko API community source ([#781](https://github.com/withcoral/coral/issues/781)) ([80e1538](https://github.com/withcoral/coral/commit/80e1538027a68a027c91e922833774e4b7e51e5b))
+* **sources/community/coolify:** add coolify community source ([#751](https://github.com/withcoral/coral/issues/751)) ([5caf601](https://github.com/withcoral/coral/commit/5caf601161d2ae3a9de5f2594cc405028d8565af)), closes [#729](https://github.com/withcoral/coral/issues/729)
+* **sources/community/country-state-city:** add Country State City source ([#859](https://github.com/withcoral/coral/issues/859)) ([67b39af](https://github.com/withcoral/coral/commit/67b39afe2117a5f68a2fdf791f303f283df42072))
+* **sources/community/dbt_cloud:** add dbt cloud source ([#627](https://github.com/withcoral/coral/issues/627)) ([83a8ae6](https://github.com/withcoral/coral/commit/83a8ae6dc5e2b478ae4b4546344c7de3c3119356))
+* **sources/community/deps_dev:** add deps_dev community source ([#799](https://github.com/withcoral/coral/issues/799)) ([a179119](https://github.com/withcoral/coral/commit/a179119b2d8f9d00685e52ca82158c5f8dfdbd8c))
+* **sources/community/devto:** add DEV.to community source ([#811](https://github.com/withcoral/coral/issues/811)) ([d99ed85](https://github.com/withcoral/coral/commit/d99ed85f6941115b8e3bcd366264c955bff8ed54))
+* **sources/community/dog-ceo:** add Dog CEO source ([#861](https://github.com/withcoral/coral/issues/861)) ([11fc86e](https://github.com/withcoral/coral/commit/11fc86e1fc366c3072b3497dfb496efc72af76da))
+* **sources/community/dub:** add Dub.co community source ([#668](https://github.com/withcoral/coral/issues/668)) ([1361d00](https://github.com/withcoral/coral/commit/1361d0001557aafacb417b1aecce349fc15d2ede))
+* **sources/community/frankfurter:** add Frankfurter exchange rates community source ([#772](https://github.com/withcoral/coral/issues/772)) ([7ed3e5a](https://github.com/withcoral/coral/commit/7ed3e5a5ed6a7876198425844a5bd03f47ebf0cd))
+* **sources/community/free-dictionary:** add Free Dictionary API community source ([#779](https://github.com/withcoral/coral/issues/779)) ([940e8cc](https://github.com/withcoral/coral/commit/940e8ccb0627804eccd650074b69513a511b656c))
+* **sources/community/ghost:** add ghost cms integration ([#713](https://github.com/withcoral/coral/issues/713)) ([21213dc](https://github.com/withcoral/coral/commit/21213dc39a04c488f978764f91fb6114f90523d9))
+* **sources/community/google_contacts:** add Google Contacts source ([#846](https://github.com/withcoral/coral/issues/846)) ([f6d3402](https://github.com/withcoral/coral/commit/f6d3402331066a3cc6a91ede02970ddabc6e8cbb))
+* **sources/community/google_drive:** add Google Drive source ([#699](https://github.com/withcoral/coral/issues/699)) ([c5329a4](https://github.com/withcoral/coral/commit/c5329a4ebeaff18a866cfb59cf208a4082840676))
+* **sources/community/groq_ai:** add Groq AI community source ([#754](https://github.com/withcoral/coral/issues/754)) ([11ce682](https://github.com/withcoral/coral/commit/11ce682e12b9b31346168ff595e5b309a34881dd))
+* **sources/community/hn:** add dedicated category tables ([#803](https://github.com/withcoral/coral/issues/803)) ([8a18651](https://github.com/withcoral/coral/commit/8a186511857a30ed5fbce8c99c3626d54b3fdf43))
+* **sources/community/influxdb:** add InfluxDB community source ([#623](https://github.com/withcoral/coral/issues/623)) ([b2a6664](https://github.com/withcoral/coral/commit/b2a666443fbb23ca1ef6386b5a5ea3fad453cd9b))
+* **sources/community/ip_api:** add ip-api community source ([#844](https://github.com/withcoral/coral/issues/844)) ([eb9df37](https://github.com/withcoral/coral/commit/eb9df376272377c70c7322642b29bab43deab80b))
+* **sources/community/jikan:** add Jikan community source ([#802](https://github.com/withcoral/coral/issues/802)) ([82f5924](https://github.com/withcoral/coral/commit/82f5924e0a8d295494a7d65fb3c7cb98fe574e15))
+* **sources/community/jsonplaceholder:** add JSONPlaceholder source ([#840](https://github.com/withcoral/coral/issues/840)) ([9f4c04a](https://github.com/withcoral/coral/commit/9f4c04a30cf61328acb9eaf2f708f48c87eb6ac5))
+* **sources/community/k8s:** add kubernetes community source ([#420](https://github.com/withcoral/coral/issues/420)) ([c19c5b8](https://github.com/withcoral/coral/commit/c19c5b82aada8e4ec34b7672a15f87ebc336e0db))
+* **sources/community/keycloak:** add keycloak community source ([#739](https://github.com/withcoral/coral/issues/739)) ([df70a35](https://github.com/withcoral/coral/commit/df70a3521cf501509d419e5ceb2d2a2441d32e25))
+* **sources/community/lm_studio:** add LM Studio community source ([#834](https://github.com/withcoral/coral/issues/834)) ([249f6fc](https://github.com/withcoral/coral/commit/249f6fc132b730188d0fb8cf05ebb744fdcf4585))
+* **sources/community/metabase:** add Metabase source ([#785](https://github.com/withcoral/coral/issues/785)) ([5e3e5fa](https://github.com/withcoral/coral/commit/5e3e5fa89922dc914e6bf439f79a942b7f71ee4f))
+* **sources/community/musicbrainz:** add MusicBrainz community source ([#789](https://github.com/withcoral/coral/issues/789)) ([2a54128](https://github.com/withcoral/coral/commit/2a54128cc9fad5e9d713bcb0ed189a1fc594a76d))
+* **sources/community/neo4j:** add Neo4j community source ([#552](https://github.com/withcoral/coral/issues/552)) ([b649b60](https://github.com/withcoral/coral/commit/b649b60c0a39b92c0b77e4136e65f7d584482d45))
+* **sources/community/novu:** add Novu community source ([#591](https://github.com/withcoral/coral/issues/591)) ([ac316e2](https://github.com/withcoral/coral/commit/ac316e28955f32e5f084ea8d5a7120894cc3baad)), closes [#586](https://github.com/withcoral/coral/issues/586)
+* **sources/community/ollama:** add Ollama community source ([#798](https://github.com/withcoral/coral/issues/798)) ([d716dd1](https://github.com/withcoral/coral/commit/d716dd1e33401546c1b8d5dd7b135f8d2b32aac1))
+* **sources/community/open-meteo:** add Open-Meteo source ([#786](https://github.com/withcoral/coral/issues/786)) ([1795455](https://github.com/withcoral/coral/commit/1795455ed7929ec81b2f2aa8a4cde1780b6f4758))
+* **sources/community/openlibrary:** add Open Library API community source ([#780](https://github.com/withcoral/coral/issues/780)) ([6c08c23](https://github.com/withcoral/coral/commit/6c08c236bc7ccac79e664385e91fb1b448e319c0))
+* **sources/community/openmetadata:** add OpenMetadata source ([#804](https://github.com/withcoral/coral/issues/804)) ([fa121e4](https://github.com/withcoral/coral/commit/fa121e43b1126cc6b4747fa06ad5fa725aec3f03))
+* **sources/community/pinecone:** add Pinecone community source ([#513](https://github.com/withcoral/coral/issues/513)) ([632a2b8](https://github.com/withcoral/coral/commit/632a2b8bdf77e2c7fa3ed2e8df71c09d8d8b3916))
+* **sources/community/plausible:** add Plausible Analytics community source ([#585](https://github.com/withcoral/coral/issues/585)) ([318acc9](https://github.com/withcoral/coral/commit/318acc9d8c71cda3ade477c49aa33a58fb02c771)), closes [#583](https://github.com/withcoral/coral/issues/583)
+* **sources/community/pokeapi:** add PokeAPI community source ([#767](https://github.com/withcoral/coral/issues/767)) ([5a348d6](https://github.com/withcoral/coral/commit/5a348d6d77b88b0856dfec6bf5befbbd627db5b6))
+* **sources/community/prometheus:** add prometheus community source ([#665](https://github.com/withcoral/coral/issues/665)) ([6178f0b](https://github.com/withcoral/coral/commit/6178f0bfd63bec3d43a6b2cd8b45e2e9b9dccf5f))
+* **sources/community/public-holidays:** add Public Holidays (Nager.Dates) community source ([#775](https://github.com/withcoral/coral/issues/775)) ([1aa85bd](https://github.com/withcoral/coral/commit/1aa85bd8cf736eb6e48c911b0c6e487b688381e3))
+* **sources/community/remotive:** add Remotive jobs connector via DSL v3 ([#685](https://github.com/withcoral/coral/issues/685)) ([e7eabaf](https://github.com/withcoral/coral/commit/e7eabaffc606da7fe8398d1d4adcf64d75d0770e))
+* **sources/community/replicate:** add Replicate community source ([#629](https://github.com/withcoral/coral/issues/629)) ([e38b5c9](https://github.com/withcoral/coral/commit/e38b5c98c289e31bc5fa4107de0c26a35d6f68b1))
+* **sources/community/rest-countries:** add REST Countries community source ([#765](https://github.com/withcoral/coral/issues/765)) ([413103f](https://github.com/withcoral/coral/commit/413103fd1944610936088f69cc0e1206d4c9f7bd))
+* **sources/community/semaphore_ci:** add Semaphore CI community source ([#669](https://github.com/withcoral/coral/issues/669)) ([659758e](https://github.com/withcoral/coral/commit/659758e041414075ec5367563c47753661c44f99))
+* **sources/community/terraform_cloud:** add Terraform Cloud source ([#756](https://github.com/withcoral/coral/issues/756)) ([8094db7](https://github.com/withcoral/coral/commit/8094db7395bf3dfba637fb2f9a5165ff9908ee6c))
+* **sources/community/turso:** add Turso community source ([#590](https://github.com/withcoral/coral/issues/590)) ([f320662](https://github.com/withcoral/coral/commit/f3206625f6c2ff8107a5e5d7a437e7247229370f))
+* **sources/community/typeform:** add Typeform community source ([#604](https://github.com/withcoral/coral/issues/604)) ([1a01518](https://github.com/withcoral/coral/commit/1a015184d0e12a6b319a691b1b5c1327c71c85ff))
+* **sources/community/vercel:** add Vercel community source ([#434](https://github.com/withcoral/coral/issues/434)) ([3824d32](https://github.com/withcoral/coral/commit/3824d32611674527862bad01db82e7143a589f55))
+* **sources/community/wikipedia:** add Wikipedia community source ([#787](https://github.com/withcoral/coral/issues/787)) ([74224b8](https://github.com/withcoral/coral/commit/74224b8ce1f2fa901b2251a151a93bfdad9f01e6))
+* **sources/community/woocommerce:** add WooCommerce community source ([#638](https://github.com/withcoral/coral/issues/638)) ([9a77359](https://github.com/withcoral/coral/commit/9a77359ac4668f722bd2c685dea0eccb92b7f950))
+* **sources/community/xkcd:** add xkcd community source ([#842](https://github.com/withcoral/coral/issues/842)) ([0c252d0](https://github.com/withcoral/coral/commit/0c252d02a6e7caa1eec2517d655e0d0ab5d27e9e))
+* **sources/core/google_calendar:** add Google Calendar source ([#346](https://github.com/withcoral/coral/issues/346)) ([2cf281e](https://github.com/withcoral/coral/commit/2cf281e461556c871cfe0a355b67e57efec42fff))
+* **sources/core/slack:** add OAuth credential method ([#380](https://github.com/withcoral/coral/issues/380)) ([b8d6f7d](https://github.com/withcoral/coral/commit/b8d6f7d307b93aed2cf2e6e450f3536183f88332))
+* **sources/core:** add claude source ([#457](https://github.com/withcoral/coral/issues/457)) ([a2201ee](https://github.com/withcoral/coral/commit/a2201eef47bed84f76bba30d71c25522d5658101))
+* **sources/core:** add codex source ([#456](https://github.com/withcoral/coral/issues/456)) ([a508f6d](https://github.com/withcoral/coral/commit/a508f6d07b68ab769f3a95a041b669db1018eeed))
+* **sources/n8n:** add n8n community source spec ([#681](https://github.com/withcoral/coral/issues/681)) ([4058d00](https://github.com/withcoral/coral/commit/4058d0051d18652970f70574763ddd347b81d116))
+* **sources:** Add Trello Community Source ([#763](https://github.com/withcoral/coral/issues/763)) ([14df2b3](https://github.com/withcoral/coral/commit/14df2b3c9ec7a78e2c1bc6cc33e478e40111d3c6))
+* **ui:** add cmd+arrow shortcuts for trace navigation ([#776](https://github.com/withcoral/coral/issues/776)) ([5f96336](https://github.com/withcoral/coral/commit/5f96336133c833fa76ee18dacd6d0fde4cac1f4b))
+
+
+### Bug Fixes
+
+* **ci:** invoke Windows release smoke binary correctly ([#688](https://github.com/withcoral/coral/issues/688)) ([f67a494](https://github.com/withcoral/coral/commit/f67a494aec40787d28d6d911049350a28da59254))
+* **docs:** skip community source catalog in docs check ([#800](https://github.com/withcoral/coral/issues/800)) ([48a7cda](https://github.com/withcoral/coral/commit/48a7cda4ec5e0b579df0950a635ae32af24a3f8e))
+* **install:** make checksum verification resilient ([#742](https://github.com/withcoral/coral/issues/742)) ([b6018bf](https://github.com/withcoral/coral/commit/b6018bf6c55fb18864339bf951ad4cfcadf95bff))
+* **spec:** validate column types in spec ([#760](https://github.com/withcoral/coral/issues/760)) ([0da9a65](https://github.com/withcoral/coral/commit/0da9a659c7d0294978a8f06246d8bbb00a1d6570))
+* **ui/traces:** improve span tabs navigation ([#820](https://github.com/withcoral/coral/issues/820)) ([5a5eb2d](https://github.com/withcoral/coral/commit/5a5eb2df8c1a70f44b9469f005b3b3b1b810f4dc))
+* **ui:** add expandable sidebar and query stream tooltip ([#652](https://github.com/withcoral/coral/issues/652)) ([7585465](https://github.com/withcoral/coral/commit/7585465ab055f478ad35483aa87ff5d2b34c84f8))
+* **ui:** rework trace span detail layout ([#653](https://github.com/withcoral/coral/issues/653)) ([e851059](https://github.com/withcoral/coral/commit/e851059638310277fbd2f21f32a312a0d3dde2b1))
+
 ## [0.3.0](https://github.com/withcoral/coral/compare/v0.2.1...v0.3.0) (2026-05-22)
 
 
