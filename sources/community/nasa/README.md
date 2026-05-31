@@ -49,7 +49,7 @@ FROM nasa.apod
 WHERE start_date = '2024-06-01' AND end_date = '2024-06-10'
 LIMIT 10;
 
--- Filter videos only
+-- Request video thumbnails for APOD entries
 SELECT date, title, url, thumbnail_url
 FROM nasa.apod
 WHERE thumbs = 'true' AND count = 3
