@@ -3,7 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Search arXiv papers, preprints, and research metadata via the OpenAlex API.
+  A convenience wrapper around OpenAlex's /works?filter=indexed_in:arxiv endpoint.
+  Pre-applies the arXiv scope filter to simplify queries. Not a direct arXiv API integration.
   Requires a free OpenAlex API key.
 base_url: https://api.openalex.org
 
@@ -119,24 +120,7 @@ functions:
         expr:
           kind: path
           path: [cited_by_count]
-      - name: best_oa_arxiv_id
-        type: Utf8
-        nullable: true
-        description: >-
-          The arXiv identifier of the work derived from the best open access location (e.g. 1706.03762).
-          This may be null or contain a non-arXiv URL if the best open access location for a paper
-          is a publisher page, journal, or DOI link rather than arxiv.org.
-        expr:
-          kind: replace
-          from: "https://arxiv.org/abs/"
-          to: ""
-          expr:
-            kind: replace
-            from: "http://arxiv.org/abs/"
-            to: ""
-            expr:
-              kind: path
-              path: [best_oa_location, landing_page_url]
+
       - name: best_oa_landing_page_url
         type: Utf8
         nullable: true
@@ -305,28 +289,12 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Filter column to query by arXiv ID.
+        description: >-
+          Filter column to query by arXiv ID. Unversioned arXiv ID lookup only (e.g. '1706.03762', not '1706.03762v7').
+          Matches against OpenAlex landing page URLs. Versioned IDs are not supported.
         expr:
           kind: from_filter
           key: arxiv_id
-      - name: best_oa_arxiv_id
-        type: Utf8
-        nullable: true
-        description: >-
-          The arXiv identifier of the work derived from the best open access location (e.g. 1706.03762).
-          This may be null or contain a non-arXiv URL if the best open access location for a paper
-          is a publisher page, journal, or DOI link rather than arxiv.org.
-        expr:
-          kind: replace
-          from: "https://arxiv.org/abs/"
-          to: ""
-          expr:
-            kind: replace
-            from: "http://arxiv.org/abs/"
-            to: ""
-            expr:
-              kind: path
-              path: [best_oa_location, landing_page_url]
       - name: title
         type: Utf8
         nullable: true
