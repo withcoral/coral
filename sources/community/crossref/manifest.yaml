@@ -1,0 +1,785 @@
+# sources/community/crossref/manifest.yaml
+#
+# Crossref REST API source for Coral
+# API docs: https://api.crossref.org / https://github.com/CrossRef/rest-api-doc
+#
+# No sign-up required. Providing an email routes you into the "polite pool"
+# (better rate limits). An optional Plus token unlocks the SLA pool.
+
+name: crossref
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  CROSSREF_EMAIL:
+    kind: variable
+    default: ""
+    hint: >
+      Your contact email address. Crossref routes requests with a contact
+      email into the "polite pool" (more stable, higher rate limits).
+      Strongly recommended. Example: you@yourorg.org
+
+
+base_url: "https://api.crossref.org"
+
+request_headers:
+  - name: User-Agent
+    from: template
+    template: "CoralSource/0.1 (https://github.com/withcoral/coral; mailto:{{input.CROSSREF_EMAIL}})"
+
+rate_limit:
+  retry_after_header: Retry-After
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+
+test_queries:
+  - SELECT doi, title, type FROM crossref.works LIMIT 1
+  - SELECT id, primary_name FROM crossref.members LIMIT 1
+  - SELECT issn, title, publisher FROM crossref.journals LIMIT 1
+  - SELECT id, name FROM crossref.funders LIMIT 1
+  - SELECT id, label FROM crossref.types LIMIT 1
+
+tables:
+  # ---------------------------------------------------------------------------
+  # crossref.works
+  # ---------------------------------------------------------------------------
+  - name: works
+    description: >
+      Scholarly works registered with Crossref (journal articles, books,
+      conference papers, preprints, datasets, grants, and more).
+      Use the optional query filter for keyword search, or the filter field
+      for Crossref filter syntax.
+    request:
+      method: GET
+      path: /works
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: filter
+          from: filter
+          key: filter
+        - name: sort
+          from: filter
+          key: sort
+        - name: order
+          from: filter
+          key: order
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      page_size:
+        default: 20
+        max: 1000
+        query_param: rows
+      offset_param: offset
+    filters:
+      - name: query
+        type: Utf8
+        description: Keyword search across titles, authors, and other metadata
+      - name: filter
+        type: Utf8
+        description: >
+          Crossref filter string, e.g. "type:journal-article,from-pub-date:2024-01"
+      - name: sort
+        type: Utf8
+        description: "Sort field: score, relevance, updated, deposited, indexed, published"
+      - name: order
+        type: Utf8
+        description: "Sort order: asc or desc"
+    columns:
+      # --- Filter pseudo-columns (allows WHERE clause pushdown) ---
+      - name: query
+        type: Utf8
+        description: Keyword search across titles, authors, and other metadata
+        expr:
+          kind: path
+          path: [_dummy_query]
+      - name: filter
+        type: Utf8
+        description: Crossref filter string
+        expr:
+          kind: path
+          path: [_dummy_filter]
+      - name: sort
+        type: Utf8
+        description: "Sort field: score, relevance, updated, deposited, indexed, published"
+        expr:
+          kind: path
+          path: [_dummy_sort]
+      - name: order
+        type: Utf8
+        description: "Sort order: asc or desc"
+        expr:
+          kind: path
+          path: [_dummy_order]
+      # --- Actual fields ---
+      - name: doi
+        type: Utf8
+        description: Digital Object Identifier
+        expr:
+          kind: path
+          path: [DOI]
+      - name: title
+        type: Utf8
+        description: Primary title (first element of the title array)
+        expr:
+          kind: join_array_path
+          path: [title]
+          item_path: []
+          separator: ""
+      - name: type
+        type: Utf8
+        description: "Work type, e.g. journal-article, book-chapter, posted-content"
+        expr:
+          kind: path
+          path: [type]
+      - name: published_print_year
+        type: Utf8
+        description: Print publication year (from date-parts)
+        expr:
+          kind: path
+          path: [published-print, date-time]
+      - name: published_online_year
+        type: Utf8
+        description: Online publication year (from date-parts)
+        expr:
+          kind: path
+          path: [published-online, date-time]
+      - name: created
+        type: Utf8
+        description: Date the record was first deposited with Crossref
+        expr:
+          kind: path
+          path: [created, date-time]
+      - name: deposited
+        type: Utf8
+        description: Date the record was last deposited
+        expr:
+          kind: path
+          path: [deposited, date-time]
+      - name: indexed
+        type: Utf8
+        description: Date the record was last indexed
+        expr:
+          kind: path
+          path: [indexed, date-time]
+      - name: is_referenced_by_count
+        type: Int64
+        description: Number of works in Crossref that cite this DOI
+        expr:
+          kind: path
+          path: [is-referenced-by-count]
+      - name: references_count
+        type: Int64
+        description: Number of references listed in this work
+        expr:
+          kind: path
+          path: [references-count]
+      - name: publisher
+        type: Utf8
+        description: Publisher name as deposited
+        expr:
+          kind: path
+          path: [publisher]
+      - name: container_title
+        type: Utf8
+        description: Journal or book series title (first element)
+        expr:
+          kind: join_array_path
+          path: [container-title]
+          item_path: []
+          separator: ""
+      - name: issn
+        type: Utf8
+        description: ISSNs for the containing journal (comma-separated)
+        expr:
+          kind: join_array_path
+          path: [ISSN]
+          item_path: []
+          separator: ","
+      - name: isbn
+        type: Utf8
+        description: ISBNs (comma-separated, for books)
+        expr:
+          kind: join_array_path
+          path: [ISBN]
+          item_path: []
+          separator: ","
+      - name: volume
+        type: Utf8
+        description: Journal volume
+        expr:
+          kind: path
+          path: [volume]
+      - name: issue
+        type: Utf8
+        description: Journal issue
+        expr:
+          kind: path
+          path: [issue]
+      - name: page
+        type: Utf8
+        description: Page range, e.g. "1-12"
+        expr:
+          kind: path
+          path: [page]
+      - name: subject
+        type: Utf8
+        description: Subjects / discipline tags (comma-separated)
+        expr:
+          kind: join_array_path
+          path: [subject]
+          item_path: []
+          separator: ","
+      - name: language
+        type: Utf8
+        description: BCP-47 language code
+        expr:
+          kind: path
+          path: [language]
+      - name: license_url
+        type: Utf8
+        description: URLs of licences on this work (comma-separated)
+        expr:
+          kind: join_array_path
+          path: [license]
+          item_path: [URL]
+          separator: ","
+      - name: link_url
+        type: Utf8
+        description: URLs of full-text links (comma-separated)
+        expr:
+          kind: join_array_path
+          path: [link]
+          item_path: [URL]
+          separator: ","
+      - name: abstract
+        type: Utf8
+        description: Abstract text (may be JATS XML; not always present)
+        expr:
+          kind: path
+          path: [abstract]
+      - name: score
+        type: Float64
+        description: Relevance score (only present when query= is used)
+        expr:
+          kind: path
+          path: [score]
+      - name: prefix
+        type: Utf8
+        description: DOI prefix, e.g. 10.1038
+        expr:
+          kind: path
+          path: [prefix]
+      - name: member
+        type: Utf8
+        description: Crossref member ID that owns this DOI prefix
+        expr:
+          kind: path
+          path: [member]
+      - name: url
+        type: Utf8
+        description: Canonical URL for the work landing page
+        expr:
+          kind: path
+          path: [URL]
+
+  # ---------------------------------------------------------------------------
+  # crossref.members
+  # ---------------------------------------------------------------------------
+  - name: members
+    description: >
+      Crossref member organisations — publishers, learned societies, and
+      repositories that deposit DOIs with Crossref.
+    request:
+      method: GET
+      path: /members
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      page_size:
+        default: 20
+        max: 1000
+        query_param: rows
+      offset_param: offset
+    filters:
+      - name: query
+        type: Utf8
+        description: Keyword search on member organisation name
+    columns:
+      - name: query
+        type: Utf8
+        description: Keyword search on member organisation name
+        expr:
+          kind: path
+          path: [_dummy_query]
+      - name: id
+        type: Int64
+        description: Numeric Crossref member ID
+        expr:
+          kind: path
+          path: [id]
+      - name: primary_name
+        type: Utf8
+        description: Primary name of the member organisation
+        expr:
+          kind: path
+          path: [primary-name]
+      - name: location
+        type: Utf8
+        description: Country or city of the member
+        expr:
+          kind: path
+          path: [location]
+      - name: total_dois
+        type: Int64
+        description: Total number of DOIs registered by this member
+        expr:
+          kind: path
+          path: [counts, total-dois]
+      - name: current_dois
+        type: Int64
+        description: DOIs for content published in the last two years
+        expr:
+          kind: path
+          path: [counts, current-dois]
+      - name: backfile_dois
+        type: Int64
+        description: DOIs for content published more than two years ago
+        expr:
+          kind: path
+          path: [counts, backfile-dois]
+      - name: prefixes
+        type: Utf8
+        description: DOI prefixes owned by this member (comma-separated)
+        expr:
+          kind: join_array_path
+          path: [prefixes]
+          item_path: []
+          separator: ","
+      - name: coverage_affiliations_current
+        type: Float64
+        description: Fraction of current works with affiliation metadata
+        expr:
+          kind: path
+          path: [coverage, affiliations-current]
+      - name: coverage_orcids_current
+        type: Float64
+        description: Fraction of current works with ORCID metadata
+        expr:
+          kind: path
+          path: [coverage, orcids-current]
+      - name: coverage_references_current
+        type: Float64
+        description: Fraction of current works with reference lists
+        expr:
+          kind: path
+          path: [coverage, references-current]
+      - name: coverage_abstracts_current
+        type: Float64
+        description: Fraction of current works with abstracts
+        expr:
+          kind: path
+          path: [coverage, abstracts-current]
+
+  # ---------------------------------------------------------------------------
+  # crossref.journals
+  # ---------------------------------------------------------------------------
+  - name: journals
+    description: >
+      Journals registered with Crossref. Each row is one ISSN-identified
+      journal title.
+    request:
+      method: GET
+      path: /journals
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      page_size:
+        default: 20
+        max: 1000
+        query_param: rows
+      offset_param: offset
+    filters:
+      - name: query
+        type: Utf8
+        description: Keyword search on journal title or publisher name
+    columns:
+      - name: query
+        type: Utf8
+        description: Keyword search on journal title or publisher name
+        expr:
+          kind: path
+          path: [_dummy_query]
+      - name: issn
+        type: Utf8
+        description: ISSNs for this journal (comma-separated)
+        expr:
+          kind: join_array_path
+          path: [ISSN]
+          item_path: []
+          separator: ","
+      - name: title
+        type: Utf8
+        description: Journal title
+        expr:
+          kind: path
+          path: [title]
+      - name: publisher
+        type: Utf8
+        description: Publisher name
+        expr:
+          kind: path
+          path: [publisher]
+      - name: total_dois
+        type: Int64
+        description: Total DOIs registered for this journal
+        expr:
+          kind: path
+          path: [counts, total-dois]
+      - name: current_dois
+        type: Int64
+        description: DOIs for recent content (last two years)
+        expr:
+          kind: path
+          path: [counts, current-dois]
+      - name: backfile_dois
+        type: Int64
+        description: DOIs for older backfile content
+        expr:
+          kind: path
+          path: [counts, backfile-dois]
+      - name: coverage_references_current
+        type: Float64
+        description: Fraction of current articles with reference lists
+        expr:
+          kind: path
+          path: [coverage, references-current]
+      - name: coverage_abstracts_current
+        type: Float64
+        description: Fraction of current articles with abstracts
+        expr:
+          kind: path
+          path: [coverage, abstracts-current]
+      - name: coverage_orcids_current
+        type: Float64
+        description: Fraction of current articles with ORCID data
+        expr:
+          kind: path
+          path: [coverage, orcids-current]
+      - name: flags_deposits_articles
+        type: Boolean
+        description: Whether this journal deposits article-level metadata
+        expr:
+          kind: path
+          path: [flags, deposits-articles]
+
+  # ---------------------------------------------------------------------------
+  # crossref.funders
+  # ---------------------------------------------------------------------------
+  - name: funders
+    description: >
+      Research funding bodies registered in the Crossref Funder Registry
+      (formerly FundRef). Links to works via the funder DOI.
+    request:
+      method: GET
+      path: /funders
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      page_size:
+        default: 20
+        max: 1000
+        query_param: rows
+      offset_param: offset
+    filters:
+      - name: query
+        type: Utf8
+        description: Keyword search on funder name
+    columns:
+      - name: query
+        type: Utf8
+        description: Keyword search on funder name
+        expr:
+          kind: path
+          path: [_dummy_query]
+      - name: id
+        type: Utf8
+        description: Funder DOI, e.g. 10.13039/100000001
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        description: Primary name of the funder
+        expr:
+          kind: path
+          path: [name]
+      - name: alt_names
+        type: Utf8
+        description: Alternative names (comma-separated)
+        expr:
+          kind: join_array_path
+          path: [alt-names]
+          item_path: []
+          separator: ","
+      - name: uri
+        type: Utf8
+        description: Canonical URI for this funder
+        expr:
+          kind: path
+          path: [uri]
+      - name: location
+        type: Utf8
+        description: Country where the funder is based
+        expr:
+          kind: path
+          path: [location]
+      - name: work_count
+        type: Int64
+        description: Total number of works linked to this funder
+        expr:
+          kind: path
+          path: [work-count]
+      - name: descendant_work_count
+        type: Int64
+        description: Works linked to this funder and all its descendants
+        expr:
+          kind: path
+          path: [descendant-work-count]
+
+  # ---------------------------------------------------------------------------
+  # crossref.types
+  # ---------------------------------------------------------------------------
+  - name: types
+    description: >
+      Controlled vocabulary of work types used by Crossref, e.g.
+      journal-article, book-chapter, posted-content, dataset.
+    request:
+      method: GET
+      path: /types
+    response:
+      rows_path:
+        - message
+        - items
+    columns:
+      - name: id
+        type: Utf8
+        description: Machine-readable type identifier, e.g. journal-article
+        expr:
+          kind: path
+          path: [id]
+      - name: label
+        type: Utf8
+        description: Human-readable label, e.g. Journal Article
+        expr:
+          kind: path
+          path: [label]
+
+  # ---------------------------------------------------------------------------
+  # crossref.licenses
+  # ---------------------------------------------------------------------------
+  - name: licenses
+    description: >
+      Content licences declared on Crossref works, grouped by URL.
+      Useful for auditing open-access coverage.
+    request:
+      method: GET
+      path: /licenses
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      page_size:
+        default: 20
+        max: 1000
+        query_param: rows
+      offset_param: offset
+    filters:
+      - name: query
+        type: Utf8
+        description: Keyword search on licence URL
+    columns:
+      - name: query
+        type: Utf8
+        description: Keyword search on licence URL
+        expr:
+          kind: path
+          path: [_dummy_query]
+      - name: url
+        type: Utf8
+        description: Canonical URL of the licence
+        expr:
+          kind: path
+          path: [URL]
+      - name: work_count
+        type: Int64
+        description: Number of works using this licence
+        expr:
+          kind: path
+          path: [work-count]
+      - name: content_version
+        type: Utf8
+        description: Content version this licence applies to (vor, am, tdm, unspecified)
+        expr:
+          kind: path
+          path: [content-version]
+      - name: delay_in_days
+        type: Int64
+        description: Embargo period in days before the licence applies
+        expr:
+          kind: path
+          path: [delay-in-days]
+
+functions:
+  # ---------------------------------------------------------------------------
+  # crossref.search_works(q)
+  # ---------------------------------------------------------------------------
+  - name: search_works
+    kind: search
+    description: >
+      Full-text search across all Crossref works. Returns provider-ranked
+      results. Use for discovery; use crossref.works with filter= for
+      exhaustive retrieval.
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /works
+      query:
+        - name: query
+          from: arg
+          key: q
+    response:
+      rows_path:
+        - message
+        - items
+    columns:
+      - name: doi
+        type: Utf8
+        expr:
+          kind: path
+          path: [DOI]
+      - name: title
+        type: Utf8
+        expr:
+          kind: join_array_path
+          path: [title]
+          item_path: []
+          separator: ""
+      - name: type
+        type: Utf8
+        expr:
+          kind: path
+          path: [type]
+      - name: publisher
+        type: Utf8
+        expr:
+          kind: path
+          path: [publisher]
+      - name: container_title
+        type: Utf8
+        expr:
+          kind: join_array_path
+          path: [container-title]
+          item_path: []
+          separator: ""
+      - name: is_referenced_by_count
+        type: Int64
+        expr:
+          kind: path
+          path: [is-referenced-by-count]
+      - name: score
+        type: Float64
+        expr:
+          kind: path
+          path: [score]
+
+  # ---------------------------------------------------------------------------
+  # crossref.search_funders(q)
+  # ---------------------------------------------------------------------------
+  - name: search_funders
+    kind: search
+    description: >
+      Search the Crossref Funder Registry by funder name. Returns
+      provider-ranked matches.
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /funders
+      query:
+        - name: query
+          from: arg
+          key: q
+    response:
+      rows_path:
+        - message
+        - items
+    columns:
+      - name: id
+        type: Utf8
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        expr:
+          kind: path
+          path: [name]
+      - name: location
+        type: Utf8
+        expr:
+          kind: path
+          path: [location]
+      - name: work_count
+        type: Int64
+        expr:
+          kind: path
+          path: [work-count]
