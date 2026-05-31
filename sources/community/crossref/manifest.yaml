@@ -10,6 +10,10 @@ name: crossref
 version: 0.1.0
 dsl_version: 3
 backend: http
+description: >
+  Query the Crossref REST API with SQL. Covers scholarly works, journals,
+  publishers, funders, licences, and work types across 150M+ registered DOIs.
+  No authentication required.
 
 inputs:
   CROSSREF_EMAIL:
@@ -138,15 +142,15 @@ tables:
         expr:
           kind: path
           path: [type]
-      - name: published_print_year
+      - name: published_print
         type: Utf8
-        description: Print publication year (from date-parts)
+        description: Print publication datetime (ISO 8601)
         expr:
           kind: path
           path: [published-print, date-time]
-      - name: published_online_year
+      - name: published_online
         type: Utf8
-        description: Online publication year (from date-parts)
+        description: Online publication datetime (ISO 8601)
         expr:
           kind: path
           path: [published-online, date-time]
@@ -563,7 +567,7 @@ tables:
           path: [location]
       - name: work_count
         type: Int64
-        description: Total number of works linked to this funder
+        description: Total number of works linked to this funder (may be null)
         expr:
           kind: path
           path: [work-count]
