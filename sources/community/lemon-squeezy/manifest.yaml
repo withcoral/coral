@@ -1,6 +1,11 @@
 name: lemon_squeezy
 version: 0.1.0
 dsl_version: 3
+description: >
+  Query your Lemon Squeezy store data. Covers orders, subscriptions, customers,
+  products, variants, license keys, discount codes, and subscription invoices.
+  Supports both test-mode and live-mode API keys; the two modes access completely
+  separate datasets.
 backend: http
 
 inputs:
@@ -128,7 +133,7 @@ tables:
           path: [attributes, total_sales]
       - name: total_revenue
         type: Int64
-        description: Total revenue in store-currency cents across all time.
+        description: Total revenue in USD cents across all time.
         expr:
           kind: path
           path: [attributes, total_revenue]
@@ -140,7 +145,7 @@ tables:
           path: [attributes, thirty_day_sales]
       - name: thirty_day_revenue
         type: Int64
-        description: Revenue in store-currency cents in the last 30 days.
+        description: Revenue in USD cents in the last 30 days.
         expr:
           kind: path
           path: [attributes, thirty_day_revenue]
@@ -612,13 +617,13 @@ tables:
           path: [attributes, country]
       - name: total_revenue_currency
         type: Int64
-        description: Total revenue from this customer in store-currency cents.
+        description: Total revenue from this customer in USD cents.
         expr:
           kind: path
           path: [attributes, total_revenue_currency]
       - name: mrr
         type: Int64
-        description: Monthly recurring revenue from this customer in store-currency cents.
+        description: Monthly recurring revenue from this customer in USD cents.
         expr:
           kind: path
           path: [attributes, mrr]
@@ -1231,7 +1236,7 @@ tables:
         type: Utf8
         description: "Filter by invoice status: pending, paid, void, refunded, partial_refund."
       - name: refunded
-        type: Utf8
+        type: Boolean
         description: "Filter by refund state: true to return only refunded invoices, false for non-refunded."
     columns:
       - name: id
@@ -1342,7 +1347,7 @@ tables:
       - name: urls__invoice_url
         type: Utf8
         nullable: true
-        description: Signed URL to download the PDF invoice. Valid for a limited time.
+        description: Signed URL to download the PDF invoice. Null for invoices in pending status.
         expr:
           kind: path
           path: [attributes, urls, invoice_url]

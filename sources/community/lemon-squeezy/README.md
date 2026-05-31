@@ -48,8 +48,13 @@ coral source test lemon_squeezy
 | `discount_redemptions`  | Individual records of each discount code being applied to an order — use this to count redemptions per discount |
 | `license_keys`          | License keys issued with purchases, tracking activation limit and current activation count                      |
 
-All monetary amounts are in **cents** in the store's configured currency, except
-for `*_usd` columns which are in USD cents. Divide by 100 to get decimal values.
+All monetary amounts are in **cents**. Most transactional columns
+(`subtotal`, `tax`, `total`, etc.) use the store's configured currency. The
+following aggregate fields are always in **USD cents** regardless of the
+store's currency: `stores.total_revenue`, `stores.thirty_day_revenue`,
+`customers.total_revenue_currency`, and `customers.mrr`. Columns explicitly
+suffixed `_usd` are also USD cents. Divide any cent value by 100 to get the
+decimal amount.
 
 > **Note on fetch limits:** High-cardinality tables (`orders`, `customers`,
 > `subscriptions`, `subscription_invoices`, `license_keys`,
@@ -85,8 +90,8 @@ SELECT
   name,
   currency,
   total_sales,
-  ROUND(total_revenue / 100.0, 2)       AS total_revenue,
-  ROUND(thirty_day_revenue / 100.0, 2)  AS revenue_last_30d
+  ROUND(total_revenue / 100.0, 2)       AS total_revenue_usd,
+  ROUND(thirty_day_revenue / 100.0, 2)  AS revenue_last_30d_usd
 FROM lemon_squeezy.stores
 ORDER BY total_revenue DESC;
 ```
@@ -126,8 +131,8 @@ ORDER BY active_count DESC;
 SELECT
   name,
   email,
-  ROUND(mrr / 100.0, 2)                   AS mrr,
-  ROUND(total_revenue_currency / 100.0, 2) AS lifetime_revenue
+  ROUND(mrr / 100.0, 2)                   AS mrr_usd,
+  ROUND(total_revenue_currency / 100.0, 2) AS lifetime_revenue_usd
 FROM lemon_squeezy.customers
 ORDER BY mrr DESC
 LIMIT 20;
@@ -218,8 +223,8 @@ LIMIT 10;
   so each field is a direct SQL column.
 - Monetary values are always integers (cents). There are no decimal money
   columns in this source.
-- `subscription_invoices.urls__invoice_url` contains a signed PDF download URL
-  that expires after a short period — fetch it close to when you need it.
+- `subscription_invoices.urls__invoice_url` is the signed PDF download URL for
+  an invoice. It is null for invoices in pending status.
 - The `license_keys.instances_count` column is the live activation count
   returned by the API. It may briefly lag behind actual activation events.
 - Test-mode and live-mode stores are completely separate. You must re-add the
