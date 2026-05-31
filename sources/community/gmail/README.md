@@ -105,13 +105,17 @@ WHERE m.label_ids = 'INBOX'
 LIMIT 20;
 ```
 
-Extract a bare email from `from_header` when the sender uses a display name:
+Extract an email from `from_header` (angle-bracket, bare address, or embedded):
 
 ```sql
 SELECT
   m.id,
   d.subject,
-  regexp_match(d.from_header, '<([^>]+)>')[1] AS from_email
+  COALESCE(
+    regexp_match(d.from_header, '<([^>]+)>')[1],
+    regexp_match(d.from_header, '([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})')[1],
+    TRIM(d.from_header)
+  ) AS from_email
 FROM gmail.messages m
 JOIN gmail.message_details d ON d.message_id = m.id
 WHERE m.label_ids = 'INBOX'
@@ -119,6 +123,10 @@ LIMIT 20;
 ```
 
 ## Cross-source joins
+
+`from_header` may be `Name <addr@domain>`, a bare `addr@domain`, or text with an
+embedded address. Examples below use `COALESCE` so joins do not silently drop
+rows when Gmail omits angle brackets.
 
 Reference GitHub issue #1080 when contributing changes. Example relationships:
 
@@ -134,30 +142,44 @@ gmail.message_details.from_header (parsed email)
 Requires bundled Stripe source and parsed `from_email`:
 
 ```sql
-SELECT
-  regexp_match(d.from_header, '<([^>]+)>')[1] AS from_email,
-  d.subject,
-  s.id AS stripe_customer_id,
-  s.name
-FROM gmail.search_messages(q => 'newer_than:30d') m
-JOIN gmail.message_details d ON d.message_id = m.id
-JOIN stripe.customers s
-  ON LOWER(s.email) = LOWER(regexp_match(d.from_header, '<([^>]+)>')[1])
+WITH mail AS (
+  SELECT
+    m.id AS message_id,
+    d.subject,
+    COALESCE(
+      regexp_match(d.from_header, '<([^>]+)>')[1],
+      regexp_match(d.from_header, '([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})')[1],
+      TRIM(d.from_header)
+    ) AS from_email
+  FROM gmail.search_messages(q => 'newer_than:30d') m
+  JOIN gmail.message_details d ON d.message_id = m.id
+)
+SELECT from_email, subject, s.id AS stripe_customer_id, s.name
+FROM mail
+JOIN stripe.customers s ON LOWER(s.email) = LOWER(mail.from_email)
+WHERE mail.from_email IS NOT NULL
 LIMIT 20;
 ```
 
 ### Linear users matching Gmail senders
 
 ```sql
-SELECT
-  regexp_match(d.from_header, '<([^>]+)>')[1] AS from_email,
-  u.name AS linear_name,
-  u.email AS linear_email
-FROM gmail.messages m
-JOIN gmail.message_details d ON d.message_id = m.id
-JOIN linear.users u
-  ON LOWER(u.email) = LOWER(regexp_match(d.from_header, '<([^>]+)>')[1])
-WHERE m.label_ids = 'INBOX'
+WITH mail AS (
+  SELECT
+    m.id AS message_id,
+    COALESCE(
+      regexp_match(d.from_header, '<([^>]+)>')[1],
+      regexp_match(d.from_header, '([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})')[1],
+      TRIM(d.from_header)
+    ) AS from_email
+  FROM gmail.messages m
+  JOIN gmail.message_details d ON d.message_id = m.id
+  WHERE m.label_ids = 'INBOX'
+)
+SELECT from_email, u.name AS linear_name, u.email AS linear_email
+FROM mail
+JOIN linear.users u ON LOWER(u.email) = LOWER(mail.from_email)
+WHERE mail.from_email IS NOT NULL
 LIMIT 20;
 ```
 
@@ -209,14 +231,14 @@ Full details: https://developers.google.com/workspace/gmail/api/reference/quota
 
 - Read-only (`gmail.readonly`); no send, delete, or label changes
 - No full MIME body or attachment bytes in v1
-- `from_header` is the raw From header; normalize email addresses in SQL
+- `from_header` is the raw From header; use `COALESCE` + `regexp_match` in SQL for joins
 - `message_details` requires an explicit `message_id` filter per fetch
 
 ## Validation
 
 ```bash
 make lint-sources
-coral source lint --file sources/community/gmail/manifest.yaml
+coral source lint sources/community/gmail/manifest.yaml
 coral source add --interactive --file sources/community/gmail/manifest.yaml
 coral source test gmail
 ```
