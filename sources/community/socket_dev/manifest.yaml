@@ -90,9 +90,9 @@ tables:
   - name: organizations
     description: Socket organizations associated with the configured API token.
     guide: |
-      Use this table to discover the `slug` value required by org-scoped
-      package lookup tables such as `socket_dev.package_artifacts` and
-      `socket_dev.package_alerts`.
+      Use this table to inspect Socket organizations visible to the configured
+      token. Package lookup tables in this source use Socket's PURL endpoint
+      directly and do not require an organization slug.
     request:
       method: GET
       path: /organizations

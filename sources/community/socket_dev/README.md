@@ -26,7 +26,7 @@ environment.
 
 - [Socket API authentication](https://docs.socket.dev/reference/authentication)
 - [Socket OpenAPI document](https://api.socket.dev/v0/openapi)
-- [Get Packages by PURL](https://docs.socket.dev/reference/batchpackagefetchbyorg)
+- [Get Packages by PURL](https://docs.socket.dev/reference/batchpackagefetch)
 - [Search dependencies](https://docs.socket.dev/reference/searchdependencies)
 - [Package scores](https://docs.socket.dev/docs/package-scores)
 - [Alert categories](https://docs.socket.dev/docs/package-issues)
