@@ -1,0 +1,665 @@
+name: railway
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query projects, environments, service instances, deployments, domains, and
+  logs from Railway, the cloud application platform.
+base_url: https://backboard.railway.com
+
+inputs:
+  RAILWAY_API_TOKEN:
+    kind: secret
+    hint: >-
+      Railway account API token. Create one from https://railway.com/account/tokens.
+      This source uses the public GraphQL API and sends the token as
+      Authorization: Bearer <token>. An account token is recommended for the
+      default project inventory queries.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste Railway API token
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.RAILWAY_API_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name, email FROM railway.me LIMIT 1
+  - SELECT id, name, created_at FROM railway.projects LIMIT 5
+
+tables:
+  - name: me
+    description: >
+      The Railway account attached to the API token.
+    guide: >
+      Start here to verify credentials with
+      `SELECT id, name, email FROM railway.me`. This requires an account token;
+      workspace and project tokens are scoped differently in Railway.
+    request:
+      method: POST
+      path: /graphql/v2
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query {
+              me {
+                id
+                name
+                email
+              }
+            }
+    response:
+      rows_path:
+        - data
+        - me
+      row_strategy: direct
+      error_path:
+        - errors
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Railway user ID.
+        expr: { kind: path, path: [id] }
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Railway user display name.
+        expr: { kind: path, path: [name] }
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Railway user email.
+        expr: { kind: path, path: [email] }
+
+  - name: projects
+    description: >
+      Railway projects visible to the account token.
+    guide: >
+      `SELECT id, name, created_at FROM railway.projects LIMIT 20` inventories
+      projects. Use the project `id` with `railway.environments`,
+      `railway.project_members`, and scoped deployment queries.
+    request:
+      method: POST
+      path: /graphql/v2
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query projects($first: Int, $after: String) {
+              projects(first: $first, after: $after) {
+                edges {
+                  node {
+                    id
+                    name
+                    description
+                    createdAt
+                    updatedAt
+                  }
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+        - path: [variables, first]
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - data
+        - projects
+        - edges
+      row_strategy: direct
+      error_path:
+        - errors
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - projects
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 50
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Railway project ID.
+        expr: { kind: path, path: [node, id] }
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+        expr: { kind: path, path: [node, name] }
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+        expr: { kind: path, path: [node, description] }
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Project creation time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [node, createdAt] } }
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Project last-updated time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [node, updatedAt] } }
+
+  - name: environments
+    description: >
+      Railway environments for a project, including production and preview
+      environments.
+    guide: >
+      Requires `project_id` from `railway.projects`. Example:
+      `SELECT id, name, created_at FROM railway.environments
+      WHERE project_id = 'project-id'`.
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /graphql/v2
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query environments($projectId: String!, $first: Int, $after: String) {
+              environments(projectId: $projectId, first: $first, after: $after) {
+                edges {
+                  node {
+                    id
+                    name
+                    createdAt
+                  }
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+        - path: [variables, projectId]
+          from: filter
+          key: project_id
+        - path: [variables, first]
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - data
+        - environments
+        - edges
+      row_strategy: direct
+      error_path:
+        - errors
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - environments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 50
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID used to scope the query.
+        virtual: true
+        expr: { kind: from_filter, key: project_id }
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Railway environment ID.
+        expr: { kind: path, path: [node, id] }
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Environment name.
+        expr: { kind: path, path: [node, name] }
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Environment creation time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [node, createdAt] } }
+
+  - name: project_members
+    description: >
+      Members and roles for a Railway project.
+    guide: >
+      Requires `project_id`. Use this table to answer ownership and access
+      questions such as who can change a production Railway project.
+    filters:
+      - name: project_id
+        required: true
+    request:
+      method: POST
+      path: /graphql/v2
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query projectMembers($projectId: String!) {
+              projectMembers(projectId: $projectId) {
+                id
+                role
+                user {
+                  id
+                  name
+                  email
+                }
+              }
+            }
+        - path: [variables, projectId]
+          from: filter
+          key: project_id
+    response:
+      rows_path:
+        - data
+        - projectMembers
+      row_strategy: direct
+      error_path:
+        - errors
+    pagination:
+      mode: none
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID used to scope the query.
+        virtual: true
+        expr: { kind: from_filter, key: project_id }
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project membership ID.
+        expr: { kind: path, path: [id] }
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Member role on the project.
+        expr: { kind: path, path: [role] }
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: Railway user ID.
+        expr: { kind: path, path: [user, id] }
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: Railway user display name.
+        expr: { kind: path, path: [user, name] }
+      - name: user_email
+        type: Utf8
+        nullable: true
+        description: Railway user email.
+        expr: { kind: path, path: [user, email] }
+
+  - name: service_instances
+    description: >
+      Service instances and latest deployment status for one Railway
+      environment.
+    guide: >
+      Requires `environment_id` from `railway.environments`. This table is useful
+      for mapping an environment to its runnable services and latest deploy.
+      Use `service_id` with `railway.deployments`, and
+      `latest_deployment_id` with `railway.build_logs` or
+      `railway.deployment_logs`.
+    filters:
+      - name: environment_id
+        required: true
+    request:
+      method: POST
+      path: /graphql/v2
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query environment($id: String!) {
+              environment(id: $id) {
+                id
+                serviceInstances {
+                  edges {
+                    node {
+                      id
+                      serviceId
+                      serviceName
+                      latestDeployment {
+                        id
+                        status
+                        createdAt
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        - path: [variables, id]
+          from: filter
+          key: environment_id
+    response:
+      rows_path:
+        - data
+        - environment
+        - serviceInstances
+        - edges
+      row_strategy: direct
+      error_path:
+        - errors
+    pagination:
+      mode: none
+    columns:
+      - name: environment_id
+        type: Utf8
+        nullable: false
+        description: Environment ID used to scope the query.
+        virtual: true
+        expr: { kind: from_filter, key: environment_id }
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Railway service instance ID.
+        expr: { kind: path, path: [node, id] }
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: Service name in this environment.
+        expr: { kind: path, path: [node, serviceName] }
+      - name: service_id
+        type: Utf8
+        nullable: true
+        description: Railway service ID to use with railway.deployments.
+        expr: { kind: path, path: [node, serviceId] }
+      - name: latest_deployment_id
+        type: Utf8
+        nullable: true
+        description: Latest deployment ID for the service instance.
+        expr: { kind: path, path: [node, latestDeployment, id] }
+      - name: latest_deployment_status
+        type: Utf8
+        nullable: true
+        description: Latest deployment status.
+        expr: { kind: path, path: [node, latestDeployment, status] }
+      - name: latest_deployment_created_at
+        type: Timestamp
+        nullable: true
+        description: Latest deployment creation time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [node, latestDeployment, createdAt] } }
+
+  - name: deployments
+    description: >
+      Deployments for one Railway project, service, and environment.
+    guide: >
+      Requires `project_id`, `service_id`, and `environment_id`. Example:
+      `SELECT id, status, created_at, url FROM railway.deployments
+      WHERE project_id = 'project-id' AND service_id = 'service-id'
+      AND environment_id = 'environment-id'`. Discover `service_id` from
+      `railway.service_instances`; Coral requires this as a constant equality
+      filter for deployment-history queries.
+    filters:
+      - name: project_id
+        required: true
+      - name: service_id
+        required: true
+      - name: environment_id
+        required: true
+    request:
+      method: POST
+      path: /graphql/v2
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query deployments($input: DeploymentListInput!, $first: Int, $after: String) {
+              deployments(input: $input, first: $first, after: $after) {
+                edges {
+                  node {
+                    id
+                    status
+                    createdAt
+                    url
+                    staticUrl
+                  }
+                }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+              }
+            }
+        - path: [variables, input, projectId]
+          from: filter
+          key: project_id
+        - path: [variables, input, serviceId]
+          from: filter
+          key: service_id
+        - path: [variables, input, environmentId]
+          from: filter
+          key: environment_id
+        - path: [variables, first]
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - data
+        - deployments
+        - edges
+      row_strategy: direct
+      error_path:
+        - errors
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - deployments
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 50
+        max: 50
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID used to scope the query.
+        virtual: true
+        expr: { kind: from_filter, key: project_id }
+      - name: service_id
+        type: Utf8
+        nullable: false
+        description: Service ID used to scope the query.
+        virtual: true
+        expr: { kind: from_filter, key: service_id }
+      - name: environment_id
+        type: Utf8
+        nullable: false
+        description: Environment ID used to scope the query.
+        virtual: true
+        expr: { kind: from_filter, key: environment_id }
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Railway deployment ID.
+        expr: { kind: path, path: [node, id] }
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Deployment status, such as BUILDING, SUCCESS, FAILED, or CRASHED.
+        expr: { kind: path, path: [node, status] }
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Deployment creation time.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [node, createdAt] } }
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Deployment URL.
+        expr: { kind: path, path: [node, url] }
+      - name: static_url
+        type: Utf8
+        nullable: true
+        description: Static deployment URL when available.
+        expr: { kind: path, path: [node, staticUrl] }
+
+  - name: deployment_logs
+    description: >
+      Runtime logs for one Railway deployment.
+    guide: >
+      Requires `deployment_id`. Use `message` and `severity` to correlate
+      runtime errors with deploys from `railway.deployments`.
+    filters:
+      - name: deployment_id
+        required: true
+    request:
+      method: POST
+      path: /graphql/v2
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query deploymentLogs($deploymentId: String!, $limit: Int) {
+              deploymentLogs(deploymentId: $deploymentId, limit: $limit) {
+                timestamp
+                message
+                severity
+              }
+            }
+        - path: [variables, deploymentId]
+          from: filter
+          key: deployment_id
+        - path: [variables, limit]
+          from: literal
+          value: 200
+    response:
+      rows_path:
+        - data
+        - deploymentLogs
+      row_strategy: direct
+      error_path:
+        - errors
+    pagination:
+      mode: none
+    columns:
+      - name: deployment_id
+        type: Utf8
+        nullable: false
+        description: Deployment ID used to scope the query.
+        virtual: true
+        expr: { kind: from_filter, key: deployment_id }
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: Log timestamp.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [timestamp] } }
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Log message.
+        expr: { kind: path, path: [message] }
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Railway log severity.
+        expr: { kind: path, path: [severity] }
+
+  - name: build_logs
+    description: >
+      Build logs for one Railway deployment.
+    guide: >
+      Requires `deployment_id`. Use this table to diagnose failed builds.
+    filters:
+      - name: deployment_id
+        required: true
+    request:
+      method: POST
+      path: /graphql/v2
+      body:
+        - path: [query]
+          from: literal
+          value: |
+            query buildLogs($deploymentId: String!, $limit: Int) {
+              buildLogs(deploymentId: $deploymentId, limit: $limit) {
+                timestamp
+                message
+                severity
+              }
+            }
+        - path: [variables, deploymentId]
+          from: filter
+          key: deployment_id
+        - path: [variables, limit]
+          from: literal
+          value: 200
+    response:
+      rows_path:
+        - data
+        - buildLogs
+      row_strategy: direct
+      error_path:
+        - errors
+    pagination:
+      mode: none
+    columns:
+      - name: deployment_id
+        type: Utf8
+        nullable: false
+        description: Deployment ID used to scope the query.
+        virtual: true
+        expr: { kind: from_filter, key: deployment_id }
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: Log timestamp.
+        expr: { kind: format_timestamp, input: iso8601, expr: { kind: path, path: [timestamp] } }
+      - name: message
+        type: Utf8
+        nullable: true
+        description: Build log message.
+        expr: { kind: path, path: [message] }
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Railway log severity.
+        expr: { kind: path, path: [severity] }
