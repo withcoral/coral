@@ -332,6 +332,9 @@ tables:
         - name: detail
           from: literal
           value: full
+        - name: page_size
+          from: literal
+          value: "250"
     response:
       rows_path:
         - data

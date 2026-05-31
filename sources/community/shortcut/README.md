@@ -35,13 +35,13 @@ export SHORTCUT_TOKEN="<your-api-token>"
 ### 3. Add the source
 
 ```sh
-cargo run -p coral-cli -- source add --file sources/community/shortcut/manifest.yaml
+coral source add --file sources/community/shortcut/manifest.yaml
 ```
 
 ### 4. Verify
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.members LIMIT 5"
+coral sql "SELECT id, name FROM shortcut.members LIMIT 5"
 ```
 
 ## Tables
@@ -51,7 +51,7 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.members LIMIT 5"
 | `shortcut.members` | Workspace members | — | — |
 | `shortcut.workflows` | Workspace workflows | — | — |
 | `shortcut.epics` | Epics in the workspace | — | — |
-| `shortcut.stories` | Stories retrieved via Shortcut Search API (/search/stories) — first page only | `query` | — |
+| `shortcut.stories` | Stories retrieved via Shortcut Search API (/search/stories) — first page only (up to 250 records, explicitly requested via page_size=250) | `query` | — |
 | `shortcut.iterations` | Iterations (sprints) | — | — |
 | `shortcut.objectives` | Objectives (replaces deprecated milestones) | — | — |
 
@@ -98,8 +98,9 @@ required and is pushed down to the API using Shortcut search operators.
 **Pagination limitation:** Shortcut's `StorySearchResults.next` field is a
 full URL string (path + query string), not a bare cursor token. Coral's
 `cursor_query` pagination mode cannot extract a bare token from a full URL,
-so this table returns the **first page only** (up to 250 records per request).
-Use a narrow `query` filter to keep results within one page. Full multi-page
+so this table returns the **first page only**. The source explicitly sends
+`page_size=250` (the API maximum) to maximise records per request. Use a
+narrow `query` filter to keep results within one page. Full multi-page
 pagination support is out of scope for v1.
 
 ### `iterations`
@@ -206,39 +207,39 @@ LIMIT 20;
 Lint the manifest:
 
 ```sh
-cargo run -p coral-cli -- source lint sources/community/shortcut/manifest.yaml
+coral source lint sources/community/shortcut/manifest.yaml
 ```
 
 Add the source and validate each table:
 
 ```sh
 export SHORTCUT_TOKEN="<your-api-token>"
-cargo run -p coral-cli -- source add --file sources/community/shortcut/manifest.yaml
+coral source add --file sources/community/shortcut/manifest.yaml
 
 # members — no required filters
-cargo run -p coral-cli -- sql "SELECT id, name, email, role FROM shortcut.members LIMIT 5"
+coral sql "SELECT id, name, email, role FROM shortcut.members LIMIT 5"
 
 # workflows — no required filters
-cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.workflows LIMIT 5"
+coral sql "SELECT id, name FROM shortcut.workflows LIMIT 5"
 
 # epics — no required filters
-cargo run -p coral-cli -- sql "SELECT id, name, state, created_at FROM shortcut.epics LIMIT 5"
+coral sql "SELECT id, name, state, created_at FROM shortcut.epics LIMIT 5"
 
-# stories — query is required (Search API); first page only
-cargo run -p coral-cli -- sql "SELECT id, name, story_type, epic_id, created_at FROM shortcut.stories WHERE query = 'type:bug' LIMIT 5"
+# stories — query is required (Search API); first page only (page_size=250)
+coral sql "SELECT id, name, story_type, epic_id, created_at FROM shortcut.stories WHERE query = 'type:bug' LIMIT 5"
 
 # iterations — no required filters
-cargo run -p coral-cli -- sql "SELECT id, name, status, start_date, end_date FROM shortcut.iterations LIMIT 5"
+coral sql "SELECT id, name, status, start_date, end_date FROM shortcut.iterations LIMIT 5"
 
 # objectives — no required filters
-cargo run -p coral-cli -- sql "SELECT id, name, state, created_at FROM shortcut.objectives LIMIT 5"
+coral sql "SELECT id, name, state, created_at FROM shortcut.objectives LIMIT 5"
 ```
 
 Inspect registered tables and columns:
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'shortcut'"
-cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'shortcut' ORDER BY table_name, ordinal_position"
+coral sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'shortcut'"
+coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'shortcut' ORDER BY table_name, ordinal_position"
 ```
 
 ## Notes
@@ -259,7 +260,8 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 - **`stories` pagination:** Shortcut's `StorySearchResults.next` field is a
   full URL string, not a bare cursor token. Coral cannot extract a bare token
   from a full URL with `cursor_query`, so `stories` returns the first page
-  only (up to 250 records). Use a narrow `query` to stay within one page.
+  only. The source explicitly sends `page_size=250` (the API maximum) to
+  maximise records returned. Use a narrow `query` to stay within one page.
 - **`query` filter on stories:** required because this table uses Shortcut's
   Search API (/search/stories), which does not support unfiltered listing.
   Accepts Shortcut search operators such as `is:started`, `type:bug`,
