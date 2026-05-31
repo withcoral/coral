@@ -23,7 +23,7 @@ export VAPI_API_KEY=<your-api-key>
 4. Add the source:
 
 ```sh
-coral source add vapi
+coral source add --file sources/community/vapi/manifest.yaml
 ```
 
 ## Example Queries
