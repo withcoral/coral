@@ -502,17 +502,15 @@ function TimelineWaterfall({
     // Drag resizing updates both detailPanelRatio and animatedDetailPanelRatio directly.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedHttpSpanId])
-  useEffect(() => {
-    onNavigableSpanIdsChange(
-      rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId),
-    )
-  }, [onNavigableSpanIdsChange, rows])
-  const traceStart = BigInt(summary?.startTimeUnixNanos || rows[0]?.span.startTimeUnixNanos || 0)
-  const durationMs = Math.max(nanosToMs(summary?.durationNanos || '0'), 1)
   const navigableSpanIds = useMemo(
     () => rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId),
     [rows],
   )
+  useEffect(() => {
+    onNavigableSpanIdsChange(navigableSpanIds)
+  }, [onNavigableSpanIdsChange, navigableSpanIds])
+  const traceStart = BigInt(summary?.startTimeUnixNanos || rows[0]?.span.startTimeUnixNanos || 0)
+  const durationMs = Math.max(nanosToMs(summary?.durationNanos || '0'), 1)
   const renderedHttpSpanIndex = renderedHttpSpanId
     ? navigableSpanIds.indexOf(renderedHttpSpanId)
     : -1
