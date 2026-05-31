@@ -1,0 +1,139 @@
+name: nasa
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >
+  Query NASA's Astronomy Picture of the Day (APOD) API. Fetch daily space
+  images, videos, and their explanations. No API key required — works with a
+  default DEMO_KEY (30 requests/hour). Free personal keys provide 1000
+  requests/hour and can be requested at https://api.nasa.gov/.
+base_url: "https://api.nasa.gov"
+
+inputs:
+  NASA_API_KEY:
+    kind: variable
+    default: DEMO_KEY
+    hint: "NASA Open API key. Defaults to DEMO_KEY (30 requests/hour). Get a free key at https://api.nasa.gov/."
+
+test_queries:
+  - SELECT * FROM nasa.apod LIMIT 1
+  - SELECT date, title, url, media_type FROM nasa.apod WHERE date = '2024-06-01' LIMIT 1
+  - SELECT date, title, url FROM nasa.apod WHERE count = 3 LIMIT 3
+
+tables:
+  - name: apod
+    description: |
+      NASA Astronomy Picture of the Day. Returns the picture or video for a
+      specific date, a range of dates, or a random sample of entries.
+
+      When no filters are provided the endpoint returns today's APOD (a single
+      row).  Use `date` for a specific day, `start_date` + `end_date` for a
+      date range, or `count` for a random set of entries (any of these will
+      return multiple rows when applicable).
+
+      Parameters `date`, `start_date`/`end_date`, and `count` are mutually
+      exclusive in the underlying API — only one style should be used per
+      query.
+    fetch_limit_default: 10
+    filters:
+      - name: date
+      - name: start_date
+      - name: end_date
+      - name: count
+      - name: thumbs
+    request:
+      method: GET
+      path: /planetary/apod
+      query:
+        - name: api_key
+          from: input
+          key: NASA_API_KEY
+        - name: date
+          from: filter
+          key: date
+        - name: start_date
+          from: filter
+          key: start_date
+        - name: end_date
+          from: filter
+          key: end_date
+        - name: count
+          from: filter_int
+          key: count
+        - name: thumbs
+          from: filter
+          key: thumbs
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Date of the APOD entry (YYYY-MM-DD).
+        expr: {kind: path, path: [date]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the picture or video.
+        expr: {kind: path, path: [title]}
+      - name: explanation
+        type: Utf8
+        nullable: true
+        description: Explanation of the astronomical object or event.
+        expr: {kind: path, path: [explanation]}
+      - name: media_type
+        type: Utf8
+        nullable: true
+        description: Media type — 'image' or 'video'.
+        expr: {kind: path, path: [media_type]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL to the image or video thumbnail.
+        expr: {kind: path, path: [url]}
+      - name: hdurl
+        type: Utf8
+        nullable: true
+        description: URL to the high-resolution image (when available).
+        expr: {kind: path, path: [hdurl]}
+      - name: thumbnail_url
+        type: Utf8
+        nullable: true
+        description: Video thumbnail URL (returned when thumbs=true and media_type is video).
+        expr: {kind: path, path: [thumbnail_url]}
+      - name: copyright
+        type: Utf8
+        nullable: true
+        description: Copyright holder of the image or video.
+        expr: {kind: path, path: [copyright]}
+      - name: service_version
+        type: Utf8
+        nullable: true
+        description: Version of the APOD API service.
+        expr: {kind: path, path: [service_version]}
+      - name: start_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Start of a date range filter (YYYY-MM-DD).
+        expr: {kind: from_filter, key: start_date}
+      - name: end_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: End of a date range filter (YYYY-MM-DD).
+        expr: {kind: from_filter, key: end_date}
+      - name: count
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Number of random APOD entries requested.
+        expr: {kind: from_filter, key: count}
+      - name: thumbs
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Video thumbnail filter ('true' to enable).
+        expr: {kind: from_filter, key: thumbs}
