@@ -41,7 +41,7 @@ Your Chargebee URL is `https://{site}.chargebee.com`. Enter just the subdomain (
 
 **Note on the password field:**
 
-Chargebee documents HTTP Basic Auth with the API key as the username and an [empty password](https://apidocs.chargebee.com/docs/api/auth). The Coral source spec requires `minLength: 1` for BasicAuth passwords, so a zero-length password fails schema validation. The manifest therefore sends a single placeholder character `x` as the password, producing `Authorization: Basic base64(<api_key>:x)`. Authentication is keyed on the API key in the username field. This placeholder was validated against a real Chargebee test site using this exact manifest and authenticated successfully (see the Validation section below). This note documents the workaround so it is transparent rather than implied to be guaranteed by Chargebee for arbitrary password values.
+Chargebee documents HTTP Basic Auth with the API key as the username and an [empty password](https://apidocs.chargebee.com/docs/api/auth). The Coral source spec requires `minLength: 1` for BasicAuth passwords, so a zero-length password fails schema validation. The manifest therefore sends a single placeholder character `x` as the password, producing `Authorization: Basic base64(<api_key>:x)`. Per Chargebee's documentation, authentication is keyed on the API key in the username field and the password is left blank, so a placeholder in the password position should not affect the outcome. This note documents the workaround so it is transparent. It has not been independently verified against arbitrary password values, so if you hit an auth error, confirm your API key is a valid read-only key for the site.
 
 ## Install
 
@@ -51,13 +51,16 @@ CHARGEBEE_API_KEY=your-key \
 coral source add --file sources/community/chargebee/manifest.yaml
 ```
 
-## Validation
+## Verify your install
+
+After adding the source, confirm it loaded and that your credentials work:
 
 ```bash
-# Add the source and run test query (output sanitized — site name and key redacted)
 coral source add --file sources/community/chargebee/manifest.yaml
-# coral source test chargebee produces the same output
+coral source test chargebee
 ```
+
+A successful run lists the four tables and passes the declared test query. The block below shows the **expected shape** of that output (illustrative, with placeholder IDs), not a captured run from a specific account:
 
 ```text
   ✓ chargebee connected successfully
@@ -76,8 +79,9 @@ coral source add --file sources/community/chargebee/manifest.yaml
       1 row
 ```
 
+A representative subscriptions query and the shape of its result:
+
 ```bash
-# Representative query (output sanitized)
 coral sql "SELECT id, status, mrr, currency_code FROM chargebee.subscriptions WHERE status = 'active' LIMIT 3"
 ```
 
