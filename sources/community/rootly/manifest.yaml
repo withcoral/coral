@@ -439,7 +439,7 @@ tables:
       No required filters. All filters push down to the Rootly API.
 
       Common filter patterns:
-      - `status` = started | mitigated | resolved | cancelled
+      - `status` = started | mitigated | resolved | cancelled | in_triage | acknowledged | closed (see Rootly incident lifecycle docs for the full status list)
       - `severity` = slug of the severity (e.g. sev0, sev1, critical, high)
       - `started_at_gte` / `started_at_lte` for time-bounded incident windows
       - `created_at_gte` / `created_at_lte` for creation date ranges
@@ -457,8 +457,9 @@ tables:
       - name: status
         type: Utf8
         description: >-
-          Filter by incident status. One of: started, mitigated,
-          resolved, cancelled.
+          Filter by incident status. Common values include: started,
+          mitigated, resolved, cancelled, in_triage, acknowledged,
+          closed. See Rootly incident lifecycle docs for the full list.
       - name: severity
         type: Utf8
         description: >-
@@ -744,7 +745,7 @@ tables:
       No required filters. All filters push down to the Rootly API.
 
       Common filter patterns:
-      - `status` for alert lifecycle state (open, triggered, acknowledged, resolved, deferred)
+      - `status` for alert lifecycle state (open, triggered, acknowledged, resolved)
       - `source` to narrow by originating system
       - `created_at_gte` / `created_at_lte` for time-bounded windows
 
@@ -822,7 +823,7 @@ tables:
       - name: status
         type: Utf8
         nullable: true
-        description: "Alert lifecycle status: open, triggered, acknowledged, resolved, deferred."
+        description: "Alert lifecycle status: open, triggered, acknowledged, or resolved."
         expr:
           kind: path
           path:
