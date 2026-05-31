@@ -66,6 +66,7 @@ test_queries:
   - SELECT id, thread_id FROM gmail.messages LIMIT 5
   - SELECT id, name, type FROM gmail.labels LIMIT 5
   - SELECT function_name FROM coral.table_functions WHERE schema_name = 'gmail' ORDER BY function_name LIMIT 1
+  - SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3
 
 functions:
   - name: search_messages

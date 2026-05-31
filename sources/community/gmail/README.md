@@ -216,21 +216,22 @@ unverified.
 | Method | Quota units |
 | --- | --- |
 | `messages.list` / `search_messages` | 5 |
-| `messages.get` / `message_details` | 5 |
+| `messages.get` / `message_details` | 20 |
 | `drafts.list` | 5 |
 | `threads.list` | 10 |
 | `labels.list` | 1 |
 | `getProfile` | 1 |
 
-Each `message_details` row costs one `messages.get` call. Prefer `LIMIT` on
-joins over large unbounded scans.
+Each `message_details` row costs one `messages.get` call (20 quota units each).
+Prefer `LIMIT` on joins over large unbounded scans.
 
 Full details: https://developers.google.com/workspace/gmail/api/reference/quota
 
 ## Limitations
 
 - Read-only (`gmail.readonly`); no send, delete, or label changes
-- No full MIME body or attachment bytes in v1
+- This source does not expose full MIME bodies or attachment bytes in v1 (the
+  Gmail API supports them via other methods)
 - `from_header` is the raw From header; use `COALESCE` + `regexp_match` in SQL for joins
 - `message_details` requires an explicit `message_id` filter per fetch
 
@@ -242,6 +243,69 @@ coral source lint sources/community/gmail/manifest.yaml
 coral source add --interactive --file sources/community/gmail/manifest.yaml
 coral source test gmail
 ```
+
+## Live validation
+
+Community sources require evidence of a successful OAuth-backed run. After
+`coral source add --interactive`, record sanitized output from `coral source test
+gmail` and from queries that exercise `search_messages` and `message_details`.
+
+```bash
+coral source test gmail
+
+# Replace <message-id> with an id from search_messages or gmail.messages
+coral sql "SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3"
+coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '<message-id>' LIMIT 1"
+```
+
+Expected output shape — replace with your sanitized run (tokens and addresses redacted):
+
+```text
+$ coral source test gmail
+
+  ✓ gmail connected successfully
+
+    gmail (6 tables, 1 search function)
+    ├─ drafts
+    ├─ labels
+    ├─ message_details
+    ├─ messages
+    ├─ profile
+    └─ threads
+    Query tests
+    5 declared · 5 passed · 0 failed
+
+    ✓ SELECT history_id, messages_total, threads_total FROM gmail.profile LIMIT 1
+      1 row
+    ✓ SELECT id, thread_id FROM gmail.messages LIMIT 5
+      5 rows
+    ✓ SELECT id, name, type FROM gmail.labels LIMIT 5
+      5 rows
+    ✓ SELECT function_name FROM coral.table_functions WHERE schema_name = 'gmail' ...
+      1 row
+    ✓ SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3
+      3 rows
+
+$ coral sql "SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3"
++----------+------------+
+| id       | thread_id  |
++----------+------------+
+| 18f3…a01 | 18f3…a01   |
+| 18f2…b92 | 18f2…b92   |
+| 18f1…c44 | 18f1…c44   |
++----------+------------+
+
+$ coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '18f3…a01' LIMIT 1"
++-------------+---------------------------+------------------+---------------------+
+| message_id  | from_header               | subject          | internal_date       |
++-------------+---------------------------+------------------+---------------------+
+| 18f3…a01    | Example <user@example.com>| Invoice attached | 2026-05-30T12:00:00 |
++-------------+---------------------------+------------------+---------------------+
+```
+
+Replace truncated ids and sample rows with your own `coral source test` / `coral sql`
+output before merge, or paste equivalent sanitized output in the pull request
+description for reviewers.
 
 ## Provider docs
 
