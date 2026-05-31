@@ -197,7 +197,7 @@ tables:
     description: >-
       CVSS v3.1 metric array for each CVE, returned as a single JSON column.
       Each row contains the cve_id and the full cvssMetricV31 array from NVD.
-      Array elements carry source, type, cvssData, exploitabilityScore, and
+      Array elements carry source, type, cvssData (including baseSeverity), exploitabilityScore, and
       impactScore. Filter to type = 'Primary' and source = 'nvd@nist.gov' for
       the authoritative NVD score. CVSS v4.0 metrics are out of scope for
       this version.
@@ -263,7 +263,7 @@ tables:
       - name: cve_id
         type: Utf8
         description: CVE identifier linking to nvd.vulnerabilities.
-        nullable: false
+        nullable: true
         expr: {kind: path, path: [cve, id]}
       - name: metrics
         type: Json
@@ -324,7 +324,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Filter by keyword search across CVE descriptions and metadata.
+        description: >-
+          Whole-word keyword search across CVE descriptions and metadata.
+          NVD matches exact words, not substrings - 'buffer' matches but
+          'buf' does not.
         expr: {kind: from_filter, key: keyword_search}
 
   - name: cvss_v3_0_metrics
@@ -336,8 +339,9 @@ tables:
       version.
     guide: >-
       Filter by cve_id for a single CVE. Use json_get to extract individual
-      metric entries from the metrics array. The metrics column is null when
-      NVD has not assigned CVSS v3.0 metrics to the CVE.
+      metric entries from the metrics array. Filter to source = 'nvd@nist.gov'
+      and type = 'Primary' for the authoritative NVD score. The metrics column
+      is null when NVD has not assigned CVSS v3.0 metrics to the CVE.
     fetch_limit_default: 100
     filters:
       - name: cve_id
@@ -394,7 +398,7 @@ tables:
       - name: cve_id
         type: Utf8
         description: CVE identifier linking to nvd.vulnerabilities.
-        nullable: false
+        nullable: true
         expr: {kind: path, path: [cve, id]}
       - name: metrics
         type: Json
@@ -454,7 +458,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Filter by keyword search across CVE descriptions and metadata.
+        description: >-
+          Whole-word keyword search across CVE descriptions and metadata.
+          NVD matches exact words, not substrings - 'buffer' matches but
+          'buf' does not.
         expr: {kind: from_filter, key: keyword_search}
 
   - name: cvss_v2_metrics
@@ -466,8 +473,9 @@ tables:
       are out of scope for this version.
     guide: >-
       Filter by cve_id for a single CVE. Use json_get to extract individual
-      metric entries from the metrics array. The metrics column is null when
-      NVD has not assigned CVSS v2 metrics to the CVE.
+      metric entries from the metrics array. Filter to source = 'nvd@nist.gov'
+      and type = 'Primary' for the authoritative NVD score. The metrics column
+      is null when NVD has not assigned CVSS v2 metrics to the CVE.
     fetch_limit_default: 100
     filters:
       - name: cve_id
@@ -524,7 +532,7 @@ tables:
       - name: cve_id
         type: Utf8
         description: CVE identifier linking to nvd.vulnerabilities.
-        nullable: false
+        nullable: true
         expr: {kind: path, path: [cve, id]}
       - name: metrics
         type: Json
@@ -585,7 +593,10 @@ tables:
         type: Utf8
         nullable: true
         virtual: true
-        description: Filter by keyword search across CVE descriptions and metadata.
+        description: >-
+          Whole-word keyword search across CVE descriptions and metadata.
+          NVD matches exact words, not substrings - 'buffer' matches but
+          'buf' does not.
         expr: {kind: from_filter, key: keyword_search}
 
   - name: references
@@ -610,6 +621,8 @@ tables:
         required: false
       - name: last_mod_end_date
         required: false
+      - name: cvss_v3_severity
+        required: false
       - name: keyword_search
         required: false
     request:
@@ -631,6 +644,9 @@ tables:
         - name: lastModEndDate
           from: filter
           key: last_mod_end_date
+        - name: cvssV3Severity
+          from: filter
+          key: cvss_v3_severity
         - name: keywordSearch
           from: filter
           key: keyword_search
@@ -649,7 +665,7 @@ tables:
       - name: cve_id
         type: Utf8
         description: CVE identifier linking to nvd.vulnerabilities.
-        nullable: false
+        nullable: true
         expr: {kind: path, path: [cve, id]}
       - name: references
         type: Json
@@ -696,9 +712,20 @@ tables:
           End of last-modified date window (ISO 8601). Must be paired with
           last_mod_start_date. Window must be 120 days or fewer.
         expr: {kind: from_filter, key: last_mod_end_date}
+      - name: cvss_v3_severity
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Push a CVSS v3 severity filter to the NVD API (LOW, MEDIUM, HIGH,
+          CRITICAL).
+        expr: {kind: from_filter, key: cvss_v3_severity}
       - name: keyword_search
         type: Utf8
         nullable: true
         virtual: true
-        description: Filter by keyword search across CVE descriptions and metadata.
+        description: >-
+          Whole-word keyword search across CVE descriptions and metadata.
+          NVD matches exact words, not substrings - 'buffer' matches but
+          'buf' does not.
         expr: {kind: from_filter, key: keyword_search}

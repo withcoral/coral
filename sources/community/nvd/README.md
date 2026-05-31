@@ -121,7 +121,7 @@ CVEs published in a 30-day window (use pub_start_date + pub_end_date together, m
 SELECT cve_id, published, vuln_status
 FROM nvd.vulnerabilities
 WHERE pub_start_date = '2024-01-01T00:00:00.000'
-AND pub_end_date = '2024-01-30T23:59:59.999'
+AND pub_end_date = '2024-01-31T23:59:59.999'
 ORDER BY published DESC
 LIMIT 20;
 ```
