@@ -19,11 +19,15 @@ documents.
 
 - Network access to a CouchDB HTTP endpoint (default port `5984`).
 - A CouchDB user. The `server` table only needs valid credentials, but the
-  `databases`, `active_tasks`, and `scheduler` tables read server-level
-  metadata endpoints that require **server-admin** access (or a user granted
-  the relevant role).
+  `databases`, `active_tasks`, `scheduler`, and `scheduler_docs` tables read
+  server-level metadata endpoints that require **server-admin** access (or a
+  user granted the relevant role).
 - The `databases` table uses the bodyless `GET /_dbs_info`, which requires
   **CouchDB 3.2 or newer**.
+- `scheduler_docs` reads `GET /_scheduler/docs`. On a cluster that has never
+  run a replication, CouchDB returns HTTP 404 because the `_replicator`
+  database does not exist yet; the table reports this as empty (zero rows)
+  rather than an error.
 
 ### Add the source
 
@@ -90,7 +94,9 @@ replications.
   compaction.
 - `active_tasks` returns an empty result on an idle node. Columns like
   `source`, `target`, `docs_read`, and `docs_written` are populated only for
-  replication tasks; `design_document` only for indexer tasks.
+  replication tasks; `design_document` only for indexer tasks. Use
+  `process_status` (e.g. `running`, `waiting`) for the live status on CouchDB
+  2.x/3.x; the documented `task` and `status` fields are null there.
 - `scheduler.history` is ordered most-recent-first, so `latest_event` and
   `latest_event_at` reflect each job's latest scheduler event (`started`,
   `crashed`, `added`, etc.). For authoritative replication state use

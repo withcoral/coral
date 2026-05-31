@@ -18,8 +18,8 @@ inputs:
     kind: variable
     hint: |
       CouchDB username. Server-level metadata endpoints (`/_dbs_info`,
-      `/_active_tasks`, `/_scheduler/jobs`) require a server admin or a user
-      with the relevant role. See
+      `/_active_tasks`, `/_scheduler/jobs`, `/_scheduler/docs`) require a
+      server admin or a user with the relevant role. See
       https://docs.couchdb.org/en/stable/api/server/authn.html
   COUCHDB_PASSWORD:
     kind: secret
@@ -35,6 +35,10 @@ request_headers:
     value: application/json
 test_queries:
   - SELECT * FROM couchdb.server LIMIT 1
+  - SELECT * FROM couchdb.databases LIMIT 1
+  - SELECT * FROM couchdb.active_tasks LIMIT 1
+  - SELECT * FROM couchdb.scheduler LIMIT 1
+  - SELECT * FROM couchdb.scheduler_docs LIMIT 1
 
 tables:
   - name: server
@@ -196,9 +200,11 @@ tables:
       server-admin access. Returns an empty result when the node is idle.
       `type` identifies the task kind (e.g. `indexer`, `replication`,
       `database_compaction`, `view_compaction`). `progress` is a 0-100 percent
-      value. Many columns are populated only for specific task types: `source`,
-      `target`, `docs_read`, and `docs_written` for replication;
-      `design_document` for indexing.
+      value, and `process_status` (e.g. `running`, `waiting`) is the live
+      status signal on CouchDB 2.x/3.x — the documented `task` and `status`
+      fields are null there. Many columns are populated only for specific task
+      types: `source`, `target`, `docs_read`, and `docs_written` for
+      replication; `design_document` for indexing.
     request:
       method: GET
       path: /_active_tasks
@@ -213,6 +219,30 @@ tables:
         nullable: true
         description: "Task type: indexer, replication, database_compaction, etc."
         expr: {kind: path, path: [type]}
+      - name: task
+        type: Utf8
+        nullable: true
+        description: >-
+          Human-readable task label from CouchDB's documented active-task
+          schema. Populated on older CouchDB releases; null on CouchDB 3.x,
+          which reports liveness through process_status plus the type-specific
+          fields below.
+        expr: {kind: path, path: [task]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Human-readable status line from CouchDB's documented active-task
+          schema. Like task, this is null on CouchDB 3.x — use process_status
+          there.
+        expr: {kind: path, path: [status]}
+      - name: process_status
+        type: Utf8
+        nullable: true
+        description: >-
+          Live Erlang process status of the task on CouchDB 2.x/3.x (e.g.
+          running, waiting) — the current "what is it doing" signal.
+        expr: {kind: path, path: [process_status]}
       - name: database
         type: Utf8
         nullable: true
@@ -398,7 +428,10 @@ tables:
       `info` column to triage failing replications: `info` carries live progress
       for running replications (e.g. `docs_read`, `docs_written`) or the error
       reason for failed ones (e.g. `json_get_str(info, 'error')`). The endpoint
-      is paginated with `skip`/`limit`, which Coral drives automatically.
+      is paginated with `skip`/`limit`, which Coral drives automatically. On a
+      cluster that has never run a replication the `_replicator` database may
+      not exist yet, so CouchDB returns HTTP 404 for this endpoint; Coral treats
+      that as an empty result rather than an error.
     request:
       method: GET
       path: /_scheduler/docs
@@ -406,6 +439,7 @@ tables:
       rows_path:
         - docs
       row_strategy: direct
+      allow_404_empty: true
     pagination:
       mode: offset
       offset_param: skip
