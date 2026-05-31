@@ -3,10 +3,11 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query Yelp Fusion as SQL — businesses, reviews, events, and the Yelp category
-  graph. Adds Local Business Intelligence to your Coral workspace so agents can
-  join Yelp ratings with Slack threads, GitHub activity, Google Calendar plans,
-  and any other Coral source.
+  Query Yelp Fusion as SQL — Local Business Intelligence in Coral. Free Yelp
+  Fusion plan covers `search_businesses`, `business_details`, and
+  `autocomplete_terms` end-to-end; `business_reviews`, `search_events` /
+  `event_details`, and `categories` require Yelp's Business / Developer Beta
+  tiers and remain in the spec for users with elevated access.
 inputs:
   YELP_API_KEY:
     kind: secret
@@ -256,7 +257,8 @@ functions:
     kind: search
     description: >-
       Search Yelp local events by location, date range, category, and price.
-      Returns provider-ranked events.
+      Returns provider-ranked events. Requires Yelp's Developer Beta access —
+      the free Fusion plan returns 403 on the events endpoints.
     search_limits:
       default_top_k: 20
       max_top_k: 200
@@ -676,7 +678,10 @@ tables:
         description: JSON array of holiday/special-hours overrides
         expr: {kind: path, path: [special_hours]}
   - name: business_reviews
-    description: Reviews for a Yelp business. Yelp returns up to 3 excerpted reviews per business.
+    description: >-
+      Reviews for a Yelp business (requires Yelp Business / Partner tier — the
+      free Fusion plan returns 404). Yelp returns up to 3 excerpted reviews per
+      business with the reviewer profile attached.
     guide: >
       Requires business_id. Yelp's public Fusion API returns a small sample
       (up to 3) of recent reviews per business — this table mirrors that
@@ -765,7 +770,9 @@ tables:
         description: Reviewer avatar image URL
         expr: {kind: path, path: [user, image_url]}
   - name: event_details
-    description: Full event detail by Yelp event ID
+    description: >-
+      Full event detail by Yelp event ID (requires Yelp's Developer Beta access
+      — the free Fusion plan returns 403)
     guide: >
       Requires id (the Yelp event_id from yelp.search_events.id). Returns a
       single row with the full event description, schedule, and host business.
@@ -896,7 +903,10 @@ tables:
         description: Event country
         expr: {kind: path, path: [location, country]}
   - name: categories
-    description: The Yelp category taxonomy — alias, title, and parent_aliases for every category Yelp supports
+    description: >-
+      The Yelp category taxonomy — alias, title, and parent_aliases for every
+      category Yelp supports (requires Yelp's Developer Beta access — the free
+      Fusion plan returns 403)
     guide: >
       No filters required. Use this as a lookup table for `categories` arguments
       in yelp.search_businesses and yelp.search_events. NOTE: as of 2024 the
