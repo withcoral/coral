@@ -66,10 +66,10 @@ pub use composition::{
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
-    QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    CatalogInfo, ColumnInfo, CoreError, QueryBatchExecution, QueryBatchResult, QueryExecution,
+    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
+    QueryTestResult, QueryTestSuccess, SourceValidationReport, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -137,6 +137,40 @@ impl CoralQuery {
         runtime::query::build_runtime(sources, runtime)
             .await?
             .execute_sql(sql)
+            .await
+    }
+
+    /// Executes ordered batch `SQL` statements over the provided source set.
+    ///
+    /// Batch execution builds one private query runtime for the whole batch.
+    /// Read-only query statements may be mixed with session-local temporary
+    /// table CTAS statements. Execution stops at the first invalid or failing
+    /// statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the batch is empty, if source compilation
+    /// fails, if any statement is outside the batch SQL policy, or if the
+    /// runtime cannot execute a statement.
+    pub async fn execute_sql_batch(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &[String],
+    ) -> Result<QueryBatchExecution, CoreError> {
+        if sql.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "SQL batch must contain at least one statement".to_string(),
+            ));
+        }
+        if sql.iter().any(|statement| statement.trim().is_empty()) {
+            return Err(CoreError::InvalidInput(
+                "SQL batch statements must not be empty".to_string(),
+            ));
+        }
+
+        runtime::query::build_runtime(sources, runtime)
+            .await?
+            .execute_sql_batch(sql)
             .await
     }
 

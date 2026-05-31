@@ -322,3 +322,70 @@ impl QueryExecution {
         self.row_count
     }
 }
+
+/// One result set produced by batch SQL execution.
+#[derive(Debug, Clone)]
+pub struct QueryBatchResult {
+    index: usize,
+    sql: String,
+    execution: QueryExecution,
+}
+
+impl QueryBatchResult {
+    #[must_use]
+    /// Builds one batch result entry.
+    pub fn new(index: usize, sql: impl Into<String>, execution: QueryExecution) -> Self {
+        Self {
+            index,
+            sql: sql.into(),
+            execution,
+        }
+    }
+
+    #[must_use]
+    /// Returns the 1-based statement index from the original batch.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    #[must_use]
+    /// Returns the SQL text that produced this result set.
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    #[must_use]
+    /// Returns the materialized query execution.
+    pub fn execution(&self) -> &QueryExecution {
+        &self.execution
+    }
+}
+
+/// Result sets produced by executing one SQL batch.
+#[derive(Debug, Clone)]
+pub struct QueryBatchExecution {
+    results: Vec<QueryBatchResult>,
+}
+
+impl QueryBatchExecution {
+    #[must_use]
+    /// Builds one batch execution from result sets in statement order.
+    pub fn new(results: Vec<QueryBatchResult>) -> Self {
+        Self { results }
+    }
+
+    #[must_use]
+    /// Returns result sets produced by statements in the batch.
+    pub fn results(&self) -> &[QueryBatchResult] {
+        &self.results
+    }
+
+    #[must_use]
+    /// Returns the total row count across returned result sets.
+    pub fn row_count(&self) -> usize {
+        self.results
+            .iter()
+            .map(|result| result.execution().row_count())
+            .sum()
+    }
+}

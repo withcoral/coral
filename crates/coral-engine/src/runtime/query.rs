@@ -2,11 +2,15 @@
 
 use std::sync::Arc;
 
+use arrow::record_batch::RecordBatch;
 use datafusion::dataframe::DataFrame;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
+use datafusion::sql::sqlparser::ast::{CreateTable, CreateTableOptions, Statement};
+use datafusion::sql::sqlparser::dialect::GenericDialect;
+use datafusion::sql::sqlparser::parser::Parser;
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 
 use crate::backends::compile_query_source;
@@ -21,8 +25,9 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, QueryExecution, QueryPlan, QueryResultObserver,
-    QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
+    CatalogInfo, CoreError, QueryBatchExecution, QueryBatchResult, QueryExecution, QueryPlan,
+    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QuerySource,
+    TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -187,6 +192,31 @@ impl QueryRuntimeAdapter {
         Ok(QueryExecution::new(arrow_schema, batches))
     }
 
+    pub(crate) async fn execute_sql_batch(
+        &self,
+        sql: &[String],
+    ) -> Result<QueryBatchExecution, CoreError> {
+        let mut results = Vec::new();
+        for (position, statement_sql) in sql.iter().enumerate() {
+            let statement = parse_batch_statement(statement_sql)?;
+            match statement {
+                BatchStatement::Query => {
+                    let execution = self.execute_sql(statement_sql).await?;
+                    results.push(QueryBatchResult::new(
+                        position + 1,
+                        statement_sql.clone(),
+                        execution,
+                    ));
+                }
+                BatchStatement::TempTableCtas(rewritten_sql) => {
+                    self.execute_batch_ddl(&rewritten_sql).await?;
+                }
+            }
+        }
+
+        Ok(QueryBatchExecution::new(results))
+    }
+
     fn observe_query_result(
         &self,
         sql: &str,
@@ -233,6 +263,24 @@ impl QueryRuntimeAdapter {
             .await
             .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))
     }
+
+    async fn execute_batch_ddl(&self, sql: &str) -> Result<(), CoreError> {
+        let batches = self
+            .ctx
+            .sql_with_options(sql, batch_ddl_sql_options())
+            .await
+            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))?
+            .collect()
+            .await
+            .map_err(|err| datafusion_to_core_with_sql(&err, &self.tables, Some(sql)))?;
+        if batches.iter().map(RecordBatch::num_rows).sum::<usize>() == 0 {
+            Ok(())
+        } else {
+            Err(CoreError::InvalidInput(
+                "batch DDL statements must not return rows".to_string(),
+            ))
+        }
+    }
 }
 
 fn read_only_sql_options() -> SQLOptions {
@@ -240,6 +288,77 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false)
+}
+
+fn batch_ddl_sql_options() -> SQLOptions {
+    SQLOptions::new()
+        .with_allow_ddl(true)
+        .with_allow_dml(false)
+        .with_allow_statements(false)
+}
+
+enum BatchStatement {
+    Query,
+    TempTableCtas(String),
+}
+
+fn parse_batch_statement(sql: &str) -> Result<BatchStatement, CoreError> {
+    let dialect = GenericDialect {};
+    let statements = Parser::parse_sql(&dialect, sql).map_err(|error| {
+        CoreError::InvalidInput(format!("invalid batch SQL statement: {error}"))
+    })?;
+    let [statement] = statements.as_slice() else {
+        return Err(CoreError::InvalidInput(
+            "batch SQL entries must each contain exactly one statement".to_string(),
+        ));
+    };
+
+    match statement {
+        Statement::Query(_) => Ok(BatchStatement::Query),
+        Statement::CreateTable(create) => {
+            let rewritten_sql = rewrite_temp_table_ctas(create.clone())?;
+            Ok(BatchStatement::TempTableCtas(rewritten_sql))
+        }
+        _ => Err(CoreError::InvalidInput(
+            "batch SQL only supports read-only queries and CREATE TEMP TABLE ... AS SELECT"
+                .to_string(),
+        )),
+    }
+}
+
+fn rewrite_temp_table_ctas(mut create: CreateTable) -> Result<String, CoreError> {
+    let supported = create.temporary
+        && !create.external
+        && !create.dynamic
+        && create.global.is_none()
+        && !create.transient
+        && !create.volatile
+        && !create.iceberg
+        && create.query.is_some()
+        && create.hive_formats.is_none()
+        && matches!(&create.table_options, CreateTableOptions::None)
+        && create.file_format.is_none()
+        && create.location.is_none()
+        && create.like.is_none()
+        && create.clone.is_none()
+        && create.version.is_none()
+        && create.on_cluster.is_none()
+        && create.primary_key.is_none()
+        && create.order_by.is_none()
+        && create.partition_by.is_none()
+        && create.cluster_by.is_none()
+        && create.clustered_by.is_none()
+        && create.inherits.is_none();
+
+    if !supported {
+        return Err(CoreError::InvalidInput(
+            "batch SQL only supports CREATE TEMP TABLE ... AS SELECT for temporary tables"
+                .to_string(),
+        ));
+    }
+
+    create.temporary = false;
+    Ok(Statement::CreateTable(create).to_string())
 }
 
 fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> CoreError {
@@ -252,5 +371,79 @@ fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> 
             CoreError::FailedPrecondition(format!("query result observer '{name}': {detail}"))
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoreError, QueryRuntimeConfig, build_runtime};
+
+    #[tokio::test]
+    async fn batch_temp_table_ctas_is_visible_to_later_statement() {
+        let runtime = build_runtime(&[], QueryRuntimeConfig::default())
+            .await
+            .expect("runtime");
+        let sql = vec![
+            "create temp table t as select 1 as value".to_string(),
+            "select * from t".to_string(),
+        ];
+
+        let execution = runtime
+            .execute_sql_batch(&sql)
+            .await
+            .expect("batch should execute");
+
+        assert_eq!(execution.results().len(), 1);
+        let result = execution.results().first().expect("first result");
+        assert_eq!(result.index(), 2);
+        assert_eq!(result.execution().row_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn unary_execute_sql_still_rejects_temp_table_ddl() {
+        let runtime = build_runtime(&[], QueryRuntimeConfig::default())
+            .await
+            .expect("runtime");
+
+        let error = runtime
+            .execute_sql("create temp table t as select 1 as value")
+            .await
+            .expect_err("unary temp table DDL should fail");
+
+        assert!(
+            error.to_string().contains("DDL not supported")
+                || error.to_string().contains("Temporary tables not supported"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_rejects_persistent_create_table() {
+        let runtime = build_runtime(&[], QueryRuntimeConfig::default())
+            .await
+            .expect("runtime");
+        let sql = vec!["create table t as select 1 as value".to_string()];
+
+        let error = runtime
+            .execute_sql_batch(&sql)
+            .await
+            .expect_err("persistent create table should fail");
+
+        assert!(matches!(error, CoreError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn batch_rejects_dml() {
+        let runtime = build_runtime(&[], QueryRuntimeConfig::default())
+            .await
+            .expect("runtime");
+        let sql = vec!["delete from t".to_string()];
+
+        let error = runtime
+            .execute_sql_batch(&sql)
+            .await
+            .expect_err("DML should fail");
+
+        assert!(matches!(error, CoreError::InvalidInput(_)));
     }
 }

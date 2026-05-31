@@ -5,8 +5,8 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    QueryPlan as QueryPlanProto,
+    ExecuteSqlBatchRequest, ExecuteSqlBatchResponse, ExecuteSqlBatchResult, ExecuteSqlRequest,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, QueryPlan as QueryPlanProto,
 };
 use tonic::{Request, Response, Status};
 
@@ -52,6 +52,39 @@ impl QueryServiceApi for QueryService {
                 row_count: i64::try_from(execution.row_count()).unwrap_or(i64::MAX),
             };
             Ok(Response::new(response))
+        }))
+        .await
+    }
+
+    async fn execute_sql_batch(
+        &self,
+        request: Request<ExecuteSqlBatchRequest>,
+    ) -> Result<Response<ExecuteSqlBatchResponse>, Status> {
+        let span = grpc_span(&request);
+        let queries = self.queries.clone();
+        Box::pin(instrument_grpc(span, async move {
+            let inner = request.into_inner();
+            let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            let execution = queries
+                .execute_sql_batch(&workspace_name, &inner.sql)
+                .await
+                .map_err(query_status)?;
+            let mut results = Vec::with_capacity(execution.results().len());
+            for result in execution.results() {
+                let query_execution = result.execution();
+                results.push(ExecuteSqlBatchResult {
+                    index: i32::try_from(result.index()).unwrap_or(i32::MAX),
+                    sql: result.sql().to_string(),
+                    arrow_ipc_stream: encode_arrow_ipc_stream(
+                        query_execution.arrow_schema(),
+                        query_execution.batches(),
+                    )
+                    .map_err(coral_engine::CoreError::from)
+                    .map_err(core_status)?,
+                    row_count: i64::try_from(query_execution.row_count()).unwrap_or(i64::MAX),
+                });
+            }
+            Ok(Response::new(ExecuteSqlBatchResponse { results }))
         }))
         .await
     }

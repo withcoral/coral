@@ -30,7 +30,7 @@ use arrow::ipc::reader::StreamReader;
 use arrow::json::writer::{JsonArray, WriterBuilder};
 use arrow::record_batch::RecordBatch;
 use arrow::util::pretty::pretty_format_batches;
-use coral_api::v1::ExecuteSqlResponse;
+use coral_api::v1::{ExecuteSqlBatchResponse, ExecuteSqlResponse};
 use serde_json::Value;
 
 pub use client::{
@@ -49,6 +49,50 @@ pub struct CollectedQueryResult {
     schema: SchemaRef,
     batches: Vec<RecordBatch>,
     row_count: usize,
+}
+
+/// Fully decoded result set from a batch query response.
+#[derive(Debug, Clone)]
+pub struct CollectedBatchQueryResult {
+    index: usize,
+    sql: String,
+    result: CollectedQueryResult,
+}
+
+impl CollectedBatchQueryResult {
+    /// Builds one collected batch result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryResultError::InvalidResponse`] if the index is negative.
+    pub fn new(
+        index: i32,
+        sql: String,
+        result: CollectedQueryResult,
+    ) -> Result<Self, QueryResultError> {
+        let index = usize::try_from(index).map_err(|_err| {
+            QueryResultError::InvalidResponse("batch result index must not be negative".into())
+        })?;
+        Ok(Self { index, sql, result })
+    }
+
+    #[must_use]
+    /// Returns the 1-based statement index from the batch request.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    #[must_use]
+    /// Returns the SQL text that produced this result set.
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    #[must_use]
+    /// Returns the decoded result set.
+    pub fn result(&self) -> &CollectedQueryResult {
+        &self.result
+    }
 }
 
 impl CollectedQueryResult {
@@ -109,6 +153,29 @@ pub fn decode_execute_sql_response(
         QueryResultError::InvalidResponse("row_count must not be negative".into())
     })?;
     CollectedQueryResult::new(schema, batches, row_count)
+}
+
+/// Decodes one batch API response into Arrow batches and schemas.
+///
+/// # Errors
+///
+/// Returns [`QueryResultError`] if any Arrow IPC payload is invalid, if a row
+/// count does not match the decoded batches, or if a result index is invalid.
+pub fn decode_execute_sql_batch_response(
+    response: &ExecuteSqlBatchResponse,
+) -> Result<Vec<CollectedBatchQueryResult>, QueryResultError> {
+    response
+        .results
+        .iter()
+        .map(|result| {
+            let (schema, batches) = decode_arrow_ipc_stream(&result.arrow_ipc_stream)?;
+            let row_count = usize::try_from(result.row_count).map_err(|_err| {
+                QueryResultError::InvalidResponse("row_count must not be negative".into())
+            })?;
+            let collected = CollectedQueryResult::new(schema, batches, row_count)?;
+            CollectedBatchQueryResult::new(result.index, result.sql.clone(), collected)
+        })
+        .collect()
 }
 
 fn decode_arrow_ipc_stream(

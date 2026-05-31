@@ -25,6 +25,8 @@ clap_complete.workspace = true
 crossterm.workspace = true
 dialoguer.workspace = true
 rust-embed = { workspace = true, optional = true }
+serde_json.workspace = true
+sqlparser.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
@@ -41,7 +43,6 @@ assert_cmd.workspace = true
 jsonschema.workspace = true
 regex.workspace = true
 rmcp = { workspace = true, features = ["transport-child-process"] }
-serde_json.workspace = true
 tempfile.workspace = true
 tokio-stream.workspace = true
 tonic-types.workspace = true

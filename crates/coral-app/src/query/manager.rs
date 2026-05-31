@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
-    QueryRuntimeContext, QuerySource, SourceValidationReport, StatusCode, TableInfo,
+    CatalogInfo, CoralQuery, CoreError, QueryBatchExecution, QueryExecution, QueryPlan,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, SourceValidationReport, StatusCode,
+    TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
@@ -106,6 +107,29 @@ impl QueryManager {
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(workspace_name, &sources);
                 CoralQuery::execute_sql(&sources, runtime, sql)
+                    .await
+                    .map_err(QueryManagerError::Core)
+            },
+            |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_sql_batch(
+        &self,
+        workspace_name: &WorkspaceName,
+        sql: &[String],
+    ) -> Result<QueryBatchExecution, QueryManagerError> {
+        run_query_operation(
+            QueryOperation::ExecuteSqlBatch,
+            workspace_name,
+            "<batch>",
+            async {
+                let sources = self
+                    .load_query_sources(workspace_name)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self.runtime_config(workspace_name, &sources);
+                CoralQuery::execute_sql_batch(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -255,6 +279,7 @@ impl QueryManager {
 #[derive(Clone, Copy)]
 enum QueryOperation {
     ExecuteSql,
+    ExecuteSqlBatch,
     ExplainSql,
 }
 
@@ -262,6 +287,7 @@ impl QueryOperation {
     const fn as_str(self) -> &'static str {
         match self {
             Self::ExecuteSql => "execute_sql",
+            Self::ExecuteSqlBatch => "execute_sql_batch",
             Self::ExplainSql => "explain_sql",
         }
     }
