@@ -1,5 +1,5 @@
 name: osv
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: >-
@@ -20,7 +20,7 @@ tables:
       Use this table for package lookup in one ecosystem (for example PyPI,
       npm, Maven). Requires package_name and ecosystem; version is optional
       for fuzzy upstream matching when provided. This maps to POST /v1/query
-      and paginates via nextPageToken when present. For purl-based lookup, use
+      and paginates via next_page_token when present. For purl-based lookup, use
       the OSV HTTP API directly; OSV rejects requests that supply both a
       package name and a purl.
     filters:
@@ -73,9 +73,9 @@ tables:
     pagination:
       mode: cursor_body
       cursor_body_path:
-        - pageToken
+        - page_token
       response_cursor_path:
-        - nextPageToken
+        - next_page_token
       max_pages: 20
     columns:
       - name: id
@@ -284,9 +284,9 @@ tables:
     pagination:
       mode: cursor_body
       cursor_body_path:
-        - pageToken
+        - page_token
       response_cursor_path:
-        - nextPageToken
+        - next_page_token
       max_pages: 20
     columns:
       - name: id
