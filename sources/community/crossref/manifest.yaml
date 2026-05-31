@@ -75,12 +75,15 @@ tables:
         - message
         - items
     pagination:
-      mode: offset
+      mode: cursor_query
       page_size:
         default: 20
         max: 1000
         query_param: rows
-      offset_param: offset
+      cursor_param: cursor
+      response_cursor_path:
+        - message
+        - next-cursor
     filters:
       - name: query
         type: Utf8
