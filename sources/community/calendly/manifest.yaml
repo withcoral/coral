@@ -15,6 +15,9 @@ inputs:
     hint: >
       Personal access token from Calendly. Generate one at
       https://calendly.com/integrations/api_webhooks under API & Webhooks.
+      Minimum read scopes: event_types:read, scheduled_events:read,
+      organizations:read; add routing_forms:read and webhooks:read when
+      querying those tables. See README for the full scope table.
   CALENDLY_ORG_URI:
     kind: variable
     hint: >
@@ -47,7 +50,7 @@ rate_limit:
 
 test_queries:
   - SELECT * FROM calendly.event_types LIMIT 1
-  - SELECT * FROM calendly.scheduled_events LIMIT 1
+  - SELECT * FROM calendly.scheduled_events WHERE min_start_time = '2025-01-01T00:00:00Z' LIMIT 1
   - SELECT * FROM calendly.organization_memberships LIMIT 1
 
 tables:
@@ -160,6 +163,13 @@ tables:
       WHERE clauses. Use min_start_time and max_start_time with ISO 8601
       strings to narrow results to a date window and avoid large full-org
       scans. Use the sort filter to control ordering.
+    guide: >
+      Default cap: 500 total rows. Coral stops paging there by default so
+      SELECT * does not walk the full org history. Calendly's count parameter
+      controls page size (1-100 rows per request; this table uses up to 100).
+      Narrow with min_start_time/max_start_time or other API filters, or add
+      an explicit LIMIT greater than 500 when you need more rows.
+    fetch_limit_default: 500
     request:
       method: GET
       path: /scheduled_events
@@ -494,7 +504,9 @@ tables:
       Routing forms for the configured Calendly organization. Routing forms
       collect invitee information and direct them to the right event type or
       URL. Join with routing_form_submissions(form_uuid) to inspect responses.
-      Requires a Teams plan or above.
+      Requires a Calendly plan with Routing Forms enabled (Professional, Teams,
+      or Enterprise; owner/admin). See
+      https://calendly.com/help/how-to-create-a-routing-form
     request:
       method: GET
       path: /routing_forms
@@ -528,7 +540,7 @@ tables:
         description: Heading text shown to invitees at the top of the form.
       - name: status
         type: Utf8
-        description: "Form status: 'active' or 'archived'."
+        description: "Form status: 'draft' or 'published'."
       - name: organization
         type: Utf8
         description: URI of the organization this routing form belongs to.
@@ -557,8 +569,11 @@ tables:
     description: >
       Webhook subscriptions configured for the organization. Each row shows the
       callback URL, delivery state, scope, and subscribed event types in the
-      events column. Useful for auditing integrations. Requires a paid Standard,
-      Teams, or Enterprise plan.
+      events column. Useful for auditing integrations. Requires a paid plan
+      with webhook/API access (Professional, Standard, Teams, or Enterprise).
+      Lists organization-scoped subscriptions only (scope=organization); requires
+      an owner or admin token with webhooks:read. See
+      https://developer.calendly.com/receive-data-from-scheduled-events-in-real-time-with-webhook-subscriptions
     request:
       method: GET
       path: /webhook_subscriptions
@@ -602,7 +617,9 @@ tables:
       - name: user
         type: Utf8
         nullable: true
-        description: URI of the user this subscription is scoped to (user-scope only).
+        description: >
+          URI of the user this subscription is scoped to. Always null here because
+          this table lists organization-scoped subscriptions only.
       - name: creator
         type: Utf8
         nullable: true
@@ -638,6 +655,7 @@ tables:
       Pending and accepted invitations to join the configured organization.
       Useful for auditing who has not yet accepted their invitation. Requires
       CALENDLY_ORG_UUID to be set (the UUID at the end of CALENDLY_ORG_URI).
+      Querying without it produces a request error.
     request:
       method: GET
       path: "/organizations/{{input.CALENDLY_ORG_UUID}}/invitations"
@@ -805,8 +823,9 @@ functions:
       https://api.calendly.com/routing_forms/AAAAAAAAAAAAAAAA use
       AAAAAAAAAAAAAAAA as form_uuid. The event column links to a
       scheduled_events.uri when the submission resulted in a booking.
-      Requires a Teams plan or above and an active (published) routing form;
-      draft forms may return no rows.
+      Requires a Calendly plan with Routing Forms enabled (Professional, Teams,
+      or Enterprise) and a published routing form; draft forms may return no
+      rows. See https://calendly.com/help/how-to-manage-routing-forms
     args:
       - name: form_uuid
         required: true

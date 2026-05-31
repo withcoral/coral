@@ -43,12 +43,12 @@ functions in the manifest):
 
 | Scope | Used for |
 |-------|----------|
-| `users:read` | `GET /users/me` during setup (organization URI discovery) |
+| `users:read` | Manual setup curl (`GET /users/me`) to discover org URI — not used by Coral at query time |
 | `event_types:read` | `calendly.event_types` |
 | `scheduled_events:read` | `calendly.scheduled_events`, `calendly.event_invitees`, `calendly.scheduled_event_hosts` |
 | `organizations:read` | `calendly.organization_memberships`, `calendly.organization_invitations` |
-| `routing_forms:read` | `calendly.routing_forms`, `calendly.routing_form_submissions` (Teams+) |
-| `webhooks:read` | `calendly.webhook_subscriptions` (paid Standard+) |
+| `routing_forms:read` | `calendly.routing_forms`, `calendly.routing_form_submissions` (Professional, Teams, or Enterprise) |
+| `webhooks:read` | `calendly.webhook_subscriptions` (paid plan: Professional, Standard, Teams, or Enterprise; owner/admin token for org scope) |
 
 Those six scopes are **sufficient for read-only Coral usage**.
 
@@ -78,16 +78,16 @@ coral source test calendly
 | `calendly.event_types` | Scheduling page templates (event type definitions) | Free |
 | `calendly.scheduled_events` | Booked meetings — active and canceled | Free |
 | `calendly.organization_memberships` | Members of the organization with role and contact details | Free |
-| `calendly.routing_forms` | Routing forms for the organization | Teams+ |
-| `calendly.webhook_subscriptions` | Active webhook endpoints and subscribed event types (`events` column) | Paid Standard+ |
-| `calendly.organization_invitations` | Pending and accepted invitations to join the org | Free (requires `CALENDLY_ORG_UUID`) |
+| `calendly.routing_forms` | Routing forms for the organization | Professional, Teams, or Enterprise |
+| `calendly.webhook_subscriptions` | Active webhook endpoints and subscribed event types (`events` column) | Paid plan (Professional, Standard, Teams, or Enterprise); owner/admin token |
+| `calendly.organization_invitations` | Pending and accepted invitations to join the org | Free (requires `CALENDLY_ORG_UUID`; queries without it fail) |
 
 ## Table functions
 
 | Function | Description | Plan required |
 |---|---|---|
 | `calendly.event_invitees(event_uuid => '...')` | Invitees for one specific scheduled event | Free |
-| `calendly.routing_form_submissions(form_uuid => '...')` | Submissions for one specific routing form | Teams+ |
+| `calendly.routing_form_submissions(form_uuid => '...')` | Submissions for one specific routing form | Professional, Teams, or Enterprise |
 | `calendly.scheduled_event_hosts(event_uuid => '...')` | Hosts assigned to one specific scheduled event | Free |
 
 Call them with named arguments, for example
@@ -109,10 +109,16 @@ the API rather than evaluated locally:
 | `invitee_email` | `Utf8` | Filter events that include a specific invitee |
 | `min_start_time` | `Utf8` | ISO 8601 lower bound on event start time |
 | `max_start_time` | `Utf8` | ISO 8601 upper bound on event start time |
-| `sort` | `Utf8` | `'start_time:asc'` (default) or `'start_time:desc'` |
+| `sort` | `Utf8` | `'start_time:asc'` (default) or `'start_time:desc'` — controls API-side page ordering; add SQL `ORDER BY` after fetching for a different final order |
 
 Use `=` in SQL WHERE clauses for these filters. Always provide
 `min_start_time`/`max_start_time` for large orgs to avoid scanning all pages.
+
+Coral stops paging at **500 total rows by default** on `scheduled_events` so a
+bare `SELECT *` does not walk the full org history. That cap is separate from
+Calendly's per-request `count` parameter (1–100 rows per page; this table
+requests up to 100 per page). Narrow with time-range or other pushdown filters,
+or add an explicit `LIMIT` greater than 500 when you need more rows.
 
 ## Example queries
 
@@ -123,18 +129,19 @@ FROM calendly.event_types
 WHERE active = true
 ORDER BY name;
 
--- Events in a date range (use min_start_time and max_start_time virtual filters)
+-- Adjust min_start_time / max_start_time to your org's data window
+-- Events in a date range (provider-side min_start_time and max_start_time filters)
 SELECT name, start_time, end_time, status, location__type, location__location
 FROM calendly.scheduled_events
-WHERE min_start_time = '2024-12-01T00:00:00Z'
-  AND max_start_time = '2024-12-31T23:59:59Z'
+WHERE min_start_time = '2025-12-01T00:00:00Z'
+  AND max_start_time = '2025-12-31T23:59:59Z'
 ORDER BY start_time;
 
 -- Newest bookings first (push sort to the API, not SQL ORDER BY)
 SELECT name, start_time, status, invitees_counter__total
 FROM calendly.scheduled_events
-WHERE min_start_time = '2024-01-01T00:00:00Z'
-  AND max_start_time = '2030-12-31T23:59:59Z'
+WHERE min_start_time = '2025-01-01T00:00:00Z'
+  AND max_start_time = '2026-12-31T23:59:59Z'
   AND sort = 'start_time:desc'
 LIMIT 25;
 
@@ -145,15 +152,15 @@ SELECT name, start_time,
        cancellation__reason
 FROM calendly.scheduled_events
 WHERE status = 'canceled'
-  AND min_start_time = '2024-01-01T00:00:00Z'
-  AND max_start_time = '2030-12-31T23:59:59Z'
+  AND min_start_time = '2025-01-01T00:00:00Z'
+  AND max_start_time = '2026-12-31T23:59:59Z'
 ORDER BY start_time DESC;
 
 -- Meetings that include a specific invitee email (API filter)
 SELECT name, start_time, status
 FROM calendly.scheduled_events
 WHERE invitee_email = 'someone@example.com'
-  AND min_start_time = '2024-01-01T00:00:00Z'
+  AND min_start_time = '2025-01-01T00:00:00Z'
 ORDER BY start_time DESC;
 
 -- Organization members and their roles
@@ -166,16 +173,16 @@ SELECT t.name AS event_type_name, COUNT(*) AS bookings
 FROM calendly.scheduled_events s
 JOIN calendly.event_types t ON t.uri = s.event_type
 WHERE s.status = 'active'
-  AND s.min_start_time = '2024-01-01T00:00:00Z'
-  AND s.max_start_time = '2030-12-31T23:59:59Z'
+  AND s.min_start_time = '2025-01-01T00:00:00Z'
+  AND s.max_start_time = '2026-12-31T23:59:59Z'
 GROUP BY t.name
 ORDER BY bookings DESC;
 
 -- Discover a scheduled event UUID first (use the trailing segment of uri)
 SELECT uri, name, start_time
 FROM calendly.scheduled_events
-WHERE min_start_time = '2024-01-01T00:00:00Z'
-  AND max_start_time = '2030-12-31T23:59:59Z'
+WHERE min_start_time = '2025-01-01T00:00:00Z'
+  AND max_start_time = '2026-12-31T23:59:59Z'
 ORDER BY start_time DESC
 LIMIT 5;
 
@@ -188,15 +195,15 @@ FROM calendly.event_invitees(event_uuid => 'YOUR_EVENT_UUID');
 SELECT i.name, i.email, i.status, se.name AS event_name, se.start_time
 FROM calendly.event_invitees(event_uuid => 'YOUR_EVENT_UUID') i
 JOIN calendly.scheduled_events se ON se.uri = i.event
-WHERE se.min_start_time = '2024-01-01T00:00:00Z'
-  AND se.max_start_time = '2030-12-31T23:59:59Z';
+WHERE se.min_start_time = '2025-01-01T00:00:00Z'
+  AND se.max_start_time = '2026-12-31T23:59:59Z';
 
--- Routing forms (Teams+); status should be active, not draft
+-- Routing forms (Professional, Teams, or Enterprise); status should be published, not draft
 SELECT name, status, heading, created_at
 FROM calendly.routing_forms
 ORDER BY name;
 
--- Submissions for one routing form (Teams+, active form)
+-- Submissions for one routing form (published form on a Routing Forms plan)
 SELECT uri, event,
        tracking__utm_source,
        tracking__utm_campaign,
@@ -212,10 +219,10 @@ SELECT rs.uri AS submission_uri,
        se.start_time
 FROM calendly.routing_form_submissions(form_uuid => 'AAAAAAAAAAAAAAAA') rs
 JOIN calendly.scheduled_events se ON se.uri = rs.event
-WHERE se.min_start_time = '2024-01-01T00:00:00Z'
-  AND se.max_start_time = '2030-12-31T23:59:59Z';
+WHERE se.min_start_time = '2025-01-01T00:00:00Z'
+  AND se.max_start_time = '2026-12-31T23:59:59Z';
 
--- Webhook subscriptions (paid Standard+; empty if none configured)
+-- Webhook subscriptions (paid plan + owner/admin token; empty if none configured)
 SELECT callback_url, state, scope, events, created_at
 FROM calendly.webhook_subscriptions
 ORDER BY created_at DESC;
@@ -256,11 +263,26 @@ prefix (`https://api.calendly.com/scheduled_events/` or
 
 **`CALENDLY_ORG_UUID`.** Optional at install (defaults to empty). Set it only
 when querying `organization_invitations`; it is the final path segment of
-`CALENDLY_ORG_URI`.
+`CALENDLY_ORG_URI`. Querying `organization_invitations` without it set produces
+a request error.
 
 **Plan requirements.** `routing_forms` and `routing_form_submissions` require a
-Teams plan. `webhook_subscriptions` requires a paid Standard, Teams, or
-Enterprise plan. All other tables and functions work on the free plan.
+Calendly plan with [Routing Forms](https://calendly.com/help/how-to-create-a-routing-form)
+enabled (Professional, Teams, or Enterprise; owner/admin). See also
+[manage routing forms](https://calendly.com/help/how-to-manage-routing-forms).
+`webhook_subscriptions` requires a
+[paid plan with API/webhook access](https://calendly.com/help/calendly-api-overview)
+(Professional, Standard, Teams, or Enterprise, depending on account plan naming;
+see [Getting started](https://developer.calendly.com/getting-started)). This table
+queries organization-scoped subscriptions (`scope=organization`) and requires an
+[owner/admin token](https://developer.calendly.com/receive-data-from-scheduled-events-in-real-time-with-webhook-subscriptions);
+members with only `webhooks:read` will not see org-wide subscriptions. All other
+tables and functions work on the free plan.
+
+**`webhook_subscriptions` and admin scope.** This table queries
+organization-scoped webhook subscriptions (`scope=organization`). Only org
+owner and admin tokens can list org-level webhooks; member tokens return an
+empty result set even on a paid plan with `webhooks:read` granted.
 
 **Routing form submissions.** Calendly lists submissions at
 `GET /routing_form_submissions` with the `form` query parameter set to the full
