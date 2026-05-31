@@ -66,7 +66,7 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
 | `pipedrive.deals` | CRM deals/opportunities | — | `status`, `pipeline_id`, `stage_id`, `owner_id`, `person_id`, `org_id` |
 | `pipedrive.persons` | Contacts/persons | — | `owner_id`, `org_id` |
 | `pipedrive.organizations` | Organizations/companies | — | `owner_id` |
-| `pipedrive.activities` | Calls, meetings, tasks, emails | — | `done`, `owner_id`, `type` |
+| `pipedrive.activities` | Calls, meetings, tasks, emails | — | `done`, `owner_id` |
 | `pipedrive.notes` | Notes attached to entities | — | `deal_id`, `person_id`, `org_id`, `owner_id` |
 | `pipedrive.leads` | Leads Inbox leads | — | — |
 | `pipedrive.products` | Product catalog | — | — |

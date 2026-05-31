@@ -550,9 +550,6 @@ tables:
       - name: owner_id
         type: Int64
         description: Filter activities by owner user ID.
-      - name: type
-        type: Utf8
-        description: Filter by activity type key (e.g. call, meeting, task, email, lunch).
     request:
       method: GET
       path: /api/v2/activities
@@ -563,9 +560,6 @@ tables:
         - name: owner_id
           from: filter
           key: owner_id
-        - name: type
-          from: filter
-          key: type
     response:
       rows_path:
         - data
