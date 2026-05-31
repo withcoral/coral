@@ -1,0 +1,316 @@
+name: npm
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Search the npm package registry and retrieve search-result summary data via
+  the public npm registry REST API. No authentication required.
+base_url: https://registry.npmjs.org
+
+test_queries:
+  - >-
+    SELECT name, version, description
+    FROM npm.search WHERE text = 'express' LIMIT 1
+  - >-
+    SELECT name, version, description
+    FROM npm.search WHERE text = 'react' LIMIT 1
+
+tables:
+  - name: search
+    description: >
+      Searches npm packages by keyword. Each row includes the
+      package name, version, description, publisher, license,
+      weekly and monthly download counts, dependent count, and
+      quality scores. Use the text filter for keyword search.
+      Optionally adjust popularity_weight, quality_weight, or
+      maintenance_weight to influence search ranking.
+    guide: >
+      Start with `SELECT name, version, description,
+      weekly_downloads, monthly_downloads FROM npm.search
+      WHERE text = 'express' LIMIT 10`. Add
+      `AND popularity_weight = 1.0` to boost popular packages
+      in the results. The keywords column is a JSON array of
+      package keywords.
+    fetch_limit_default: 100
+    filters:
+      - name: text
+        required: true
+      - name: popularity_weight
+      - name: quality_weight
+      - name: maintenance_weight
+    request:
+      method: GET
+      path: /-/v1/search
+      query:
+        - name: text
+          from: filter
+          key: text
+        - name: popularity
+          from: filter
+          key: popularity_weight
+        - name: quality
+          from: filter
+          key: quality_weight
+        - name: maintenance
+          from: filter
+          key: maintenance_weight
+    response:
+      rows_path:
+        - objects
+    pagination:
+      mode: offset
+      offset_param: from
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 250
+        query_param: size
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Package name on npm.
+        expr:
+          kind: path
+          path:
+            - package
+            - name
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Latest published version.
+        expr:
+          kind: path
+          path:
+            - package
+            - version
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Package description from package.json.
+        expr:
+          kind: path
+          path:
+            - package
+            - description
+      - name: license
+        type: Utf8
+        nullable: true
+        description: >-
+          License identifier (e.g. MIT, ISC, Apache-2.0).
+        expr:
+          kind: path
+          path:
+            - package
+            - license
+      - name: date
+        type: Timestamp
+        nullable: true
+        description: Publish date of the latest version.
+        # Parse the ISO 8601 publish date from npm.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - package
+              - date
+      - name: keywords
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of keywords from package.json.
+        expr:
+          kind: path
+          path:
+            - package
+            - keywords
+      - name: publisher_username
+        type: Utf8
+        nullable: true
+        description: npm username of the latest publisher.
+        expr:
+          kind: path
+          path:
+            - package
+            - publisher
+            - username
+      - name: publisher_email
+        type: Utf8
+        nullable: true
+        description: Email of the latest publisher.
+        expr:
+          kind: path
+          path:
+            - package
+            - publisher
+            - email
+      - name: maintainers
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of maintainer objects with username and
+          email fields.
+        expr:
+          kind: path
+          path:
+            - package
+            - maintainers
+      - name: homepage
+        type: Utf8
+        nullable: true
+        description: Homepage URL from package.json.
+        expr:
+          kind: path
+          path:
+            - package
+            - links
+            - homepage
+      - name: repository
+        type: Utf8
+        nullable: true
+        description: Repository URL from package.json.
+        expr:
+          kind: path
+          path:
+            - package
+            - links
+            - repository
+      - name: bugs
+        type: Utf8
+        nullable: true
+        description: Bug tracker URL from package.json.
+        expr:
+          kind: path
+          path:
+            - package
+            - links
+            - bugs
+      - name: npm_url
+        type: Utf8
+        nullable: true
+        description: URL to the package page on npmjs.com.
+        expr:
+          kind: path
+          path:
+            - package
+            - links
+            - npm
+      - name: weekly_downloads
+        type: Int64
+        nullable: true
+        description: >-
+          Number of downloads in the last seven days.
+        expr:
+          kind: path
+          path:
+            - downloads
+            - weekly
+      - name: monthly_downloads
+        type: Int64
+        nullable: true
+        description: >-
+          Number of downloads in the last 30 days.
+        expr:
+          kind: path
+          path:
+            - downloads
+            - monthly
+      - name: dependents
+        type: Utf8
+        nullable: true
+        description: >-
+          Number of packages that depend on this package
+          (returned as a string by the API).
+        expr:
+          kind: path
+          path:
+            - dependents
+      - name: search_score
+        type: Float64
+        nullable: true
+        description: >-
+          Overall search relevance score from the registry.
+        expr:
+          kind: path
+          path:
+            - searchScore
+      - name: score_final
+        type: Float64
+        nullable: true
+        description: >-
+          Combined quality, popularity, and maintenance score.
+        expr:
+          kind: path
+          path:
+            - score
+            - final
+      - name: score_popularity
+        type: Float64
+        nullable: true
+        description: >-
+          Popularity sub-score (0 to 1).
+        expr:
+          kind: path
+          path:
+            - score
+            - detail
+            - popularity
+      - name: score_quality
+        type: Float64
+        nullable: true
+        description: Quality sub-score (0 to 1).
+        expr:
+          kind: path
+          path:
+            - score
+            - detail
+            - quality
+      - name: score_maintenance
+        type: Float64
+        nullable: true
+        description: Maintenance sub-score (0 to 1).
+        expr:
+          kind: path
+          path:
+            - score
+            - detail
+            - maintenance
+      - name: text
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Required keyword to search for in package names,
+          descriptions, and readmes.
+        expr:
+          kind: from_filter
+          key: text
+      - name: popularity_weight
+        type: Float64
+        nullable: true
+        virtual: true
+        description: >-
+          Search ranking weight for popularity (0.0 to 1.0).
+        expr:
+          kind: from_filter
+          key: popularity_weight
+      - name: quality_weight
+        type: Float64
+        nullable: true
+        virtual: true
+        description: >-
+          Search ranking weight for quality (0.0 to 1.0).
+        expr:
+          kind: from_filter
+          key: quality_weight
+      - name: maintenance_weight
+        type: Float64
+        nullable: true
+        virtual: true
+        description: >-
+          Search ranking weight for maintenance (0.0 to 1.0).
+        expr:
+          kind: from_filter
+          key: maintenance_weight
