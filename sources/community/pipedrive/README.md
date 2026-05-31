@@ -42,19 +42,19 @@ export PIPEDRIVE_COMPANY_DOMAIN="coral-testing"
 ### 3. Add the source
 
 ```sh
-cargo run -p coral-cli -- source add --file sources/community/pipedrive/manifest.yaml
+coral source add --file sources/community/pipedrive/manifest.yaml
 ```
 
 Or interactively:
 
 ```sh
-cargo run -p coral-cli -- source add --interactive --file sources/community/pipedrive/manifest.yaml
+coral source add --interactive --file sources/community/pipedrive/manifest.yaml
 ```
 
 ### 4. Verify
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
+coral sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
 ```
 
 ## Tables
@@ -91,13 +91,17 @@ through your company domain (`https://<company>.pipedrive.com`).
 | `products` | v2 | cursor |
 | `notes` | v1 | offset (`start` / `limit`) |
 | `leads` | v1 | offset (`start` / `limit`) |
-| `users` | v1 | offset (`start` / `limit`) |
+| `users` | v1 | none (all users returned in a single response) |
 | `search_deals` | v2 | cursor |
 | `search_persons` | v2 | cursor |
 | `search_organizations` | v2 | cursor |
 
 `notes`, `leads`, and `users` use v1 endpoints because Pipedrive has not
 published v2 equivalents for these resources.
+
+`users` is unpaginated — `GET /api/v1/users` does not document `start` or
+`limit` query parameters, and the endpoint returns all users in a single
+response.
 
 Key v2 behavioral notes:
 
@@ -237,7 +241,7 @@ LIMIT 10;
 Lint the manifest:
 
 ```sh
-cargo run -p coral-cli -- source lint sources/community/pipedrive/manifest.yaml
+coral source lint sources/community/pipedrive/manifest.yaml
 ```
 
 Add the source:
@@ -245,43 +249,44 @@ Add the source:
 ```sh
 export PIPEDRIVE_API_TOKEN="<your-pipedrive-api-token>"
 export PIPEDRIVE_COMPANY_DOMAIN="<your-company-domain>"
-cargo run -p coral-cli -- source add --file sources/community/pipedrive/manifest.yaml
+coral source add --file sources/community/pipedrive/manifest.yaml
 ```
 
 Validate core tables:
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, pipeline_id FROM pipedrive.stages LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, title, status, value FROM pipedrive.deals LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, org_id FROM pipedrive.persons LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, owner_id FROM pipedrive.organizations LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, subject, type, done FROM pipedrive.activities LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, deal_id, user_id FROM pipedrive.notes LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, title, source_name FROM pipedrive.leads LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, code FROM pipedrive.products LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, email FROM pipedrive.users LIMIT 5"
+coral sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
+coral sql "SELECT id, name, pipeline_id FROM pipedrive.stages LIMIT 5"
+coral sql "SELECT id, title, status, value FROM pipedrive.deals LIMIT 5"
+coral sql "SELECT id, name, org_id FROM pipedrive.persons LIMIT 5"
+coral sql "SELECT id, name, owner_id FROM pipedrive.organizations LIMIT 5"
+coral sql "SELECT id, subject, type, done FROM pipedrive.activities LIMIT 5"
+coral sql "SELECT id, deal_id, user_id FROM pipedrive.notes LIMIT 5"
+coral sql "SELECT id, title, source_name FROM pipedrive.leads LIMIT 5"
+coral sql "SELECT id, name, code FROM pipedrive.products LIMIT 5"
+coral sql "SELECT id, name, email FROM pipedrive.users LIMIT 5"
 ```
 
 Validate search functions:
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT * FROM pipedrive.search_deals(term => 'enterprise') LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT * FROM pipedrive.search_persons(term => 'john') LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT * FROM pipedrive.search_organizations(term => 'acme') LIMIT 5"
+coral sql "SELECT * FROM pipedrive.search_deals(term => 'enterprise') LIMIT 5"
+coral sql "SELECT * FROM pipedrive.search_persons(term => 'john') LIMIT 5"
+coral sql "SELECT * FROM pipedrive.search_organizations(term => 'acme') LIMIT 5"
 ```
 
 Inspect registered tables and columns:
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'pipedrive'"
-cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'pipedrive' ORDER BY table_name, ordinal_position"
+coral sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'pipedrive'"
+coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'pipedrive' ORDER BY table_name, ordinal_position"
 ```
 
 ## Notes
 
 - Authenticates with `x-api-token` header (personal API token only)
-- v2 tables use cursor pagination; v1 tables (`notes`, `leads`, `users`) use offset pagination (`start` / `limit`)
+- v2 tables use cursor pagination; v1 tables (`notes`, `leads`) use offset pagination (`start` / `limit`)
+- `users` is unpaginated — `GET /api/v1/users` returns all users in a single response with no documented pagination parameters
 - `is_deleted = true` means soft-deleted; entities are fully deleted 30 days after last activity
 - Nested fields like `address` and `location` are flattened with double-underscore notation (e.g. `address__country`, `location__value`)
 - The `notes` table `owner_id` filter maps to the `user_id` query parameter on the v1 API

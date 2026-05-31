@@ -916,14 +916,16 @@ tables:
         description: Last update timestamp (RFC 3339).
 
   # ──────────────────────────────────────────────────────────────────────────
-  # users — v1 (no v2 endpoint available)
+  # users — v1 (no v2 endpoint; GET /api/v1/users is unpaginated)
   # ──────────────────────────────────────────────────────────────────────────
   - name: users
     description: >-
       Users (team members) in your Pipedrive company account. Uses the v1
-      endpoint; no v2 equivalent is currently documented.
+      endpoint; no v2 equivalent is currently documented. The endpoint
+      returns all users in a single response with no pagination support.
     guide: |
-      No required filters. Join with `pipedrive.deals` on `id = owner_id`,
+      No required filters. No pagination — all users are returned in a single
+      response. Join with `pipedrive.deals` on `id = owner_id`,
       `pipedrive.activities` on `id = owner_id`, or `pipedrive.persons` on
       `id = owner_id` to resolve user names across any entity.
     request:
@@ -933,13 +935,7 @@ tables:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
-      page_size:
-        default: 100
-        max: 500
-        query_param: limit
+      mode: none
     columns:
       - name: id
         type: Int64
