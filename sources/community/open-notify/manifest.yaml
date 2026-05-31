@@ -1,0 +1,73 @@
+name: open_notify
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Real-time data about the International Space Station and astronauts in space from Open Notify.
+base_url: http://api.open-notify.org
+test_queries:
+  - SELECT latitude, longitude FROM open_notify.iss_position LIMIT 1
+  - SELECT name, craft FROM open_notify.astronauts LIMIT 5
+tables:
+  - name: iss_position
+    description: Current geographic location of the International Space Station.
+    request:
+      method: GET
+      path: /iss-now.json
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: timestamp
+        type: Int64
+        nullable: false
+        description: Unix timestamp of the position data.
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: latitude
+        type: Float64
+        nullable: false
+        description: Current latitude of the ISS.
+        expr:
+          kind: path
+          path:
+            - iss_position
+            - latitude
+      - name: longitude
+        type: Float64
+        nullable: false
+        description: Current longitude of the ISS.
+        expr:
+          kind: path
+          path:
+            - iss_position
+            - longitude
+
+  - name: astronauts
+    description: List of astronauts currently in space.
+    request:
+      method: GET
+      path: /astros.json
+    response:
+      rows_path:
+        - people
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the astronaut.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: craft
+        type: Utf8
+        nullable: false
+        description: Spacecraft the astronaut is aboard.
+        expr:
+          kind: path
+          path:
+            - craft
