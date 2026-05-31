@@ -8,6 +8,10 @@ description: >-
   per package, filtered by `package_name`. No authentication required. Useful
   for popularity and short-term trend detection. Package metadata lives on a
   different host (registry.npmjs.org) and is a separate source spec, `npm`.
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
 
 inputs:
   NPM_DOWNLOADS_BASE:
@@ -26,6 +30,11 @@ tables:
     description: >
       Total downloads in the trailing 30 days for a package. One row per
       package. Filter on package_name (required).
+    guide: >
+      Total downloads over the trailing 30 days. Requires package_name and maps
+      to GET /downloads/point/last-month/{package_name} on api.npmjs.org.
+      Returns one row. Pair with downloads_last_week to estimate a trend
+      (week * 4 vs month).
     filters:
       - name: package_name
         required: true
@@ -38,24 +47,46 @@ tables:
     columns:
       - name: package_name
         type: Utf8
-        description: Package name queried (echoes the WHERE filter)
+        nullable: true
+        virtual: true
+        description: Package name queried (echoes the WHERE filter).
+        expr:
+          kind: from_filter
+          key: package_name
       - name: package
         type: Utf8
-        description: Canonical package name returned by the API
+        description: Canonical package name returned by the API.
+        expr:
+          kind: path
+          path: [package]
       - name: downloads
         type: Int64
-        description: Total downloads in the period
+        description: Total downloads in the period.
+        expr:
+          kind: path
+          path: [downloads]
       - name: start
         type: Utf8
-        description: First day of the counted window (YYYY-MM-DD)
+        description: First day of the counted window (YYYY-MM-DD).
+        expr:
+          kind: path
+          path: [start]
       - name: end
         type: Utf8
-        description: Last day of the counted window (YYYY-MM-DD)
+        description: Last day of the counted window (YYYY-MM-DD).
+        expr:
+          kind: path
+          path: [end]
 
   - name: downloads_last_week
     description: >
       Total downloads in the trailing 7 days for a package. One row per
       package. Useful for short-term trend detection.
+    guide: >
+      Total downloads over the trailing 7 days. Requires package_name and maps
+      to GET /downloads/point/last-week/{package_name} on api.npmjs.org.
+      Returns one row. A week's count multiplied by ~4 and compared against
+      downloads_last_month is a cheap momentum signal.
     filters:
       - name: package_name
         required: true
@@ -68,12 +99,33 @@ tables:
     columns:
       - name: package_name
         type: Utf8
-        description: Package name queried (echoes the WHERE filter)
+        nullable: true
+        virtual: true
+        description: Package name queried (echoes the WHERE filter).
+        expr:
+          kind: from_filter
+          key: package_name
       - name: package
         type: Utf8
+        description: Canonical package name returned by the API.
+        expr:
+          kind: path
+          path: [package]
       - name: downloads
         type: Int64
+        description: Total downloads in the period.
+        expr:
+          kind: path
+          path: [downloads]
       - name: start
         type: Utf8
+        description: First day of the counted window (YYYY-MM-DD).
+        expr:
+          kind: path
+          path: [start]
       - name: end
         type: Utf8
+        description: Last day of the counted window (YYYY-MM-DD).
+        expr:
+          kind: path
+          path: [end]
