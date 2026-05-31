@@ -57,9 +57,13 @@ tables:
                   website
                   twitterHandle
                   githubHandle
-                  repositoryUrl
+                  socialLinks {
+                    type
+                    url
+                  }
                   tags
                   createdAt
+                  totalFinancialContributors
                   stats {
                     totalAmountReceived {
                       value
@@ -77,7 +81,6 @@ tables:
                       value
                       currency
                     }
-                    contributorsCount
                   }
                 }
               }
@@ -147,10 +150,10 @@ tables:
       - name: contributors_count
         type: Int64
         nullable: true
-        description: Total number of unique contributors.
+        description: Total number of financial contributors.
         expr:
           kind: path
-          path: ["stats", "contributorsCount"]
+          path: ["totalFinancialContributors"]
       - name: website
         type: Utf8
         nullable: true
@@ -169,13 +172,13 @@ tables:
         expr:
           kind: path
           path: ["githubHandle"]
-      - name: repository_url
-        type: Utf8
+      - name: social_links
+        type: Json
         nullable: true
-        description: URL of the primary source code repository.
+        description: Social links associated with the collective.
         expr:
           kind: path
-          path: ["repositoryUrl"]
+          path: ["socialLinks"]
       - name: tags
         type: Json
         nullable: true
