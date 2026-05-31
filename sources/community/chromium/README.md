@@ -57,7 +57,6 @@ coral source add --file sources/community/chromium/manifest.yaml
 | Environment variable | Purpose |
 | --- | --- |
 | `CHROME_API_KEY` | Required bearer token used by Coral and the local server. |
-| `CHROME_SERVER_PORT` | Optional server port. Defaults to `8767`. |
 | `CHROME_PROFILE_PATH` | Optional full path to the Chrome profile directory to query. |
 | `EDGE_PROFILE_PATH` | Optional full path to the Edge profile directory to query. |
 | `BRAVE_PROFILE_PATH` | Optional full path to the Brave profile directory to query. |
@@ -140,7 +139,7 @@ If a query fails with HTTP 503, check the message from the server. It usually me
 
 If a query fails with HTTP 401, confirm `CHROME_API_KEY` is set to the same value in the server terminal and in the shell where you run `coral source add --file` or `coral source test`.
 
-If you changed `CHROME_SERVER_PORT`, restart the server and re-add the source so Coral stores the updated port input.
+The server listens on `http://127.0.0.1:8765` and the port is fixed. If Coral cannot reach the server, confirm that the server is still running and that `CHROME_API_KEY` matches the token printed when the server started.
 
 ## Contributions
 
