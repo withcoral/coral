@@ -107,7 +107,7 @@ coral sql "SELECT id, name, plan, region, status FROM render.key_value LIMIT 3"
 | --- | --- | --- | --- |
 | `services` | Render services and their Git/deploy metadata | — | `name`, `type`, `environment_id`, `region`, `suspended`, `owner_id`, `created_after/before`, `updated_after/before`, `include_previews` |
 | `deploys` | Deploy history for one service, newest first | `service_id` | `status`, `created_after/before`, `updated_after/before`, `finished_after/before` |
-| `events` | Lifecycle events for one service | `service_id` | — |
+| `events` | Lifecycle events for one service | `service_id` | `type`, `start_time`, `end_time` |
 | `logs` | Application/build/request log lines | `owner_id`, `resource` | `text`, `level`, `type`, `start_time`, `end_time`, `direction` |
 | `postgres` | Render PostgreSQL databases | — | `name`, `region`, `suspended`, `owner_id`, `environment_id`, `include_replicas`, `created_after/before`, `updated_after/before` |
 | `key_value` | Render Key Value (Redis-compatible) instances | — | `name`, `region`, `owner_id`, `environment_id`, `created_after/before`, `updated_after/before` |
@@ -152,12 +152,15 @@ LIMIT 20;
 
 ### Look at events around an incident
 
-`events` requires a `service_id`:
+`events` requires a `service_id`, and you can narrow an incident window with the
+optional `type`, `start_time`, and `end_time` filters (RFC3339 timestamps):
 
 ```sql
 SELECT id, type, timestamp
 FROM render.events
 WHERE service_id = 'srv-xxxxxxxx'
+  AND start_time = '2026-05-29T14:00:00Z'
+  AND end_time   = '2026-05-29T15:00:00Z'
 ORDER BY timestamp DESC
 LIMIT 50;
 ```
@@ -171,8 +174,13 @@ The `details` column is the raw provider JSON for the event; inspect fields with
 service/postgres/key-value ID, e.g. `srv-xxxx`). The filter is `resource`, **not**
 `resource_id`:
 
+`level` and `type` are **filters**, not output columns — Render returns the
+per-row level and type inside the `labels` array (no fixed position), so select
+`labels` and read them with json functions rather than expecting top-level
+columns:
+
 ```sql
-SELECT timestamp, level, message
+SELECT timestamp, message, labels
 FROM render.logs
 WHERE owner_id = 'tea-xxxxxxxx'
   AND resource = 'srv-xxxxxxxx'
@@ -184,6 +192,13 @@ LIMIT 100;
 Defaults to the last hour; widen with `start_time`/`end_time` (RFC3339, within
 the last 30 days). The `labels` JSON holds the resource, level, type, host, and
 status code for each line.
+
+> **`logs` is first-page-only.** Render paginates logs with response-level
+> `hasMore`/`nextStartTime`/`nextEndTime` cursors (not the per-row cursor the
+> other tables use), which this manifest does not yet follow, so each query
+> returns at most the newest 100 lines in the requested window. For wider
+> coverage, narrow the time window with `start_time`/`end_time` and run
+> successive queries rather than relying on a large `LIMIT`.
 
 ### Inventory PostgreSQL databases
 
@@ -224,13 +239,18 @@ The point of putting Render in Coral is the join. `deploys.commit_id` is the SHA
 that shipped, so you can correlate a broken deploy with the pull request that
 introduced it:
 
+Coral's GitHub source exposes pull requests as `github.pulls`, which **requires**
+`owner` and `repo` filters, so pin those in the `WHERE` clause:
+
 ```sql
 SELECT d.id AS deploy_id, d.status, d.commit_id, pr.title, pr.html_url
 FROM render.deploys d
-JOIN github.pull_requests pr
+JOIN github.pulls pr
   ON pr.merge_commit_sha = d.commit_id
 WHERE d.service_id = 'srv-xxxxxxxx'
-  AND d.status = 'build_failed';
+  AND d.status = 'build_failed'
+  AND pr.owner = 'your-org'
+  AND pr.repo  = 'your-repo';
 ```
 
 ## Query flow

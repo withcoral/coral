@@ -357,15 +357,29 @@ tables:
     guide: >
       Requires `service_id`. Example:
       `SELECT id, type, timestamp FROM render.events
-      WHERE service_id = 'srv-xxxx' LIMIT 50`. The `details` column is the raw
-      provider JSON for the event; use json_get_str(details, '<key>') to inspect
-      event-specific fields.
+      WHERE service_id = 'srv-xxxx' LIMIT 50`. Narrow an incident window with the
+      optional `type`, `start_time`, and `end_time` filters (RFC3339 timestamps).
+      The `details` column is the raw provider JSON for the event; use
+      json_get_str(details, '<key>') to inspect event-specific fields.
     filters:
       - name: service_id
         required: true
+      - name: type
+      - name: start_time
+      - name: end_time
     request:
       method: GET
       path: /services/{{filter.service_id}}/events
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: startTime
+          from: filter
+          key: start_time
+        - name: endTime
+          from: filter
+          key: end_time
     response:
       row_strategy: direct
     pagination:
@@ -506,22 +520,15 @@ tables:
         nullable: true
         description: The log line text.
         expr: { kind: path, path: [message] }
-      - name: level
-        type: Utf8
-        nullable: true
-        description: Severity level filtered on (info, warning, error), echoed from the filter when provided.
-        virtual: true
-        expr: { kind: from_filter, key: level }
-      - name: type
-        type: Utf8
-        nullable: true
-        description: Log type filtered on (app, request, build), echoed from the filter when provided.
-        virtual: true
-        expr: { kind: from_filter, key: type }
       - name: labels
         type: Json
         nullable: true
-        description: All log labels as an array of {name, value} (resource, level, type, instance, host, statusCode, etc.). Query with json functions.
+        description: >
+          All log labels as an array of {name, value} objects (resource, level,
+          type, instance, host, statusCode, etc.). Per-row level and type live
+          here, not as top-level columns, because Render returns them inside this
+          array with no fixed position. Query with json functions, e.g.
+          json_extract / json path filtering on name = 'level'.
         expr: { kind: path, path: [labels] }
 
   - name: postgres
