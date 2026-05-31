@@ -24,7 +24,7 @@ tables:
       Filter by cve_id for a single record. For date-scoped queries supply
       pub_start_date and pub_end_date together - NVD requires both and caps
       the window at 120 consecutive days (e.g. pub_start_date =
-      '2024-01-01T00:00:00.000' and pub_end_date = '2024-04-30T23:59:59.999').
+      '2024-01-01T00:00:00.000' and pub_end_date = '2024-03-31T23:59:59.999').
       Without any filter the table pages through all 350 000+ CVE records;
       always scope with cve_id, a date pair, or cvss_v3_severity.
     fetch_limit_default: 100
