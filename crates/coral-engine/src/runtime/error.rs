@@ -164,16 +164,13 @@ fn table_not_found_ref(
         return Some(table_ref);
     }
 
-    if !is_legacy_table_not_found_plan(detail) {
-        return None;
-    }
+    let raw = extract_table_not_found(detail)?;
 
-    extract_table_not_found(detail)
-        .and_then(table_ref_parts_from_sql_object)
-        .or_else(|| {
-            extract_table_not_found(detail)
-                .map(|raw| TableRefParts::new(raw.split('.').map(ToString::to_string).collect()))
-        })
+    table_ref_parts_from_sql_object(raw).or_else(|| {
+        Some(TableRefParts::new(
+            raw.split('.').map(ToString::to_string).collect(),
+        ))
+    })
 }
 
 fn looks_like_table_not_found(detail: &str) -> bool {
@@ -181,10 +178,6 @@ fn looks_like_table_not_found(detail: &str) -> bool {
     lowered.contains("table")
         && lowered.contains("not found")
         && !lowered.contains("table function")
-}
-
-fn is_legacy_table_not_found_plan(detail: &str) -> bool {
-    extract_table_not_found(detail).is_some()
 }
 
 fn extract_table_not_found(detail: &str) -> Option<&str> {

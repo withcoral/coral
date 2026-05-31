@@ -33,22 +33,15 @@ detect_target() {
 
 fetch_latest_version() {
     token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-    if [ -n "$token" ]; then
-        curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "User-Agent: withcoral-install" \
-            -H "Authorization: Bearer ${token}" \
-            "https://api.github.com/repos/${REPO}/releases/latest" |
-            sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
-            head -n 1
-        return
-    fi
-
-    curl -fsSL \
+    set -- \
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
-        -H "User-Agent: withcoral-install" \
+        -H "User-Agent: withcoral-install"
+    if [ -n "$token" ]; then
+        set -- "$@" -H "Authorization: Bearer ${token}"
+    fi
+
+    curl -fsSL "$@" \
         "https://api.github.com/repos/${REPO}/releases/latest" |
         sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
         head -n 1
