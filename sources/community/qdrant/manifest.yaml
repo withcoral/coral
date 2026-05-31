@@ -756,9 +756,9 @@ tables:
       - name: collection_name
         required: true
       - name: target
-        required: true
+        required: false
       - name: context
-        required: true
+        required: false
       - name: limit
         required: false
       - name: filter
