@@ -3,8 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query members, workflows, workflow states, epic states, epics, stories,
-  iterations, and objectives from Shortcut via the Shortcut REST API v3.
+  Query members, workflows, epic states, epics, stories, iterations,
+  and objectives from Shortcut via the Shortcut REST API v3.
 base_url: https://api.app.shortcut.com/api/v3
 
 inputs:
@@ -129,12 +129,14 @@ tables:
   - name: workflows
     description: >-
       Workflows in the Shortcut workspace. Each row is one workflow.
-      Use id to join with stories on workflow_id. Join with
-      workflow_states on id = workflow_id to resolve story state names.
+      Use id to join with stories on workflow_id.
     guide: |
       No required filters. Use `id` to join with `shortcut.stories` on
-      `workflow_id`. Join with `shortcut.workflow_states` on
-      `id = workflow_id` to map workflow state IDs to names and types.
+      `workflow_id` to map stories to their workflow. Workflow states
+      are embedded in the API response as a nested `states` array but
+      cannot be unnested into a separate table in this version — use
+      `workflow_state_id` on stories to identify the state, and resolve
+      names by querying the Shortcut API directly if needed.
     request:
       method: GET
       path: /workflows
@@ -146,7 +148,7 @@ tables:
       - name: id
         type: Int64
         nullable: false
-        description: Workflow ID. Join to shortcut.stories.workflow_id and shortcut.workflow_states.workflow_id.
+        description: Workflow ID. Join to shortcut.stories.workflow_id.
         expr:
           kind: path
           path:
@@ -191,109 +193,6 @@ tables:
               - updated_at
 
   # ──────────────────────────────────────────────────────────────────────────
-  # workflow_states — states within each workflow
-  # ──────────────────────────────────────────────────────────────────────────
-  - name: workflow_states
-    description: >-
-      Workflow states across all workflows in the workspace. Each row is
-      one state. Join id to stories.workflow_state_id to resolve the
-      name and type of the state a story is currently in.
-    guide: |
-      No required filters. This table unnests the `states` array from
-      the GET /workflows response. Join `id` to
-      `shortcut.stories.workflow_state_id` to resolve state names. Use
-      `type` to classify states: Unstarted, Started, or Done. Use
-      `workflow_id` to join back to `shortcut.workflows.id`.
-    request:
-      method: GET
-      path: /workflows
-    response:
-      rows_path:
-        - states
-      row_strategy: direct
-    pagination:
-      mode: none
-    columns:
-      - name: id
-        type: Int64
-        nullable: false
-        description: Workflow state ID. Join to shortcut.stories.workflow_state_id.
-        expr:
-          kind: path
-          path:
-            - id
-      - name: name
-        type: Utf8
-        nullable: true
-        description: Workflow state name (e.g. In Development, Ready for Review).
-        expr:
-          kind: path
-          path:
-            - name
-      - name: type
-        type: Utf8
-        nullable: true
-        description: "State type: Unstarted, Started, or Done."
-        expr:
-          kind: path
-          path:
-            - type
-      - name: position
-        type: Int64
-        nullable: true
-        description: Position of the state within the workflow (0 = leftmost).
-        expr:
-          kind: path
-          path:
-            - position
-      - name: color
-        type: Utf8
-        nullable: true
-        description: Hex color for the workflow state.
-        expr:
-          kind: path
-          path:
-            - color
-      - name: description
-        type: Utf8
-        nullable: true
-        description: Description of what stories belong in this state.
-        expr:
-          kind: path
-          path:
-            - description
-      - name: num_stories
-        type: Int64
-        nullable: true
-        description: Number of stories currently in this state.
-        expr:
-          kind: path
-          path:
-            - num_stories
-      - name: created_at
-        type: Timestamp
-        nullable: true
-        description: Timestamp when the state was created.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - created_at
-      - name: updated_at
-        type: Timestamp
-        nullable: true
-        description: Timestamp when the state was last updated.
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path:
-              - updated_at
-
-  # ──────────────────────────────────────────────────────────────────────────
   # epic_states — epic workflow states (replaces deprecated epics.state)
   # ──────────────────────────────────────────────────────────────────────────
   - name: epic_states
@@ -304,8 +203,9 @@ tables:
     guide: |
       No required filters. Join `id` to `shortcut.epics.epic_state_id`
       to resolve the current state name and type for each epic. Use
-      `type` to classify states: to do, in progress, or done.
-      This table replaces the deprecated `epics.state` string column.
+      `type` to classify states: Unstarted, Started, or Done (exact
+      casing as returned by the API). This table replaces the deprecated
+      `epics.state` string column.
     request:
       method: GET
       path: /epic-workflow
@@ -335,7 +235,8 @@ tables:
       - name: type
         type: Utf8
         nullable: true
-        description: "Epic state type: to do, in progress, or done."
+        description: >-
+          Epic state type as returned by the API: Unstarted, Started, or Done.
         expr:
           kind: path
           path:
@@ -533,9 +434,7 @@ tables:
       request). Use a narrow `query` filter to stay within one page.
       Full multi-page pagination is out of scope for v1.
 
-      Join `workflow_state_id` to `shortcut.workflow_states.id` to
-      resolve the state name and type. Join `epic_id` to
-      `shortcut.epics.id` and `iteration_id` to
+      Join `epic_id` to `shortcut.epics.id` and `iteration_id` to
       `shortcut.iterations.id`.
     filters:
       - name: query
@@ -596,8 +495,7 @@ tables:
         nullable: true
         description: >-
           ID of the workflow state the story is currently in.
-          Join to shortcut.workflow_states.id to resolve the state
-          name and type.
+          Use this to identify the story's state within its workflow.
         expr:
           kind: path
           path:

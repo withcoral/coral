@@ -2,13 +2,13 @@
 
 **Version:** 0.1.0
 **Backend:** HTTP (Shortcut REST API v3)
-**Tables:** 8
+**Tables:** 7
 **Base URL:** `https://api.app.shortcut.com/api/v3`
 
-Query members, workflows, workflow states, epic states, epics, stories,
-iterations, and objectives from Shortcut via SQL. Designed for engineering
-project analytics: story cycle times, sprint velocity, epic progress, and
-cross-source joins with the bundled **Linear**, **GitHub**, and **Jira** sources.
+Query members, workflows, epic states, epics, stories, iterations, and
+objectives from Shortcut via SQL. Designed for engineering project analytics:
+story cycle times, sprint velocity, epic progress, and cross-source joins
+with the bundled **Linear**, **GitHub**, and **Jira** sources.
 
 ## Setup
 
@@ -35,13 +35,13 @@ export SHORTCUT_TOKEN="<your-api-token>"
 ### 3. Add the source
 
 ```sh
-cargo run -p coral-cli -- source add --file sources/community/shortcut/manifest.yaml
+coral source add --file sources/community/shortcut/manifest.yaml
 ```
 
 ### 4. Verify
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.members LIMIT 5"
+coral sql "SELECT id, name FROM shortcut.members LIMIT 5"
 ```
 
 ## Tables
@@ -50,10 +50,9 @@ cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.members LIMIT 5"
 |---|---|---|---|
 | `shortcut.members` | Workspace members | — | — |
 | `shortcut.workflows` | Workspace workflows | — | — |
-| `shortcut.workflow_states` | States within each workflow — join to stories.workflow_state_id | — | — |
 | `shortcut.epic_states` | Epic workflow states — join to epics.epic_state_id | — | — |
 | `shortcut.epics` | Epics in the workspace | — | — |
-| `shortcut.stories` | Stories via Shortcut Search API — first page only (up to 250 records) | `query` | — |
+| `shortcut.stories` | Stories via Shortcut Search API — first page only (up to 250 records, explicitly requested via page_size=250) | `query` | — |
 | `shortcut.iterations` | Iterations (sprints) | — | — |
 | `shortcut.objectives` | Objectives (replaces deprecated milestones) | — | — |
 
@@ -68,21 +67,10 @@ Shortcut comments and descriptions.
 
 ### `workflows`
 
-Lists all workflows in the workspace. Join with `workflow_states` on
-`id = workflow_id` to see all states per workflow.
-
-### `workflow_states`
-
-Unnests the `states` array from `GET /workflows`. Each row is one state
-across all workflows. Join `id` to `shortcut.stories.workflow_state_id`
-to resolve what state a story is currently in.
-
-| Column | Description |
-|---|---|
-| `id` | State ID — join to `stories.workflow_state_id` |
-| `name` | State display name (e.g. In Development, Ready for Review) |
-| `type` | `Unstarted`, `Started`, or `Done` |
-| `position` | Position within the workflow (0 = leftmost) |
+Lists all workflows in the workspace. Use `id` to join with
+`shortcut.stories` on `workflow_id`. Workflow states are nested inside
+each workflow object in the API response and cannot be unnested into a
+separate SQL table in this version — see Out of scope for v1.
 
 ### `epic_states`
 
@@ -94,7 +82,7 @@ current model — prefer this over the deprecated `epics.state` string field.
 |---|---|
 | `id` | Epic state ID — join to `epics.epic_state_id` |
 | `name` | State display name |
-| `type` | State type: `to do`, `in progress`, or `done` |
+| `type` | State type as returned by the API: `Unstarted`, `Started`, or `Done` |
 
 ### `epics`
 
@@ -137,20 +125,10 @@ Lists all iterations (sprints). Use `status` to filter locally:
 ### `objectives`
 
 Lists all objectives. Shortcut deprecated `GET /milestones` in favour of
-`GET /objectives`. Use `state` to filter locally.
+`GET /objectives`. Use `state` to filter locally: `to do`, `in progress`,
+or `done`.
 
 ## Example queries
-
-Stories with resolved state name:
-
-```sql
-SELECT s.id, s.name, s.story_type, ws.name AS state_name, ws.type AS state_type
-FROM shortcut.stories s
-JOIN shortcut.workflow_states ws ON s.workflow_state_id = ws.id
-WHERE s.query = 'is:started'
-ORDER BY s.id
-LIMIT 20;
-```
 
 In-progress epics with state name (current model):
 
@@ -158,36 +136,25 @@ In-progress epics with state name (current model):
 SELECT e.id, e.name, es.name AS state_name, e.started_at
 FROM shortcut.epics e
 JOIN shortcut.epic_states es ON e.epic_state_id = es.id
-WHERE es.type = 'in progress'
+WHERE es.type = 'Started'
 ORDER BY e.started_at
 LIMIT 20;
 ```
 
-Stories joined to their epic with state names:
+Stories joined to their epic with epic state:
 
 ```sql
 SELECT
   s.id,
   s.name,
   s.story_type,
-  ws.name AS story_state,
   e.name AS epic_name,
   es.name AS epic_state
 FROM shortcut.stories s
-JOIN shortcut.workflow_states ws ON s.workflow_state_id = ws.id
 LEFT JOIN shortcut.epics e ON s.epic_id = e.id
 LEFT JOIN shortcut.epic_states es ON e.epic_state_id = es.id
 WHERE s.query = 'is:started'
 LIMIT 20;
-```
-
-All workflow states across all workflows:
-
-```sql
-SELECT ws.id, ws.name, ws.type, ws.position, w.name AS workflow_name
-FROM shortcut.workflow_states ws
-JOIN shortcut.workflows w ON ws.workflow_id = w.id
-ORDER BY w.name, ws.position;
 ```
 
 Bug stories in the current iteration:
@@ -197,6 +164,28 @@ SELECT id, name, story_type, workflow_state_id, estimate, created_at
 FROM shortcut.stories
 WHERE query = 'type:bug iteration:current'
 ORDER BY created_at DESC
+LIMIT 20;
+```
+
+All stories with cycle time for completed work:
+
+```sql
+SELECT id, name, story_type, cycle_time, completed_at
+FROM shortcut.stories
+WHERE query = 'is:completed'
+  AND completed = true
+ORDER BY completed_at DESC
+LIMIT 50;
+```
+
+Current iteration stories with iteration name:
+
+```sql
+SELECT s.id, s.name, s.story_type, i.name AS iteration_name, i.status
+FROM shortcut.stories s
+LEFT JOIN shortcut.iterations i ON s.iteration_id = i.id
+WHERE s.query = 'iteration:current'
+ORDER BY s.id
 LIMIT 20;
 ```
 
@@ -216,30 +205,29 @@ LIMIT 20;
 Lint the manifest:
 
 ```sh
-cargo run -p coral-cli -- source lint sources/community/shortcut/manifest.yaml
+coral source lint sources/community/shortcut/manifest.yaml
 ```
 
 Add the source and validate each table:
 
 ```sh
 export SHORTCUT_TOKEN="<your-api-token>"
-cargo run -p coral-cli -- source add --file sources/community/shortcut/manifest.yaml
+coral source add --file sources/community/shortcut/manifest.yaml
 
-cargo run -p coral-cli -- sql "SELECT id, name, email, role FROM shortcut.members LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name FROM shortcut.workflows LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, type, position FROM shortcut.workflow_states LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, type FROM shortcut.epic_states LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, epic_state_id, state FROM shortcut.epics LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, story_type, workflow_state_id FROM shortcut.stories WHERE query = 'type:bug' LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, status, start_date, end_date FROM shortcut.iterations LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, state, created_at FROM shortcut.objectives LIMIT 5"
+coral sql "SELECT id, name, email, role FROM shortcut.members LIMIT 5"
+coral sql "SELECT id, name FROM shortcut.workflows LIMIT 5"
+coral sql "SELECT id, name, type FROM shortcut.epic_states LIMIT 5"
+coral sql "SELECT id, name, epic_state_id FROM shortcut.epics LIMIT 5"
+coral sql "SELECT id, name, story_type, workflow_state_id FROM shortcut.stories WHERE query = 'type:bug' LIMIT 5"
+coral sql "SELECT id, name, status, start_date, end_date FROM shortcut.iterations LIMIT 5"
+coral sql "SELECT id, name, state, created_at FROM shortcut.objectives LIMIT 5"
 ```
 
 Inspect registered tables and columns:
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'shortcut'"
-cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'shortcut' ORDER BY table_name, ordinal_position"
+coral sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'shortcut'"
+coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'shortcut' ORDER BY table_name, ordinal_position"
 ```
 
 ## Notes
@@ -248,21 +236,30 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
   the creating user. Store them in environment variables or a secrets manager.
   Use an Observer-role member to limit write exposure.
 - **Rate limits:** 200 requests per minute per token; retry on 429.
-- **`workflow_states`:** unnested from `GET /workflows` — no separate API
-  call needed. Join `id` to `stories.workflow_state_id` to resolve state names.
-- **`epic_states`:** sourced from `GET /epic-workflow`. Join `id` to
-  `epics.epic_state_id` — this is the current model. The `epics.state` string
-  column is deprecated by Shortcut and kept only for backwards compatibility.
 - **`detail=full`** on `/search/stories` ensures `cycle_time`, `estimate`,
   and workflow metadata are included.
-- **`stories` pagination:** first page only (up to 250 records). Use a narrow
-  `query` to stay within one page.
+- **Auth header:** this source uses `Shortcut-Token: <token>` not
+  `Authorization: Bearer`.
+- **`email` field:** sourced from `profile.email_address` in the API
+  response, not a top-level field.
+- **`epic_states.type`:** values returned by the API are `Unstarted`,
+  `Started`, and `Done` — use these exact strings in WHERE clauses.
+- **`epics.state`:** deprecated by Shortcut — use `epic_state_id` joined
+  to `epic_states` instead.
+- **`stories` pagination:** first page only (up to 250 records, explicitly
+  requested via `page_size=250`). Use a narrow `query` to stay within one page.
+- **`query` filter on stories:** required — this table uses Shortcut's Search
+  API which does not support unfiltered listing. Accepts search operators such
+  as `is:started`, `type:bug`, `epic:my-epic`, and `iteration:current`.
 - **`cycle_time`** is in seconds — divide by 3600 for hours or 86400 for days.
-- **`members`, `workflows`, `workflow_states`, `epic_states`, `iterations`,
-  `objectives`** return the full workspace list in a single response.
+- **Workflow states:** the `GET /workflows` response embeds states as a nested
+  array per workflow object. Coral cannot unnest per-parent arrays into a
+  separate table, so `workflow_states` is not available in this version. Use
+  `workflow_state_id` on stories to identify the state ID.
 
 ## Out of scope for v1
 
+- `workflow_states` table (Coral cannot unnest per-parent nested arrays from a single endpoint)
 - Multi-page pagination for `stories` (blocked by Shortcut returning `next` as a full URL)
 - Labels table
 - Groups table
