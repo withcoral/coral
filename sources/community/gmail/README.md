@@ -1,7 +1,7 @@
 # Gmail Source
 
 Query your Gmail mailbox using SQL via the Gmail REST API v1. Designed for
-inbox discovery, provider-native search, and cross-source joins with bundled
+inbox discovery, provider-native search, and cross-source workflows with bundled
 **Stripe**, **Linear**, and **Intercom** on sender email.
 
 ## Setup
@@ -50,8 +50,9 @@ token, run `coral source add` again and choose **Connect Gmail** to re-authentic
 | `drafts` | table | Draft IDs |
 | `search_messages` | search function | Gmail-native search via `q` argument |
 
-`messages` and `drafts` return IDs for discovery. Use `message_details` for
-join-friendly headers, or `search_messages` for provider-native search syntax.
+`messages` and `drafts` return IDs for discovery. Use `search_messages` for
+provider-native search, then `message_details` with a **literal** `message_id`
+to read From/Subject metadata for one message at a time.
 
 ## Example queries
 
@@ -86,114 +87,91 @@ FROM gmail.search_messages(q => 'is:unread subject:invoice')
 LIMIT 10;
 ```
 
-### Message metadata (single message)
+### Message metadata (two-step workflow)
+
+Gmail uses `messages.list` / `search_messages` for IDs and `messages.get` for
+one message at a time. Coral's `message_details` table maps to `messages.get` and
+requires a **literal** `message_id` in `WHERE` (not a value from a `JOIN`).
+
+**Step 1 — discover ids:**
+
+```sql
+SELECT id, thread_id
+FROM gmail.search_messages(q => 'in:inbox')
+LIMIT 10;
+```
+
+**Step 2 — metadata for one id (paste from step 1):**
 
 ```sql
 SELECT message_id, from_header, subject, internal_date
 FROM gmail.message_details
-WHERE message_id = '<message-id-from-gmail.messages>'
+WHERE message_id = '0000000000000001'
 LIMIT 1;
 ```
 
-### Join discovery IDs to metadata
-
-```sql
-SELECT m.id, d.from_header, d.subject, d.internal_date
-FROM gmail.messages m
-JOIN gmail.message_details d ON d.message_id = m.id
-WHERE m.label_ids = 'INBOX'
-LIMIT 20;
-```
-
-Extract an email from `from_header` (angle-bracket, bare address, or embedded):
+Parse `from_header` in SQL when you have a single metadata row:
 
 ```sql
 SELECT
-  m.id,
-  d.subject,
+  message_id,
+  subject,
   COALESCE(
-    regexp_match(d.from_header, '<([^>]+)>')[1],
-    regexp_match(d.from_header, '([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})')[1],
-    TRIM(d.from_header)
+    regexp_match(from_header, '<([^>]+)>')[1],
+    regexp_match(from_header, '([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})')[1],
+    TRIM(from_header)
   ) AS from_email
-FROM gmail.messages m
-JOIN gmail.message_details d ON d.message_id = m.id
-WHERE m.label_ids = 'INBOX'
-LIMIT 20;
+FROM gmail.message_details
+WHERE message_id = '0000000000000001'
+LIMIT 1;
 ```
 
-## Cross-source joins
+## Cross-source workflows
 
-`from_header` may be `Name <addr@domain>`, a bare `addr@domain`, or text with an
-embedded address. Examples below use `COALESCE` so joins do not silently drop
-rows when Gmail omits angle brackets.
+After step 2, use the parsed email in a **separate** Coral query against bundled
+sources. Coral cannot `JOIN` from `gmail.search_messages` into `message_details`
+because `message_id` must be literal.
 
-Reference GitHub issue #1080 when contributing changes. Example relationships:
+Example relationships:
 
 ```text
-gmail.message_details.from_header (parsed email)
-  → stripe.customers.email
-  → linear.users.email
-  → intercom.contacts.email
+gmail.search_messages / gmail.messages  →  ids
+gmail.message_details (literal message_id)  →  from_header
+parsed from_email  →  stripe.customers.email / linear.users.email
 ```
 
-### Stripe customers who emailed you recently
+### Stripe lookup for a known sender email
 
-Requires bundled Stripe source and parsed `from_email`:
+Requires bundled Stripe. Run after you know `from_email` from `message_details`:
 
 ```sql
-WITH mail AS (
-  SELECT
-    m.id AS message_id,
-    d.subject,
-    COALESCE(
-      regexp_match(d.from_header, '<([^>]+)>')[1],
-      regexp_match(d.from_header, '([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})')[1],
-      TRIM(d.from_header)
-    ) AS from_email
-  FROM gmail.search_messages(q => 'newer_than:30d') m
-  JOIN gmail.message_details d ON d.message_id = m.id
-)
-SELECT from_email, subject, s.id AS stripe_customer_id, s.name
-FROM mail
-JOIN stripe.customers s ON LOWER(s.email) = LOWER(mail.from_email)
-WHERE mail.from_email IS NOT NULL
-LIMIT 20;
+SELECT id, email, name
+FROM stripe.customers
+WHERE LOWER(email) = LOWER('billing@example.com')
+LIMIT 5;
 ```
 
-### Linear users matching Gmail senders
+### Linear lookup for a known sender email
 
 ```sql
-WITH mail AS (
-  SELECT
-    m.id AS message_id,
-    COALESCE(
-      regexp_match(d.from_header, '<([^>]+)>')[1],
-      regexp_match(d.from_header, '([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})')[1],
-      TRIM(d.from_header)
-    ) AS from_email
-  FROM gmail.messages m
-  JOIN gmail.message_details d ON d.message_id = m.id
-  WHERE m.label_ids = 'INBOX'
-)
-SELECT from_email, u.name AS linear_name, u.email AS linear_email
-FROM mail
-JOIN linear.users u ON LOWER(u.email) = LOWER(mail.from_email)
-WHERE mail.from_email IS NOT NULL
-LIMIT 20;
+SELECT name, email
+FROM linear.users
+WHERE LOWER(email) = LOWER('billing@example.com')
+LIMIT 5;
 ```
 
-### Intercom contacts not in recent inbox (illustrative)
+### Intercom contacts (illustrative)
 
 ```sql
-SELECT i.email, i.name
-FROM intercom.contacts i
-WHERE i.email IS NOT NULL
+SELECT email, name
+FROM intercom.contacts
+WHERE email IS NOT NULL
 LIMIT 50;
 ```
 
-Combine with Gmail search results in your workspace to find contacts who have
-not appeared in recent mail.
+To correlate Gmail with Intercom, compare ids from `search_messages` and emails
+from per-message `message_details` fetches against this contact list in your
+workspace.
 
 ## Auth scopes
 
@@ -223,7 +201,7 @@ unverified.
 | `getProfile` | 1 |
 
 Each `message_details` row costs one `messages.get` call (20 quota units each).
-Prefer `LIMIT` on joins over large unbounded scans.
+Use `LIMIT` on list/search queries; fetch details only for message ids you need.
 
 Full details: https://developers.google.com/workspace/gmail/api/reference/quota
 
@@ -233,7 +211,8 @@ Full details: https://developers.google.com/workspace/gmail/api/reference/quota
 - This source does not expose full MIME bodies or attachment bytes in v1 (the
   Gmail API supports them via other methods)
 - `from_header` is the raw From header; use `COALESCE` + `regexp_match` in SQL for joins
-- `message_details` requires an explicit `message_id` filter per fetch
+- `message_details` requires a **literal** `message_id` filter per fetch (no
+  join-derived ids; two-step list/get workflow)
 
 ## Validation
 
@@ -253,12 +232,12 @@ gmail` and from queries that exercise `search_messages` and `message_details`.
 ```bash
 coral source test gmail
 
-# Replace <message-id> with an id from search_messages or gmail.messages
 coral sql "SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3"
-coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '<message-id>' LIMIT 1"
+# Use a literal id from the result above (JOIN-derived ids are not supported):
+coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '0000000000000001' LIMIT 1"
 ```
 
-Sanitized output from a successful local run (OAuth desktop app; addresses redacted):
+Example output shape (synthetic ids and headers; live OAuth evidence in PR discussion):
 
 ```text
 $ coral source test gmail
@@ -276,30 +255,19 @@ $ coral source test gmail
     Query tests
     5 declared · 5 passed · 0 failed
 
-    ✓ SELECT history_id, messages_total, threads_total FROM gmail.profile LIMIT 1
-      1 row
-    ✓ SELECT id, thread_id FROM gmail.messages LIMIT 5
-      5 rows
-    ✓ SELECT id, name, type FROM gmail.labels LIMIT 5
-      5 rows
-    ✓ SELECT function_name FROM coral.table_functions WHERE schema_name = 'gmail' ORDER BY function_name LIMIT 1
-      1 row
-    ✓ SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3
-      3 rows
-
 $ coral sql "SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 1"
 +------------------+------------------+
 | id               | thread_id        |
 +------------------+------------------+
-| 19e7ce58923bbae8 | 19e7ce58923bbae8 |
+| 0000000000000001 | 0000000000000001 |
 +------------------+------------------+
 
-$ coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '19e7ce58923bbae8' LIMIT 1"
-+------------------+-------------------------------+--------------------------------------+----------------------------+
-| message_id       | from_header                   | subject                              | internal_date              |
-+------------------+-------------------------------+--------------------------------------+----------------------------+
-| 19e7ce58923bbae8 | Example Sender <user@example.com> | Submit Your Projects NOW - Last Day! | 2026-05-31T07:17:56Z       |
-+------------------+-------------------------------+--------------------------------------+----------------------------+
+$ coral sql "SELECT message_id, from_header, subject, internal_date FROM gmail.message_details WHERE message_id = '0000000000000001' LIMIT 1"
++------------------+-----------------------------+----------------------+----------------------------+
+| message_id       | from_header                 | subject              | internal_date              |
++------------------+-----------------------------+----------------------+----------------------------+
+| 0000000000000001 | Example Sender <user@example.com> | Example subject line | 2026-01-15T10:00:00Z       |
++------------------+-----------------------------+----------------------+----------------------------+
 ```
 
 ## Provider docs

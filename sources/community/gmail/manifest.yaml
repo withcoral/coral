@@ -266,12 +266,13 @@ tables:
       Lists messages in the authenticated user's mailbox. Returns message ID
       and thread ID. Use label_ids filter to scope to INBOX, SENT, DRAFT, SPAM,
       or TRASH. Use include_spam_trash filter to include SPAM and TRASH results.
-      Join to gmail.message_details on message_id for From/Subject metadata.
+      Fetch From/Subject metadata via `gmail.message_details` using a literal
+      `message_id` from this table (see `message_details` guide).
     guide: >
       `SELECT id, thread_id FROM gmail.messages LIMIT 100`.
       Filter by label: `SELECT id, thread_id FROM gmail.messages
       WHERE label_ids = 'INBOX' LIMIT 100`.
-      Metadata: join `gmail.message_details` on `message_id`.
+      Then query `gmail.message_details` with `WHERE message_id = '<id>'`.
     fetch_limit_default: 100
     filters:
       - name: label_ids
@@ -354,9 +355,10 @@ tables:
       gmail.search_messages. One API call per message_id filter value.
     guide: >
       `SELECT message_id, from_header, subject, internal_date
-      FROM gmail.message_details WHERE message_id = '<id>'`.
-      Join: `SELECT m.id, d.from_header, d.subject FROM gmail.messages m
-      JOIN gmail.message_details d ON d.message_id = m.id LIMIT 20`.
+      FROM gmail.message_details WHERE message_id = '<id>' LIMIT 1`.
+      The `message_id` filter must be a literal predicate (copy an `id` from
+      `gmail.messages` or `gmail.search_messages` first). Coral cannot fetch
+      this table from join-derived `message_id` values.
     filters:
       - name: message_id
         required: true
