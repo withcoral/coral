@@ -418,7 +418,7 @@
           ]
         },
         "description": { "type": "string" },
-        "required_group": { "type": "string" }
+        "required_group": { "type": "string", "minLength": 1 }
       }
     },
     "search_limits": {

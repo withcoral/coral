@@ -203,6 +203,16 @@ pub(crate) fn validate_filters_and_column_exprs(
                 filter.name
             )));
         }
+        if filter
+            .required_group
+            .as_ref()
+            .is_some_and(|g| g.trim().is_empty())
+        {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} filter '{}' has an empty required_group",
+                filter.name
+            )));
+        }
         filter.manifest_data_type()?;
     }
 
@@ -1790,5 +1800,22 @@ mod tests {
                 .to_string()
                 .contains("references unknown filter 'missing'")
         );
+    }
+
+    #[test]
+    fn validate_filter_rejects_empty_required_group() {
+        let filters = vec![FilterSpec {
+            name: "id".to_string(),
+            data_type: "Utf8".to_string(),
+            required: false,
+            mode: FilterMode::Equality,
+            description: String::new(),
+            required_group: Some(String::new()),
+        }];
+
+        let error = validate_filters_and_column_exprs(&filters, &[], "demo", "messages")
+            .expect_err("empty required_group should fail");
+
+        assert!(error.to_string().contains("has an empty required_group"));
     }
 }
