@@ -757,8 +757,10 @@ tables:
         required: true
       - name: target
         required: false
+        required_group: discovery_query
       - name: context
         required: false
+        required_group: discovery_query
       - name: limit
         required: false
       - name: filter

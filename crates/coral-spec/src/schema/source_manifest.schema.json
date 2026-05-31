@@ -417,7 +417,8 @@
             { "const": "contains" }
           ]
         },
-        "description": { "type": "string" }
+        "description": { "type": "string" },
+        "required_group": { "type": "string" }
       }
     },
     "search_limits": {

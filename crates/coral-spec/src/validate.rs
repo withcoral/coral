@@ -897,6 +897,7 @@ mod tests {
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
+            required_group: None,
         }]
     }
 
@@ -1362,6 +1363,7 @@ mod tests {
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
+            required_group: None,
         }];
 
         validate_http_table(
@@ -1415,6 +1417,7 @@ mod tests {
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
+            required_group: None,
         }];
 
         validate_http_table(

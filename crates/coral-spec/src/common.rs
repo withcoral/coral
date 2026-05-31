@@ -160,6 +160,8 @@ pub struct FilterSpec {
     pub mode: FilterMode,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub required_group: Option<String>,
 }
 
 impl FilterSpec {
@@ -1006,6 +1008,7 @@ mod tests {
                 required: false,
                 mode: FilterMode::default(),
                 description: String::new(),
+                required_group: None,
             }],
             RequestSpec {
                 method: HttpMethod::GET,
@@ -1043,6 +1046,7 @@ mod tests {
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
+                    required_group: None,
                 },
                 FilterSpec {
                     name: "org".into(),
@@ -1050,6 +1054,7 @@ mod tests {
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
+                    required_group: None,
                 },
             ],
             RequestSpec {

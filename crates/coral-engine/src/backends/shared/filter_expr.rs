@@ -190,6 +190,7 @@ mod tests {
             required,
             mode,
             description: String::new(),
+            required_group: None,
         }
     }
 

@@ -206,14 +206,27 @@ impl TableProvider for HttpSourceTableProvider {
             }
         }
 
-        if self.source_schema == "qdrant"
-            && self.table.name() == "points_discover"
-            && !filter_values.contains_key("target")
-            && !filter_values.contains_key("context")
-        {
-            return Err(DataFusionError::Plan(
-                "qdrant.points_discover table requires at least one of 'target' or 'context' filters to be specified.".to_string()
-            ));
+        // Group filters by required_group
+        let mut grouped_required = HashMap::new();
+        for filter in self.table.filters() {
+            if let Some(group) = &filter.required_group {
+                grouped_required
+                    .entry(group.clone())
+                    .or_insert_with(Vec::new)
+                    .push(filter.name.clone());
+            }
+        }
+
+        for (_group, filters) in grouped_required {
+            let has_any = filters.iter().any(|f| filter_values.contains_key(f));
+            if !has_any {
+                return Err(DataFusionError::Plan(format!(
+                    "table {}.{} requires at least one of the following filters to be specified: {}",
+                    self.source_schema,
+                    self.table.name(),
+                    filters.join(", ")
+                )));
+            }
         }
 
         let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
