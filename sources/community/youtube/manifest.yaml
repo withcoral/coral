@@ -48,6 +48,9 @@ tables:
         - name: id
           from: filter
           key: channel_id
+        - name: maxResults
+          from: literal
+          value: "50"
     response:
       rows_path:
         - items
@@ -1004,7 +1007,7 @@ tables:
       - name: id
         type: Utf8
         nullable: false
-        description: Top-level comment ID — use this as parent_id in youtube.comments to fetch all replies (equals the thread id on YouTube)
+        description: Comment thread ID (commentThreads.id). To fetch replies via youtube.comments, pass top_comment__id (snippet.topLevelComment.id) — NOT this column.
         expr:
           kind: path
           path:
@@ -1157,11 +1160,9 @@ tables:
 
       Returns all replies to a specific top-level comment. `parent_id` is
       required and must be the `top_comment__id` value from
-      `youtube.comment_threads`. The YouTube API `comments.list` endpoint
-      accepts the ID of the comment whose replies to retrieve — on YouTube
-      this is always `snippet.topLevelComment.id`, exposed here as
-      `top_comment__id`. In practice this value is identical to the thread
-      `id`, but the API contract is the comment ID.
+      `youtube.comment_threads` (i.e. `snippet.topLevelComment.id`). YouTube's
+      `comments.list` `parentId` expects a comment ID, not a thread ID — do
+      not pass the `id` column from `youtube.comment_threads`.
 
       Typical workflow:
         1. Query `youtube.comment_threads WHERE video_id = '<id>'` to find
@@ -1200,7 +1201,7 @@ tables:
       - name: parent_id
         type: Utf8
         nullable: true
-        description: Use top_comment__id from youtube.comment_threads — YouTube parentId is a comment ID, not thread ID (same value on YouTube)
+        description: Use top_comment__id from youtube.comment_threads — YouTube's comments.list parentId expects a comment ID, not a thread ID
         expr:
           kind: from_filter
           key: parent_id

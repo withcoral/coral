@@ -7,8 +7,7 @@ through Coral SQL using the YouTube Data API v3.
 
 This source authenticates with a **YouTube Data API v3 API key** — *not* OAuth
 2.0. An API key grants access only to **public** YouTube data: channels (by
-`id`, `forHandle`, or `forUsername`), public videos, playlists, search, and
-public comments. Owner-scoped parameters such as `mine=true` or
+`id` or `forHandle`), public videos, playlists, search, and public comments. Owner-scoped parameters such as `mine=true` or
 `managedByMe=true` require OAuth 2.0 per the
 [YouTube auth guide](https://developers.google.com/youtube/v3/guides/authentication)
 and aren't exposed by this source. See [Limitations](#limitations) for fields
@@ -183,15 +182,21 @@ Top-level comment threads on a video.
 
 **Required filter:** `video_id`
 
-Each row is one thread. `snippet__total_reply_count` shows how many
-replies exist. The `replies` part is not fetched — use `youtube.comments`
-with `parent_id` to retrieve all replies for a thread.
+Each row is one thread. `snippet__total_reply_count` shows how many replies
+exist. The `replies` part is not fetched — use `youtube.comments WHERE
+parent_id = <top_comment__id>` to retrieve all replies for a thread.
+
+> The `id` column on this table is the **thread ID**, not the top-level
+> comment ID. Don't pass it as `parent_id` to `youtube.comments`; pass
+> `top_comment__id` (which is `snippet.topLevelComment.id`).
 
 ### `youtube.comments`
 
-All replies to a specific comment thread.
+All replies to a specific top-level comment.
 
-**Required filter:** `parent_id` — the thread `id` from `youtube.comment_threads`
+**Required filter:** `parent_id` — the **top-level comment ID** from
+`youtube.comment_threads.top_comment__id` (NOT the thread `id` column;
+YouTube's `comments.list` `parentId` expects a comment ID, not a thread ID).
 
 ## Example Queries
 
@@ -239,7 +244,9 @@ WHERE video_id = 'dQw4w9WgXcQ'
 ORDER BY top_comment__like_count DESC
 LIMIT 10;
 
--- All replies to a specific thread
+-- All replies under a specific top-level comment.
+-- parent_id is top_comment__id (snippet.topLevelComment.id) from
+-- youtube.comment_threads — NOT the thread `id` column.
 SELECT snippet__author_display_name, snippet__text_display,
        snippet__like_count, snippet__published_at
 FROM youtube.comments
@@ -262,8 +269,9 @@ LIMIT 20;
   - `statistics__dislike_count` has been private since December 2021.
   - `statistics__subscriber_count` is hidden (set to `0`) when a channel owner
     has opted to hide their subscriber count.
-  - `youtube.comment_threads` returns 0 rows when comments are disabled for a
-    video.
+  - When comments are disabled on a video, `commentThreads.list` returns a
+    `403 commentsDisabled` error from YouTube; this source surfaces that as
+    a provider error rather than silently coercing it to an empty result.
   - Region-restricted videos return reduced metadata in regions where they're
     blocked.
 - **Statistics as strings.** YouTube returns `viewCount`, `likeCount`,
@@ -274,8 +282,9 @@ LIMIT 20;
   calls per day.
 - **`comment_threads` has no reply content.** Each row contains the top-level
   comment and a reply count (`snippet__total_reply_count`), but reply text is
-  not fetched. Use `youtube.comments WHERE parent_id = '<thread_id>'` to
-  retrieve all replies for a thread.
+  not fetched. Use `youtube.comments WHERE parent_id = '<top_comment__id>'`
+  (the `top_comment__id` value from the thread row, not the thread `id`
+  column) to retrieve all replies.
 - **`search` → `videos` join.** `youtube.videos` requires a constant
   `video_id` filter, so a dynamic join from `search` results is not
   supported. Use a two-step approach: run `search`, collect the video IDs,
