@@ -34,6 +34,13 @@ Choose **Connect with Google**, then paste your `GOOGLE_SHEETS_OAUTH_CLIENT_ID` 
 `GOOGLE_SHEETS_OAUTH_CLIENT_SECRET` when prompted. Coral completes the PKCE OAuth
 flow locally and stores the token in the system keyring as `GOOGLE_SHEETS_ACCESS_TOKEN`.
 
+> **Reusing a Google OAuth client:** these inputs use source-specific keys
+> (`GOOGLE_SHEETS_OAUTH_*`), matching the per-source convention the Gmail source
+> uses (`GMAIL_OAUTH_*`). If you already created a Google Cloud OAuth client for
+> another Google source, you do not need a new one: enable the Google Sheets API
+> on that same Cloud project and enter the existing client ID and secret under the
+> `GOOGLE_SHEETS_OAUTH_*` keys.
+
 To paste an access token directly instead:
 
 ```bash
