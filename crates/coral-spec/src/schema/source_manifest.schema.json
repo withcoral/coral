@@ -827,6 +827,13 @@
         },
         {
           "properties": {
+            "from": { "const": "filter_json" },
+            "key": { "type": "string", "minLength": 1 }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
             "from": { "const": "filter_bool" },
             "key": { "type": "string", "minLength": 1 },
             "default": { "type": "boolean" }
@@ -871,6 +878,13 @@
             "from": { "const": "arg_float" },
             "key": { "type": "string", "minLength": 1 },
             "default": { "type": "number" }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
+            "from": { "const": "arg_json" },
+            "key": { "type": "string", "minLength": 1 }
           },
           "required": ["key"]
         },

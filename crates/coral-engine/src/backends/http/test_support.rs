@@ -96,6 +96,11 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
             "key": key,
             "default": default,
         }),
+        ValueSourceSpec::FilterJson { key, default } => json!({
+            "from": "filter_json",
+            "key": key,
+            "default": default,
+        }),
         ValueSourceSpec::FilterBool { key, default } => json!({
             "from": "filter_bool",
             "key": key,
@@ -133,6 +138,11 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
         }),
         ValueSourceSpec::ArgFloat { key, default } => json!({
             "from": "arg_float",
+            "key": key,
+            "default": default,
+        }),
+        ValueSourceSpec::ArgJson { key, default } => json!({
+            "from": "arg_json",
             "key": key,
             "default": default,
         }),

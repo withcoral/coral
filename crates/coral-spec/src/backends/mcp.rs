@@ -669,6 +669,7 @@ fn validate_table_tool_arg_value_source(
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterFloat { key, .. }
+        | ValueSourceSpec::FilterJson { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. } => Err(ManifestError::validation(format!(
@@ -677,6 +678,7 @@ fn validate_table_tool_arg_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgFloat { key, .. }
+        | ValueSourceSpec::ArgJson { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => Err(ManifestError::validation(format!(
@@ -726,6 +728,7 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterFloat { key, .. }
+        | ValueSourceSpec::FilterJson { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. } => Err(ManifestError::validation(format!(
@@ -734,6 +737,7 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgFloat { key, .. }
+        | ValueSourceSpec::ArgJson { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => Err(ManifestError::validation(format!(

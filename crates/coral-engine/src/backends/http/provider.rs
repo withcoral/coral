@@ -206,6 +206,16 @@ impl TableProvider for HttpSourceTableProvider {
             }
         }
 
+        if self.source_schema == "qdrant"
+            && self.table.name() == "points_discover"
+            && !filter_values.contains_key("target")
+            && !filter_values.contains_key("context")
+        {
+            return Err(DataFusionError::Plan(
+                "qdrant.points_discover table requires at least one of 'target' or 'context' filters to be specified.".to_string()
+            ));
+        }
+
         let filter_value_keys: HashSet<String> = filter_values.keys().cloned().collect();
         let active_request = self.table.resolve_request(&filter_value_keys).clone();
         let target = self.target.with_resolved_request(active_request);

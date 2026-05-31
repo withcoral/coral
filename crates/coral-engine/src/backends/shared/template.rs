@@ -63,6 +63,10 @@ impl RuntimeValueNamespace {
 }
 
 /// Resolve one declarative value source into an optional JSON value.
+#[expect(
+    clippy::too_many_lines,
+    reason = "This matches all ValueSourceSpec variants and resolves them"
+)]
 pub(crate) fn resolve_value_source(
     value: &ValueSourceSpec,
     context: &RenderContext<'_>,
@@ -91,6 +95,12 @@ pub(crate) fn resolve_value_source(
         ValueSourceSpec::FilterFloat { key, default } => {
             parse_f64_value(context, RuntimeValueNamespace::Filter, key, *default)
         }
+        ValueSourceSpec::FilterJson { key, default } => Ok(parse_json_value(
+            context,
+            RuntimeValueNamespace::Filter,
+            key,
+            default.as_ref(),
+        )),
         ValueSourceSpec::ArgInt { key, default } => parse_i64_value(
             context,
             RuntimeValueNamespace::FunctionArgument,
@@ -103,6 +113,12 @@ pub(crate) fn resolve_value_source(
             key,
             *default,
         ),
+        ValueSourceSpec::ArgJson { key, default } => Ok(parse_json_value(
+            context,
+            RuntimeValueNamespace::FunctionArgument,
+            key,
+            default.as_ref(),
+        )),
         ValueSourceSpec::FilterBool { key, default } => {
             parse_bool_value(context, RuntimeValueNamespace::Filter, key, *default)
         }
@@ -177,8 +193,20 @@ fn string_runtime_value(
     namespace
         .values(context)
         .get(key)
-        .map(|value| parse_jsonish_string(value))
+        .map(|value| Value::String(value.clone()))
         .or_else(|| default.cloned())
+}
+
+fn parse_json_value(
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
+    key: &str,
+    default: Option<&Value>,
+) -> Option<Value> {
+    let Some(raw) = namespace.values(context).get(key) else {
+        return default.cloned();
+    };
+    Some(parse_jsonish_string(raw))
 }
 
 fn parse_jsonish_string(v: &str) -> Value {
@@ -424,12 +452,14 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::Filter { .. }
         | ValueSourceSpec::FilterInt { .. }
         | ValueSourceSpec::FilterFloat { .. }
+        | ValueSourceSpec::FilterJson { .. }
         | ValueSourceSpec::FilterBool { .. }
         | ValueSourceSpec::FilterSplit { .. }
         | ValueSourceSpec::FilterSplitInt { .. }
         | ValueSourceSpec::Arg { .. }
         | ValueSourceSpec::ArgInt { .. }
         | ValueSourceSpec::ArgFloat { .. }
+        | ValueSourceSpec::ArgJson { .. }
         | ValueSourceSpec::ArgBool { .. }
         | ValueSourceSpec::ArgSplit { .. }
         | ValueSourceSpec::ArgSplitInt { .. }
@@ -709,5 +739,35 @@ mod tests {
         .expect("bool filter should resolve");
 
         assert_eq!(value, Some(json!(false)));
+    }
+
+    #[test]
+    fn resolve_value_source_filter_does_not_parse_json() {
+        let filters = HashMap::from([
+            ("tag_list".to_string(), "[\"a\", \"b\"]".to_string()),
+            ("raw_text".to_string(), "normal text".to_string()),
+        ]);
+
+        let value_filter = resolve_value_source(
+            &ValueSourceSpec::Filter {
+                key: "tag_list".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("filter should resolve");
+
+        assert_eq!(value_filter, Some(json!("[\"a\", \"b\"]")));
+
+        let value_json = resolve_value_source(
+            &ValueSourceSpec::FilterJson {
+                key: "tag_list".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("filter_json should resolve");
+
+        assert_eq!(value_json, Some(json!(["a", "b"])));
     }
 }

@@ -55,7 +55,7 @@ functions:
       path: /collections/{{arg.collection_name}}/points/search
       body:
         - path: [vector]
-          from: arg
+          from: arg_json
           key: vector
         - path: [limit]
           from: arg_int
@@ -120,10 +120,10 @@ functions:
       path: /collections/{{arg.collection_name}}/points/recommend
       body:
         - path: [positive]
-          from: arg
+          from: arg_json
           key: positive
         - path: [negative]
-          from: arg
+          from: arg_json
           key: negative
         - path: [limit]
           from: arg_int
@@ -525,7 +525,7 @@ tables:
       path: /collections/{{filter.collection_name}}/points
       body:
         - path: [ids]
-          from: filter
+          from: filter_json
           key: ids
         - path: [with_payload]
           from: literal
@@ -591,7 +591,7 @@ tables:
       path: /collections/{{filter.collection_name}}/points/search
       body:
         - path: [vector]
-          from: filter
+          from: filter_json
           key: vector
         - path: [limit]
           from: filter_int
@@ -601,7 +601,7 @@ tables:
           from: filter_float
           key: score_threshold
         - path: [filter]
-          from: filter
+          from: filter_json
           key: filter
         - path: [with_payload]
           from: literal
@@ -683,10 +683,10 @@ tables:
       path: /collections/{{filter.collection_name}}/points/recommend
       body:
         - path: [positive]
-          from: filter
+          from: filter_json
           key: positive
         - path: [negative]
-          from: filter
+          from: filter_json
           key: negative
         - path: [limit]
           from: filter_int
@@ -696,7 +696,7 @@ tables:
           from: filter
           key: strategy
         - path: [filter]
-          from: filter
+          from: filter_json
           key: filter
         - path: [with_payload]
           from: literal
@@ -768,17 +768,17 @@ tables:
       path: /collections/{{filter.collection_name}}/points/discover
       body:
         - path: [target]
-          from: filter
+          from: filter_json
           key: target
         - path: [context]
-          from: filter
+          from: filter_json
           key: context
         - path: [limit]
           from: filter_int
           key: limit
           default: 10
         - path: [filter]
-          from: filter
+          from: filter_json
           key: filter
         - path: [with_payload]
           from: literal
@@ -842,7 +842,7 @@ tables:
       path: /collections/{{filter.collection_name}}/points/count
       body:
         - path: [filter]
-          from: filter
+          from: filter_json
           key: filter
         - path: [exact]
           from: filter_bool

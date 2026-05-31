@@ -1978,7 +1978,7 @@ async fn filter_json_array_string_is_parsed_as_structured_json() {
                 "method": "POST",
                 "path": "/api/vectors/search",
                 "body": [
-                    { "path": ["vector"], "from": "filter", "key": "vector" },
+                    { "path": ["vector"], "from": "filter_json", "key": "vector" },
                     { "path": ["with_payload"], "from": "literal", "value": true }
                 ]
             },
@@ -2054,7 +2054,7 @@ async fn function_arg_json_array_string_is_parsed_as_structured_json() {
                 "method": "POST",
                 "path": "/api/vectors/search",
                 "body": [
-                    { "path": ["vector"], "from": "arg", "key": "vector" },
+                    { "path": ["vector"], "from": "arg_json", "key": "vector" },
                     { "path": ["with_payload"], "from": "literal", "value": true }
                 ]
             },
@@ -2116,7 +2116,7 @@ async fn filter_json_object_string_is_parsed_as_structured_json() {
                 "method": "POST",
                 "path": "/api/vectors/search",
                 "body": [
-                    { "path": ["filter"], "from": "filter", "key": "filter" },
+                    { "path": ["filter"], "from": "filter_json", "key": "filter" },
                     { "path": ["with_payload"], "from": "literal", "value": true }
                 ]
             },
@@ -2180,7 +2180,7 @@ async fn filter_invalid_json_array_string_falls_back_to_string() {
                 "method": "POST",
                 "path": "/api/search",
                 "body": [
-                    { "path": ["tag"], "from": "filter", "key": "tag" }
+                    { "path": ["tag"], "from": "filter_json", "key": "tag" }
                 ]
             },
             "response": { "rows_path": ["data"] },
@@ -2240,7 +2240,7 @@ async fn filter_bracketed_invalid_json_falls_back_to_string() {
                 "method": "POST",
                 "path": "/api/search",
                 "body": [
-                    { "path": ["tag"], "from": "filter", "key": "tag" }
+                    { "path": ["tag"], "from": "filter_json", "key": "tag" }
                 ]
             },
             "response": { "rows_path": ["data"] },

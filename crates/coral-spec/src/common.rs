@@ -447,6 +447,11 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<f64>,
     },
+    FilterJson {
+        key: String,
+        #[serde(default)]
+        default: Option<Value>,
+    },
     FilterBool {
         key: String,
         #[serde(default)]
@@ -476,6 +481,11 @@ pub enum ValueSourceSpec {
         key: String,
         #[serde(default)]
         default: Option<f64>,
+    },
+    ArgJson {
+        key: String,
+        #[serde(default)]
+        default: Option<Value>,
     },
     ArgBool {
         key: String,
