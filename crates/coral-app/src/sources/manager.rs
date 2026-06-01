@@ -238,40 +238,12 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
-        let validation_storage = self.source_validation_storage(
+        self.install_validated_source(
             workspace_name,
             &candidate,
             &command.bindings,
-            &BTreeSet::new(),
-        )?;
-        let stored_material = self.source_material_for_validation(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            &BTreeSet::new(),
-            validation_storage,
-        )?;
-        let bindings = validate_bindings(
-            &candidate,
-            &command.bindings,
-            &stored_material,
-            &BTreeSet::new(),
-        )?;
-        let credential_storage = self.source_persist_storage(
-            workspace_name,
-            &candidate.name,
-            &bindings,
-            !stored_material.is_empty(),
-        )?;
-        self.persist_source(
-            workspace_name,
-            PersistSourceRequest {
-                candidate: &candidate,
-                manifest_yaml: None,
-                bindings,
-                origin: SourceOrigin::Bundled,
-                credential_storage,
-            },
+            None,
+            SourceOrigin::Bundled,
         )
     }
 
@@ -283,50 +255,16 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
-        let oauth_input_keys = command
-            .oauth_credential_retrievals
-            .iter()
-            .map(|credential| credential.input_key.clone())
-            .collect::<BTreeSet<_>>();
-        let validation_storage = self.source_validation_storage(
+        self.install_source_with_oauth(
             workspace_name,
             &candidate,
             &command.bindings,
-            &oauth_input_keys,
-        )?;
-        let stored_material = self.source_material_for_validation(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            &oauth_input_keys,
-            validation_storage,
-        )?;
-        let has_stored_material = !stored_material.is_empty();
-        let bindings = self
-            .bindings_with_oauth_material(
-                &candidate,
-                &command.bindings,
-                stored_material,
-                command.oauth_credential_retrievals,
-                events,
-            )
-            .await?;
-        let credential_storage = self.source_persist_storage(
-            workspace_name,
-            &candidate.name,
-            &bindings,
-            has_stored_material,
-        )?;
-        self.persist_source(
-            workspace_name,
-            PersistSourceRequest {
-                candidate: &candidate,
-                manifest_yaml: None,
-                bindings,
-                origin: SourceOrigin::Bundled,
-                credential_storage,
-            },
+            command.oauth_credential_retrievals,
+            events,
+            None,
+            SourceOrigin::Bundled,
         )
+        .await
     }
 
     pub(crate) fn import_source(
@@ -337,40 +275,12 @@ impl SourceManager {
         let mut candidate =
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        let validation_storage = self.source_validation_storage(
+        self.install_validated_source(
             workspace_name,
             &candidate,
             &command.bindings,
-            &BTreeSet::new(),
-        )?;
-        let stored_material = self.source_material_for_validation(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            &BTreeSet::new(),
-            validation_storage,
-        )?;
-        let bindings = validate_bindings(
-            &candidate,
-            &command.bindings,
-            &stored_material,
-            &BTreeSet::new(),
-        )?;
-        let credential_storage = self.source_persist_storage(
-            workspace_name,
-            &candidate.name,
-            &bindings,
-            !stored_material.is_empty(),
-        )?;
-        self.persist_source(
-            workspace_name,
-            PersistSourceRequest {
-                candidate: &candidate,
-                manifest_yaml: Some(&command.manifest_yaml),
-                bindings,
-                origin: SourceOrigin::Imported,
-                credential_storage,
-            },
+            Some(&command.manifest_yaml),
+            SourceOrigin::Imported,
         )
     }
 
@@ -383,31 +293,90 @@ impl SourceManager {
         let mut candidate =
             describe_manifest(&command.manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        let oauth_input_keys = command
-            .oauth_credential_retrievals
+        self.install_source_with_oauth(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            command.oauth_credential_retrievals,
+            events,
+            Some(&command.manifest_yaml),
+            SourceOrigin::Imported,
+        )
+        .await
+    }
+
+    /// Validates `bindings` against any stored credential material and persists
+    /// the source. Shared tail of the non-OAuth install entry points; the
+    /// caller supplies the resolved `candidate` plus the per-origin
+    /// `manifest_yaml`/`origin`.
+    fn install_validated_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        manifest_yaml: Option<&str>,
+        origin: SourceOrigin,
+    ) -> Result<InstalledSource, AppError> {
+        let stored_material = self.source_stored_material_for_validation(
+            workspace_name,
+            candidate,
+            bindings,
+            &BTreeSet::new(),
+        )?;
+        let bindings = validate_bindings(candidate, bindings, &stored_material, &BTreeSet::new())?;
+        let credential_storage = self.source_persist_storage(
+            workspace_name,
+            &candidate.name,
+            &bindings,
+            !stored_material.is_empty(),
+        )?;
+        self.persist_source(
+            workspace_name,
+            PersistSourceRequest {
+                candidate,
+                manifest_yaml,
+                bindings,
+                origin,
+                credential_storage,
+            },
+        )
+    }
+
+    /// Resolves OAuth credential material (driving the authorization flow over
+    /// `events`), then validates and persists the source. Shared tail of the
+    /// OAuth install entry points; the caller supplies the resolved `candidate`
+    /// plus the per-origin `manifest_yaml`/`origin`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Shared OAuth install tail for the source-lifecycle entry points; the parameters are the irreducible per-call inputs and a grouping struct would only relocate the list."
+    )]
+    async fn install_source_with_oauth(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+        events: ImportSourceEventSender,
+        manifest_yaml: Option<&str>,
+        origin: SourceOrigin,
+    ) -> Result<InstalledSource, AppError> {
+        let oauth_input_keys = oauth_credential_retrievals
             .iter()
             .map(|credential| credential.input_key.clone())
             .collect::<BTreeSet<_>>();
-        let validation_storage = self.source_validation_storage(
+        let stored_material = self.source_stored_material_for_validation(
             workspace_name,
-            &candidate,
-            &command.bindings,
+            candidate,
+            bindings,
             &oauth_input_keys,
-        )?;
-        let stored_material = self.source_material_for_validation(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            &oauth_input_keys,
-            validation_storage,
         )?;
         let has_stored_material = !stored_material.is_empty();
         let bindings = self
             .bindings_with_oauth_material(
-                &candidate,
-                &command.bindings,
+                candidate,
+                bindings,
                 stored_material,
-                command.oauth_credential_retrievals,
+                oauth_credential_retrievals,
                 events,
             )
             .await?;
@@ -420,10 +389,10 @@ impl SourceManager {
         self.persist_source(
             workspace_name,
             PersistSourceRequest {
-                candidate: &candidate,
-                manifest_yaml: Some(&command.manifest_yaml),
+                candidate,
+                manifest_yaml,
                 bindings,
-                origin: SourceOrigin::Imported,
+                origin,
                 credential_storage,
             },
         )
@@ -645,52 +614,39 @@ impl SourceManager {
         }
     }
 
-    fn source_material_for_validation(
+    fn source_stored_material_for_validation(
         &self,
         workspace_name: &WorkspaceName,
         candidate: &CandidateSource,
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
-        credential_storage: Option<CredentialStorageKind>,
     ) -> Result<BTreeMap<String, String>, AppError> {
         if !source_needs_stored_material_for_validation(candidate, bindings, filled_secret_keys)? {
             return Ok(BTreeMap::new());
         }
 
-        match credential_storage {
-            Some(credential_storage) => {
-                self.read_source_material(workspace_name, &candidate.name, credential_storage)
-            }
-            None => Ok(BTreeMap::new()),
-        }
-    }
-
-    fn source_validation_storage(
-        &self,
-        workspace_name: &WorkspaceName,
-        candidate: &CandidateSource,
-        bindings: &SourceBindings,
-        filled_secret_keys: &BTreeSet<String>,
-    ) -> Result<Option<CredentialStorageKind>, AppError> {
-        if !source_needs_stored_material_for_validation(candidate, bindings, filled_secret_keys)? {
-            return Ok(None);
-        }
-
-        match self
+        let credential_storage = match self
             .config_store
             .get_source(workspace_name, &candidate.name)
         {
-            Ok(source) => Ok(source.credential_storage_for_material()),
+            Ok(source) => source.credential_storage_for_material(),
             Err(AppError::SourceNotFound(_))
                 if self
                     .layout
                     .secret_file(workspace_name, &candidate.name)
                     .exists() =>
             {
-                Ok(Some(CredentialStorageKind::File))
+                Some(CredentialStorageKind::File)
             }
-            Err(AppError::SourceNotFound(_)) => Ok(None),
-            Err(error) => Err(error),
+            Err(AppError::SourceNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+
+        match credential_storage {
+            Some(credential_storage) => {
+                self.read_source_material(workspace_name, &candidate.name, credential_storage)
+            }
+            None => Ok(BTreeMap::new()),
         }
     }
 
@@ -797,9 +753,8 @@ impl SourceManager {
                     move |authorization| {
                         let events = authorization_events;
                         async move {
-                            send_import_event(
-                                &events,
-                                ImportSourceWithCredentialsEvent::OAuthAuthorization {
+                            events
+                                .send(ImportSourceWithCredentialsEvent::OAuthAuthorization {
                                     input_key: authorization_input_key,
                                     authorization_url: authorization.authorization_url,
                                     expires_in_seconds: authorization.expires_in_seconds,
@@ -807,21 +762,18 @@ impl SourceManager {
                                     verification_uri: authorization.verification_uri,
                                     verification_uri_complete: authorization
                                         .verification_uri_complete,
-                                },
-                            )
-                            .await
+                                })
+                                .await
                         }
                     },
                 )
                 .await?;
-            send_import_event(
-                &events,
-                ImportSourceWithCredentialsEvent::OAuthCompleted {
+            events
+                .send(ImportSourceWithCredentialsEvent::OAuthCompleted {
                     input_key: material.input_key.clone(),
                     metadata: material.safe_metadata.clone(),
-                },
-            )
-            .await?;
+                })
+                .await?;
             materials.push(material);
         }
         Ok(materials)
@@ -1195,13 +1147,6 @@ fn merge_oauth_material_into_bindings(
         bindings.secrets.extend(internal_metadata);
     }
     Ok(())
-}
-
-async fn send_import_event(
-    events: &ImportSourceEventSender,
-    event: ImportSourceWithCredentialsEvent,
-) -> Result<(), AppError> {
-    events.send(event).await
 }
 
 fn import_stream_closed_message() -> String {

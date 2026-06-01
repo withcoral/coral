@@ -72,7 +72,7 @@ pub(crate) fn compile_manifest(
         manifest.clone(),
         SourceInputResolutionContext::from_query_source(request.source),
         request.request_authenticators.clone(),
-        request.runtime_context.http_body_capture_max_bytes,
+        request.runtime_context.body_capture_max_bytes,
         request.source_input_resolver.clone(),
     )
 }

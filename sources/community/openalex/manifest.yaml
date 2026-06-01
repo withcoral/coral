@@ -1,0 +1,1994 @@
+name: openalex
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query scholarly works, authors, sources (journals/repositories), institutions,
+  and topics from the OpenAlex academic database. Covers 250M+ works with
+  citation counts, open-access status, authorship, topics, and more via the
+  free OpenAlex REST API. Provide a free API key for authenticated access
+  and higher rate limits.
+inputs:
+  OPENALEX_API_KEY:
+    kind: secret
+    hint: >-
+      API key for OpenAlex. Get a free key at https://openalex.org/settings/api.
+      The key provides a $1/day free allowance, with different effective capacities
+      for search versus list/filter calls. The key is passed as the api_key query parameter.
+base_url: https://api.openalex.org
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT title, publication_year, cited_by_count FROM openalex.search_works(q => 'machine learning') LIMIT 1
+  - SELECT display_name, works_count, cited_by_count FROM openalex.search_authors(q => 'einstein') LIMIT 1
+  - SELECT display_name, works_count FROM openalex.topics LIMIT 1
+
+tables:
+  # ---------------------------------------------------------------------------
+  # works - scholarly works (articles, preprints, books, etc.)
+  # ---------------------------------------------------------------------------
+  - name: works
+    description: >
+      Lists scholarly works indexed in OpenAlex (250M+ articles, preprints,
+      books, datasets, etc.). Each row includes title, DOI, publication year,
+      type, open-access status, citation count, authorship, primary topic
+      classification, and abstract. Use `search` for full-text keyword search
+      and `filter` for structured filtering (e.g. publication_year:2024,
+      type:article, open_access.is_oa:true).
+    guide: >
+      Start with `SELECT title, publication_year, cited_by_count FROM
+      openalex.works WHERE search = 'transformer' LIMIT 10`. Use `filter_value` for
+      structured queries like `filter_value = 'publication_year:2024,type:article'`.
+      Combine `search` and `filter_value` for targeted results. The `authorships`
+      column contains the full author list as JSON. Use `sort_value` to order results
+      (e.g. `cited_by_count:desc`, `publication_year:desc`).
+    fetch_limit_default: 25
+    filters:
+      - name: filter_value
+      - name: sort_value
+      - name: search
+    request:
+      method: GET
+      path: /works
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex work ID (e.g. https://openalex.org/W2741809807).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: doi
+        type: Utf8
+        nullable: true
+        description: DOI URL (e.g. https://doi.org/10.1234/example).
+        expr:
+          kind: path
+          path:
+            - doi
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Work title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the work.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score (only present when using search filter).
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: publication_year
+        type: Int64
+        nullable: true
+        description: Year the work was published.
+        expr:
+          kind: path
+          path:
+            - publication_year
+      - name: publication_date
+        type: Utf8
+        nullable: true
+        description: Full publication date (ISO 8601, e.g. 2024-01-15).
+        expr:
+          kind: path
+          path:
+            - publication_date
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Work type (article, preprint, book, dataset, review, etc.).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: language
+        type: Utf8
+        nullable: true
+        description: ISO 639-1 language code (e.g. en, fr, de).
+        expr:
+          kind: path
+          path:
+            - language
+      - name: is_oa
+        type: Boolean
+        nullable: true
+        description: Whether the work is open access.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - is_oa
+      - name: oa_status
+        type: Utf8
+        nullable: true
+        description: >-
+          Open access status: gold, green, hybrid, bronze, or closed.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - oa_status
+      - name: oa_url
+        type: Utf8
+        nullable: true
+        description: Best available open access URL for the full text.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - oa_url
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total number of citations this work has received.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: is_retracted
+        type: Boolean
+        nullable: true
+        description: Whether the work has been retracted.
+        expr:
+          kind: path
+          path:
+            - is_retracted
+      - name: authorships
+        type: Json
+        nullable: true
+        description: >-
+          Full authorship array as JSON. Each entry has author (id, display_name,
+          orcid), institutions, countries, and position.
+        expr:
+          kind: path
+          path:
+            - authorships
+      - name: primary_topic__id
+        type: Utf8
+        nullable: true
+        description: Primary topic ID.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - id
+      - name: primary_topic__name
+        type: Utf8
+        nullable: true
+        description: Primary topic display name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - display_name
+      - name: primary_topic__subfield
+        type: Utf8
+        nullable: true
+        description: Primary topic subfield name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - subfield
+            - display_name
+      - name: primary_topic__field
+        type: Utf8
+        nullable: true
+        description: Primary topic field name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - field
+            - display_name
+      - name: primary_topic__domain
+        type: Utf8
+        nullable: true
+        description: Primary topic domain name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - domain
+            - display_name
+      - name: keywords
+        type: Json
+        nullable: true
+        description: >-
+          Keywords array as JSON. Each entry has id, display_name, and score.
+        expr:
+          kind: path
+          path:
+            - keywords
+      - name: referenced_works_count
+        type: Int64
+        nullable: true
+        description: Number of works referenced by this work.
+        expr:
+          kind: path
+          path:
+            - referenced_works_count
+      - name: abstract_inverted_index
+        type: Json
+        nullable: true
+        description: >-
+          Inverted index of the abstract as JSON. Keys are words, values are
+          position arrays. Reconstruct by sorting positions.
+        expr:
+          kind: path
+          path:
+            - abstract_inverted_index
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: created_date
+        type: Utf8
+        nullable: true
+        description: Creation date in OpenAlex (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_date
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the search filter value used.
+        expr:
+          kind: from_filter
+          key: search
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value used.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+
+  # ---------------------------------------------------------------------------
+  # authors - researchers and their profiles
+  # ---------------------------------------------------------------------------
+  - name: authors
+    description: >
+      Lists authors (researchers) indexed in OpenAlex. Each row includes the
+      author's name, ORCID, works count, citation count, last known
+      institutions, and research topics. Use `search` for name search and
+      `filter` for structured filtering (e.g. has_orcid:true,
+      last_known_institutions.id:I63966007).
+    guide: >
+      Start with `SELECT display_name, works_count, cited_by_count FROM
+      openalex.authors WHERE search = 'Yann LeCun' LIMIT 5`. Use the author's
+      OpenAlex ID from results to find their works: `SELECT title FROM
+      openalex.works WHERE filter_value = 'author.id:A5023888391' LIMIT 10`.
+    fetch_limit_default: 25
+    filters:
+      - name: filter_value
+      - name: sort_value
+      - name: search
+    request:
+      method: GET
+      path: /authors
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex author ID (e.g. https://openalex.org/A5023888391).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: orcid
+        type: Utf8
+        nullable: true
+        description: ORCID identifier URL.
+        expr:
+          kind: path
+          path:
+            - orcid
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works by this author.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count across all works.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score (only present when using search).
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: last_known_institutions
+        type: Json
+        nullable: true
+        description: >-
+          Last known institutional affiliations as JSON array. Each entry has
+          id, display_name, ror, country_code, and type.
+        expr:
+          kind: path
+          path:
+            - last_known_institutions
+      - name: topics
+        type: Json
+        nullable: true
+        description: >-
+          Research topics as JSON array with id, display_name, count, and
+          subfield/field/domain hierarchy.
+        expr:
+          kind: path
+          path:
+            - topics
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch this author's works.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: created_date
+        type: Utf8
+        nullable: true
+        description: Creation date in OpenAlex.
+        expr:
+          kind: path
+          path:
+            - created_date
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query matching.
+        expr:
+          kind: from_filter
+          key: search
+
+  # ---------------------------------------------------------------------------
+  # sources - journals, repositories, conferences
+  # ---------------------------------------------------------------------------
+  - name: sources
+    description: >
+      Lists publication sources (journals, repositories, conference series)
+      indexed in OpenAlex. Each row includes the source name, ISSN, host
+      organization, works count, open-access status, and APC pricing.
+    guide: >
+      Start with `SELECT display_name, works_count, cited_by_count FROM
+      openalex.sources WHERE search = 'Nature' LIMIT 5`. Use `filter_value` for
+      structured queries like `filter_value = 'is_oa:true,type:journal'`.
+    fetch_limit_default: 25
+    filters:
+      - name: filter_value
+      - name: sort_value
+      - name: search
+    request:
+      method: GET
+      path: /sources
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex source ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Source display name (e.g. Nature, arXiv).
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: issn_l
+        type: Utf8
+        nullable: true
+        description: Linking ISSN.
+        expr:
+          kind: path
+          path:
+            - issn_l
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Source type: journal, repository, conference, ebook platform, etc.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: host_organization_name
+        type: Utf8
+        nullable: true
+        description: Name of the host organization (e.g. Springer Nature, Elsevier).
+        expr:
+          kind: path
+          path:
+            - host_organization_name
+      - name: country_code
+        type: Utf8
+        nullable: true
+        description: Country code of the source (ISO 3166-1 alpha-2).
+        expr:
+          kind: path
+          path:
+            - country_code
+      - name: is_oa
+        type: Boolean
+        nullable: true
+        description: Whether the source is fully open access.
+        expr:
+          kind: path
+          path:
+            - is_oa
+      - name: is_in_doaj
+        type: Boolean
+        nullable: true
+        description: Whether the source is listed in the Directory of Open Access Journals.
+        expr:
+          kind: path
+          path:
+            - is_in_doaj
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works in this source.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count across all works in this source.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: homepage_url
+        type: Utf8
+        nullable: true
+        description: Source homepage URL.
+        expr:
+          kind: path
+          path:
+            - homepage_url
+      - name: apc_usd
+        type: Int64
+        nullable: true
+        description: Article processing charge in USD.
+        expr:
+          kind: path
+          path:
+            - apc_usd
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works in this source.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query matching.
+        expr:
+          kind: from_filter
+          key: search
+
+  # ---------------------------------------------------------------------------
+  # institutions - universities, companies, research orgs
+  # ---------------------------------------------------------------------------
+  - name: institutions
+    description: >
+      Lists institutions (universities, companies, research organizations)
+      indexed in OpenAlex. Each row includes the institution name, ROR ID,
+      country, type, works count, and citation count.
+    guide: >
+      Start with `SELECT display_name, country_code, works_count FROM
+      openalex.institutions WHERE search = 'Stanford' LIMIT 5`. Use `filter_value`
+      for structured queries like `filter_value = 'country_code:US,type:education'`.
+    fetch_limit_default: 25
+    filters:
+      - name: filter_value
+      - name: sort_value
+      - name: search
+    request:
+      method: GET
+      path: /institutions
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex institution ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Institution name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: ror
+        type: Utf8
+        nullable: true
+        description: ROR (Research Organization Registry) identifier.
+        expr:
+          kind: path
+          path:
+            - ror
+      - name: country_code
+        type: Utf8
+        nullable: true
+        description: Country code (ISO 3166-1 alpha-2).
+        expr:
+          kind: path
+          path:
+            - country_code
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Institution type: education, company, healthcare, nonprofit,
+          government, facility, other.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: homepage_url
+        type: Utf8
+        nullable: true
+        description: Institution homepage URL.
+        expr:
+          kind: path
+          path:
+            - homepage_url
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works affiliated with this institution.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: geo__city
+        type: Utf8
+        nullable: true
+        description: City where the institution is located.
+        expr:
+          kind: path
+          path:
+            - geo
+            - city
+      - name: geo__region
+        type: Utf8
+        nullable: true
+        description: Region/state where the institution is located.
+        expr:
+          kind: path
+          path:
+            - geo
+            - region
+      - name: geo__country
+        type: Utf8
+        nullable: true
+        description: Country name.
+        expr:
+          kind: path
+          path:
+            - geo
+            - country
+      - name: associated_institutions
+        type: Json
+        nullable: true
+        description: >-
+          Associated institutions as JSON array with id, display_name,
+          country_code, type, and relationship.
+        expr:
+          kind: path
+          path:
+            - associated_institutions
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works from this institution.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query matching.
+        expr:
+          kind: from_filter
+          key: search
+
+  # ---------------------------------------------------------------------------
+  # topics - research topics and their taxonomy
+  # ---------------------------------------------------------------------------
+  - name: topics
+    description: >
+      Lists research topics in OpenAlex's hierarchical taxonomy (4500+ topics).
+      Each topic belongs to a subfield, field, and domain. Browse topics to
+      understand research area classifications, or filter works by topic.
+    guide: >
+      Start with `SELECT display_name, works_count FROM openalex.topics
+      LIMIT 10`. Topics are organized in a hierarchy: domain > field >
+      subfield > topic. Use topic IDs to filter works: `SELECT title FROM
+      openalex.works WHERE filter_value = 'topics.id:T10048' LIMIT 10`.
+    fetch_limit_default: 25
+    filters:
+      - name: filter_value
+      - name: sort_value
+      - name: search
+    request:
+      method: GET
+      path: /topics
+      query:
+        - name: search
+          from: filter
+          key: search
+        - name: filter
+          from: filter
+          key: filter_value
+        - name: sort
+          from: filter
+          key: sort_value
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex topic ID (e.g. https://openalex.org/T10048).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Topic display name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Topic description text.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: subfield__name
+        type: Utf8
+        nullable: true
+        description: Subfield name in the topic hierarchy.
+        expr:
+          kind: path
+          path:
+            - subfield
+            - display_name
+      - name: field__name
+        type: Utf8
+        nullable: true
+        description: Field name in the topic hierarchy.
+        expr:
+          kind: path
+          path:
+            - field
+            - display_name
+      - name: domain__name
+        type: Utf8
+        nullable: true
+        description: Domain name (top level of the topic hierarchy).
+        expr:
+          kind: path
+          path:
+            - domain
+            - display_name
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works classified under this topic.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count for works in this topic.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: keywords
+        type: Json
+        nullable: true
+        description: Keywords associated with this topic as JSON array.
+        expr:
+          kind: path
+          path:
+            - keywords
+      - name: siblings
+        type: Json
+        nullable: true
+        description: >-
+          Sibling topics in the same subfield as JSON array with id and
+          display_name.
+        expr:
+          kind: path
+          path:
+            - siblings
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works in this topic.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: filter_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the filter value.
+        expr:
+          kind: from_filter
+          key: filter_value
+      - name: sort_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort value used.
+        expr:
+          kind: from_filter
+          key: sort_value
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search query matching.
+        expr:
+          kind: from_filter
+          key: search
+
+functions:
+  - name: search_works
+    description: >-
+      Search for works using provider-native full-text search.
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
+    request:
+      method: GET
+      path: /works
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: arg
+          key: filter
+        - name: sort
+          from: arg
+          key: sort
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex work ID (e.g. https://openalex.org/W2741809807).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: doi
+        type: Utf8
+        nullable: true
+        description: DOI URL (e.g. https://doi.org/10.1234/example).
+        expr:
+          kind: path
+          path:
+            - doi
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Work title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the work.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score (only present when using search filter).
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: publication_year
+        type: Int64
+        nullable: true
+        description: Year the work was published.
+        expr:
+          kind: path
+          path:
+            - publication_year
+      - name: publication_date
+        type: Utf8
+        nullable: true
+        description: Full publication date (ISO 8601, e.g. 2024-01-15).
+        expr:
+          kind: path
+          path:
+            - publication_date
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Work type (article, preprint, book, dataset, review, etc.).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: language
+        type: Utf8
+        nullable: true
+        description: ISO 639-1 language code (e.g. en, fr, de).
+        expr:
+          kind: path
+          path:
+            - language
+      - name: is_oa
+        type: Boolean
+        nullable: true
+        description: Whether the work is open access.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - is_oa
+      - name: oa_status
+        type: Utf8
+        nullable: true
+        description: >-
+          Open access status: gold, green, hybrid, bronze, or closed.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - oa_status
+      - name: oa_url
+        type: Utf8
+        nullable: true
+        description: Best available open access URL for the full text.
+        expr:
+          kind: path
+          path:
+            - open_access
+            - oa_url
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total number of citations this work has received.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: is_retracted
+        type: Boolean
+        nullable: true
+        description: Whether the work has been retracted.
+        expr:
+          kind: path
+          path:
+            - is_retracted
+      - name: authorships
+        type: Json
+        nullable: true
+        description: >-
+          Full authorship array as JSON. Each entry has author (id, display_name,
+          orcid), institutions, countries, and position.
+        expr:
+          kind: path
+          path:
+            - authorships
+      - name: primary_topic__id
+        type: Utf8
+        nullable: true
+        description: Primary topic ID.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - id
+      - name: primary_topic__name
+        type: Utf8
+        nullable: true
+        description: Primary topic display name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - display_name
+      - name: primary_topic__subfield
+        type: Utf8
+        nullable: true
+        description: Primary topic subfield name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - subfield
+            - display_name
+      - name: primary_topic__field
+        type: Utf8
+        nullable: true
+        description: Primary topic field name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - field
+            - display_name
+      - name: primary_topic__domain
+        type: Utf8
+        nullable: true
+        description: Primary topic domain name.
+        expr:
+          kind: path
+          path:
+            - primary_topic
+            - domain
+            - display_name
+      - name: keywords
+        type: Json
+        nullable: true
+        description: >-
+          Keywords array as JSON. Each entry has id, display_name, and score.
+        expr:
+          kind: path
+          path:
+            - keywords
+      - name: referenced_works_count
+        type: Int64
+        nullable: true
+        description: Number of works referenced by this work.
+        expr:
+          kind: path
+          path:
+            - referenced_works_count
+      - name: abstract_inverted_index
+        type: Json
+        nullable: true
+        description: >-
+          Inverted index of the abstract as JSON. Keys are words, values are
+          position arrays. Reconstruct by sorting positions.
+        expr:
+          kind: path
+          path:
+            - abstract_inverted_index
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: created_date
+        type: Utf8
+        nullable: true
+        description: Creation date in OpenAlex (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - created_date
+
+  # ---------------------------------------------------------------------------
+  # authors - researchers and their profiles
+  # ---------------------------------------------------------------------------
+  - name: search_authors
+    description: >-
+      Search for authors using provider-native full-text search.
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
+    request:
+      method: GET
+      path: /authors
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: arg
+          key: filter
+        - name: sort
+          from: arg
+          key: sort
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex author ID (e.g. https://openalex.org/A5023888391).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: orcid
+        type: Utf8
+        nullable: true
+        description: ORCID identifier URL.
+        expr:
+          kind: path
+          path:
+            - orcid
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works by this author.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count across all works.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score (only present when using search).
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: last_known_institutions
+        type: Json
+        nullable: true
+        description: >-
+          Last known institutional affiliations as JSON array. Each entry has
+          id, display_name, ror, country_code, and type.
+        expr:
+          kind: path
+          path:
+            - last_known_institutions
+      - name: topics
+        type: Json
+        nullable: true
+        description: >-
+          Research topics as JSON array with id, display_name, count, and
+          subfield/field/domain hierarchy.
+        expr:
+          kind: path
+          path:
+            - topics
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch this author's works.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+      - name: created_date
+        type: Utf8
+        nullable: true
+        description: Creation date in OpenAlex.
+        expr:
+          kind: path
+          path:
+            - created_date
+
+  # ---------------------------------------------------------------------------
+  # sources - journals, repositories, conferences
+  # ---------------------------------------------------------------------------
+  - name: search_sources
+    description: >-
+      Search for sources using provider-native full-text search.
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
+    request:
+      method: GET
+      path: /sources
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: arg
+          key: filter
+        - name: sort
+          from: arg
+          key: sort
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex source ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Source display name (e.g. Nature, arXiv).
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: issn_l
+        type: Utf8
+        nullable: true
+        description: Linking ISSN.
+        expr:
+          kind: path
+          path:
+            - issn_l
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Source type: journal, repository, conference, ebook platform, etc.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: host_organization_name
+        type: Utf8
+        nullable: true
+        description: Name of the host organization (e.g. Springer Nature, Elsevier).
+        expr:
+          kind: path
+          path:
+            - host_organization_name
+      - name: country_code
+        type: Utf8
+        nullable: true
+        description: Country code of the source (ISO 3166-1 alpha-2).
+        expr:
+          kind: path
+          path:
+            - country_code
+      - name: is_oa
+        type: Boolean
+        nullable: true
+        description: Whether the source is fully open access.
+        expr:
+          kind: path
+          path:
+            - is_oa
+      - name: is_in_doaj
+        type: Boolean
+        nullable: true
+        description: Whether the source is listed in the Directory of Open Access Journals.
+        expr:
+          kind: path
+          path:
+            - is_in_doaj
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works in this source.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count across all works in this source.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: homepage_url
+        type: Utf8
+        nullable: true
+        description: Source homepage URL.
+        expr:
+          kind: path
+          path:
+            - homepage_url
+      - name: apc_usd
+        type: Int64
+        nullable: true
+        description: Article processing charge in USD.
+        expr:
+          kind: path
+          path:
+            - apc_usd
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works in this source.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+
+  # ---------------------------------------------------------------------------
+  # institutions - universities, companies, research orgs
+  # ---------------------------------------------------------------------------
+  - name: search_institutions
+    description: >-
+      Search for institutions using provider-native full-text search.
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
+    request:
+      method: GET
+      path: /institutions
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: arg
+          key: filter
+        - name: sort
+          from: arg
+          key: sort
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex institution ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Institution name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: ror
+        type: Utf8
+        nullable: true
+        description: ROR (Research Organization Registry) identifier.
+        expr:
+          kind: path
+          path:
+            - ror
+      - name: country_code
+        type: Utf8
+        nullable: true
+        description: Country code (ISO 3166-1 alpha-2).
+        expr:
+          kind: path
+          path:
+            - country_code
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Institution type: education, company, healthcare, nonprofit,
+          government, facility, other.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: homepage_url
+        type: Utf8
+        nullable: true
+        description: Institution homepage URL.
+        expr:
+          kind: path
+          path:
+            - homepage_url
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works affiliated with this institution.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: relevance_score
+        type: Float64
+        nullable: true
+        description: Search relevance score.
+        expr:
+          kind: path
+          path:
+            - relevance_score
+      - name: geo__city
+        type: Utf8
+        nullable: true
+        description: City where the institution is located.
+        expr:
+          kind: path
+          path:
+            - geo
+            - city
+      - name: geo__region
+        type: Utf8
+        nullable: true
+        description: Region/state where the institution is located.
+        expr:
+          kind: path
+          path:
+            - geo
+            - region
+      - name: geo__country
+        type: Utf8
+        nullable: true
+        description: Country name.
+        expr:
+          kind: path
+          path:
+            - geo
+            - country
+      - name: associated_institutions
+        type: Json
+        nullable: true
+        description: >-
+          Associated institutions as JSON array with id, display_name,
+          country_code, type, and relationship.
+        expr:
+          kind: path
+          path:
+            - associated_institutions
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works from this institution.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date
+
+  # ---------------------------------------------------------------------------
+  # topics - research topics and their taxonomy
+  # ---------------------------------------------------------------------------
+  - name: search_topics
+    description: >-
+      Search for topics using provider-native full-text search.
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: sort
+        required: false
+        bind:
+          arg: sort
+    request:
+      method: GET
+      path: /topics
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: filter
+          from: arg
+          key: filter
+        - name: sort
+          from: arg
+          key: sort
+        - name: cursor
+          from: literal
+          value: "*"
+        - name: api_key
+          from: input
+          key: OPENALEX_API_KEY
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - meta
+        - next_cursor
+      page_size:
+        default: 25
+        max: 200
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: OpenAlex topic ID (e.g. https://openalex.org/T10048).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Topic display name.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Topic description text.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: subfield__name
+        type: Utf8
+        nullable: true
+        description: Subfield name in the topic hierarchy.
+        expr:
+          kind: path
+          path:
+            - subfield
+            - display_name
+      - name: field__name
+        type: Utf8
+        nullable: true
+        description: Field name in the topic hierarchy.
+        expr:
+          kind: path
+          path:
+            - field
+            - display_name
+      - name: domain__name
+        type: Utf8
+        nullable: true
+        description: Domain name (top level of the topic hierarchy).
+        expr:
+          kind: path
+          path:
+            - domain
+            - display_name
+      - name: works_count
+        type: Int64
+        nullable: true
+        description: Total number of works classified under this topic.
+        expr:
+          kind: path
+          path:
+            - works_count
+      - name: cited_by_count
+        type: Int64
+        nullable: true
+        description: Total citation count for works in this topic.
+        expr:
+          kind: path
+          path:
+            - cited_by_count
+      - name: keywords
+        type: Json
+        nullable: true
+        description: Keywords associated with this topic as JSON array.
+        expr:
+          kind: path
+          path:
+            - keywords
+      - name: siblings
+        type: Json
+        nullable: true
+        description: >-
+          Sibling topics in the same subfield as JSON array with id and
+          display_name.
+        expr:
+          kind: path
+          path:
+            - siblings
+      - name: works_api_url
+        type: Utf8
+        nullable: true
+        description: API URL to fetch works in this topic.
+        expr:
+          kind: path
+          path:
+            - works_api_url
+      - name: updated_date
+        type: Utf8
+        nullable: true
+        description: Last updated timestamp.
+        expr:
+          kind: path
+          path:
+            - updated_date

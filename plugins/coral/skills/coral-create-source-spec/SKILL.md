@@ -85,7 +85,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Use source variables for non-secret configuration.
 - Use source secrets for credentials.
 - For OAuth-backed services, model setup with `inputs.<TOKEN>.credential.methods[]` using `type: oauth`; keep the runtime `auth` or request header pointing at the same secret input.
-- OAuth credential methods support device-code flow and authorization-code flow. For authorization-code flow, set `flow.type: authorization_code`, set `flow.pkce` explicitly to `required` or `disabled`, use a loopback `http://127.0.0.1` or `http://localhost` redirect URI, choose `redirect_uri_port_mode: random` for provider apps that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI. For device-code flow, declare `flow.type: device_code`, `endpoints.device_authorization_url`, `endpoints.token_url`, and a public client ID; omit redirect URI fields and do not declare a client secret.
+- OAuth credential methods support device-code flow and authorization-code flow. For authorization-code flow, set `flow.type: authorization_code`, set `flow.pkce` explicitly to `required` or `disabled`, use a loopback `http://127.0.0.1` or `http://localhost` redirect URI, choose `redirect_uri_port_mode: random` for provider apps that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI. The CLI also accepts the final loopback redirect URL pasted into the terminal when the browser cannot reach the machine running Coral, so do not reject authorization-code OAuth solely because users may run Coral over SSH, in a VM, or in another split-browser environment. For device-code flow, declare `flow.type: device_code`, `endpoints.device_authorization_url`, `endpoints.token_url`, and a public client ID; omit redirect URI fields and do not declare a client secret.
 - OAuth endpoint URLs may template declared `kind: variable` inputs with `{{input.KEY}}` for non-secret endpoint components such as tenant IDs or domains. Do not reference secret inputs, filters, function arguments, state, or inline defaults from OAuth endpoint URLs.
 - If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
@@ -141,6 +141,7 @@ Specific guidance:
   - describe the browser-based setup in `description`
   - list required OAuth scopes in the secret hint or method description
   - mention whether users need to register a fixed loopback redirect URI or provide their own OAuth client ID/secret
+  - for authorization-code flow, note that users can paste the final localhost redirect URL into the terminal if their browser cannot reach Coral's loopback listener directly
 - For derived secrets (for example Basic auth blobs):
   - include a short shell example (for example a Base64 command)
 - Prefer stable documentation links.
