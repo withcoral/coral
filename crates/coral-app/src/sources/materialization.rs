@@ -343,7 +343,7 @@ pub(crate) fn stale_materialization_error(
     detail: impl AsRef<str>,
 ) -> AppError {
     AppError::FailedPrecondition(format!(
-        "source '{source_name}' has stale or missing DSL v4 materialized artifacts: {}. Run `coral source refresh {source_name}` or reinstall the source.",
+        "source '{source_name}' has stale or missing DSL v4 materialized artifacts: {}. Reinstall the source to regenerate them.",
         detail.as_ref()
     ))
 }

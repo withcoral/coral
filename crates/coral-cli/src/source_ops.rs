@@ -13,11 +13,10 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess,
-    RefreshSourceRequest, RefreshSourceResponse, Source, SourceCredentialStorage, SourceInfo,
-    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
-    create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
-    source_input_spec::Input as ProtoSourceInput,
+    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
+    SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
+    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
+    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
@@ -468,108 +467,6 @@ pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), any
         }))
         .await?;
     Ok(())
-}
-
-pub(crate) async fn refresh_source(
-    app: &AppClient,
-    name: &str,
-) -> Result<RefreshSourceResponse, anyhow::Error> {
-    Ok(app
-        .source_client()
-        .refresh_source(Request::new(RefreshSourceRequest {
-            workspace: Some(default_workspace()),
-            name: source_name_arg(Some(name))?,
-        }))
-        .await?
-        .into_inner())
-}
-
-pub(crate) async fn refresh_and_print(
-    app: &AppClient,
-    source_name: &str,
-    json: bool,
-) -> Result<(), crate::CliError> {
-    let normalized = source_name_arg(Some(source_name))?;
-    match refresh_source(app, &normalized).await {
-        Ok(response) => {
-            print_refresh_response(&response, json)?;
-            Ok(())
-        }
-        Err(err) => {
-            if err
-                .downcast_ref::<tonic::Status>()
-                .is_some_and(is_source_missing_status)
-            {
-                Err(crate::CliError::SourceNotFound {
-                    source_name: normalized,
-                })
-            } else {
-                Err(err.into())
-            }
-        }
-    }
-}
-
-pub(crate) fn print_refresh_response(
-    response: &RefreshSourceResponse,
-    json: bool,
-) -> Result<(), anyhow::Error> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(response)?);
-        return Ok(());
-    }
-    let source = response
-        .source
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("refresh response missing source"))?;
-    let materialization = response
-        .materialization
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("refresh response missing materialization"))?;
-    println!(
-        "Refreshed source {}: {} surface{}, {} published projection{}, {} hidden projection{}",
-        source.name,
-        materialization.surface_count,
-        plural_suffix(materialization.surface_count),
-        materialization.published_projection_count,
-        plural_suffix(materialization.published_projection_count),
-        materialization.hidden_projection_count,
-        plural_suffix(materialization.hidden_projection_count)
-    );
-    for diagnostic in &response.diagnostics {
-        if diagnostic.severity == "warning" || diagnostic.severity == "error" {
-            let context = refresh_diagnostic_context(diagnostic);
-            println!(
-                "{} {}{}: {}",
-                diagnostic.severity, diagnostic.code, context, diagnostic.message
-            );
-        }
-    }
-    Ok(())
-}
-
-fn refresh_diagnostic_context(
-    diagnostic: &coral_api::v1::SourceMaterializationDiagnostic,
-) -> String {
-    let mut parts = Vec::new();
-    if !diagnostic.surface_id.is_empty() {
-        parts.push(diagnostic.surface_id.clone());
-    }
-    if !diagnostic.operation_id.is_empty() {
-        parts.push(diagnostic.operation_id.clone());
-    }
-    if !diagnostic.projection_name.is_empty() {
-        parts.push(format!("projection {}", diagnostic.projection_name));
-    }
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", parts.join(" "))
-    }
-}
-
-fn plural_suffix(count: u32) -> &'static str {
-    if count == 1 { "" } else { "s" }
 }
 
 pub(crate) fn require_interactive() -> Result<(), anyhow::Error> {
