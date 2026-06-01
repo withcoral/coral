@@ -87,6 +87,53 @@ const githubInfo = makeBundledSourceWithVariable(
   true,
 )
 
+const cloudwatchLogsInfo = create(SourceInfoSchema, {
+  name: 'cloudwatch_logs',
+  description: 'Query Amazon CloudWatch Logs groups, streams, and events.',
+  version: '0.1.0',
+  installed: true,
+  origin: SourceOrigin.BUNDLED,
+  credentialStorage: SourceCredentialStorage.FILE,
+  inputs: [
+    create(SourceInputSpecSchema, {
+      key: 'AWS_REGION',
+      required: false,
+      hint: 'AWS region for CloudWatch Logs API requests, for example `us-east-1`.',
+      input: {
+        case: 'variable',
+        value: create(SourceVariableInputSchema, { defaultValue: 'us-east-1' }),
+      },
+    }),
+    create(SourceInputSpecSchema, {
+      key: 'AWS_ENDPOINT_SUFFIX',
+      required: false,
+      hint: 'AWS endpoint DNS suffix. Keep `amazonaws.com` for standard AWS regions.',
+      input: {
+        case: 'variable',
+        value: create(SourceVariableInputSchema, { defaultValue: 'amazonaws.com' }),
+      },
+    }),
+    create(SourceInputSpecSchema, {
+      key: 'AWS_ACCESS_KEY_ID',
+      required: true,
+      hint: 'AWS access key ID with CloudWatch Logs read permissions.',
+      input: {
+        case: 'secret',
+        value: create(SourceSecretInputSchema, {}),
+      },
+    }),
+    create(SourceInputSpecSchema, {
+      key: 'AWS_SECRET_ACCESS_KEY',
+      required: true,
+      hint: 'AWS secret access key.',
+      input: {
+        case: 'secret',
+        value: create(SourceSecretInputSchema, {}),
+      },
+    }),
+  ],
+})
+
 const linearInfo = makeSourceInfo(
   'linear',
   'Query issues, projects, cycles, teams, and users from Linear.',
@@ -105,7 +152,13 @@ const sentryInfo = makeSourceInfo(
   false,
 )
 
-export const bundledCatalog: SourceInfo[] = [githubInfo, linearInfo, slackInfo, sentryInfo]
+export const bundledCatalog: SourceInfo[] = [
+  cloudwatchLogsInfo,
+  githubInfo,
+  linearInfo,
+  slackInfo,
+  sentryInfo,
+]
 
 const installedGithub: Source = create(SourceSchema, {
   name: 'github',
@@ -118,6 +171,21 @@ const installedGithub: Source = create(SourceSchema, {
   secrets: [create(SourceSecretSchema, { key: 'GITHUB_TOKEN', value: '' })],
 })
 
+const installedCloudwatchLogs: Source = create(SourceSchema, {
+  name: 'cloudwatch_logs',
+  version: '0.1.0',
+  origin: SourceOrigin.BUNDLED,
+  credentialStorage: SourceCredentialStorage.FILE,
+  variables: [
+    create(SourceVariableSchema, { key: 'AWS_REGION', value: 'us-east-1' }),
+    create(SourceVariableSchema, { key: 'AWS_ENDPOINT_SUFFIX', value: 'amazonaws.com' }),
+  ],
+  secrets: [
+    create(SourceSecretSchema, { key: 'AWS_ACCESS_KEY_ID', value: '' }),
+    create(SourceSecretSchema, { key: 'AWS_SECRET_ACCESS_KEY', value: '' }),
+  ],
+})
+
 const installedLinear: Source = create(SourceSchema, {
   name: 'linear',
   version: '1.0.0',
@@ -127,7 +195,7 @@ const installedLinear: Source = create(SourceSchema, {
   secrets: [create(SourceSecretSchema, { key: 'LINEAR_API_TOKEN', value: '' })],
 })
 
-export const initialInstalledSources: Source[] = [installedGithub]
+export const initialInstalledSources: Source[] = [installedCloudwatchLogs, installedGithub]
 
 export const discoverInitialResponse = create(DiscoverSourcesResponseSchema, {
   sources: bundledCatalog,
@@ -153,9 +221,15 @@ export const listAfterLinearRemovedResponse = listInitialResponse
 
 export const getInfoLinearResponse = create(GetSourceInfoResponseSchema, { sourceInfo: linearInfo })
 export const getInfoGithubResponse = create(GetSourceInfoResponseSchema, { sourceInfo: githubInfo })
+export const getInfoCloudwatchLogsResponse = create(GetSourceInfoResponseSchema, {
+  sourceInfo: cloudwatchLogsInfo,
+})
 
 export const getInstalledGithubResponse = create(GetSourceResponseSchema, {
   source: installedGithub,
+})
+export const getInstalledCloudwatchLogsResponse = create(GetSourceResponseSchema, {
+  source: installedCloudwatchLogs,
 })
 export const getInstalledLinearResponse = create(GetSourceResponseSchema, {
   source: installedLinear,

@@ -71,7 +71,7 @@ test('installs a core source via paste, edits a binding, and removes it', async 
   )
   const detailDialog = page.getByRole('dialog', { name: /Linear/i })
   await expect(detailDialog.getByRole('heading', { name: 'Configuration' })).toBeVisible()
-  await expect(detailDialog.getByText('LINEAR_API_TOKEN')).toBeVisible()
+  await expect(detailDialog.getByText('Linear api token', { exact: true })).toBeVisible()
   await review.pause()
 
   await review.chapter(
@@ -95,6 +95,44 @@ test('installs a core source via paste, edits a binding, and removes it', async 
 
   await expect(page.getByText('Removed linear')).toBeVisible()
   await expect(page.getByRole('button', { name: /Linear/i })).toBeVisible()
+  await review.pause()
+})
+
+test('installed source detail uses manifest fields and masked secrets', async ({
+  network,
+  page,
+  review,
+}) => {
+  network.use(...sourceLifecycleHandlers())
+
+  await page.goto('/#/sources')
+
+  await review.chapter(
+    'Open an installed source',
+    'CloudWatch Logs uses manifest defaults and configured secret inputs',
+  )
+  await page.getByRole('button', { name: /cloudwatch_logs/i }).click()
+
+  const dialog = page.getByRole('dialog', { name: /cloudwatch_logs/i })
+  await expect(dialog.getByRole('heading', { name: 'Configuration' })).toBeVisible()
+  await expect(dialog.getByText('Aws region', { exact: true })).toBeVisible()
+  const variableInputs = dialog.locator('input[type="text"]')
+  await expect(variableInputs.nth(0)).toHaveValue('us-east-1')
+  await expect(variableInputs.nth(1)).toHaveValue('amazonaws.com')
+
+  const secretInputs = dialog.locator('input[type="password"]')
+  await expect(secretInputs).toHaveCount(2)
+  await expect(secretInputs.first()).toHaveValue('••••••••')
+  await review.pause()
+
+  await review.chapter(
+    'Replace a configured secret',
+    'Focusing the masked secret clears the sentinel and allows a new value',
+  )
+  await secretInputs.first().focus()
+  await expect(secretInputs.first()).toHaveValue('')
+  await secretInputs.first().fill('AKIAUPDATED')
+  await expect(dialog.getByRole('button', { name: 'Save changes' })).toBeVisible()
   await review.pause()
 })
 

@@ -65,6 +65,23 @@ export const section = style({
   gap: 8,
 })
 
+export const fieldGroup = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 14,
+})
+
+export const fieldItem = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+})
+
+export const fieldLabel = style({
+  color: theme.content.primary,
+  fontWeight: 500,
+})
+
 export const bindingList = style({
   background: theme.surface.onMainContent,
   border: `1px solid ${theme.stroke.secondary}`,

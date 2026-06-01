@@ -15,8 +15,10 @@ import {
   discoverAfterLinearInstallResponse,
   discoverAfterLinearRemovedResponse,
   discoverInitialResponse,
+  getInfoCloudwatchLogsResponse,
   getInfoGithubResponse,
   getInfoLinearResponse,
+  getInstalledCloudwatchLogsResponse,
   getInstalledGithubResponse,
   getInstalledLinearResponse,
   listAfterLinearInstallResponse,
@@ -44,14 +46,20 @@ export function sourceLifecycleHandlers() {
     http.post(listUrl, () => grpcWebResponse(ListSourcesResponseSchema, listResponse)),
     http.post(getInfoUrl, async ({ request }) => {
       const body = new TextDecoder().decode(await request.arrayBuffer())
-      const response = body.includes('github') ? getInfoGithubResponse : getInfoLinearResponse
+      const response = body.includes('cloudwatch_logs')
+        ? getInfoCloudwatchLogsResponse
+        : body.includes('github')
+          ? getInfoGithubResponse
+          : getInfoLinearResponse
       return grpcWebResponse(GetSourceInfoResponseSchema, response)
     }),
     http.post(getUrl, async ({ request }) => {
       const body = new TextDecoder().decode(await request.arrayBuffer())
       const response = body.includes('linear')
         ? getInstalledLinearResponse
-        : getInstalledGithubResponse
+        : body.includes('cloudwatch_logs')
+          ? getInstalledCloudwatchLogsResponse
+          : getInstalledGithubResponse
       return grpcWebResponse(GetSourceResponseSchema, response)
     }),
     http.post(createBundledUrl, () => {

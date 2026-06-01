@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import type { Source } from '@/generated/coral/v1/sources_pb'
+import type { Source, SourceInfo, SourceInputSpec } from '@/generated/coral/v1/sources_pb'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { Icon as ButtonIcon } from '@/wax/components/button/icon'
@@ -11,19 +11,26 @@ import { TextInput } from '@/wax/components/inputs/text'
 import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
+import { Markdown } from '@/components/markdown'
 import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
   deleteSource,
+  getBundledSourceInfo,
   getInstalledSource,
   originLabel,
   type InstallInput,
   type SourceOriginLabel,
 } from '@/lib/sources'
+import { toSentenceCase } from '@/utils/to-sentence-case'
 
 import * as styles from './source-detail.css'
 
 const SECRET_PLACEHOLDER = '••••••••'
+
+function formatFieldName(key: string): string {
+  return toSentenceCase(key.replace(/_/g, ' '))
+}
 
 export function SourceDetailDialog({
   name,
@@ -65,6 +72,7 @@ function SourceDetailDialogContent({
   onRemoved: (name: string) => void
 }) {
   const [source, setSource] = useState<Source | null>(null)
+  const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirmingRemove, setConfirmingRemove] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -74,9 +82,15 @@ function SourceDetailDialogContent({
   const refresh = useCallback(async () => {
     try {
       const installed = await getInstalledSource(name)
+      const info =
+        originLabel(installed.origin) === 'bundled' ? (await getBundledSourceInfo(name)).info : null
       setSource(installed)
+      setSourceInfo(info)
       setDrafts({})
+      setLoadError(null)
     } catch (e) {
+      setSource(null)
+      setSourceInfo(null)
       setLoadError(e instanceof Error ? e.message : String(e))
     }
   }, [name])
@@ -102,6 +116,20 @@ function SourceDetailDialogContent({
 
   const hasChanges = useMemo(() => {
     if (!source) return false
+    if (sourceInfo) {
+      const variables = new Map(source.variables.map((v) => [v.key, v.value]))
+      for (const input of sourceInfo.inputs) {
+        if (input.input.case === 'variable') {
+          const draft = drafts[`var:${input.key}`]
+          const current = variables.get(input.key) ?? input.input.value.defaultValue ?? ''
+          if (draft !== undefined && draft !== current) return true
+        } else if (input.input.case === 'secret') {
+          const draft = drafts[`sec:${input.key}`]
+          if (draft !== undefined && draft.trim().length > 0) return true
+        }
+      }
+      return false
+    }
     for (const v of source.variables) {
       const draft = drafts[`var:${v.key}`]
       if (draft !== undefined && draft !== v.value) return true
@@ -111,23 +139,49 @@ function SourceDetailDialogContent({
       if (draft !== undefined && draft.trim().length > 0) return true
     }
     return false
-  }, [drafts, source])
+  }, [drafts, source, sourceInfo])
 
   async function save() {
     if (!source) return
     setSaving(true)
     try {
-      const bindings: InstallInput[] = source.variables.map((v) => ({
-        key: v.key,
-        value: drafts[`var:${v.key}`] ?? v.value,
-        secret: false,
-      }))
-      for (const s of source.secrets) {
-        const draft = drafts[`sec:${s.key}`]
-        if (draft === undefined) continue
-        const trimmed = draft.trim()
-        if (trimmed.length > 0) {
-          bindings.push({ key: s.key, value: trimmed, secret: true })
+      const bindings: InstallInput[] = []
+      if (sourceInfo) {
+        const variables = new Map(source.variables.map((v) => [v.key, v.value]))
+        for (const input of sourceInfo.inputs) {
+          if (input.input.case === 'variable') {
+            const value = (
+              drafts[`var:${input.key}`] ??
+              variables.get(input.key) ??
+              input.input.value.defaultValue ??
+              ''
+            ).trim()
+            if (value.length > 0) bindings.push({ key: input.key, value, secret: false })
+            continue
+          }
+          if (input.input.case !== 'secret') continue
+          const draft = drafts[`sec:${input.key}`]
+          if (draft === undefined) continue
+          const trimmed = draft.trim()
+          if (trimmed.length > 0) {
+            bindings.push({ key: input.key, value: trimmed, secret: true })
+          }
+        }
+      } else {
+        bindings.push(
+          ...source.variables.map((v) => ({
+            key: v.key,
+            value: drafts[`var:${v.key}`] ?? v.value,
+            secret: false,
+          })),
+        )
+        for (const s of source.secrets) {
+          const draft = drafts[`sec:${s.key}`]
+          if (draft === undefined) continue
+          const trimmed = draft.trim()
+          if (trimmed.length > 0) {
+            bindings.push({ key: s.key, value: trimmed, secret: true })
+          }
         }
       }
       await createBundledSource(name, bindings)
@@ -177,7 +231,31 @@ function SourceDetailDialogContent({
 
       {!source && !loadError ? (
         <Typography.BodySmall variant="tertiary">Loading…</Typography.BodySmall>
-      ) : !source ? null : source.variables.length === 0 && source.secrets.length === 0 ? (
+      ) : !source ? null : sourceInfo ? (
+        <SourceInfoBindings
+          disabled={!editable || saving}
+          drafts={drafts}
+          onSecretBlur={(key) => {
+            const draftKey = `sec:${key}`
+            if (drafts[draftKey] !== '') return
+            setDrafts((previous) => {
+              const next = { ...previous }
+              delete next[draftKey]
+              return next
+            })
+          }}
+          onSecretFocus={(key) => {
+            const draftKey = `sec:${key}`
+            if (drafts[draftKey] !== undefined) return
+            setDrafts((previous) => ({ ...previous, [draftKey]: '' }))
+          }}
+          onValueChange={(key, value, secret) =>
+            setDrafts((previous) => ({ ...previous, [`${secret ? 'sec' : 'var'}:${key}`]: value }))
+          }
+          source={source}
+          sourceInfo={sourceInfo}
+        />
+      ) : source.variables.length === 0 && source.secrets.length === 0 ? (
         <section className={styles.section}>
           <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
           <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
@@ -278,6 +356,117 @@ function SourceDetailDialogContent({
         </Dialog.Portal>
       </Dialog.Root>
     </>
+  )
+}
+
+function SourceInfoBindings({
+  disabled,
+  drafts,
+  onSecretBlur,
+  onSecretFocus,
+  onValueChange,
+  source,
+  sourceInfo,
+}: {
+  disabled: boolean
+  drafts: Record<string, string>
+  onSecretBlur: (key: string) => void
+  onSecretFocus: (key: string) => void
+  onValueChange: (key: string, value: string, secret: boolean) => void
+  source: Source
+  sourceInfo: SourceInfo
+}) {
+  const variables = useMemo(() => new Map(source.variables.map((v) => [v.key, v.value])), [source])
+  const configuredSecrets = useMemo(() => new Set(source.secrets.map((s) => s.key)), [source])
+
+  if (sourceInfo.inputs.length === 0) {
+    return (
+      <section className={styles.section}>
+        <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+        <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
+      </section>
+    )
+  }
+
+  return (
+    <section className={styles.section}>
+      <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+      <div className={styles.fieldGroup}>
+        {sourceInfo.inputs.map((input) => (
+          <SourceInfoInputRow
+            key={input.key}
+            configuredSecret={configuredSecrets.has(input.key)}
+            disabled={disabled}
+            draft={drafts[`${input.input.case === 'secret' ? 'sec' : 'var'}:${input.key}`]}
+            input={input}
+            onSecretBlur={onSecretBlur}
+            onSecretFocus={onSecretFocus}
+            onValueChange={onValueChange}
+            value={variables.get(input.key)}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function SourceInfoInputRow({
+  configuredSecret,
+  disabled,
+  draft,
+  input,
+  onSecretBlur,
+  onSecretFocus,
+  onValueChange,
+  value,
+}: {
+  configuredSecret: boolean
+  disabled: boolean
+  draft: string | undefined
+  input: SourceInputSpec
+  onSecretBlur: (key: string) => void
+  onSecretFocus: (key: string) => void
+  onValueChange: (key: string, value: string, secret: boolean) => void
+  value: string | undefined
+}) {
+  if (input.input.case === 'variable') {
+    const resolved = value ?? input.input.value.defaultValue ?? ''
+    return (
+      <Field input={input}>
+        <TextInput
+          value={draft ?? resolved}
+          onChange={(next) => onValueChange(input.key, next, false)}
+          placeholder={resolved || formatFieldName(input.key)}
+          disabled={disabled}
+        />
+      </Field>
+    )
+  }
+
+  if (input.input.case !== 'secret') return null
+
+  return (
+    <Field input={input}>
+      <TextInput
+        type="password"
+        value={draft ?? (configuredSecret ? SECRET_PLACEHOLDER : '')}
+        onBlur={() => onSecretBlur(input.key)}
+        onChange={(next) => onValueChange(input.key, next, true)}
+        onFocus={() => onSecretFocus(input.key)}
+        placeholder={formatFieldName(input.key)}
+        disabled={disabled}
+      />
+    </Field>
+  )
+}
+
+function Field({ input, children }: { input: SourceInputSpec; children: React.ReactNode }) {
+  return (
+    <div className={styles.fieldItem}>
+      <Typography.Body className={styles.fieldLabel}>{formatFieldName(input.key)}</Typography.Body>
+      {children}
+      {input.hint ? <Markdown>{input.hint}</Markdown> : null}
+    </div>
   )
 }
 
