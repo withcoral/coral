@@ -1,5 +1,5 @@
 name: github
-version: 1.1.6
+version: 1.1.7
 dsl_version: 3
 backend: http
 description: >-
@@ -329,6 +329,79 @@ functions:
         type: Utf8
         nullable: true
         expr: {kind: path, path: [repository_url]}
+      - name: created_at
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [updated_at]}
+      - name: closed_at
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [closed_at]}
+      - name: comments
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [comments]}
+      - name: labels
+        type: Utf8
+        nullable: true
+        description: Raw label objects as JSON text. Use label_names for a compact comma-separated projection.
+        expr: {kind: path, path: [labels]}
+      - name: label_names
+        type: Utf8
+        nullable: true
+        description: Comma-separated issue or pull request label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
+      - name: assignees
+        type: Utf8
+        nullable: true
+        description: Raw assignee objects as JSON text. Use assignee_logins for a compact comma-separated projection.
+        expr: {kind: path, path: [assignees]}
+      - name: assignee_logins
+        type: Utf8
+        nullable: true
+        description: Comma-separated issue or pull request assignee logins.
+        expr:
+          kind: join_array_path
+          path:
+            - assignees
+          item_path:
+            - login
+      - name: pull_request
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [pull_request]}
+      - name: pull_request__html_url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [pull_request, html_url]}
+      - name: pull_request__url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [pull_request, url]}
+      - name: is_pull_request
+        type: Boolean
+        nullable: true
+        description: True when the search result is a pull request rather than an issue.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: if_present
+              check:
+                kind: path
+                path:
+                  - pull_request
+              then_value: "true"
+            - kind: literal
+              value: false
   - name: search_labels
     description: Search GitHub labels in a repository.
     args:
@@ -4840,12 +4913,20 @@ tables:
       - name: severity
         type: Utf8
         nullable: true
-        virtual: true
+        virtual: false
         description: >-
-          A comma-separated list of severities.
+          Dependabot alert severity. WHERE filters on this column still push down to GitHub's severity parameter.
         expr:
-          kind: from_filter
-          key: severity
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - security_advisory
+                - severity
+            - kind: path
+              path:
+                - security_vulnerability
+                - severity
       - name: sort
         type: Utf8
         nullable: true
@@ -47622,6 +47703,28 @@ tables:
           kind: path
           path:
             - labels
+      - name: label_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated issue label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
+      - name: assignee_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated issue assignee logins.
+        expr:
+          kind: join_array_path
+          path:
+            - assignees
+          item_path:
+            - login
       - name: labels_url
         type: Utf8
         nullable: true
@@ -100951,9 +101054,13 @@ tables:
         required: false
       - name: branch
         required: false
+      - name: head_branch
+        required: false
       - name: event
         required: false
       - name: status
+        required: false
+      - name: conclusion
         required: false
       - name: created
         required: false
@@ -100975,12 +101082,18 @@ tables:
         - name: branch
           from: filter
           key: branch
+        - name: branch
+          from: filter
+          key: head_branch
         - name: event
           from: filter
           key: event
         - name: status
           from: filter
           key: status
+        - name: status
+          from: filter
+          key: conclusion
         - name: created
           from: filter
           key: created
@@ -120015,12 +120128,20 @@ tables:
       - name: severity
         type: Utf8
         nullable: true
-        virtual: true
+        virtual: false
         description: >-
-          Filter by severity levels; can be low, medium, high, critical.
+          Dependabot alert severity. WHERE filters on this column still push down to GitHub's severity parameter.
         expr:
-          kind: from_filter
-          key: severity
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - security_advisory
+                - severity
+            - kind: path
+              path:
+                - security_vulnerability
+                - severity
       - name: site_admin
         type: Boolean
         nullable: true
@@ -134576,8 +134697,6 @@ tables:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}/releases/latest
     response:
-      rows_path:
-        - assets
       allow_404_empty: false
       row_strategy: direct
     pagination:
@@ -134587,6 +134706,40 @@ tables:
       offset_start: 0
       link_header_require_results: false
     columns:
+      - name: assets
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - assets
+      - name: assets_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - assets_url
+      - name: author__login
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Login for the release author.
+        expr:
+          kind: path
+          path:
+            - author
+            - login
+      - name: body
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - body
       - name: browser_download_url
         type: Utf8
         nullable: true
@@ -134619,6 +134772,14 @@ tables:
           kind: path
           path:
             - digest
+      - name: draft
+        type: Boolean
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - draft
       - name: download_count
         type: Int64
         nullable: true
@@ -134643,11 +134804,19 @@ tables:
           kind: path
           path:
             - label
+      - name: html_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - html_url
       - name: name
         type: Utf8
         nullable: true
         virtual: false
-        description: The file name of the asset.
+        description: The release name.
         expr:
           kind: path
           path:
@@ -134676,6 +134845,22 @@ tables:
         expr:
           kind: from_filter
           key: repo
+      - name: prerelease
+        type: Boolean
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - prerelease
+      - name: published_at
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - published_at
       - name: size
         type: Int64
         nullable: true
@@ -134693,6 +134878,30 @@ tables:
           kind: path
           path:
             - state
+      - name: tag_name
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - tag_name
+      - name: target_commitish
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - target_commitish
+      - name: tarball_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - tarball_url
       - name: updated_at
         type: Utf8
         nullable: true
@@ -134701,6 +134910,14 @@ tables:
           kind: path
           path:
             - updated_at
+      - name: upload_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - upload_url
       - name: uploader
         type: Utf8
         nullable: true
@@ -134915,6 +135132,14 @@ tables:
           kind: path
           path:
             - url
+      - name: zipball_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - zipball_url
   - name: repo_release_tags
     description: Get a release by tag name
     guide: >
@@ -180294,6 +180519,28 @@ tables:
           kind: path
           path:
             - labels
+      - name: label_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated issue label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
+      - name: assignee_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated issue assignee logins.
+        expr:
+          kind: join_array_path
+          path:
+            - assignees
+          item_path:
+            - login
       - name: labels_url
         type: Utf8
         nullable: true
