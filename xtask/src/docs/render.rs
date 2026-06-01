@@ -5,7 +5,10 @@
 
 use std::fmt::Write as _;
 
-use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
+use coral_spec::{
+    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputSpec,
+    ValidatedSourceManifest,
+};
 
 /// Render the `changelog.mdx` page from a raw `CHANGELOG.md`.
 ///
@@ -196,6 +199,52 @@ fn render_input_block(out: &mut String, input: &ManifestInputSpec) {
             out.push_str(&escape_mdx(hint));
             out.push('\n');
         }
+    }
+
+    if let Some(credential) = input.credential.as_ref() {
+        render_credential_methods(out, &credential.methods);
+    }
+}
+
+/// Render the credential retrieval methods declared on a secret input.
+///
+/// The interactive CLI and UI surface each method's hint contextually when
+/// the user picks it; the static docs can't, so we list every method with
+/// its label and authored hint (falling back to its short description) as a
+/// compact bullet list. Hints are freeform markdown, so each one is
+/// flattened to a single line and run through [`escape_mdx`].
+fn render_credential_methods(out: &mut String, methods: &[ManifestCredentialMethod]) {
+    if methods.is_empty() {
+        return;
+    }
+    out.push_str("\nCredential methods:\n\n");
+    for method in methods {
+        let label = method
+            .label
+            .as_deref()
+            .map_or_else(|| default_method_label(method.kind), str::trim);
+        write!(out, "- **{}**", escape_mdx(label)).expect("writing to String is infallible");
+
+        let detail = method
+            .hint
+            .as_deref()
+            .or(method.description.as_deref())
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty());
+        if let Some(detail) = detail {
+            write!(out, " — {}", escape_mdx(&flatten_for_table_cell(detail)))
+                .expect("writing to String is infallible");
+        }
+        out.push('\n');
+    }
+}
+
+/// Fallback display label for a credential method with no authored label,
+/// mirroring the interactive CLI/UI defaults.
+fn default_method_label(kind: ManifestCredentialMethodKind) -> &'static str {
+    match kind {
+        ManifestCredentialMethodKind::SourceConfig => "Paste token",
+        ManifestCredentialMethodKind::OAuth => "OAuth",
     }
 }
 
@@ -441,6 +490,24 @@ inputs:
   DEMO_TOKEN:
     kind: secret
     hint: Create an API token in Settings → Tokens
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with demo
+          description: Authorize with OAuth.
+          hint: Sign in through the demo provider in your browser.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://demo.example.com/device/code
+              token_url: https://demo.example.com/token
+            client:
+              id:
+                default: demo-client
+        - type: source_config
+          label: Paste token
+          hint: Create a read-only API token in Settings.
 base_url: "{{input.DEMO_API_BASE}}"
 auth:
   type: HeaderAuth

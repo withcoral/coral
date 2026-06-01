@@ -126,6 +126,7 @@ fn credential_method_from_proto(
         kind,
         label: (!method.label.is_empty()).then(|| method.label.clone()),
         description: (!method.description.is_empty()).then(|| method.description.clone()),
+        hint: (!method.hint.is_empty()).then(|| method.hint.clone()),
         oauth,
     })
 }
@@ -290,6 +291,7 @@ mod tests {
                         SourceCredentialMethod {
                             label: "Connect".to_string(),
                             description: String::new(),
+                            hint: String::new(),
                             method: Some(ProtoCredentialMethod::Oauth(Box::new(
                                 OAuthCredentialMethod {
                                     flow: OauthCredentialFlowType::AuthorizationCode as i32,
@@ -320,6 +322,7 @@ mod tests {
                         SourceCredentialMethod {
                             label: "Paste token".to_string(),
                             description: String::new(),
+                            hint: String::new(),
                             method: Some(ProtoCredentialMethod::SourceConfig(
                                 SourceConfigCredentialMethod {},
                             )),
@@ -384,6 +387,7 @@ mod tests {
                     methods: vec![SourceCredentialMethod {
                         label: "Connect".to_string(),
                         description: String::new(),
+                        hint: String::new(),
                         method: Some(ProtoCredentialMethod::Oauth(Box::new(
                             OAuthCredentialMethod {
                                 flow: flow as i32,
@@ -471,6 +475,7 @@ mod tests {
                     methods: vec![SourceCredentialMethod {
                         label: "Connect".to_string(),
                         description: String::new(),
+                        hint: String::new(),
                         method: None,
                     }],
                 }),

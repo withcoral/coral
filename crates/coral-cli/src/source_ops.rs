@@ -999,6 +999,7 @@ fn prompt_secret_with_methods(
         .methods
         .get(selected)
         .ok_or_else(|| anyhow::anyhow!("credential method index {selected} is out of range"))?;
+    print_method_hint(method);
     match method.kind {
         ManifestCredentialMethodKind::SourceConfig => Ok(SecretInputOutcome::SourceConfig(
             prompt_source_config_secret(input)?,
@@ -1482,6 +1483,14 @@ fn print_input_hint(input: &ManifestInputSpec) {
     }
 }
 
+fn print_method_hint(method: &ManifestCredentialMethod) {
+    if let Some(hint) = method.hint.as_deref()
+        && !hint.is_empty()
+    {
+        println!("  {}", style(hint).dim());
+    }
+}
+
 pub(crate) fn finalize_input_value(
     input: &ManifestInputSpec,
     value: String,
@@ -1574,6 +1583,7 @@ mod tests {
                     kind: ManifestCredentialMethodKind::SourceConfig,
                     label: Some("Paste token".to_string()),
                     description: None,
+                    hint: None,
                     oauth: None,
                 }],
             }),

@@ -616,6 +616,7 @@ fn credential_method_to_proto(
     SourceCredentialMethod {
         label: method.label.unwrap_or_default(),
         description: method.description.unwrap_or_default(),
+        hint: method.hint.unwrap_or_default(),
         method: Some(method_body),
     }
 }
@@ -727,6 +728,7 @@ mod tests {
                         kind: ManifestCredentialMethodKind::OAuth,
                         label: Some("Connect".to_string()),
                         description: None,
+                        hint: None,
                         oauth: Some(ManifestOAuthCredentialSpec {
                             flow: ManifestOAuthFlowSpec {
                                 kind: ManifestOAuthFlowKind::AuthorizationCode,
@@ -753,6 +755,7 @@ mod tests {
                         kind: ManifestCredentialMethodKind::SourceConfig,
                         label: Some("Paste token".to_string()),
                         description: None,
+                        hint: None,
                         oauth: None,
                     },
                 ],

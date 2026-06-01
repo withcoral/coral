@@ -20,36 +20,17 @@ inputs:
       `https://<host>/api/v3`.
   GITHUB_TOKEN:
     kind: secret
-    hint: |
-      For GitHub Cloud, choose "Connect with GitHub device code" for the
-      simplest setup. It signs in through GitHub and does not require you
-      to create an OAuth app or enter a client secret.
-
-      If you want to use your own GitHub OAuth app, set
-      GITHUB_OAUTH_CLIENT_ID to the app's Client ID. To create an app,
-      follow GitHub's guide:
-      https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app.
-      Enable device flow on the app before using the device-code option.
-      For the browser "Connect with GitHub OAuth app" option, set the
-      app's Authorization callback URL to
-      `http://127.0.0.1:53682/oauth/callback` and set
-      GITHUB_OAUTH_CLIENT_SECRET to the app's Client secret.
-
-      The OAuth options request `repo`, `read:org`, `read:user`, and
-      `user:email` scopes. Use the token method instead if you need a
-      narrower or more elevated scope set, or if you are connecting
-      to GitHub Enterprise Server.
-
-      For token auth, if you're already authenticated in GitHub CLI, run
-      `gh auth token`, or create a new personal access token (PAT).
-      Grant read access to the repositories and organizations you plan
-      to query; some admin tables require elevated scopes.
-      See [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
     credential:
       methods:
         - type: oauth
           label: Connect with GitHub device code
           description: Sign in to GitHub with a device code.
+          hint: |
+            Signs you in through GitHub, with no app setup or client
+            secret needed. Requests the `repo`, `read:org`, `read:user`,
+            and `user:email` scopes. To use your own GitHub app instead,
+            set GITHUB_OAUTH_CLIENT_ID to its Client ID and enable device
+            flow on the app.
           oauth:
             flow:
               type: device_code
@@ -71,6 +52,13 @@ inputs:
         - type: oauth
           label: Connect with GitHub OAuth app
           description: Sign in through a GitHub OAuth app in your browser.
+          hint: |
+            Uses your own GitHub OAuth app. Register one with its
+            Authorization callback URL set to
+            `http://127.0.0.1:53682/oauth/callback`, then enter the app's
+            Client ID and Client secret below. Requests the `repo`,
+            `read:org`, `read:user`, and `user:email` scopes. See
+            [GitHub's guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app).
           oauth:
             flow:
               type: authorization_code
@@ -98,6 +86,12 @@ inputs:
         - type: source_config
           label: Paste token
           description: Paste a GitHub token or provide GITHUB_TOKEN.
+          hint: |
+            If you use GitHub CLI, run `gh auth token`. Otherwise create a
+            personal access token with read access to the repositories and
+            organizations you query; some admin tables need elevated
+            scopes. Works with GitHub Enterprise Server. See
+            [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 auth:
   type: HeaderAuth
   headers:

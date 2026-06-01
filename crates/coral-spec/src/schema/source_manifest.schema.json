@@ -156,7 +156,8 @@
           "properties": {
             "type": { "const": "source_config" },
             "label": { "type": "string" },
-            "description": { "type": "string" }
+            "description": { "type": "string" },
+            "hint": { "type": "string" }
           }
         },
         {
@@ -167,6 +168,7 @@
             "type": { "const": "oauth" },
             "label": { "type": "string" },
             "description": { "type": "string" },
+            "hint": { "type": "string" },
             "oauth": { "$ref": "#/$defs/oauth_credential_method" }
           }
         }

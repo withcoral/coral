@@ -58,7 +58,8 @@ Additional hint guidance:
 
 - Base URL inputs should clarify default behavior and self-hosted alternatives.
 - Secret inputs should name token type and any format constraints (for example token prefixes).
-- OAuth-backed secret hints should name the required scopes, client ID/secret expectations, and redirect URI registration requirement.
+- OAuth setup guidance — required scopes, client ID/secret expectations, and redirect URI registration — belongs in the OAuth method's `hint` (`credential.methods[].hint`), not the input-level hint, since that text renders next to the fields the method collects.
+- When a secret declares multiple `credential.methods`, write a focused `hint` on each method (`credential.methods[].hint`) instead of one long input-level hint; the fields shown change with the selected method, so each method's hint should cover only the inputs it collects.
 - For encoded credentials, include a short shell example (for example `printf ... | base64`).
 - Prefer official docs links and stable settings pages over brittle click-path instructions.
 
