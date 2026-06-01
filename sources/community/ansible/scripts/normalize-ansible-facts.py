@@ -15,9 +15,10 @@ TABLES = ["hosts", "services", "packages", "mounts", "interfaces", "security", "
 
 
 def fact_get(facts: dict[str, Any], name: str, default: Any = None) -> Any:
-    if name in facts:
-        return facts[name]
-    return facts.get(f"ansible_{name}", default)
+    value = facts.get(name, default)
+    if value in (None, "", [], {}):
+        return facts.get(f"ansible_{name}", default)
+    return value
 
 
 def as_str(value: Any) -> str | None:

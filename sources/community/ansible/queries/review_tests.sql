@@ -48,7 +48,6 @@ AND LOWER(s.name) IN (
 'sshd',
 'sshd.service'
 )
-WHERE s.name IS NOT NULL
 ORDER BY h.hostname, observed_service;
 
 -- 4. Prove SELinux policy is a policy name, not a numeric policy version.
