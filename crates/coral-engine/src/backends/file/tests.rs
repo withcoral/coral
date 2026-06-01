@@ -638,6 +638,59 @@ async fn file_provider_reads_csv_with_format_options() {
     assert!(rendered.contains("user"));
 }
 
+#[tokio::test]
+async fn file_view_registration_rejects_declared_schema_mismatch() {
+    let fixture_dir = tempdir().expect("tempdir should be created");
+    fs::write(
+        fixture_dir.path().join("events.jsonl"),
+        r#"{"type":"message"}"#,
+    )
+    .expect("fixture should write");
+    let location = file_url_from_directory_path(fixture_dir.path());
+    let manifest = parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "view_mismatch",
+        "version": "0.1.0",
+        "backend": "file",
+        "tables": [{
+            "name": "events",
+            "description": "events",
+            "format": "jsonl",
+            "source": {
+                "location": location,
+                "glob": "**/*.jsonl",
+            },
+            "columns": [{ "name": "type", "type": "Utf8" }],
+        }],
+        "views": [{
+            "name": "messages",
+            "description": "messages",
+            "sql": "SELECT type AS actual FROM view_mismatch.events",
+            "columns": [{ "name": "declared", "type": "Utf8" }],
+        }],
+    }))
+    .expect("manifest should parse");
+
+    let ctx = SessionContext::new();
+    let registration = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
+        .expect("registration should collect source failures");
+
+    assert!(registration.active_sources.is_empty());
+    let failure = registration
+        .failures
+        .first()
+        .expect("view mismatch should skip the source");
+    assert!(
+        failure
+            .detail
+            .contains("declared columns do not match SQL output at position 1"),
+        "{}",
+        failure.detail
+    );
+    assert!(failure.detail.contains("expected declared Utf8"));
+    assert!(failure.detail.contains("got actual Utf8"));
+}
+
 fn parquet_manifest(location: &str) -> ValidatedSourceManifest {
     parquet_manifest_with_glob_and_partitions(
         location,

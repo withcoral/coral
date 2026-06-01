@@ -94,6 +94,64 @@ tables:
     }
 
     #[test]
+    fn parse_source_manifest_yaml_accepts_http_source_sql_views() {
+        parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Int64
+views:
+  - name: message_ids
+    description: Message ids
+    sql: SELECT id FROM demo.messages
+    columns:
+      - name: id
+        type: Int64
+",
+        )
+        .expect("HTTP source SQL views should pass schema and parser validation");
+    }
+
+    #[test]
+    fn parse_source_manifest_yaml_accepts_mcp_source_sql_views() {
+        parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: stdio
+  command: demo-mcp-server
+tables:
+  - name: messages
+    tool: list_messages
+    columns:
+      - name: id
+        type: Utf8
+views:
+  - name: message_ids
+    description: Message ids
+    sql: SELECT id FROM demo.messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("MCP source SQL views should pass schema and parser validation");
+    }
+
+    #[test]
     fn validate_manifest_schema_accepts_quoted_sql_table_names() {
         let manifest = manifest_json(
             r"

@@ -443,6 +443,38 @@ same name as a metadata column, queries see the declared metadata value for
 that column name. File metadata preserves the object-store path text; literal
 percent sequences in object keys are not URL-decoded again.
 
+### Source SQL views
+
+DSL3 `file`, `http`, and `mcp` sources can declare read-only SQL views in a
+top-level `views` array. Views are registered in the same source schema after
+the source's provider-backed tables, so they can expose ergonomic derived
+surfaces over raw provider tables without copying or rewriting source data.
+
+```yaml
+views:
+  - name: sessions
+    description: One row per session file
+    sql: |
+      SELECT session_file, COUNT(*) AS event_count
+      FROM codex.events
+      GROUP BY session_file
+    columns:
+      - name: session_file
+        type: Utf8
+      - name: event_count
+        type: Int64
+```
+
+View names share the same namespace as tables and table functions. A view must
+declare its output `columns`; those columns are surfaced through `coral.columns`
+and `coral.tables`. View columns do not support `virtual` or `expr` metadata;
+use SQL expressions in the view query instead. The SQL is executed by
+DataFusion and must reference at least one table in the same source using the
+source schema name, such as `codex.events`. Constant views such as `SELECT 1 AS
+id` are rejected. Views cannot reference other source schemas, table functions,
+or unqualified base table names, so view behavior does not depend on source
+registration order.
+
 ## HTTP-backed tables
 
 For `http`, the source spec declares request and response behavior.

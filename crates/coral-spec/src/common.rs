@@ -134,6 +134,18 @@ impl TableCommon {
     }
 }
 
+/// Declarative source-scoped SQL view.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSqlViewSpec {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub guide: String,
+    pub sql: String,
+    pub columns: Vec<ColumnSpec>,
+}
+
 /// How a filter value is matched against `SQL` predicates.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]

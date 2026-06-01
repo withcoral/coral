@@ -13,13 +13,13 @@ use serde_json::Value;
 use crate::{
     ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, FunctionArgBinding, ManifestError,
     ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
-    TableCommon, TableFunctionArgSpec, ValueSourceSpec,
+    SourceBackend, SourceManifestCommon, SourceSqlViewSpec, SourceTableFunctionKind,
+    SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec, ValueSourceSpec,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
-    validate_identifier, validate_test_queries, validate_unique_values,
+    validate_identifier, validate_source_sql_view, validate_test_queries, validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -29,6 +29,7 @@ pub struct McpSourceManifest {
     pub server: McpServerSpec,
     pub functions: Vec<McpTableFunctionSpec>,
     pub tables: Vec<McpTableSpec>,
+    pub views: Vec<SourceSqlViewSpec>,
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
@@ -50,6 +51,8 @@ struct RawMcpSourceManifest {
     functions: Vec<RawMcpTableFunctionSpec>,
     #[serde(default)]
     tables: Vec<RawMcpTableSpec>,
+    #[serde(default)]
+    views: Vec<SourceSqlViewSpec>,
 }
 
 /// MCP server connection settings.
@@ -390,6 +393,7 @@ impl McpSourceManifest {
             server,
             functions,
             tables,
+            views,
         } = raw;
 
         if functions.is_empty() && tables.is_empty() {
@@ -404,6 +408,11 @@ impl McpSourceManifest {
             tables
                 .iter()
                 .map(|table| DeclaredRelation::table(table.name.as_str()))
+                .chain(
+                    views
+                        .iter()
+                        .map(|view| DeclaredRelation::table(view.name.as_str())),
+                )
                 .chain(
                     functions
                         .iter()
@@ -420,12 +429,16 @@ impl McpSourceManifest {
             .into_iter()
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
+        for view in &views {
+            validate_source_sql_view(&common.name, view)?;
+        }
 
         Ok(Self {
             common,
             server,
             functions,
             tables,
+            views,
             declared_inputs,
         })
     }
@@ -1794,5 +1807,37 @@ mod tests {
             error.to_string(),
             "source 'demo' must define at least one function or table"
         );
+    }
+
+    #[test]
+    fn accepts_source_scoped_views() {
+        let manifest = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "state", "type": "Utf8" }
+                ]
+            }],
+            "views": [{
+                "name": "open_issues",
+                "description": "Open issues",
+                "sql": "SELECT id FROM demo.issues WHERE state = 'open'",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("manifest should parse");
+        let view = manifest
+            .views
+            .first()
+            .expect("manifest should include the declared view");
+
+        assert_eq!(view.name, "open_issues");
     }
 }

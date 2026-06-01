@@ -301,6 +301,68 @@ async fn select_all_from_http_source() {
 }
 
 #[tokio::test]
+async fn http_backend_registers_declared_sql_views() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .mount(&server)
+        .await;
+    let mut manifest = base_http_manifest("http_user_views", &server.uri());
+    manifest
+        .as_object_mut()
+        .expect("manifest is an object")
+        .insert(
+            "views".to_string(),
+            json!([{
+                "name": "ada_users",
+                "description": "Ada users",
+                "sql": "SELECT id, name FROM http_user_views.users WHERE name = 'Ada'",
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "name", "type": "Utf8" }
+                ]
+            }]),
+        );
+    let source = build_source(manifest);
+    let sources = [source];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT id, name FROM http_user_views.ada_users",
+        )
+        .await
+        .expect("declared view should query"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 1, "name": "Ada"})]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT column_name, data_type \
+             FROM coral.columns \
+             WHERE schema_name = 'http_user_views' \
+               AND table_name = 'ada_users' \
+             ORDER BY ordinal_position",
+        )
+        .await
+        .expect("declared view columns should be discoverable"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"column_name": "id", "data_type": "Int64"}),
+            json!({"column_name": "name", "data_type": "Utf8"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn select_with_column_projection() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

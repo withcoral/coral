@@ -20,6 +20,9 @@
           "tables": {
             "items": { "$ref": "#/$defs/http_table" }
           },
+          "views": {
+            "items": { "$ref": "#/$defs/source_sql_view" }
+          },
           "functions": {
             "items": { "$ref": "#/$defs/table_function" }
           }
@@ -36,6 +39,9 @@
         "properties": {
           "tables": {
             "items": { "$ref": "#/$defs/file_table" }
+          },
+          "views": {
+            "items": { "$ref": "#/$defs/source_sql_view" }
           }
         }
       }
@@ -54,6 +60,9 @@
         "properties": {
           "tables": {
             "items": { "$ref": "#/$defs/mcp_table" }
+          },
+          "views": {
+            "items": { "$ref": "#/$defs/source_sql_view" }
           },
           "functions": {
             "items": { "$ref": "#/$defs/mcp_table_function" }
@@ -87,6 +96,11 @@
       "items": { "type": "object" }
     },
     "functions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "object" }
+    },
+    "views": {
       "type": "array",
       "minItems": 1,
       "items": { "type": "object" }
@@ -454,6 +468,22 @@
         "format_options": { "$ref": "#/$defs/format_options" },
         "columns": {
           "type": "array",
+          "items": { "$ref": "#/$defs/column" }
+        }
+      }
+    },
+    "source_sql_view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "sql", "columns"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "guide": { "type": "string" },
+        "sql": { "type": "string", "minLength": 1 },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
           "items": { "$ref": "#/$defs/column" }
         }
       }

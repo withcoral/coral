@@ -124,6 +124,76 @@ async fn select_all_from_jsonl_source() {
 }
 
 #[tokio::test]
+async fn file_backend_registers_declared_sql_views() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "events.jsonl",
+        &[
+            json!({"type": "message", "payload": {"text": "hello"}}),
+            json!({"type": "debug", "payload": {"text": "skip"}}),
+        ],
+    );
+    let source = build_source(json!({
+        "name": "jsonl_view_fixture",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [{
+            "name": "events",
+            "description": "Raw events",
+            "format": "jsonl",
+            "source": {
+                "location": dir_url(temp.path()),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "type", "type": "Utf8" },
+                { "name": "payload", "type": "Json" }
+            ]
+        }],
+        "views": [{
+            "name": "messages",
+            "description": "Message events",
+            "sql": "SELECT json_get_str(payload, 'text') AS text FROM jsonl_view_fixture.events WHERE type = 'message'",
+            "columns": [{ "name": "text", "type": "Utf8" }]
+        }]
+    }));
+    let sources = [source];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT text FROM jsonl_view_fixture.messages",
+        )
+        .await
+        .expect("declared view should query"),
+    );
+
+    assert_eq!(rows, vec![json!({"text": "hello"})]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT column_name, data_type \
+             FROM coral.columns \
+             WHERE schema_name = 'jsonl_view_fixture' \
+               AND table_name = 'messages' \
+             ORDER BY ordinal_position",
+        )
+        .await
+        .expect("declared view columns should be discoverable"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({"column_name": "text", "data_type": "Utf8"})]
+    );
+}
+
+#[tokio::test]
 async fn quoted_fully_qualified_table_reference_reports_sql_reference_hint() {
     let temp = TempDir::new().expect("temp dir");
     let source = github_pulls_source(temp.path());

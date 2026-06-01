@@ -132,21 +132,26 @@ fn http_manifest_for_surface(
         }
     }
     Ok(HttpSourceManifest {
-        common: SourceManifestCommon {
-            dsl_version: manifest.common.dsl_version,
-            name: manifest.common.name.clone(),
-            version: String::new(),
-            description: manifest.common.description.clone(),
-            test_queries: Vec::new(),
-        },
+        common: runtime_common_for_v4_source(manifest),
         base_url: surface_base_url(surface, materialized_surface)?,
         auth: surface.openapi_runtime.auth.clone(),
         request_headers: surface.openapi_runtime.request_headers.clone(),
         rate_limit: surface.openapi_runtime.rate_limit.clone(),
         tables,
         functions,
+        views: Vec::new(),
         declared_inputs: manifest.declared_inputs.clone(),
     })
+}
+
+fn runtime_common_for_v4_source(manifest: &V4SourceManifest) -> SourceManifestCommon {
+    SourceManifestCommon {
+        dsl_version: manifest.common.dsl_version,
+        name: manifest.common.name.clone(),
+        version: String::new(),
+        description: manifest.common.description.clone(),
+        test_queries: Vec::new(),
+    }
 }
 
 fn surface_base_url(

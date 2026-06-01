@@ -12,8 +12,8 @@ use datafusion::prelude::SessionContext;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
     RegisteredSourceTable, RegisteredTable, SourceTableFunctions, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
-    registered_columns_from_specs, required_filter_names,
+    build_registered_source_view, build_registered_table, build_registered_table_function,
+    internal_table_function_name, registered_columns_from_specs, required_filter_names,
 };
 use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -106,7 +106,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             &self.request_authenticators,
             runtime,
         )?;
-        let mut tables = Vec::with_capacity(self.manifest.tables.len());
+        let mut tables = Vec::with_capacity(self.manifest.tables.len() + self.manifest.views.len());
 
         for table in &self.manifest.tables {
             let provider: Arc<dyn TableProvider> = Arc::new(HttpSourceTableProvider::new(
@@ -118,6 +118,9 @@ impl CompiledBackendSource for HttpCompiledSource {
                 registered_table(table),
                 provider,
             ));
+        }
+        for view in &self.manifest.views {
+            tables.push(build_registered_source_view(view));
         }
         let mut table_functions =
             SourceTableFunctions::with_capacity(self.manifest.functions.len());

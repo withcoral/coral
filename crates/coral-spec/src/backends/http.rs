@@ -20,13 +20,14 @@ use crate::{
     ColumnSpec, DeclaredRelation, DetailHintDeclaringSurface, DetailHintSpec,
     DetailHintTargetTable, FilterSpec, HeaderSpec, ManifestError, ManifestInputSpec,
     PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceSqlViewSpec,
+    SourceTableFunctionSpec, TableCommon,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate::validate_template,
     validate_declared_relation_namespace, validate_detail_hint_references, validate_http_function,
-    validate_http_table, validate_test_queries,
+    validate_http_table, validate_source_sql_view, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -98,6 +99,7 @@ pub struct HttpSourceManifest {
     pub rate_limit: RateLimitSpec,
     pub tables: Vec<HttpTableSpec>,
     pub functions: Vec<SourceTableFunctionSpec>,
+    pub views: Vec<SourceSqlViewSpec>,
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
@@ -126,6 +128,8 @@ struct RawHttpSourceManifest {
     tables: Vec<RawHttpTableSpec>,
     #[serde(default)]
     functions: Vec<SourceTableFunctionSpec>,
+    #[serde(default)]
+    views: Vec<SourceSqlViewSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -282,6 +286,7 @@ impl HttpSourceManifest {
             inputs: _inputs,
             tables,
             functions,
+            views,
         } = raw;
         if tables.is_empty() && functions.is_empty() {
             return Err(ManifestError::validation(format!(
@@ -294,6 +299,11 @@ impl HttpSourceManifest {
             tables
                 .iter()
                 .map(|table| DeclaredRelation::table(table.name.as_str()))
+                .chain(
+                    views
+                        .iter()
+                        .map(|view| DeclaredRelation::table(view.name.as_str())),
+                )
                 .chain(
                     functions
                         .iter()
@@ -313,6 +323,9 @@ impl HttpSourceManifest {
                 Ok(function)
             })
             .collect::<Result<Vec<_>>>()?;
+        for view in &views {
+            validate_source_sql_view(&common.name, view)?;
+        }
         validate_http_detail_hints(&common.name, &tables, &functions)?;
         if base_url.raw().trim().is_empty() {
             return Err(ManifestError::validation(format!(
@@ -334,6 +347,7 @@ impl HttpSourceManifest {
             rate_limit,
             tables,
             functions,
+            views,
             declared_inputs,
         })
     }
@@ -392,5 +406,45 @@ pub(crate) fn test_http_table_spec(
         requests: vec![],
         response: ResponseSpec::default(),
         pagination: PaginationSpec::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parse_source_manifest_value;
+    use serde_json::json;
+
+    #[test]
+    fn http_manifest_accepts_source_scoped_views() {
+        let manifest = parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "github",
+            "version": "1.0.0",
+            "backend": "http",
+            "base_url": "https://api.github.com",
+            "tables": [{
+                "name": "issues",
+                "description": "Issues",
+                "request": { "path": "/issues" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "state", "type": "Utf8" }
+                ]
+            }],
+            "views": [{
+                "name": "open_issues",
+                "description": "Open issues",
+                "sql": "SELECT id FROM github.issues WHERE state = 'open'",
+                "columns": [{ "name": "id", "type": "Int64" }]
+            }]
+        }))
+        .expect("manifest should parse");
+        let http = manifest.as_http().expect("http manifest");
+        let view = http
+            .views
+            .first()
+            .expect("manifest should include the declared view");
+
+        assert_eq!(view.name, "open_issues");
     }
 }

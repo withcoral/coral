@@ -98,8 +98,9 @@ pub use common::{
     FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode,
     PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat,
     ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
-    SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
-    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    SourceSqlViewSpec, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
+    TableFunctionArgSpec, TimestampInput, ValidatedPagination, ValidatedPaginationMode,
+    ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
 pub use inputs::{
@@ -119,5 +120,5 @@ pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, validate_columns,
     validate_declared_relation_namespace, validate_detail_hint_references,
     validate_filters_and_column_exprs, validate_http_function, validate_http_table,
-    validate_identifier, validate_unique_values,
+    validate_identifier, validate_source_sql_view, validate_unique_values,
 };

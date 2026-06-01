@@ -82,9 +82,9 @@ pub(crate) use common::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
     RegisteredSource, RegisteredSourceTable, RegisteredTable, RegisteredTableFunction,
     RegisteredTableImplementation, SourceTableFunctions, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns,
+    build_registered_source_view, build_registered_table, build_registered_table_function,
+    internal_table_function_name, registered_columns_from_schema, registered_columns_from_specs,
+    required_filter_names, schema_from_columns,
 };
 
 pub(crate) mod file;

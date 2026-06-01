@@ -8,7 +8,7 @@ use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputR
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceSqlViewSpec, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::TableFunctionImpl;
@@ -71,13 +71,6 @@ impl RegisteredSourceTable {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "file-backed source views construct this in the next stacked PR"
-        )
-    )]
     pub(crate) fn sql_view(metadata: RegisteredTable, sql: String) -> Self {
         Self {
             metadata,
@@ -374,6 +367,22 @@ pub(crate) fn build_registered_table(
         required_filters,
         search_limits_json: common.search_limits.as_ref().map(serialize_search_limits),
     }
+}
+
+pub(crate) fn build_registered_source_view(view: &SourceSqlViewSpec) -> RegisteredSourceTable {
+    let common = TableCommon {
+        name: view.name.clone(),
+        description: view.description.clone(),
+        guide: view.guide.clone(),
+        filters: Vec::new(),
+        fetch_limit_default: None,
+        search_limits: None,
+        detail_hints: Vec::new(),
+        columns: view.columns.clone(),
+    };
+    let columns = registered_columns_from_specs(&view.columns, &[]);
+    let metadata = build_registered_table(&common, columns, vec![]);
+    RegisteredSourceTable::sql_view(metadata, view.sql.clone())
 }
 
 pub(crate) fn build_registered_table_function(

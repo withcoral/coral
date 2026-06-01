@@ -22,8 +22,9 @@ use crate::inputs::{
 };
 use crate::{
     ColumnSpec, DeclaredRelation, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec,
-    ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
-    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_test_queries,
+    ParsedTemplate, Result, SourceBackend, SourceManifestCommon, SourceSqlViewSpec, TableCommon,
+    TemplateNamespace, TemplatePart, validate_columns, validate_declared_relation_namespace,
+    validate_source_sql_view, validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -31,6 +32,7 @@ use crate::{
 pub struct FileSourceManifest {
     pub common: SourceManifestCommon,
     pub tables: Vec<FileTableSpec>,
+    pub views: Vec<SourceSqlViewSpec>,
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
@@ -129,6 +131,8 @@ struct RawFileSourceManifest {
     #[serde(default)]
     inputs: Option<Value>,
     tables: Vec<RawFileTableSpec>,
+    #[serde(default)]
+    views: Vec<SourceSqlViewSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -575,13 +579,7 @@ impl RawFileTableSpec {
 
         self.source.validate_for_file(schema, &self.name, format)?;
         validate_columns(&self.columns, schema, &self.name)?;
-        validate_native_file_table_features(
-            schema,
-            &self.name,
-            format,
-            &self.filters,
-            &self.columns,
-        )?;
+        validate_native_file_table_features(schema, &self.name, &self.filters, &self.columns)?;
         validate_derived_column_overlap(schema, &self.name, &self.source, &self.columns)?;
         self.format_options
             .validate_for_format(format, schema, &self.name)?;
@@ -607,7 +605,6 @@ impl RawFileTableSpec {
 fn validate_native_file_table_features(
     schema: &str,
     table: &str,
-    _format: FileFormat,
     filters: &[FilterSpec],
     columns: &[ColumnSpec],
 ) -> Result<()> {
@@ -697,13 +694,19 @@ impl FileSourceManifest {
             backend: _backend,
             inputs: _inputs,
             tables,
+            views,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
         validate_declared_relation_namespace(
             &name,
             tables
                 .iter()
-                .map(|table| DeclaredRelation::table(table.name.as_str())),
+                .map(|table| DeclaredRelation::table(table.name.as_str()))
+                .chain(
+                    views
+                        .iter()
+                        .map(|view| DeclaredRelation::table(view.name.as_str())),
+                ),
         )?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
@@ -711,9 +714,13 @@ impl FileSourceManifest {
             .into_iter()
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
+        for view in &views {
+            validate_source_sql_view(&common.name, view)?;
+        }
         Ok(Self {
             common,
             tables,
+            views,
             declared_inputs,
         })
     }
@@ -1032,6 +1039,74 @@ mod tests {
                 ("session_file", "file_stem"),
                 ("event_index", "line_number"),
             ]
+        );
+    }
+
+    #[test]
+    fn file_manifest_accepts_source_scoped_views() {
+        let manifest = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "logs",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "events",
+                "description": "Raw events",
+                "format": "jsonl",
+                "source": { "location": "file:///tmp/logs/" },
+                "columns": [
+                    { "name": "type", "type": "Utf8" },
+                    { "name": "payload", "type": "Json" }
+                ],
+            }],
+            "views": [{
+                "name": "messages",
+                "description": "Projected messages",
+                "sql": "SELECT type, json_get_str(payload, 'text') AS text FROM logs.events",
+                "columns": [
+                    { "name": "type", "type": "Utf8" },
+                    { "name": "text", "type": "Utf8" }
+                ],
+            }],
+        }))
+        .expect("file views should parse");
+
+        let view = manifest
+            .views
+            .first()
+            .expect("manifest should include the declared view");
+        assert_eq!(view.name, "messages");
+        assert!(view.sql.contains("logs.events"));
+    }
+
+    #[test]
+    fn file_manifest_rejects_view_name_collisions() {
+        let error = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "logs",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "events",
+                "description": "Raw events",
+                "format": "jsonl",
+                "source": { "location": "file:///tmp/logs/" },
+                "columns": [{ "name": "type", "type": "Utf8" }],
+            }],
+            "views": [{
+                "name": "events",
+                "description": "Duplicate events",
+                "sql": "SELECT type FROM logs.events",
+                "columns": [{ "name": "type", "type": "Utf8" }],
+            }],
+        }))
+        .expect_err("table and view names should share one namespace");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source 'logs' table 'events' is declared more than once"),
+            "{error}"
         );
     }
 

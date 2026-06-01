@@ -26,9 +26,9 @@ use self::provider::McpTableProvider;
 use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSourceTable, SourceTableFunctions, build_registered_inputs, build_registered_table,
-    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    RegisteredSourceTable, SourceTableFunctions, build_registered_inputs,
+    build_registered_source_view, build_registered_table, build_registered_table_function,
+    internal_table_function_name, registered_columns_from_specs, required_filter_names,
 };
 use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
 
@@ -171,7 +171,7 @@ impl CompiledBackendSource for McpCompiledSource {
             ));
         }
 
-        let mut tables = Vec::with_capacity(self.manifest.tables.len());
+        let mut tables = Vec::with_capacity(self.manifest.tables.len() + self.manifest.views.len());
         for table in &self.manifest.tables {
             let provider: Arc<dyn TableProvider> = Arc::new(McpTableProvider::new(
                 self.caller.clone(),
@@ -183,6 +183,9 @@ impl CompiledBackendSource for McpCompiledSource {
             let columns = registered_columns_from_specs(table.columns(), table.filters());
             let metadata = build_registered_table(&table.common, columns, required_filters);
             tables.push(RegisteredSourceTable::provider(metadata, provider));
+        }
+        for view in &self.manifest.views {
+            tables.push(build_registered_source_view(view));
         }
 
         let secret_keys = self

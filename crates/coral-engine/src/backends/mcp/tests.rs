@@ -387,6 +387,40 @@ fn mcp_table_manifest() -> coral_spec::ValidatedSourceManifest {
     .expect("mcp table manifest should parse")
 }
 
+fn mcp_table_view_manifest() -> coral_spec::ValidatedSourceManifest {
+    coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "Open issues",
+            "tool": "list_issues",
+            "tool_args": {
+                "owner": { "from": "literal", "value": "acme" }
+            },
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }],
+        "views": [{
+            "name": "open_issues",
+            "description": "Open issues",
+            "sql": "SELECT id, title FROM test_mcp.issues WHERE state = 'open'",
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("mcp table view manifest should parse")
+}
+
 fn mcp_table_required_filter_manifest() -> coral_spec::ValidatedSourceManifest {
     coral_spec::parse_source_manifest_value(json!({
         "dsl_version": 3,
@@ -450,6 +484,50 @@ async fn scans_mcp_table_with_manifest_tool_args_and_no_filters() {
         "unbound optional filter should not be passed: {:?}",
         call.1
     );
+}
+
+#[tokio::test]
+async fn mcp_backend_registers_declared_sql_views() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources_with_catalog(&ctx, compile_sources(mcp_table_view_manifest(), caller));
+
+    let batches = ctx
+        .sql("SELECT id, title FROM test_mcp.open_issues ORDER BY id")
+        .await
+        .expect("view query should plan")
+        .collect()
+        .await
+        .expect("view query should execute");
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+
+    assert!(rendered.contains("| 1  | Bug A"));
+    assert!(rendered.contains("| 2  | Bug B"));
+    assert!(!rendered.contains("| Bug C"));
+
+    let batches = ctx
+        .sql(
+            "SELECT column_name, data_type \
+             FROM coral.columns \
+             WHERE schema_name = 'test_mcp' \
+               AND table_name = 'open_issues' \
+             ORDER BY ordinal_position",
+        )
+        .await
+        .expect("catalog query should plan")
+        .collect()
+        .await
+        .expect("catalog query should execute");
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+
+    assert!(rendered.contains("| id"));
+    assert!(rendered.contains("| title"));
 }
 
 fn mcp_typed_filters_manifest() -> coral_spec::ValidatedSourceManifest {

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::common::{
     BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterSpec, FunctionArgBinding,
     MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
-    RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+    RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceSqlViewSpec, SourceTableFunctionKind,
     SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
@@ -86,6 +86,39 @@ pub(crate) fn validate_declared_relation_namespace<'a>(
             };
         }
         namespace.insert(key, relation.kind);
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_source_sql_view(schema: &str, view: &SourceSqlViewSpec) -> Result<()> {
+    if view.sql.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "{schema}.{} view sql must not be empty",
+            view.name
+        )));
+    }
+    if view.columns.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "{schema}.{} view must define columns",
+            view.name
+        )));
+    }
+
+    validate_columns(&view.columns, schema, &view.name)?;
+    for column in &view.columns {
+        if column.r#virtual {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{} view column '{}' is virtual, which is not supported for source SQL views",
+                view.name, column.name
+            )));
+        }
+        if column.expr.is_some() {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{} view column '{}' uses expr, which is not supported for source SQL views; use SQL expressions instead",
+                view.name, column.name
+            )));
+        }
     }
 
     Ok(())
