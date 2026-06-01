@@ -553,7 +553,6 @@ That can collapse YAML into one line and break parsing.
 ```text
 docs/DESIGN.md          deeper architecture, table design, snapshot behavior
 SECURITY_NOTES.md       allowed fields, blocked fields, data handling rules
-GIT_COMMANDS.md         contribution workflow and PR commands
 queries/examples.sql    basic, medium, and advanced SQL examples
 manifest.yaml           Coral source spec
 fixtures/               synthetic JSONL smoke-test data
