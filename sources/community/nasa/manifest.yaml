@@ -39,6 +39,7 @@ tables:
       - name: end_date
       - name: count
       - name: thumbs
+      - name: include_concept_tags
     request:
       method: GET
       path: /planetary/apod
@@ -63,7 +64,7 @@ tables:
           key: thumbs
         - name: concept_tags
           from: filter
-          key: concept_tags
+          key: include_concept_tags
     response:
       row_strategy: direct
     pagination:
@@ -138,14 +139,14 @@ tables:
         virtual: true
         description: Video thumbnail filter (true to enable).
         expr: {kind: from_filter, key: thumbs}
-      - name: concept_tags
-        type: Utf8
+      - name: include_concept_tags
+        type: Boolean
         nullable: true
         virtual: true
         description: Request concept tags in response (true to enable).
-        expr: {kind: from_filter, key: concept_tags}
+        expr: {kind: from_filter, key: include_concept_tags}
       - name: concept_tags
         type: Utf8
         nullable: true
-        description: Comma-separated list of NASA concept tags for the entry (returned when concept_tags filter is true).
+        description: Comma-separated list of NASA concept tags for the entry (returned when include_concept_tags = true).
         expr: {kind: path, path: [concept_tags]}

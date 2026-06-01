@@ -21,7 +21,7 @@ coral source add --file sources/community/nasa/manifest.yaml
 
 | Table       | Description                           | Key filters                                              |
 | ----------- | ------------------------------------- | -------------------------------------------------------- |
-| `nasa.apod` | NASA Astronomy Picture of the Day     | `date`, `start_date`, `end_date`, `count`, `thumbs`, `concept_tags` |
+| `nasa.apod` | NASA Astronomy Picture of the Day     | `date`, `start_date`, `end_date`, `count`, `thumbs`, `include_concept_tags` |
 
 ## Example queries
 
@@ -64,7 +64,7 @@ The `apod` table supports these query parameters:
 - **`start_date` / `end_date`** — A date range (inclusive). Returns one row per day.
 - **`count`** — Number of *random* APOD entries to return (max 100). Returns that many rows.
 - **`thumbs`** — Set to `true` to request video thumbnail URLs when `media_type` is `video`.
-- **`concept_tags`** — Set to `true` to include NASA concept tags in the response.
+- **`include_concept_tags`** — Set to `true` to include NASA concept tags in the response.
 
 **Note:** `date`, `start_date`/`end_date`, and `count` are mutually exclusive. Only use one style per query.
 
