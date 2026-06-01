@@ -27,7 +27,6 @@ pub struct V4SourceManifest {
     pub common: SourceManifestCommon,
     pub surfaces: Vec<V4Surface>,
     pub declared_inputs: Vec<ManifestInputSpec>,
-    pub projection_policy: ProjectionPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -81,24 +80,6 @@ pub struct OpenApiRuntimeConfig {
     pub rate_limit: RateLimitSpec,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ProjectionPolicy {
-    pub default: ProjectionPolicyDefault,
-}
-
-impl Default for ProjectionPolicy {
-    fn default() -> Self {
-        Self {
-            default: ProjectionPolicyDefault::DeriveReadOperations,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectionPolicyDefault {
-    DeriveReadOperations,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawV4SourceManifest {
@@ -110,8 +91,6 @@ struct RawV4SourceManifest {
     #[serde(default)]
     test_queries: Vec<String>,
     surfaces: Vec<RawV4Surface>,
-    #[serde(default)]
-    projection_policy: RawProjectionPolicy,
     #[serde(default)]
     onboarding: Option<Value>,
 }
@@ -145,13 +124,6 @@ enum RawSurfaceType {
     OpenApi,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawProjectionPolicy {
-    #[serde(default)]
-    default: Option<String>,
-}
-
 impl V4SourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
         let raw_value = value.clone();
@@ -164,7 +136,6 @@ impl V4SourceManifest {
             description,
             test_queries,
             surfaces,
-            projection_policy,
             onboarding: _onboarding,
         } = raw;
         if dsl_version != 4 {
@@ -178,7 +149,6 @@ impl V4SourceManifest {
             )));
         }
         validate_test_queries(&name, &test_queries)?;
-        let policy = parse_projection_policy(&name, &projection_policy)?;
         let common = SourceManifestCommon::new(
             dsl_version,
             name.clone(),
@@ -236,7 +206,6 @@ impl V4SourceManifest {
             common,
             surfaces: validated_surfaces,
             declared_inputs,
-            projection_policy: policy,
         })
     }
 
@@ -244,18 +213,6 @@ impl V4SourceManifest {
         self.surfaces
             .iter()
             .find(|surface| surface.id == surface_id)
-    }
-}
-
-fn parse_projection_policy(
-    source_name: &str,
-    raw: &RawProjectionPolicy,
-) -> Result<ProjectionPolicy> {
-    match raw.default.as_deref().unwrap_or("derive_read_operations") {
-        "derive_read_operations" => Ok(ProjectionPolicy::default()),
-        other => Err(ManifestError::validation(format!(
-            "source '{source_name}' projection_policy.default '{other}' is unsupported"
-        ))),
     }
 }
 
@@ -1514,7 +1471,7 @@ pub fn generate_projection_catalog(
     let mut diagnostics = Vec::new();
     for ir in surfaces {
         for operation in &ir.operations {
-            let projection = generate_projection(manifest, ir, operation, &mut diagnostics);
+            let projection = generate_projection(ir, operation, &mut diagnostics);
             projections.push(projection);
         }
         diagnostics.extend(ir.diagnostics.clone());
@@ -1531,7 +1488,6 @@ pub fn generate_projection_catalog(
 }
 
 fn generate_projection(
-    manifest: &V4SourceManifest,
     ir: &SemanticIr,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1628,7 +1584,6 @@ fn generate_projection(
         diagnostics: projection_diagnostics.clone(),
     };
     diagnostics.extend(projection_diagnostics);
-    let _ = manifest.projection_policy.default;
     projection
 }
 

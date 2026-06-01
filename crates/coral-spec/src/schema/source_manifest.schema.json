@@ -40,8 +40,7 @@
             "type": "array",
             "minItems": 1,
             "items": { "$ref": "#/$defs/v4_surface" }
-          },
-          "projection_policy": { "$ref": "#/$defs/projection_policy" }
+          }
         }
       }
     },
@@ -154,7 +153,6 @@
       "type": "array",
       "items": { "$ref": "#/$defs/v4_surface" }
     },
-    "projection_policy": { "$ref": "#/$defs/projection_policy" },
     "projection_overrides": { "type": "object" }
   },
   "$defs": {
@@ -198,13 +196,6 @@
           "items": { "$ref": "#/$defs/header" }
         },
         "rate_limit": { "$ref": "#/$defs/rate_limit" }
-      }
-    },
-    "projection_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "default": { "const": "derive_read_operations" }
       }
     },
     "inputs": {
