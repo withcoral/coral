@@ -21,7 +21,7 @@ use datafusion::datasource::TableProvider;
 use datafusion::datasource::file_format::json::JsonDecoder;
 use datafusion::datasource::listing::{ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileOpenFuture, FileOpener, FileScanConfig, FileScanConfigBuilder, FileSource,
+    FileOpenFuture, FileOpener, FileScanConfig, FileScanConfigBuilder, FileSource,
     JsonSource as DataFusionJsonSource,
 };
 use datafusion::datasource::source::DataSourceExec;
@@ -39,7 +39,7 @@ use datafusion_datasource_json::utils::{ChannelReader, JsonArrayToNdjsonReader};
 use futures::stream::{self, BoxStream};
 use futures::{Stream, StreamExt as _, TryStreamExt as _};
 use object_store::path::Path as ObjectPath;
-use object_store::{GetResultPayload, ObjectMeta, ObjectStore, ObjectStoreExt};
+use object_store::{GetResultPayload, ObjectStore, ObjectStoreExt};
 use serde_json::Value;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -48,10 +48,11 @@ use crate::backends::shared::mapping::json_value_to_text;
 use coral_spec::backends::file::{FileFormat, FileTableSpec};
 use coral_spec::{ColumnSpec, ManifestDataType};
 
+use super::file_groups::{FileGroupsForScan, file_groups_for_scan};
 use super::listing::{PreparedListingTable, prepare_listing_table};
+use super::metadata::FileMetadataColumns;
 use super::partitions::{
     PartitionColumns, filter_is_supported_partition_filter, filter_references_partition,
-    partition_filter_constraints, partition_values_for_path,
 };
 
 const JSON_ARRAY_CHANNEL_BUFFER_SIZE: usize = 128;
@@ -96,6 +97,7 @@ pub(super) struct JsonFileTableProvider {
     schema: SchemaRef,
     table_schema: TableSchema,
     json_fields: Arc<HashSet<String>>,
+    metadata_columns: FileMetadataColumns,
     partition_columns: PartitionColumns,
 }
 
@@ -127,8 +129,10 @@ impl JsonFileTableProvider {
         } = prepare_listing_table(ctx, source_schema, &table, home_dir, resolved_inputs).await?;
 
         let file_schema = schema_from_columns(table.columns(), source_schema, table.name())?;
-        let partition_fields = partition_columns.arrow_fields();
-        let table_schema = TableSchema::new(file_schema, partition_fields);
+        let table_schema = TableSchema::new(file_schema, partition_columns.arrow_fields());
+
+        let metadata_columns = FileMetadataColumns::try_new(&table.source.metadata)?;
+        let table_schema = metadata_columns.extend_table_schema_if_present(table_schema);
         let schema = Arc::clone(table_schema.table_schema());
         let json_fields = Arc::new(json_field_names(table.columns())?);
 
@@ -142,13 +146,17 @@ impl JsonFileTableProvider {
             schema,
             table_schema,
             json_fields,
+            metadata_columns,
             partition_columns,
         })
     }
 }
 
 pub(super) fn requires_custom_provider(table: &FileTableSpec) -> Result<bool> {
-    Ok(!table.source.partitions.is_empty() || !json_field_names(table.columns())?.is_empty())
+    let metadata_columns = FileMetadataColumns::try_new(&table.source.metadata)?;
+    Ok(!table.source.partitions.is_empty()
+        || metadata_columns.has_row_columns()
+        || !json_field_names(table.columns())?.is_empty())
 }
 
 #[async_trait]
@@ -203,13 +211,14 @@ impl TableProvider for JsonFileTableProvider {
                 DataFusionError::Execution(format!("failed to list {}: {error}", self.table_path))
             })?;
 
-        let JsonFileGroups {
+        let FileGroupsForScan {
             groups,
             grouped_by_partition,
-        } = json_file_groups(
+        } = file_groups_for_scan(
             &self.table_path,
             &self.partition_columns,
             files,
+            &self.metadata_columns,
             filters,
             state.config().target_partitions(),
             state.config_options().optimizer.preserve_file_partitions,
@@ -219,6 +228,7 @@ impl TableProvider for JsonFileTableProvider {
             self.table_schema.clone(),
             self.format,
             Arc::clone(&self.json_fields),
+            self.metadata_columns.clone(),
             projection,
         );
 
@@ -238,11 +248,22 @@ fn json_file_source(
     table_schema: TableSchema,
     format: FileFormat,
     json_fields: Arc<HashSet<String>>,
+    metadata_columns: FileMetadataColumns,
     projection: Option<&Vec<usize>>,
 ) -> Arc<dyn FileSource> {
     let read_mode = JsonReadMode::from_file_format(format);
-    if projection_requires_json_normalization(&table_schema, &json_fields, projection) {
-        Arc::new(CoralJsonSource::new(table_schema, read_mode, json_fields))
+    if projection_requires_json_normalization(
+        &table_schema,
+        &json_fields,
+        &metadata_columns,
+        projection,
+    ) {
+        Arc::new(CoralJsonSource::new(
+            table_schema,
+            read_mode,
+            json_fields,
+            metadata_columns,
+        ))
     } else {
         Arc::new(
             DataFusionJsonSource::new(table_schema)
@@ -254,9 +275,10 @@ fn json_file_source(
 fn projection_requires_json_normalization(
     table_schema: &TableSchema,
     json_fields: &HashSet<String>,
+    metadata_columns: &FileMetadataColumns,
     projection: Option<&Vec<usize>>,
 ) -> bool {
-    if json_fields.is_empty() {
+    if json_fields.is_empty() && !metadata_columns.has_row_columns() {
         return false;
     }
 
@@ -269,7 +291,9 @@ fn projection_requires_json_normalization(
             .table_schema()
             .fields()
             .get(*index)
-            .is_some_and(|field| json_fields.contains(field.name()))
+            .is_some_and(|field| {
+                json_fields.contains(field.name()) || metadata_columns.row_contains(field.name())
+            })
     })
 }
 
@@ -278,6 +302,7 @@ struct CoralJsonSource {
     table_schema: TableSchema,
     read_mode: JsonReadMode,
     json_fields: Arc<HashSet<String>>,
+    metadata_columns: FileMetadataColumns,
     projection: SplitProjection,
     batch_size: Option<usize>,
     metrics: ExecutionPlanMetricsSet,
@@ -288,12 +313,14 @@ impl CoralJsonSource {
         table_schema: TableSchema,
         read_mode: JsonReadMode,
         json_fields: Arc<HashSet<String>>,
+        metadata_columns: FileMetadataColumns,
     ) -> Self {
         let projection = SplitProjection::unprojected(&table_schema);
         Self {
             table_schema,
             read_mode,
             json_fields,
+            metadata_columns,
             projection,
             batch_size: None,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -323,6 +350,7 @@ impl FileSource for CoralJsonSource {
             object_store,
             read_mode: self.read_mode,
             json_fields: Arc::clone(&self.json_fields),
+            metadata_columns: self.metadata_columns.clone(),
         }) as Arc<dyn FileOpener>;
 
         ProjectionOpener::try_new(
@@ -388,6 +416,7 @@ struct CoralJsonOpener {
     object_store: Arc<dyn ObjectStore>,
     read_mode: JsonReadMode,
     json_fields: Arc<HashSet<String>>,
+    metadata_columns: FileMetadataColumns,
 }
 
 impl FileOpener for CoralJsonOpener {
@@ -404,6 +433,7 @@ impl FileOpener for CoralJsonOpener {
         let compression = self.file_compression_type;
         let read_mode = self.read_mode;
         let json_fields = Arc::clone(&self.json_fields);
+        let metadata_columns = self.metadata_columns.clone();
         let location = partitioned_file.object_meta.location;
 
         Ok(Box::pin(async move {
@@ -411,7 +441,8 @@ impl FileOpener for CoralJsonOpener {
             match (read_mode, result.payload) {
                 (JsonReadMode::NewlineDelimited, GetResultPayload::File(file, _)) => {
                     let reader = compression.convert_read(file)?;
-                    let reader = CompatJsonlReader::new(reader, location, json_fields);
+                    let reader =
+                        CompatJsonlReader::new(reader, location, json_fields, metadata_columns);
                     let arrow_reader = ReaderBuilder::new(schema)
                         .with_batch_size(batch_size)
                         .build(reader)?;
@@ -425,7 +456,8 @@ impl FileOpener for CoralJsonOpener {
                         reader,
                         JSON_ARRAY_CONVERTER_BUFFER_SIZE,
                     );
-                    let reader = CompatJsonlReader::new(reader, location, json_fields);
+                    let reader =
+                        CompatJsonlReader::new(reader, location, json_fields, metadata_columns);
                     let arrow_reader = ReaderBuilder::new(schema)
                         .with_batch_size(batch_size)
                         .build(reader)?;
@@ -436,7 +468,8 @@ impl FileOpener for CoralJsonOpener {
                 (JsonReadMode::NewlineDelimited, GetResultPayload::Stream(stream)) => {
                     let input = stream.map_err(DataFusionError::from).boxed();
                     let input = compression.convert_stream(input)?;
-                    let input = normalize_jsonl_stream(input, location, json_fields);
+                    let input =
+                        normalize_jsonl_stream(input, location, json_fields, metadata_columns);
                     let decoder = ReaderBuilder::new(schema)
                         .with_batch_size(batch_size)
                         .build_decoder()?;
@@ -453,6 +486,7 @@ impl FileOpener for CoralJsonOpener {
                         input,
                         location,
                         json_fields,
+                        metadata_columns,
                         schema,
                         batch_size,
                     ))
@@ -480,6 +514,7 @@ struct CompatJsonlReader<R> {
     reader: BufReader<R>,
     location: ObjectPath,
     json_fields: Arc<HashSet<String>>,
+    metadata_columns: FileMetadataColumns,
     line: Vec<u8>,
     pending: Vec<u8>,
     pending_offset: usize,
@@ -487,11 +522,17 @@ struct CompatJsonlReader<R> {
 }
 
 impl<R: Read> CompatJsonlReader<R> {
-    fn new(reader: R, location: ObjectPath, json_fields: Arc<HashSet<String>>) -> Self {
+    fn new(
+        reader: R,
+        location: ObjectPath,
+        json_fields: Arc<HashSet<String>>,
+        metadata_columns: FileMetadataColumns,
+    ) -> Self {
         Self {
             reader: BufReader::new(reader),
             location,
             json_fields,
+            metadata_columns,
             line: Vec::new(),
             pending: Vec::new(),
             pending_offset: 0,
@@ -513,6 +554,7 @@ impl<R: Read> CompatJsonlReader<R> {
                 self.line_number,
                 &self.line,
                 &self.json_fields,
+                &self.metadata_columns,
             )
             .map_err(|error| datafusion_error_to_io(&error))?
             else {
@@ -589,6 +631,7 @@ struct JsonlStreamState {
     input: BoxStream<'static, Result<Bytes>>,
     location: ObjectPath,
     json_fields: Arc<HashSet<String>>,
+    metadata_columns: FileMetadataColumns,
     buffer: BytesMut,
     pending: VecDeque<Bytes>,
     line_number: usize,
@@ -599,9 +642,13 @@ impl JsonlStreamState {
     fn drain_complete_lines(&mut self) -> Result<()> {
         while let Some(line) = take_jsonl_line(&mut self.buffer) {
             self.line_number += 1;
-            if let Some(line) =
-                normalize_jsonl_line(&self.location, self.line_number, &line, &self.json_fields)?
-            {
+            if let Some(line) = normalize_jsonl_line(
+                &self.location,
+                self.line_number,
+                &line,
+                &self.json_fields,
+                &self.metadata_columns,
+            )? {
                 self.pending.push_back(line);
             }
         }
@@ -613,11 +660,13 @@ fn normalize_jsonl_stream(
     input: BoxStream<'static, Result<Bytes>>,
     location: ObjectPath,
     json_fields: Arc<HashSet<String>>,
+    metadata_columns: FileMetadataColumns,
 ) -> BoxStream<'static, Result<Bytes>> {
     let state = JsonlStreamState {
         input,
         location,
         json_fields,
+        metadata_columns,
         buffer: BytesMut::new(),
         pending: VecDeque::new(),
         line_number: 0,
@@ -645,6 +694,7 @@ fn normalize_jsonl_stream(
                         state.line_number,
                         &state.buffer,
                         &state.json_fields,
+                        &state.metadata_columns,
                     )? {
                         state.pending.push_back(line);
                     }
@@ -660,6 +710,7 @@ fn normalize_json_array_stream(
     mut input: BoxStream<'static, Result<Bytes>>,
     location: ObjectPath,
     json_fields: Arc<HashSet<String>>,
+    metadata_columns: FileMetadataColumns,
     schema: SchemaRef,
     batch_size: usize,
 ) -> BoxStream<'static, Result<RecordBatch>> {
@@ -695,7 +746,8 @@ fn normalize_json_array_stream(
             channel_reader,
             JSON_ARRAY_CONVERTER_BUFFER_SIZE,
         );
-        let mut reader = CompatJsonlReader::new(ndjson_reader, location, json_fields);
+        let mut reader =
+            CompatJsonlReader::new(ndjson_reader, location, json_fields, metadata_columns);
 
         match ReaderBuilder::new(schema)
             .with_batch_size(batch_size)
@@ -735,6 +787,7 @@ fn normalize_jsonl_line(
     line_number: usize,
     line: &[u8],
     json_fields: &HashSet<String>,
+    metadata_columns: &FileMetadataColumns,
 ) -> Result<Option<Bytes>> {
     let line = jsonl_line_text(location, line_number, line)?;
     if line.is_empty() {
@@ -746,7 +799,13 @@ fn normalize_jsonl_line(
             "failed to parse {location} line {line_number} as JSON: {error}"
         ))
     })?;
-    let value = normalize_json_record(location, Some(line_number), value, json_fields)?;
+    let value = normalize_json_record(
+        location,
+        Some(line_number),
+        value,
+        json_fields,
+        metadata_columns,
+    )?;
     Ok(Some(Bytes::from(json_value_to_line_bytes(&value)?)))
 }
 
@@ -755,6 +814,7 @@ fn normalize_json_record(
     line_number: Option<usize>,
     row: Value,
     json_fields: &HashSet<String>,
+    metadata_columns: &FileMetadataColumns,
 ) -> Result<Value> {
     let Value::Object(mut object) = row else {
         let row_description = line_number
@@ -764,6 +824,10 @@ fn normalize_json_record(
             "{location}{row_description} is not a JSON object"
         )));
     };
+
+    if let Some(line_number) = line_number {
+        metadata_columns.insert_row_values(location, line_number, &mut object)?;
+    }
 
     for field in json_fields {
         if let Some(value) = object.get_mut(field)
@@ -812,76 +876,6 @@ fn datafusion_error_to_io(error: &DataFusionError) -> io::Error {
 
 fn datafusion_error_to_arrow(error: DataFusionError) -> ArrowError {
     ArrowError::ExternalError(Box::new(error))
-}
-
-pub(super) struct JsonFileGroups {
-    pub(super) groups: Vec<FileGroup>,
-    pub(super) grouped_by_partition: bool,
-}
-
-pub(super) fn json_file_groups(
-    table_path: &ListingTableUrl,
-    partition_columns: &PartitionColumns,
-    files: Vec<ObjectMeta>,
-    filters: &[Expr],
-    target_partitions: usize,
-    preserve_file_partitions: usize,
-) -> Result<JsonFileGroups> {
-    let constraints = partition_filter_constraints(filters, partition_columns);
-    let mut partitioned_files = Vec::new();
-
-    for meta in files {
-        let partition_values =
-            partition_values_for_path(table_path, &meta.location, partition_columns)?;
-        if !constraints.matches(&partition_values) {
-            continue;
-        }
-
-        partitioned_files.push(
-            PartitionedFile::new_from_meta(meta)
-                .with_partition_values(partition_values.into_scalars()),
-        );
-    }
-
-    if partitioned_files.is_empty() {
-        return Ok(JsonFileGroups {
-            groups: vec![FileGroup::default()],
-            grouped_by_partition: false,
-        });
-    }
-
-    partitioned_files.sort_by(|left, right| {
-        left.object_meta
-            .location
-            .as_ref()
-            .cmp(right.object_meta.location.as_ref())
-    });
-
-    let file_group = FileGroup::new(partitioned_files);
-    let target_partitions = target_partitions.max(1);
-    if partition_columns.is_empty() || preserve_file_partitions == 0 {
-        return Ok(JsonFileGroups {
-            groups: file_group.split_files(target_partitions),
-            grouped_by_partition: false,
-        });
-    }
-
-    let grouped = file_group.group_by_partition_values(target_partitions);
-    if grouped.len() >= preserve_file_partitions {
-        Ok(JsonFileGroups {
-            groups: grouped,
-            grouped_by_partition: true,
-        })
-    } else {
-        let files = grouped
-            .into_iter()
-            .flat_map(FileGroup::into_inner)
-            .collect::<Vec<_>>();
-        Ok(JsonFileGroups {
-            groups: FileGroup::new(files).split_files(target_partitions),
-            grouped_by_partition: false,
-        })
-    }
 }
 
 fn json_field_names(columns: &[ColumnSpec]) -> Result<HashSet<String>> {
