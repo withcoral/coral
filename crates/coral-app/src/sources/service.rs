@@ -15,10 +15,9 @@ use coral_api::v1::{
     OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
     OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
     OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
-    OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, RefreshSourceRequest,
-    RefreshSourceResponse, Source, SourceConfigCredentialMethod, SourceCredential,
-    SourceCredentialMethod, SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo,
-    SourceInputSpec, SourceMaterializationDiagnostic, SourceMaterializationSummary,
+    OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
+    SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
+    SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
     SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
     create_bundled_source_with_o_auth_response, import_source_response,
@@ -294,37 +293,6 @@ impl SourceServiceApi for SourceService {
         .await
     }
 
-    async fn refresh_source(
-        &self,
-        request: Request<RefreshSourceRequest>,
-    ) -> Result<Response<RefreshSourceResponse>, Status> {
-        let span = grpc_span(&request);
-        let sources = self.sources.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let response_workspace_name = workspace_name.clone();
-            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let result = run_blocking_source_operation(move || {
-                sources.refresh_source(&workspace_name, &source_name)
-            })
-            .await?;
-            Ok(Response::new(RefreshSourceResponse {
-                source: Some(installed_source_to_proto(
-                    &response_workspace_name,
-                    result.source,
-                )),
-                materialization: Some(materialization_summary_to_proto(result.materialization)),
-                diagnostics: result
-                    .diagnostics
-                    .into_iter()
-                    .map(materialization_diagnostic_to_proto)
-                    .collect(),
-            }))
-        })
-        .await
-    }
-
     async fn validate_source(
         &self,
         request: Request<ValidateSourceRequest>,
@@ -588,40 +556,6 @@ fn proto_source_credential_storage(
         Some(CredentialStorageKind::File) => ProtoSourceCredentialStorage::File,
         Some(CredentialStorageKind::Keychain) => ProtoSourceCredentialStorage::Keychain,
         None => ProtoSourceCredentialStorage::Unspecified,
-    }
-}
-
-fn materialization_summary_to_proto(
-    summary: crate::sources::materialization::SourceMaterializationSummary,
-) -> SourceMaterializationSummary {
-    SourceMaterializationSummary {
-        source_name: summary.source_name,
-        source_version: summary.source_version,
-        manifest_sha256: summary.manifest_sha256,
-        importer_version: summary.importer_version,
-        projection_generator_version: summary.projection_generator_version,
-        surface_count: summary.surface_count,
-        projection_count: summary.projection_count,
-        published_projection_count: summary.published_projection_count,
-        hidden_projection_count: summary.hidden_projection_count,
-    }
-}
-
-fn materialization_diagnostic_to_proto(
-    diagnostic: coral_spec::v4::Diagnostic,
-) -> SourceMaterializationDiagnostic {
-    SourceMaterializationDiagnostic {
-        code: diagnostic.code,
-        severity: match diagnostic.severity {
-            coral_spec::v4::DiagnosticSeverity::Info => "info",
-            coral_spec::v4::DiagnosticSeverity::Warning => "warning",
-            coral_spec::v4::DiagnosticSeverity::Error => "error",
-        }
-        .to_string(),
-        message: diagnostic.message,
-        surface_id: diagnostic.surface_id.unwrap_or_default(),
-        operation_id: diagnostic.operation_id.unwrap_or_default(),
-        projection_name: diagnostic.projection_name.unwrap_or_default(),
     }
 }
 

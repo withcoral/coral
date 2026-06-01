@@ -25,10 +25,9 @@ use coral_api::v1::{
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, RefreshSourceRequest, RefreshSourceResponse,
-    SearchCatalogRequest, SearchCatalogResponse, Source, SourceCredentialStorage, SourceInfo,
-    SourceInputSpec, SourceMaterializationSummary, SourceOrigin, SourceSecretInput, Table,
-    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
+    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
+    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -434,7 +433,6 @@ pub(crate) struct MockServerConfig {
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
-    refresh_source: MockResult<RefreshSourceResponse>,
     delete_source: MockResult<()>,
 }
 
@@ -466,21 +464,6 @@ impl Default for MockServerConfig {
                 ],
             }),
             validate_source: MockResult::ok(mock_validate_response()),
-            refresh_source: MockResult::ok(RefreshSourceResponse {
-                source: Some(mock_source()),
-                materialization: Some(SourceMaterializationSummary {
-                    source_name: "github".to_string(),
-                    source_version: "1.0.0".to_string(),
-                    manifest_sha256: "00".to_string(),
-                    importer_version: "openapi-v2".to_string(),
-                    projection_generator_version: "derive-read-v1".to_string(),
-                    surface_count: 1,
-                    projection_count: 3,
-                    published_projection_count: 3,
-                    hidden_projection_count: 0,
-                }),
-                diagnostics: Vec::new(),
-            }),
             delete_source: MockResult::ok(()),
         }
     }
@@ -524,23 +507,11 @@ impl MockServerConfig {
         self
     }
 
-    pub(crate) fn with_refresh_source_response(mut self, response: RefreshSourceResponse) -> Self {
-        self.refresh_source = MockResult::ok(response);
-        self
-    }
-
     /// Mirrors what the real server emits for `AppError::SourceNotFound`
     /// from `validate_source` (a `Code::NotFound` Status carrying an
     /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
     pub(crate) fn with_validate_source_not_found(mut self, qualified: impl Into<String>) -> Self {
         self.validate_source = MockResult::source_not_found(qualified);
-        self
-    }
-
-    /// Mirrors what the real server emits for `AppError::SourceNotFound`
-    /// from `refresh_source`.
-    pub(crate) fn with_refresh_source_not_found(mut self, qualified: impl Into<String>) -> Self {
-        self.refresh_source = MockResult::source_not_found(qualified);
         self
     }
 
@@ -607,7 +578,6 @@ struct Captured {
     create_bundled_source_with_oauth: Mutex<Vec<CreateBundledSourceWithOAuthRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
-    refresh_source: Mutex<Vec<RefreshSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
 }
 
@@ -976,20 +946,6 @@ impl SourceService for MockSourceService {
         Ok(Response::new(DeleteSourceResponse {}))
     }
 
-    async fn refresh_source(
-        &self,
-        request: Request<RefreshSourceRequest>,
-    ) -> Result<Response<RefreshSourceResponse>, Status> {
-        self.captured
-            .refresh_source
-            .lock()
-            .expect("refresh_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(
-            self.config.refresh_source.clone().into_tonic_result()?,
-        ))
-    }
-
     async fn validate_source(
         &self,
         request: Request<ValidateSourceRequest>,
@@ -1154,14 +1110,6 @@ impl MockServer {
             .delete_source
             .lock()
             .expect("delete_source capture")
-            .clone()
-    }
-
-    pub(crate) fn refresh_source_requests(&self) -> Vec<RefreshSourceRequest> {
-        self.captured
-            .refresh_source
-            .lock()
-            .expect("refresh_source capture")
             .clone()
     }
 

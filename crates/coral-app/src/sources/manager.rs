@@ -18,14 +18,13 @@ use crate::credentials::{
 use crate::features::Features;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
-    BundledSourceManifest, describe_manifest, list_bundled_sources, load_bundled_source,
-    resolve_installed_manifest,
+    describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
-    MaterializationBuild, MaterializationDescriptorSource, SourceMaterializationSummary,
-    build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
-    cleanup_materialization_tmp, enrich_v4_openapi_manifest_yaml, new_materialization_suffix,
-    replace_v4_materialization, restore_materialization_backup,
+    MaterializationBuild, MaterializationDescriptorSource, build_v4_materialization_tmp,
+    canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
+    enrich_v4_openapi_manifest_yaml, new_materialization_suffix, replace_v4_materialization,
+    restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -158,12 +157,6 @@ struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
     credential_material: Option<CredentialMaterialSnapshot>,
-}
-
-pub(crate) struct RefreshSourceResult {
-    pub(crate) source: InstalledSource,
-    pub(crate) materialization: SourceMaterializationSummary,
-    pub(crate) diagnostics: Vec<coral_spec::v4::Diagnostic>,
 }
 
 impl SourceManager {
@@ -502,132 +495,6 @@ impl SourceManager {
                     .map(|build| build.temp_dir),
             },
         )
-    }
-
-    pub(crate) fn refresh_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<RefreshSourceResult, AppError> {
-        let source = self.config_store.get_source(workspace_name, source_name)?;
-        let (manifest_yaml, manifest, bundled) =
-            self.refresh_manifest(workspace_name, source_name, &source)?;
-        let Some(v4) = manifest.as_v4() else {
-            return Err(AppError::FailedPrecondition(format!(
-                "source '{source_name}' does not use DSL v4 materialization"
-            )));
-        };
-        let mut candidate = describe_manifest(&manifest_yaml, source.origin, true)?;
-        if candidate.name != *source_name {
-            return Err(AppError::FailedPrecondition(format!(
-                "installed source '{source_name}' does not match manifest name '{}'",
-                candidate.name
-            )));
-        }
-        candidate.installed = true;
-        candidate.credential_storage = Some(source.effective_credential_storage());
-        let bindings = SourceBindings {
-            variables: source
-                .variables
-                .iter()
-                .map(|(key, value)| SourceBinding {
-                    key: key.clone(),
-                    value: value.clone(),
-                })
-                .collect(),
-            secrets: Vec::new(),
-        };
-        let stored_material = self.source_stored_material_for_validation(
-            workspace_name,
-            &candidate,
-            &bindings,
-            &BTreeSet::new(),
-        )?;
-        validate_bindings(&candidate, &bindings, &stored_material)?;
-        let build = build_v4_materialization_tmp(
-            &self.layout,
-            workspace_name,
-            source_name,
-            &manifest_yaml,
-            v4,
-            MaterializationDescriptorSource {
-                origin: source.origin,
-                bundled_descriptors: bundled
-                    .as_ref()
-                    .map_or(&[][..], |bundled| bundled.descriptors),
-            },
-            &new_materialization_suffix("refresh"),
-        )?;
-        let backup = match replace_v4_materialization(
-            &self.layout,
-            workspace_name,
-            source_name,
-            &build.temp_dir,
-        ) {
-            Ok(backup) => backup,
-            Err(error) => {
-                cleanup_materialization_tmp(Some(&build.temp_dir));
-                return Err(error);
-            }
-        };
-        let mut source = source;
-        source.version = match source.origin {
-            SourceOrigin::Bundled => None,
-            SourceOrigin::Imported => Some(manifest.source_version().to_string()),
-        };
-        if let Err(error) = self
-            .config_store
-            .upsert_source(workspace_name, source.clone())
-        {
-            if let Err(restore_error) =
-                restore_materialization_backup(&self.layout, workspace_name, source_name, backup)
-            {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to persist refreshed source '{source_name}': {error}; failed to restore previous DSL v4 materialization: {restore_error}"
-                )));
-            }
-            return Err(error);
-        }
-        cleanup_materialization_backup(backup);
-        let mut resolved = source;
-        resolved.version = Some(manifest.source_version().to_string());
-        Ok(RefreshSourceResult {
-            source: resolved,
-            materialization: build.summary,
-            diagnostics: build.diagnostics,
-        })
-    }
-
-    fn refresh_manifest(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-        source: &InstalledSource,
-    ) -> Result<
-        (
-            String,
-            ValidatedSourceManifest,
-            Option<BundledSourceManifest>,
-        ),
-        AppError,
-    > {
-        let bundled = match source.origin {
-            SourceOrigin::Bundled => Some(load_bundled_source(source_name, &self.features)?),
-            SourceOrigin::Imported => None,
-        };
-        let manifest_yaml = match source.origin {
-            SourceOrigin::Bundled => bundled
-                .as_ref()
-                .expect("bundled source should have loaded manifest")
-                .manifest_yaml
-                .clone(),
-            SourceOrigin::Imported => {
-                std::fs::read_to_string(self.layout.manifest_file(workspace_name, source_name))?
-            }
-        };
-        let manifest = parse_source_manifest_yaml(&manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        Ok((manifest_yaml, manifest, bundled))
     }
 
     pub(crate) fn delete_source(
@@ -1764,37 +1631,6 @@ surfaces:
         )
     }
 
-    fn manifest_v4_with_required_token(openapi_file: &std::path::Path) -> String {
-        let bytes = v4_openapi_fixture().as_bytes();
-        format!(
-            r#"
-name: github_v4_test
-version: 2.0.1
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    file: {}
-    sha256: {}
-    inputs:
-      API_BASE:
-        kind: variable
-        default: http://127.0.0.1:1
-      GITHUB_TOKEN:
-        kind: secret
-    base_url: "{{{{input.API_BASE}}}}"
-    auth:
-      type: HeaderAuth
-      headers:
-        - name: Authorization
-          from: template
-          template: Bearer {{{{input.GITHUB_TOKEN}}}}
-"#,
-            openapi_file.display(),
-            sha256_hex(bytes)
-        )
-    }
-
     fn manifest_without_secrets() -> String {
         r#"
 name: public_messages
@@ -2066,55 +1902,6 @@ tables:
         assert!(
             stored_manifest.contains("base_url: https://api.github.test"),
             "expected stored manifest to contain OpenAPI server URL: {stored_manifest}"
-        );
-    }
-
-    #[test]
-    fn refresh_v4_source_rejects_new_required_secret_without_materializing() {
-        let temp = TempDir::new().expect("temp dir");
-        let descriptor_root = std::env::current_dir()
-            .expect("cwd")
-            .join("target")
-            .join("v4-test-fixtures");
-        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
-        let descriptor_temp = tempfile::Builder::new()
-            .prefix("github-v4-refresh-")
-            .tempdir_in(descriptor_root)
-            .expect("descriptor temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
-
-        manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("import v4 source");
-        let source_name = SourceName::parse("github_v4_test").expect("source");
-        std::fs::write(
-            layout.manifest_file(&default_workspace(), &source_name),
-            manifest_v4_with_required_token(&openapi_file),
-        )
-        .expect("update manifest");
-
-        let Err(error) = manager.refresh_source(&default_workspace(), &source_name) else {
-            panic!("refresh should reject missing token");
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("missing required source secret 'GITHUB_TOKEN'"),
-            "{error}"
         );
     }
 

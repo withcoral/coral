@@ -33,24 +33,9 @@ const DESCRIPTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
 const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
 
-#[derive(Debug, Clone)]
-pub(crate) struct SourceMaterializationSummary {
-    pub(crate) source_name: String,
-    pub(crate) source_version: String,
-    pub(crate) manifest_sha256: String,
-    pub(crate) importer_version: String,
-    pub(crate) projection_generator_version: String,
-    pub(crate) surface_count: u32,
-    pub(crate) projection_count: u32,
-    pub(crate) published_projection_count: u32,
-    pub(crate) hidden_projection_count: u32,
-}
-
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
     pub(crate) temp_dir: PathBuf,
-    pub(crate) summary: SourceMaterializationSummary,
-    pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -94,11 +79,7 @@ pub(crate) fn build_v4_materialization_tmp(
         manifest,
         descriptor_source.bundled_descriptors,
     ) {
-        Ok((summary, diagnostics)) => Ok(MaterializationBuild {
-            temp_dir,
-            summary,
-            diagnostics,
-        }),
+        Ok(()) => Ok(MaterializationBuild { temp_dir }),
         Err(error) => {
             if temp_dir.exists() {
                 drop(std::fs::remove_dir_all(&temp_dir));
@@ -348,16 +329,12 @@ pub(crate) fn stale_materialization_error(
     ))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "Materialization writes one transaction-shaped artifact set; splitting would obscure ordering."
-)]
 fn write_materialization(
     temp_dir: &Path,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
     bundled_descriptors: &[BundledV4Descriptor],
-) -> Result<(SourceMaterializationSummary, Vec<Diagnostic>), AppError> {
+) -> Result<(), AppError> {
     let manifest_sha256 = sha256_hex(manifest_yaml.as_bytes());
     let mut materialized_surfaces = Vec::new();
     let mut semantic_irs = Vec::new();
@@ -437,28 +414,7 @@ fn write_materialization(
     write_yaml(&temp_dir.join("fingerprint.yaml"), &fingerprint)?;
     write_yaml(&temp_dir.join("projections.yaml"), &projections)?;
     write_yaml(&temp_dir.join("diagnostics.yaml"), &diagnostics)?;
-    let published = projections
-        .projections
-        .iter()
-        .filter(|projection| {
-            projection.visibility == coral_spec::v4::ProjectionVisibility::Published
-        })
-        .count();
-    let hidden = projections.projections.len().saturating_sub(published);
-    Ok((
-        SourceMaterializationSummary {
-            source_name: manifest.common.name.clone(),
-            source_version: manifest.common.version.clone(),
-            manifest_sha256,
-            importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
-            projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
-            surface_count: u32::try_from(manifest.surfaces.len()).unwrap_or(u32::MAX),
-            projection_count: u32::try_from(projections.projections.len()).unwrap_or(u32::MAX),
-            published_projection_count: u32::try_from(published).unwrap_or(u32::MAX),
-            hidden_projection_count: u32::try_from(hidden).unwrap_or(u32::MAX),
-        },
-        diagnostics,
-    ))
+    Ok(())
 }
 
 fn read_descriptor(
