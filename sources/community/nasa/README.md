@@ -15,13 +15,13 @@ coral source add --file sources/community/nasa/manifest.yaml
 
 | Input          | Kind     | Required | Default   | Description                                                              |
 | -------------- | -------- | -------- | --------- | ------------------------------------------------------------------------ |
-| `NASA_API_KEY` | variable | no       | `DEMO_KEY` | NASA Open API key. `DEMO_KEY` works out of the box (30 req/hr). Free personal keys are available at [api.nasa.gov](https://api.nasa.gov/). |
+| `NASA_API_KEY` | secret   | no       | (none)     | NASA Open API key. Leave unset to use `DEMO_KEY` (30 req/hr). Free personal keys are available at [api.nasa.gov](https://api.nasa.gov/). |
 
 ## Tables
 
-| Table       | Description                           | Key filters                              |
-| ----------- | ------------------------------------- | ---------------------------------------- |
-| `nasa.apod` | NASA Astronomy Picture of the Day     | `date`, `start_date`, `end_date`, `count`, `thumbs` |
+| Table       | Description                           | Key filters                                              |
+| ----------- | ------------------------------------- | -------------------------------------------------------- |
+| `nasa.apod` | NASA Astronomy Picture of the Day     | `date`, `start_date`, `end_date`, `count`, `thumbs`, `concept_tags` |
 
 ## Example queries
 
@@ -52,26 +52,27 @@ LIMIT 10;
 -- Request video thumbnails for APOD entries
 SELECT date, title, url, thumbnail_url
 FROM nasa.apod
-WHERE thumbs = 'true' AND count = 3
+WHERE thumbs = true AND count = 3
 LIMIT 3;
 ```
 
 ## API Parameters
 
-The `apod` table supports the same query parameters as the original NASA API:
+The `apod` table supports these query parameters:
 
 - **`date`** — A specific date in `YYYY-MM-DD` format. Returns a single row.
 - **`start_date` / `end_date`** — A date range (inclusive). Returns one row per day.
-- **`count`** — Number of *random* APOD entries to return. Returns that many rows.
+- **`count`** — Number of *random* APOD entries to return (max 100). Returns that many rows.
 - **`thumbs`** — Set to `true` to request video thumbnail URLs when `media_type` is `video`.
+- **`concept_tags`** — Set to `true` to include NASA concept tags in the response.
 
 **Note:** `date`, `start_date`/`end_date`, and `count` are mutually exclusive. Only use one style per query.
 
 ## Notes
 
-- **No authentication required.** The default `DEMO_KEY` is sufficient for casual use.
+- **Default auth.** Leaving `NASA_API_KEY` unset uses `DEMO_KEY` (30 req/hr). For higher limits, set a free personal key from [api.nasa.gov](https://api.nasa.gov/).
 - **Rate limits:** `DEMO_KEY` is limited to 30 requests per hour and 50 requests per day. A free personal API key raises this to 1000 requests per hour.
-- **Images vs. Videos:** When `media_type` is `video`, `url` points to a video page and `hdurl` is absent. Set `thumbs = 'true'` to receive a `thumbnail_url` for video items.
+- **Images vs. Videos:** When `media_type` is `video`, `url` points to a video page and `hdurl` is absent. Set `thumbs = true` to receive a `thumbnail_url` for video items.
 - **Date range:** The APOD archive begins on **1995-06-16**. Dates before this return no results.
 - **Read-only.** This source does not support write operations.
 

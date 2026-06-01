@@ -11,14 +11,12 @@ base_url: "https://api.nasa.gov"
 
 inputs:
   NASA_API_KEY:
-    kind: variable
-    default: DEMO_KEY
-    hint: "NASA Open API key. Defaults to DEMO_KEY (30 requests/hour). Get a free key at https://api.nasa.gov/."
+    kind: secret
+    hint: "NASA Open API key. Defaults to DEMO_KEY (30 requests/hour) if unset. Get a free key at https://api.nasa.gov/."
 
 test_queries:
   - SELECT * FROM nasa.apod LIMIT 1
   - SELECT date, title, url, media_type FROM nasa.apod WHERE date = '2024-06-01' LIMIT 1
-  - SELECT date, title, url FROM nasa.apod WHERE count = 3 LIMIT 3
 
 tables:
   - name: apod
@@ -61,8 +59,11 @@ tables:
           from: filter_int
           key: count
         - name: thumbs
-          from: filter
+          from: filter_bool
           key: thumbs
+        - name: concept_tags
+          from: filter
+          key: concept_tags
     response:
       row_strategy: direct
     pagination:
@@ -132,8 +133,19 @@ tables:
         description: Number of random APOD entries requested.
         expr: {kind: from_filter, key: count}
       - name: thumbs
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Video thumbnail filter (true to enable).
+        expr: {kind: from_filter, key: thumbs}
+      - name: concept_tags
         type: Utf8
         nullable: true
         virtual: true
-        description: Video thumbnail filter ('true' to enable).
-        expr: {kind: from_filter, key: thumbs}
+        description: Request concept tags in response (true to enable).
+        expr: {kind: from_filter, key: concept_tags}
+      - name: concept_tags
+        type: Utf8
+        nullable: true
+        description: Comma-separated list of NASA concept tags for the entry (returned when concept_tags filter is true).
+        expr: {kind: path, path: [concept_tags]}
