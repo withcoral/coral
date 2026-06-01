@@ -323,8 +323,9 @@ tables:
       Requires `org_slug` and one package URL in `purl`, for example
       `pkg:npm/express@4.19.2`, `pkg:pypi/django@5.0.6`, or
       `pkg:maven/log4j/log4j@1.2.17`. Use `socket_dev.organizations` to
-      discover organization slugs visible to the token. Set `alerts = 'true'`
-      to include alert metadata in the raw payload and alert-priority fields.
+      discover organization slugs visible to the token. Set
+      `include_alerts = 'true'` to include alert metadata in the raw payload
+      and alert-priority fields.
       Socket's org-scoped PURL endpoint consumes 100 quota units per request,
       so check `socket_dev.quota` first and keep package lookups narrow.
       Optional `poll = 'true'` waits for package analysis. If you set
@@ -334,7 +335,7 @@ tables:
         required: true
       - name: purl
         required: true
-      - name: alerts
+      - name: include_alerts
         required: false
       - name: compact
         required: false
@@ -355,7 +356,7 @@ tables:
       query:
         - name: alerts
           from: filter
-          key: alerts
+          key: include_alerts
         - name: compact
           from: filter
           key: compact
@@ -595,6 +596,38 @@ tables:
         expr:
           kind: from_filter
           key: purl
+      - name: include_alerts
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional alerts query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: include_alerts
+      - name: compact
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional compact query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: compact
+      - name: poll
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional poll query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: poll
+      - name: timeout_sec
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional timeoutSec query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: timeout_sec
       - name: raw
         type: Json
         nullable: false
@@ -781,6 +814,22 @@ tables:
         expr:
           kind: from_filter
           key: purl
+      - name: poll
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional poll query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: poll
+      - name: timeout_sec
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional timeoutSec query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: timeout_sec
       - name: raw
         type: Json
         nullable: false

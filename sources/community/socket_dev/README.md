@@ -83,6 +83,18 @@ WHERE org_slug = 'your-org-slug'
 LIMIT 1;
 ```
 
+To wait for package analysis, include the optional package lookup filters:
+
+```sql
+SELECT name, version, score_overall
+FROM socket_dev.package_artifacts
+WHERE org_slug = 'your-org-slug'
+  AND purl = 'pkg:npm/express@4.19.2'
+  AND poll = 'true'
+  AND timeout_sec = '120'
+LIMIT 1;
+```
+
 Fetch alerts for one package:
 
 ```sql
@@ -131,6 +143,8 @@ LIMIT 50;
 - Package lookups accept optional `poll` and `timeout_sec` filters. Set
   `poll = 'true'` to wait for Socket package analysis; `timeout_sec` maps to
   Socket's `timeoutSec` query parameter and must be between 1 and 1200 seconds.
+  `package_artifacts` also accepts `include_alerts = 'true'` to request alert
+  metadata in the raw package payload.
 - Socket's older npm score and npm issues endpoints are deprecated. This source
   uses the org-scoped PURL endpoint instead so it supports multiple package
   ecosystems.
