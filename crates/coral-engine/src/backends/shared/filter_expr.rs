@@ -113,6 +113,7 @@ fn classify_filter_pushdown_with_consumed(
         .collect()
 }
 
+#[cfg(test)]
 fn classify_filter(
     expr: &Expr,
     allowed: &HashSet<&str>,

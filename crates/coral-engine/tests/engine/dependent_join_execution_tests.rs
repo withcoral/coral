@@ -2090,10 +2090,11 @@ fn issues_with_org_manifest(dir: &Path) -> Value {
         "name": "issues",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "items",
             "description": "Issue fixture with an extra owner-like column",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -2136,10 +2137,11 @@ fn resolver_ids_manifest(dir: &Path) -> Value {
         "name": "resolver_ids",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "items",
             "description": "Resolver table with an id column that can collide with joined resolver columns",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/resolver_ids.jsonl"

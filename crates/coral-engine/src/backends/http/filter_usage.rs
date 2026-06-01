@@ -78,6 +78,11 @@ fn collect_template_filters(template: &ParsedTemplate, filters: &mut HashSet<Str
 fn collect_value_source_filters(source: &ValueSourceSpec, filters: &mut HashSet<String>) {
     match source {
         ValueSourceSpec::Template { template } => collect_template_filters(template, filters),
+        ValueSourceSpec::OneOf { values } => {
+            for value in values {
+                collect_value_source_filters(value, filters);
+            }
+        }
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
@@ -89,7 +94,10 @@ fn collect_value_source_filters(source: &ValueSourceSpec, filters: &mut HashSet<
         | ValueSourceSpec::Arg { .. }
         | ValueSourceSpec::ArgInt { .. }
         | ValueSourceSpec::ArgBool { .. }
+        | ValueSourceSpec::ArgSplit { .. }
+        | ValueSourceSpec::ArgSplitInt { .. }
         | ValueSourceSpec::Input { .. }
+        | ValueSourceSpec::Bearer { .. }
         | ValueSourceSpec::State { .. }
         | ValueSourceSpec::NowEpochMinusSeconds { .. } => {}
     }
@@ -120,6 +128,7 @@ mod tests {
             body: BodySpec::Json {
                 fields: vec![BodyFieldSpec {
                     path: vec!["labels".to_string()],
+                    when_arg: None,
                     value: ValueSourceSpec::FilterSplit {
                         key: "labels".to_string(),
                         separator: ",".to_string(),

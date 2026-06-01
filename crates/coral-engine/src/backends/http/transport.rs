@@ -11,6 +11,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use tracing::Instrument as _;
 use tracing::field;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
