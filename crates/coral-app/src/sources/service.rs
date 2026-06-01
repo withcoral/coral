@@ -161,12 +161,12 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let response_workspace_name = workspace_name.clone();
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
                 name: bundled_name,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
+            let response_workspace_name = workspace_name.clone();
             let installed = run_blocking_source_operation(move || {
                 sources.create_bundled_source(&workspace_name, &command)
             })

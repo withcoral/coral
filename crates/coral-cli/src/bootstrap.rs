@@ -11,10 +11,9 @@ pub(crate) struct Bootstrap {
     server: Option<RunningServer>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct BootstrapOptions {
     pub(crate) enable_stderr_logs: bool,
-    pub(crate) feature_overrides: coral_app::features::FeatureOverrides,
 }
 
 impl Bootstrap {
@@ -65,7 +64,6 @@ pub(crate) async fn start_ui_server(port: u16) -> Result<RunningServer, Bootstra
 fn configure_server_builder(builder: ServerBuilder, options: BootstrapOptions) -> ServerBuilder {
     builder
         .with_stderr_logs(options.enable_stderr_logs)
-        .with_feature_overrides(options.feature_overrides)
         .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
 }
 

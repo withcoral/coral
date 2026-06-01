@@ -23,8 +23,6 @@ use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::sources::catalog::BundledV4Descriptor;
-use crate::sources::model::SourceOrigin;
 use crate::state::AppStateLayout;
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
@@ -38,47 +36,21 @@ pub(crate) struct MaterializationBuild {
     pub(crate) temp_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct MaterializationDescriptorSource<'a> {
-    pub(crate) origin: SourceOrigin,
-    pub(crate) bundled_descriptors: &'a [BundledV4Descriptor],
-}
-
 pub(crate) fn build_v4_materialization_tmp(
     layout: &AppStateLayout,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
-    descriptor_source: MaterializationDescriptorSource<'_>,
     temp_suffix: &str,
 ) -> Result<MaterializationBuild, AppError> {
-    if matches!(descriptor_source.origin, SourceOrigin::Bundled)
-        && manifest.surfaces.iter().any(|surface| {
-            matches!(
-                surface.descriptor,
-                coral_spec::v4::SurfaceDescriptor::File { .. }
-            ) && bundled_descriptor(surface, descriptor_source.bundled_descriptors).is_none()
-        })
-    {
-        return Err(AppError::FailedPrecondition(format!(
-            "bundled source '{}' uses local DSL v4 file descriptors, which are development-only",
-            manifest.common.name
-        )));
-    }
-
     let temp_dir = layout.v4_materialized_tmp_dir(workspace_name, source_name, temp_suffix);
     if temp_dir.exists() {
         std::fs::remove_dir_all(&temp_dir)?;
     }
     fs::ensure_private_dir(&temp_dir)?;
 
-    match write_materialization(
-        &temp_dir,
-        manifest_yaml,
-        manifest,
-        descriptor_source.bundled_descriptors,
-    ) {
+    match write_materialization(&temp_dir, manifest_yaml, manifest) {
         Ok(()) => Ok(MaterializationBuild { temp_dir }),
         Err(error) => {
             if temp_dir.exists() {
@@ -92,7 +64,6 @@ pub(crate) fn build_v4_materialization_tmp(
 pub(crate) fn enrich_v4_openapi_manifest_yaml(
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
-    descriptor_source: MaterializationDescriptorSource<'_>,
 ) -> Result<String, AppError> {
     let needs_description = manifest.common.description.trim().is_empty();
     let needs_base_url = manifest
@@ -111,7 +82,7 @@ pub(crate) fn enrich_v4_openapi_manifest_yaml(
             continue;
         }
 
-        let bytes = read_verified_descriptor(surface, descriptor_source.bundled_descriptors)?;
+        let bytes = read_verified_descriptor(surface)?;
         let metadata = openapi_document_metadata(&bytes)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         if surface_needs_base_url {
@@ -333,14 +304,13 @@ fn write_materialization(
     temp_dir: &Path,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
-    bundled_descriptors: &[BundledV4Descriptor],
 ) -> Result<(), AppError> {
     let manifest_sha256 = sha256_hex(manifest_yaml.as_bytes());
     let mut materialized_surfaces = Vec::new();
     let mut semantic_irs = Vec::new();
     let mut fingerprint_surfaces = Vec::new();
     for surface in &manifest.surfaces {
-        let bytes = read_descriptor(surface, bundled_descriptors)?;
+        let bytes = read_descriptor(surface)?;
         let observed = sha256_hex(&bytes);
         if observed != surface.descriptor.sha256() {
             return Err(AppError::FailedPrecondition(format!(
@@ -417,26 +387,15 @@ fn write_materialization(
     Ok(())
 }
 
-fn read_descriptor(
-    surface: &coral_spec::v4::V4Surface,
-    bundled_descriptors: &[BundledV4Descriptor],
-) -> Result<Vec<u8>, AppError> {
+fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
     match &surface.descriptor {
-        coral_spec::v4::SurfaceDescriptor::File { file, .. } => {
-            bundled_descriptor(surface, bundled_descriptors).map_or_else(
-                || read_file_descriptor(file),
-                |descriptor| Ok(descriptor.to_vec()),
-            )
-        }
+        coral_spec::v4::SurfaceDescriptor::File { file, .. } => read_file_descriptor(file),
         coral_spec::v4::SurfaceDescriptor::Url { url, .. } => read_url_descriptor(url),
     }
 }
 
-fn read_verified_descriptor(
-    surface: &coral_spec::v4::V4Surface,
-    bundled_descriptors: &[BundledV4Descriptor],
-) -> Result<Vec<u8>, AppError> {
-    let bytes = read_descriptor(surface, bundled_descriptors)?;
+fn read_verified_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
+    let bytes = read_descriptor(surface)?;
     let observed = sha256_hex(&bytes);
     if observed != surface.descriptor.sha256() {
         return Err(AppError::FailedPrecondition(format!(
@@ -447,16 +406,6 @@ fn read_verified_descriptor(
         )));
     }
     Ok(bytes)
-}
-
-fn bundled_descriptor<'a>(
-    surface: &coral_spec::v4::V4Surface,
-    bundled_descriptors: &'a [BundledV4Descriptor],
-) -> Option<&'a [u8]> {
-    bundled_descriptors
-        .iter()
-        .find(|descriptor| descriptor.surface_id == surface.id)
-        .map(|descriptor| descriptor.bytes)
 }
 
 fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {

@@ -15,16 +15,14 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
-use crate::features::Features;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
-    MaterializationBuild, MaterializationDescriptorSource, build_v4_materialization_tmp,
-    canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
-    enrich_v4_openapi_manifest_yaml, new_materialization_suffix, replace_v4_materialization,
-    restore_materialization_backup,
+    MaterializationBuild, build_v4_materialization_tmp, canonicalize_file_descriptor,
+    cleanup_materialization_backup, cleanup_materialization_tmp, enrich_v4_openapi_manifest_yaml,
+    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -42,7 +40,6 @@ pub(crate) struct SourceManager {
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
-    features: Features,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -160,32 +157,16 @@ struct SourceRollbackState {
 }
 
 impl SourceManager {
-    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
-    ) -> Self {
-        Self::new_with_features(
-            config_store,
-            credential_manager,
-            layout,
-            Features::default(),
-        )
-    }
-
-    pub(crate) fn new_with_features(
-        config_store: ConfigStore,
-        credential_manager: CredentialManager,
-        layout: AppStateLayout,
-        features: Features,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
-            features,
         }
     }
 
@@ -219,19 +200,15 @@ impl SourceManager {
     ) -> Result<CandidateSource, AppError> {
         match self.config_store.get_source(workspace_name, source_name) {
             Ok(source) => {
-                return Ok(resolve_installed_manifest(
-                    workspace_name,
-                    &source,
-                    &self.layout,
-                    &self.features,
-                )?
-                .candidate);
+                return Ok(
+                    resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
+                );
             }
             Err(AppError::SourceNotFound(_)) => {}
             Err(error) => return Err(error),
         }
 
-        match load_bundled_source(source_name, &self.features) {
+        match load_bundled_source(source_name) {
             Ok(bundled) => self.describe_bundled_source(workspace_name, &bundled.manifest_yaml),
             Err(AppError::InvalidInput(_)) => {
                 Err(AppError::SourceNotFound(source_name.to_string()))
@@ -257,7 +234,7 @@ impl SourceManager {
                     .map(|storage| (source.name.clone(), storage))
             })
             .collect::<BTreeMap<_, _>>();
-        let mut candidates = list_bundled_sources(&installed, &self.features)?;
+        let mut candidates = list_bundled_sources(&installed)?;
         for candidate in &mut candidates {
             if let Some(storage) = installed_storage.get(&candidate.name) {
                 candidate.credential_storage = Some(*storage);
@@ -271,14 +248,13 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         command: &CreateBundledSourceCommand,
     ) -> Result<InstalledSource, AppError> {
-        let bundled = load_bundled_source(&command.name, &self.features)?;
+        let bundled = load_bundled_source(&command.name)?;
         let manifest = parse_source_manifest_yaml(&bundled.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = Self::enrich_v4_manifest_yaml(
             &bundled.manifest_yaml,
             &manifest,
             SourceOrigin::Bundled,
-            bundled.descriptors,
         )?;
         let candidate = self.describe_bundled_source(workspace_name, &manifest_yaml)?;
         self.install_validated_source(
@@ -288,7 +264,6 @@ impl SourceManager {
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
-            bundled.descriptors,
         )
     }
 
@@ -298,14 +273,13 @@ impl SourceManager {
         command: CreateBundledSourceWithOAuthCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
-        let bundled = load_bundled_source(&command.name, &self.features)?;
+        let bundled = load_bundled_source(&command.name)?;
         let manifest = parse_source_manifest_yaml(&bundled.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = Self::enrich_v4_manifest_yaml(
             &bundled.manifest_yaml,
             &manifest,
             SourceOrigin::Bundled,
-            bundled.descriptors,
         )?;
         let candidate = self.describe_bundled_source(workspace_name, &manifest_yaml)?;
         self.install_source_with_oauth(
@@ -317,7 +291,6 @@ impl SourceManager {
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
-            bundled.descriptors,
         )
         .await
     }
@@ -333,7 +306,7 @@ impl SourceManager {
         let manifest = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml =
-            Self::enrich_v4_manifest_yaml(&manifest_yaml, &manifest, SourceOrigin::Imported, &[])?;
+            Self::enrich_v4_manifest_yaml(&manifest_yaml, &manifest, SourceOrigin::Imported)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_validated_source(
@@ -343,7 +316,6 @@ impl SourceManager {
             Some(&manifest_yaml),
             &manifest_yaml,
             SourceOrigin::Imported,
-            &[],
         )
     }
 
@@ -359,7 +331,7 @@ impl SourceManager {
         let manifest = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml =
-            Self::enrich_v4_manifest_yaml(&manifest_yaml, &manifest, SourceOrigin::Imported, &[])?;
+            Self::enrich_v4_manifest_yaml(&manifest_yaml, &manifest, SourceOrigin::Imported)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_source_with_oauth(
@@ -371,7 +343,6 @@ impl SourceManager {
             Some(&manifest_yaml),
             &manifest_yaml,
             SourceOrigin::Imported,
-            &[],
         )
         .await
     }
@@ -380,10 +351,6 @@ impl SourceManager {
     /// the source. Shared tail of the non-OAuth install entry points; the
     /// caller supplies the resolved `candidate` plus the per-origin
     /// `manifest_yaml`/`origin`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Shared non-OAuth install tail for the source-lifecycle entry points; the parameters mirror the OAuth path and keep rollback ownership local."
-    )]
     fn install_validated_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -392,7 +359,6 @@ impl SourceManager {
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
-        bundled_descriptors: &[crate::sources::catalog::BundledV4Descriptor],
     ) -> Result<InstalledSource, AppError> {
         let stored_material = self.source_stored_material_for_validation(
             workspace_name,
@@ -421,7 +387,6 @@ impl SourceManager {
                         candidate,
                         materialization_manifest_yaml,
                         origin,
-                        bundled_descriptors,
                         "tmp",
                     )?
                     .map(|build| build.temp_dir),
@@ -447,7 +412,6 @@ impl SourceManager {
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
-        bundled_descriptors: &[crate::sources::catalog::BundledV4Descriptor],
     ) -> Result<InstalledSource, AppError> {
         let oauth_input_keys = oauth_credential_retrievals
             .iter()
@@ -489,7 +453,6 @@ impl SourceManager {
                         candidate,
                         materialization_manifest_yaml,
                         origin,
-                        bundled_descriptors,
                         "tmp",
                     )?
                     .map(|build| build.temp_dir),
@@ -597,19 +560,24 @@ impl SourceManager {
         manifest_yaml: &str,
         manifest: &ValidatedSourceManifest,
         origin: SourceOrigin,
-        bundled_descriptors: &[crate::sources::catalog::BundledV4Descriptor],
     ) -> Result<String, AppError> {
         let Some(v4) = manifest.as_v4() else {
             return Ok(manifest_yaml.to_string());
         };
-        enrich_v4_openapi_manifest_yaml(
-            manifest_yaml,
-            v4,
-            MaterializationDescriptorSource {
-                origin,
-                bundled_descriptors,
-            },
-        )
+        if matches!(origin, SourceOrigin::Bundled)
+            && v4.surfaces.iter().any(|surface| {
+                matches!(
+                    surface.descriptor,
+                    coral_spec::v4::SurfaceDescriptor::File { .. }
+                )
+            })
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "bundled source '{}' uses local DSL v4 file descriptors, which are development-only",
+                v4.common.name
+            )));
+        }
+        enrich_v4_openapi_manifest_yaml(manifest_yaml, v4)
     }
 
     #[expect(
@@ -766,7 +734,6 @@ impl SourceManager {
         candidate: &CandidateSource,
         manifest_yaml: &str,
         origin: SourceOrigin,
-        bundled_descriptors: &[crate::sources::catalog::BundledV4Descriptor],
         suffix_prefix: &str,
     ) -> Result<Option<MaterializationBuild>, AppError> {
         let manifest = parse_source_manifest_yaml(manifest_yaml)
@@ -774,16 +741,25 @@ impl SourceManager {
         let Some(v4) = manifest.as_v4() else {
             return Ok(None);
         };
+        if matches!(origin, SourceOrigin::Bundled)
+            && v4.surfaces.iter().any(|surface| {
+                matches!(
+                    surface.descriptor,
+                    coral_spec::v4::SurfaceDescriptor::File { .. }
+                )
+            })
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "bundled source '{}' uses local DSL v4 file descriptors, which are development-only",
+                v4.common.name
+            )));
+        }
         build_v4_materialization_tmp(
             &self.layout,
             workspace_name,
             &candidate.name,
             manifest_yaml,
             v4,
-            MaterializationDescriptorSource {
-                origin,
-                bundled_descriptors,
-            },
             &new_materialization_suffix(suffix_prefix),
         )
         .map(Some)
@@ -1140,7 +1116,7 @@ impl SourceManager {
         mut source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
         source.version = Some(
-            resolve_installed_manifest(workspace_name, &source, &self.layout, &self.features)?
+            resolve_installed_manifest(workspace_name, &source, &self.layout)?
                 .candidate
                 .version,
         );
@@ -1803,7 +1779,7 @@ tables:
 
         let info = manager
             .get_source_info(&default_workspace(), &source_name)
-            .expect("installed v4 source should be usable without a runtime feature gate");
+            .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
     }
 

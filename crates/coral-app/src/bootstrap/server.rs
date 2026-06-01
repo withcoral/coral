@@ -40,7 +40,6 @@ use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
-use crate::features::{FeatureOverrides, FeatureStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -82,7 +81,6 @@ pub(crate) struct ServerConfig {
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     enable_stderr_logs: bool,
-    feature_overrides: FeatureOverrides,
 }
 
 impl Default for ServerConfig {
@@ -99,7 +97,6 @@ impl ServerConfig {
             engine_extensions_providers: Vec::new(),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             enable_stderr_logs: false,
-            feature_overrides: FeatureOverrides::default(),
         }
     }
 
@@ -125,11 +122,6 @@ impl ServerConfig {
     #[must_use]
     pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.enable_stderr_logs = enable_stderr_logs;
-        self
-    }
-
-    pub(crate) fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
-        self.feature_overrides = feature_overrides;
         self
     }
 }
@@ -233,13 +225,6 @@ impl ServerBuilder {
         self
     }
 
-    #[must_use]
-    /// Applies process-local runtime feature overrides to this local server.
-    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
-        self.config = self.config.with_feature_overrides(feature_overrides);
-        self
-    }
-
     /// Disables hosted feedback upload for tests and controlled local harnesses.
     #[doc(hidden)]
     #[must_use]
@@ -273,17 +258,14 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
-        let features = FeatureStore::new(layout.clone())
-            .load_with_overrides(&self.config.feature_overrides)?;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_with_features(
+        let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
-            features.clone(),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -294,13 +276,12 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
-        let query_manager = QueryManager::new_with_features(
+        let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
-            features,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))

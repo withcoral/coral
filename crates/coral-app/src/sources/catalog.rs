@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
-use crate::features::Features;
 use crate::sources::SourceName;
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -16,20 +15,6 @@ include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 #[derive(Debug, Clone)]
 pub(crate) struct BundledSourceManifest {
     pub(crate) manifest_yaml: String,
-    pub(crate) descriptors: &'static [BundledV4Descriptor],
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BundledSourceEntry {
-    pub(crate) name: &'static str,
-    pub(crate) manifest_yaml: &'static str,
-    pub(crate) descriptors: &'static [BundledV4Descriptor],
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BundledV4Descriptor {
-    pub(crate) surface_id: &'static str,
-    pub(crate) bytes: &'static [u8],
 }
 
 #[derive(Debug, Clone)]
@@ -41,14 +26,13 @@ pub(crate) struct InstalledSourceManifest {
 
 pub(crate) fn list_bundled_sources(
     installed_source_names: &BTreeSet<SourceName>,
-    features: &Features,
 ) -> Result<Vec<CandidateSource>, AppError> {
-    let mut candidates = enabled_bundled_sources(features)
+    let mut candidates = BUNDLED_SOURCES
         .iter()
-        .map(|entry| {
-            let bundled_name = SourceName::parse(entry.name)?;
+        .map(|(name, manifest_yaml)| {
+            let bundled_name = SourceName::parse(name)?;
             let mut candidate = describe_manifest(
-                entry.manifest_yaml,
+                manifest_yaml,
                 SourceOrigin::Bundled,
                 installed_source_names.contains(&bundled_name),
             )?;
@@ -60,21 +44,17 @@ pub(crate) fn list_bundled_sources(
     Ok(candidates)
 }
 
-pub(crate) fn load_bundled_source(
-    name: &SourceName,
-    features: &Features,
-) -> Result<BundledSourceManifest, AppError> {
-    let Some(entry) = enabled_bundled_sources(features)
-        .into_iter()
-        .find(|entry| entry.name == name.as_str())
+pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceManifest, AppError> {
+    let Some((_, manifest_yaml)) = BUNDLED_SOURCES
+        .iter()
+        .find(|(candidate, _)| *candidate == name.as_str())
     else {
         return Err(AppError::InvalidInput(format!(
             "unknown bundled source '{name}'"
         )));
     };
     Ok(BundledSourceManifest {
-        manifest_yaml: entry.manifest_yaml.to_string(),
-        descriptors: entry.descriptors,
+        manifest_yaml: (*manifest_yaml).to_string(),
     })
 }
 
@@ -84,10 +64,9 @@ pub(crate) fn resolve_installed_manifest(
     workspace_name: &WorkspaceName,
     source: &InstalledSource,
     layout: &AppStateLayout,
-    features: &Features,
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
-        SourceOrigin::Bundled => load_bundled_source(&source.name, features)?.manifest_yaml,
+        SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
         SourceOrigin::Imported => {
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
@@ -120,10 +99,6 @@ pub(crate) fn describe_manifest(
     candidate_from_manifest(&manifest, origin, installed)
 }
 
-fn enabled_bundled_sources(_features: &Features) -> Vec<&'static BundledSourceEntry> {
-    BUNDLED_SOURCES.iter().collect::<Vec<_>>()
-}
-
 fn candidate_from_manifest(
     manifest: &ValidatedSourceManifest,
     origin: SourceOrigin,
@@ -152,14 +127,12 @@ mod tests {
     use coral_spec::ManifestInputKind;
 
     use super::{describe_manifest, list_bundled_sources, load_bundled_source};
-    use crate::features::Features;
     use crate::sources::SourceName;
     use crate::sources::model::SourceOrigin;
 
     #[test]
     fn bundled_sources_load_through_catalog() {
-        let sources =
-            list_bundled_sources(&BTreeSet::new(), &Features::default()).expect("bundled sources");
+        let sources = list_bundled_sources(&BTreeSet::new()).expect("bundled sources");
         assert!(!sources.is_empty());
         assert!(
             sources
@@ -177,8 +150,7 @@ mod tests {
     #[test]
     fn community_sources_are_not_bundled() {
         let hn = SourceName::parse("hn").expect("source");
-        let error = load_bundled_source(&hn, &Features::default())
-            .expect_err("community source should not be bundled");
+        let error = load_bundled_source(&hn).expect_err("community source should not be bundled");
         assert!(error.to_string().contains("unknown bundled source 'hn'"));
     }
 
@@ -186,8 +158,7 @@ mod tests {
     fn core_v4_preview_sources_are_not_bundled() {
         let github_v4 = SourceName::parse("github_v4").expect("source");
 
-        let error = load_bundled_source(&github_v4, &Features::default())
-            .expect_err("v4 source should not be bundled");
+        let error = load_bundled_source(&github_v4).expect_err("v4 source should not be bundled");
         assert!(error.to_string().contains("unknown bundled source"));
     }
 

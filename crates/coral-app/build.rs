@@ -67,17 +67,16 @@ fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
 fn write_entries(generated: &mut String, const_name: &str, entries: &[BundledEntry]) {
     writeln!(
         generated,
-        "pub(crate) const {const_name}: &[BundledSourceEntry] = &["
+        "pub(crate) const {const_name}: &[(&str, &str)] = &["
     )
     .expect("writing to String is infallible");
     for entry in entries {
         writeln!(
             generated,
-            "    BundledSourceEntry {{ name: {:?}, manifest_yaml: {:?}, descriptors: &[",
+            "    ({:?}, {:?}),",
             entry.name, entry.manifest_yaml
         )
         .expect("writing to String is infallible");
-        generated.push_str("    ] },\n");
     }
     generated.push_str("];\n");
 }

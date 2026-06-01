@@ -166,7 +166,7 @@ impl Features {
         features
     }
 
-    pub(crate) fn apply_overrides(&mut self, overrides: &FeatureOverrides) {
+    fn apply_overrides(&mut self, overrides: &FeatureOverrides) {
         for (feature, enabled) in overrides.iter() {
             self.enabled.insert(feature, enabled);
         }
@@ -199,12 +199,6 @@ pub struct FeatureStore {
 }
 
 impl FeatureStore {
-    /// Builds a feature store for an already-discovered app state layout.
-    #[must_use]
-    pub(crate) fn new(layout: AppStateLayout) -> Self {
-        Self { layout }
-    }
-
     /// Discovers the Coral app state layout used for runtime feature config.
     ///
     /// # Errors
@@ -402,10 +396,7 @@ mod tests {
             .iter()
             .map(|spec| status_from_raw(spec, &raw, &features))
             .collect::<Vec<_>>();
-        let status = statuses
-            .iter()
-            .find(|status| status.key == "feedback")
-            .expect("feedback status");
+        let status = statuses.first().expect("feedback status");
 
         assert_eq!(status.key, "feedback");
         assert_eq!(status.configured, FeatureConfiguredState::InvalidValue);

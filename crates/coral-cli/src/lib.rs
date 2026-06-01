@@ -437,7 +437,6 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
-                feature_overrides: feature_overrides.clone(),
             })
             .await
             .map_err(anyhow::Error::from)?;
@@ -905,14 +904,6 @@ mod tests {
             .expect("global feature override should parse before subcommand");
 
         assert!(matches!(cli.command, super::Command::McpStdio(_)));
-    }
-
-    #[test]
-    fn dsl_v4_feature_override_is_rejected() {
-        let error = Cli::try_parse_from(["coral", "--enable-dsl-v4", "source", "discover"])
-            .expect_err("dsl v4 feature override should no longer be accepted");
-
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
