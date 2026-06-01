@@ -63,7 +63,7 @@ tables:
           from: filter_bool
           key: thumbs
         - name: concept_tags
-          from: filter
+          from: filter_bool
           key: include_concept_tags
     response:
       row_strategy: direct
