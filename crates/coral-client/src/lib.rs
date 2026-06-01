@@ -164,19 +164,10 @@ pub fn format_batches_json(batches: &[RecordBatch]) -> Result<String, QueryResul
 /// Returns [`QueryResultError`] if Arrow's JSON writer rejects a column type
 /// in the batch (e.g. an unsupported `Union` or extension type).
 pub fn batches_to_json_rows(batches: &[RecordBatch]) -> Result<Vec<Value>, QueryResultError> {
-    batches_to_json_rows_with(batches, |batch| {
-        format_batches_json(std::slice::from_ref(batch))
-    })
-}
-
-fn batches_to_json_rows_with(
-    batches: &[RecordBatch],
-    mut format_batch: impl FnMut(&RecordBatch) -> Result<String, QueryResultError>,
-) -> Result<Vec<Value>, QueryResultError> {
     let row_count = batches.iter().map(RecordBatch::num_rows).sum();
     let mut rows = Vec::with_capacity(row_count);
     for batch in batches {
-        let json = format_batch(batch)?;
+        let json = format_batches_json(std::slice::from_ref(batch))?;
         let mut batch_rows = serde_json::from_str::<Vec<Value>>(&json)?;
         rows.append(&mut batch_rows);
     }

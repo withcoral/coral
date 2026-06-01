@@ -226,6 +226,8 @@ impl CoralMcpServer {
     }
 
     async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
+        // Move row Values into the result instead of reserializing them through
+        // serde_json::to_value after Arrow decoding.
         let mut value = Map::with_capacity(1);
         value.insert(
             "rows".to_string(),
