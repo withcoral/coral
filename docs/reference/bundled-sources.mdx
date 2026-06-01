@@ -312,8 +312,12 @@ Leave this empty during interactive setup to connect with Linear OAuth.
 `LINEAR_OAUTH_ACCESS_TOKEN` (optional)
 
 Connect with Linear OAuth, or paste a raw OAuth access token.
-Linear OAuth application needs the `read` scope and the
+Coral uses a built-in OAuth client by default; to use your own,
+set LINEAR_OAUTH_CLIENT_ID — it needs the `read` scope and the
 redirect callback URL `http://127.0.0.1:53682/oauth/callback`.
+A pasted raw token is not refreshed automatically and must be
+replaced once it expires; connect with guided OAuth instead to
+store a refresh token and reconnect without re-pasting.
 See [Linear OAuth docs](https://linear.app/developers/oauth-2-0-authentication).
 
 ### `notion`

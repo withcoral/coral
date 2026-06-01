@@ -15,7 +15,9 @@ use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
-use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::model::{
+    AuthOneOfSecretRequirement, CandidateSource, InstalledSource, SourceOrigin,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
@@ -127,7 +129,12 @@ struct SourceCredentialOAuthConfig<'a> {
 struct ValidatedBindings {
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
-    replaced_oauth_inputs: BTreeSet<String>,
+    /// Source secret inputs whose previously stored material (bare value and
+    /// OAuth metadata) must be purged before the new credential set is written.
+    /// Holds every input the caller supplied a fresh value for; persisting also
+    /// folds in the auth `from: one_of` siblings so switching auth methods
+    /// clears the superseded alternative.
+    replaced_credential_inputs: BTreeSet<String>,
 }
 
 struct PersistSourceRequest<'a> {
@@ -504,29 +511,24 @@ impl SourceManager {
         let ValidatedBindings {
             variables,
             secrets,
-            replaced_oauth_inputs,
+            replaced_credential_inputs,
         } = request.bindings;
         let (visible_secret_keys, credential_storage) =
             if let Some(requested_storage) = request.credential_storage {
-                let expected_secret_keys = request
-                    .candidate
-                    .inputs
-                    .iter()
-                    .filter(|input| input.kind == ManifestInputKind::Secret)
-                    .map(|input| input.key.clone())
-                    .collect::<BTreeSet<_>>();
+                // Switching one branch of an auth `one_of` supersedes its siblings.
+                let replaced_credential_inputs = expand_auth_one_of_siblings(
+                    replaced_credential_inputs,
+                    &request.candidate.auth_one_of_secret_requirements,
+                );
                 let credential_write = match credential_guard.update_material_or_empty_on_parse(
                     requested_storage,
-                    |mut credential_material| {
-                        credential_material.retain(|key, _| {
-                            material_key_belongs_to_source_secret(key, &expected_secret_keys)
-                        });
-                        for input_key in &replaced_oauth_inputs {
-                            credential_material
-                                .retain(|key, _| !material_key_belongs_to_input(key, input_key));
-                        }
-                        credential_material.extend(secrets.clone());
-                        Ok(credential_material)
+                    |credential_material| {
+                        Ok(rebuild_source_credential_material(
+                            credential_material,
+                            request.candidate,
+                            &replaced_credential_inputs,
+                            &secrets,
+                        ))
                     },
                 ) {
                     Ok(outcome) => outcome,
@@ -1033,7 +1035,7 @@ fn validate_bindings(
 
     Ok(ValidatedBindings {
         variables: variable_values,
-        replaced_oauth_inputs: secret_values.keys().cloned().collect(),
+        replaced_credential_inputs: secret_values.keys().cloned().collect(),
         secrets: secret_values,
     })
 }
@@ -1073,6 +1075,61 @@ fn material_key_belongs_to_source_secret(
     expected_secret_keys
         .iter()
         .any(|secret_key| material_key_belongs_to_input(key, secret_key))
+}
+
+/// Rebuild a source's stored credential material for a persist: keep only what
+/// still belongs to a declared source secret, purge each replaced input (its
+/// bare value and any OAuth metadata), then layer the freshly supplied secrets
+/// back on top. `replaced_credential_inputs` is the already-sibling-expanded
+/// set, so purged auth `one_of` alternatives are not re-added by the `extend`.
+fn rebuild_source_credential_material(
+    mut credential_material: BTreeMap<String, String>,
+    candidate: &CandidateSource,
+    replaced_credential_inputs: &BTreeSet<String>,
+    secrets: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let expected_secret_keys = candidate
+        .inputs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Secret)
+        .map(|input| input.key.clone())
+        .collect::<BTreeSet<_>>();
+    credential_material
+        .retain(|key, _| material_key_belongs_to_source_secret(key, &expected_secret_keys));
+    for input_key in replaced_credential_inputs {
+        credential_material
+            .retain(|key, _| key != input_key && !material_key_belongs_to_input(key, input_key));
+    }
+    credential_material.extend(secrets.clone());
+    credential_material
+}
+
+/// Expand a set of replaced credential inputs to cover every sibling of the
+/// auth `from: one_of` groups they participate in.
+///
+/// Supplying a fresh credential for one branch of an auth choice (for example
+/// switching a Linear source from OAuth to a raw API key) supersedes the other
+/// branches. Their stored material must be purged, otherwise the stale sibling
+/// lingers and—because `one_of` resolves the first non-empty value in manifest
+/// order—can keep authenticating with the superseded method. Membership is
+/// tested against the original inputs so the result is independent of group
+/// ordering and only touches groups the caller directly supplied a value for.
+fn expand_auth_one_of_siblings(
+    mut replaced_inputs: BTreeSet<String>,
+    requirements: &[AuthOneOfSecretRequirement],
+) -> BTreeSet<String> {
+    let mut siblings = BTreeSet::new();
+    for requirement in requirements {
+        if requirement
+            .keys
+            .iter()
+            .any(|key| replaced_inputs.contains(key))
+        {
+            siblings.extend(requirement.keys.iter().cloned());
+        }
+    }
+    replaced_inputs.extend(siblings);
+    replaced_inputs
 }
 
 fn source_oauth_config<'a>(
@@ -1142,7 +1199,9 @@ fn merge_oauth_material_into_bindings(
                 "source secret '{input_key}' was provided by both source config and OAuth"
             )));
         }
-        bindings.replaced_oauth_inputs.insert(input_key.clone());
+        bindings
+            .replaced_credential_inputs
+            .insert(input_key.clone());
         bindings.secrets.insert(input_key, access_token);
         bindings.secrets.extend(internal_metadata);
     }
@@ -2363,6 +2422,86 @@ tables:
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),
             Some("access-token")
+        );
+    }
+
+    #[test]
+    fn switching_auth_one_of_branch_clears_stored_sibling_credential() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let workspace_name = default_workspace();
+        let manifest_yaml =
+            manifest_with_oauth_one_of_auth_secret("https://oauth.example.com/token", 53682);
+
+        // The source was previously connected through the OAuth branch, so the
+        // bearer-first `API_TOKEN` and its OAuth metadata are already stored.
+        credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([
+                    ("API_TOKEN".to_string(), "oauth-token".to_string()),
+                    (
+                        "__coral_oauth.QVBJX1RPS0VO.method".to_string(),
+                        "oauth".to_string(),
+                    ),
+                    (
+                        "__coral_oauth.QVBJX1RPS0VO.refresh_token".to_string(),
+                        "refresh-token".to_string(),
+                    ),
+                ]),
+            )
+            .expect("seed oauth material");
+
+        // Re-add the source choosing the sibling API key branch instead.
+        let updated = manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml,
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_KEY".to_string(),
+                            value: "raw-api-key".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("switch to api key");
+        assert_eq!(updated.secrets, vec!["API_KEY".to_string()]);
+
+        // The superseded OAuth credential — bare value and metadata — must be
+        // gone, so the bearer-first branch can no longer win over the API key.
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material after switch");
+        assert_eq!(
+            material.get("API_KEY").map(String::as_str),
+            Some("raw-api-key")
+        );
+        assert!(
+            !material.contains_key("API_TOKEN"),
+            "stale OAuth access token must be cleared"
+        );
+        assert!(
+            !material
+                .keys()
+                .any(|key| key.starts_with("__coral_oauth.QVBJX1RPS0VO.")),
+            "stale OAuth metadata must be cleared"
         );
     }
 
