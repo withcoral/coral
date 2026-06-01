@@ -3,6 +3,10 @@ name: zoho_books
 version: 0.1.0
 dsl_version: 3
 backend: http
+description: >-
+  Query Zoho Books API v3 financial and operations data including contacts,
+  invoices, bills, expenses, payments, items, chart of accounts, journals,
+  and projects with OAuth authentication and paginated fetch support.
 
 base_url: "{{input.ZOHO_API_DOMAIN}}/books/v3"
 
@@ -115,6 +119,11 @@ tables:
   # -------------------------------------------------------------------------
   - name: contacts
     description: Customers and vendors in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: contact_type
+      - name: filter_by
+      - name: search_text
     request:
       method: GET
       path: /contacts
@@ -122,6 +131,15 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: contact_type
+          from: filter
+          key: contact_type
+        - name: filter_by
+          from: filter
+          key: filter_by
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [contacts]
       row_strategy: direct
@@ -193,6 +211,13 @@ tables:
   # -------------------------------------------------------------------------
   - name: invoices
     description: Sales invoices in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: customer_id
+      - name: status
+      - name: date_start
+      - name: date_end
+      - name: search_text
     request:
       method: GET
       path: /invoices
@@ -200,6 +225,21 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: status
+          from: filter
+          key: status
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [invoices]
       row_strategy: direct
@@ -271,6 +311,13 @@ tables:
   # -------------------------------------------------------------------------
   - name: estimates
     description: Estimates (quotes) in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: customer_id
+      - name: status
+      - name: date_start
+      - name: date_end
+      - name: search_text
     request:
       method: GET
       path: /estimates
@@ -278,6 +325,21 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: status
+          from: filter
+          key: status
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [estimates]
       row_strategy: direct
@@ -336,6 +398,13 @@ tables:
   # -------------------------------------------------------------------------
   - name: sales_orders
     description: Sales orders in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: customer_id
+      - name: status
+      - name: date_start
+      - name: date_end
+      - name: search_text
     request:
       method: GET
       path: /salesorders
@@ -343,6 +412,21 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: status
+          from: filter
+          key: status
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [salesorders]
       row_strategy: direct
@@ -399,6 +483,13 @@ tables:
   # -------------------------------------------------------------------------
   - name: bills
     description: Vendor bills in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: vendor_id
+      - name: status
+      - name: date_start
+      - name: date_end
+      - name: search_text
     request:
       method: GET
       path: /bills
@@ -406,6 +497,21 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: vendor_id
+          from: filter
+          key: vendor_id
+        - name: status
+          from: filter
+          key: status
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [bills]
       row_strategy: direct
@@ -464,6 +570,13 @@ tables:
   # -------------------------------------------------------------------------
   - name: purchase_orders
     description: Purchase orders in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: vendor_id
+      - name: status
+      - name: date_start
+      - name: date_end
+      - name: search_text
     request:
       method: GET
       path: /purchaseorders
@@ -471,6 +584,21 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: vendor_id
+          from: filter
+          key: vendor_id
+        - name: status
+          from: filter
+          key: status
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [purchaseorders]
       row_strategy: direct
@@ -527,6 +655,14 @@ tables:
   # -------------------------------------------------------------------------
   - name: expenses
     description: Recorded expenses in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: vendor_id
+      - name: customer_id
+      - name: status
+      - name: date_start
+      - name: date_end
+      - name: search_text
     request:
       method: GET
       path: /expenses
@@ -534,6 +670,24 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: vendor_id
+          from: filter
+          key: vendor_id
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: status
+          from: filter
+          key: status
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [expenses]
       row_strategy: direct
@@ -599,6 +753,13 @@ tables:
   # -------------------------------------------------------------------------
   - name: credit_notes
     description: Credit notes in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: customer_id
+      - name: status
+      - name: date_start
+      - name: date_end
+      - name: search_text
     request:
       method: GET
       path: /creditnotes
@@ -606,6 +767,21 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: status
+          from: filter
+          key: status
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [creditnotes]
       row_strategy: direct
@@ -662,6 +838,12 @@ tables:
   # -------------------------------------------------------------------------
   - name: customer_payments
     description: Payments received from customers.
+    fetch_limit_default: 100
+    filters:
+      - name: customer_id
+      - name: date_start
+      - name: date_end
+      - name: reference_number
     request:
       method: GET
       path: /customerpayments
@@ -669,6 +851,18 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: reference_number
+          from: filter
+          key: reference_number
     response:
       rows_path: [customerpayments]
       row_strategy: direct
@@ -727,6 +921,12 @@ tables:
   # -------------------------------------------------------------------------
   - name: vendor_payments
     description: Payments made to vendors.
+    fetch_limit_default: 100
+    filters:
+      - name: vendor_id
+      - name: date_start
+      - name: date_end
+      - name: reference_number
     request:
       method: GET
       path: /vendorpayments
@@ -734,6 +934,18 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: vendor_id
+          from: filter
+          key: vendor_id
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: reference_number
+          from: filter
+          key: reference_number
     response:
       rows_path: [vendorpayments]
       row_strategy: direct
@@ -788,6 +1000,11 @@ tables:
   # -------------------------------------------------------------------------
   - name: items
     description: Products and services in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: status
+      - name: search_text
+      - name: filter_by
     request:
       method: GET
       path: /items
@@ -795,6 +1012,15 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: status
+          from: filter
+          key: status
+        - name: search_text
+          from: filter
+          key: search_text
+        - name: filter_by
+          from: filter
+          key: filter_by
     response:
       rows_path: [items]
       row_strategy: direct
@@ -859,6 +1085,11 @@ tables:
   # -------------------------------------------------------------------------
   - name: chart_of_accounts
     description: Chart of accounts.
+    fetch_limit_default: 100
+    filters:
+      - name: account_type
+      - name: search_text
+      - name: filter_by
     request:
       method: GET
       path: /chartofaccounts
@@ -866,6 +1097,15 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: account_type
+          from: filter
+          key: account_type
+        - name: search_text
+          from: filter
+          key: search_text
+        - name: filter_by
+          from: filter
+          key: filter_by
     response:
       rows_path: [chartofaccounts]
       row_strategy: direct
@@ -912,6 +1152,11 @@ tables:
   # -------------------------------------------------------------------------
   - name: journals
     description: Manual journal entries.
+    fetch_limit_default: 100
+    filters:
+      - name: date_start
+      - name: date_end
+      - name: reference_number
     request:
       method: GET
       path: /journals
@@ -919,6 +1164,15 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: date_start
+          from: filter
+          key: date_start
+        - name: date_end
+          from: filter
+          key: date_end
+        - name: reference_number
+          from: filter
+          key: reference_number
     response:
       rows_path: [journals]
       row_strategy: direct
@@ -975,6 +1229,11 @@ tables:
   # -------------------------------------------------------------------------
   - name: projects
     description: Projects in Zoho Books.
+    fetch_limit_default: 100
+    filters:
+      - name: customer_id
+      - name: status
+      - name: search_text
     request:
       method: GET
       path: /projects
@@ -982,6 +1241,15 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: status
+          from: filter
+          key: status
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [projects]
       row_strategy: direct
