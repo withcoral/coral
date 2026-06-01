@@ -524,7 +524,7 @@ Windows:
 Get-ChildItem (Join-Path $HOME ".coral\ansible-facts")
 ```
 
-### YAML syntax errors after PowerShell edits , If edited.
+### YAML syntax errors after PowerShell edits
 
 Avoid:
 

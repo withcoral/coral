@@ -41,6 +41,8 @@ FORBIDDEN_SUBSTRINGS = [
 
 def validate_file(path: Path) -> int:
     count = 0
+    if path.name not in REQUIRED_KEYS:
+        raise ValueError(f"{path} is not a known fixture file")
     keys = REQUIRED_KEYS[path.name]
     with path.open("r", encoding="utf-8") as f:
         for lineno, line in enumerate(f, start=1):

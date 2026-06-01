@@ -390,8 +390,7 @@ END AS suggested_status_command
 FROM expected_services e
 JOIN ansible.hosts h
 ON h.hostname = e.hostname
-WHERE e.observed_state = 'missing'
-OR LOWER(e.observed_state) NOT IN ('running', 'started')
+WHERE LOWER(e.observed_state) NOT IN ('running', 'started')
 ORDER BY h.hostname, e.expected_service;
 
 -- ============================================================

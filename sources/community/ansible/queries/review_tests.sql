@@ -114,8 +114,7 @@ ON sec.hostname = h.hostname
 LEFT JOIN mount_risk mr
 ON mr.hostname = h.hostname
 AND mr.mount_rank = 1
-WHERE rs.service_state = 'missing'
-OR LOWER(rs.service_state) NOT IN ('running', 'started')
+WHERE LOWER(rs.service_state) NOT IN ('running', 'started')
 ORDER BY h.hostname, rs.role;
 
 -- 7. Confirm all advertised Ansible tables are registered in the Coral catalog.
