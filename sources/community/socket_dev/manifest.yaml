@@ -121,7 +121,6 @@ tables:
         expr:
           kind: path
           path:
-            - _value
             - id
       - name: slug
         type: Utf8
@@ -130,7 +129,6 @@ tables:
         expr:
           kind: path
           path:
-            - _value
             - slug
       - name: name
         type: Utf8
@@ -139,7 +137,6 @@ tables:
         expr:
           kind: path
           path:
-            - _value
             - name
       - name: plan
         type: Utf8
@@ -148,7 +145,6 @@ tables:
         expr:
           kind: path
           path:
-            - _value
             - plan
       - name: image
         type: Utf8
@@ -157,16 +153,13 @@ tables:
         expr:
           kind: path
           path:
-            - _value
             - image
       - name: raw
         type: Json
         nullable: true
         description: Full raw Socket organization object.
         expr:
-          kind: path
-          path:
-            - _value
+          kind: current_row
 
   - name: dependency_search
     description: Dependencies observed in the authenticated Socket organization.
