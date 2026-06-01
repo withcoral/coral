@@ -639,6 +639,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            reqwest::Client::new(),
         )
         .expect("client should build");
         let table = manifest
