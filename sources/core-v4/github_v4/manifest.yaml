@@ -1,9 +1,6 @@
 name: github_v4
 version: 0.1.0
 dsl_version: 4
-description: >-
-  Query GitHub REST API entities generated from the live GitHub OpenAPI
-  description.
 surfaces:
   - id: rest
     type: openapi
@@ -16,7 +13,6 @@ surfaces:
           GitHub personal access token used as a bearer token for the live
           GitHub REST API. Set GITHUB_TOKEN when installing this preview
           source.
-    base_url: https://api.github.com
     auth:
       type: HeaderAuth
       headers:
@@ -24,9 +20,6 @@ surfaces:
           from: template
           template: Bearer {{input.GITHUB_TOKEN}}
     request_headers:
-      - name: Accept
-        from: literal
-        value: application/vnd.github+json
       - name: X-GitHub-Api-Version
         from: literal
         value: "2022-11-28"
