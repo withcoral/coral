@@ -30,6 +30,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 url.workspace = true
+scopeguard.workspace = true
+unicode-width.workspace = true
 
 coral-api.workspace = true
 coral-app.workspace = true

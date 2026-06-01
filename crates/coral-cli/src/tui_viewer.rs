@@ -12,19 +12,27 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
+use unicode_width::UnicodeWidthStr;
 use coral_client::format_batches_table;
 
 pub(crate) fn run_tui_viewer(batches: &[RecordBatch]) -> Result<(), anyhow::Error> {
     // Generate the formatted table string
     let table_string = format_batches_table(batches)?;
     let lines: Vec<&str> = table_string.lines().collect();
-    let max_y = lines.len().saturating_sub(1) as u16;
-    let max_x = lines.iter().map(|l| l.len()).max().unwrap_or(0) as u16;
+    let max_y = u16::try_from(lines.len().saturating_sub(1)).unwrap_or(u16::MAX);
+    let max_x = u16::try_from(lines.iter().map(|l| l.width()).max().unwrap_or(0)).unwrap_or(u16::MAX);
 
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    
+    // Ensure terminal state is safely restored on all exit paths
+    scopeguard::defer! {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -96,10 +104,7 @@ pub(crate) fn run_tui_viewer(batches: &[RecordBatch]) -> Result<(), anyhow::Erro
         }
     }
 
-    // Teardown
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    // Teardown is handled automatically by scopeguard::defer
 
     Ok(())
 }

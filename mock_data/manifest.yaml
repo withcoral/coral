@@ -8,7 +8,7 @@ tables:
     description: "Users dataset"
     format: jsonl
     source:
-      location: "file:///C:/Users/THRISHAL/coral/mock_data/users.jsonl"
+      location: "file://~/coral/mock_data/users.jsonl"
     columns:
       - name: id
         type: Int64
@@ -24,7 +24,7 @@ tables:
     description: "Products dataset"
     format: jsonl
     source:
-      location: "file:///C:/Users/THRISHAL/coral/mock_data/products.jsonl"
+      location: "file://~/coral/mock_data/products.jsonl"
     columns:
       - name: product_id
         type: Int64
@@ -40,7 +40,7 @@ tables:
     description: "Orders dataset"
     format: jsonl
     source:
-      location: "file:///C:/Users/THRISHAL/coral/mock_data/orders.jsonl"
+      location: "file://~/coral/mock_data/orders.jsonl"
     columns:
       - name: order_id
         type: Int64

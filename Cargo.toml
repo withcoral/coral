@@ -111,7 +111,8 @@ urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
 wiremock = "0.6"
-
+scopeguard = "1.2.0"
+unicode-width = "0.2"
 coral-api = { path = "crates/coral-api" }
 coral-app = { path = "crates/coral-app" }
 coral-cli = { path = "crates/coral-cli" }
