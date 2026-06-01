@@ -459,9 +459,9 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_preserves_app_owned_http_body_capture_max_bytes() {
+    fn runtime_config_preserves_app_owned_body_capture_max_bytes() {
         let fixture = query_manager_with(
-            QueryRuntimeContext::default().with_http_body_capture_max_bytes(Some(42)),
+            QueryRuntimeContext::default().with_body_capture_max_bytes(Some(42)),
             Vec::new(),
         );
 
@@ -471,7 +471,7 @@ mod tests {
 
         let config = runtime
             .context
-            .http_body_capture_max_bytes
+            .body_capture_max_bytes
             .expect("body capture config");
         assert_eq!(config, 42);
     }

@@ -85,7 +85,10 @@ jobs:
               - 'Makefile'
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - 'xtask/**'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/docs/**'
+              - 'xtask/src/sources.rs'
               - 'crates/coral-spec/**'
               - 'sources/core/**'
               - 'docs/**'
@@ -105,7 +108,9 @@ jobs:
               - 'rust-toolchain.toml'
               - 'rust-toolchain'
               - 'crates/**'
-              - 'xtask/**'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/perf.rs'
               - 'sources/core/github/**'
 
   rust-checks:

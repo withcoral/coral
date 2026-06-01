@@ -1,28 +1,8 @@
 # ClickHouse Cloud MCP Connector
 
-> **⚠️ Deprecated — use [`clickhouse_cloud`](../clickhouse_cloud/README.md) instead.**
->
-> This source (`clickhouse_mcp`) is preserved for users who already
-> installed it from `main`. It will be removed in a future release.
->
-> The replacement source `clickhouse_cloud` talks to
-> `mcp.clickhouse.cloud` natively over MCP Streamable HTTP and drives the
-> OAuth flow itself — no `mcp-remote` npm proxy, no manual
-> `MCP_ACCESS_TOKEN` env var.
->
-> **To migrate:**
->
-> ```bash
-> coral source rm clickhouse_mcp
-> coral source add --file sources/community/clickhouse_cloud/manifest.yaml --interactive
-> ```
->
-> Then update any `clickhouse_mcp.*` references in your saved queries to
-> `clickhouse_cloud.*`. The table and function surface is identical.
-
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Source:** ClickHouse Cloud remote MCP server
-**Backend:** MCP (stdio, proxied through `mcp-remote`)
+**Backend:** MCP (Streamable HTTP, native)
 **Server URL:** `https://mcp.clickhouse.cloud/mcp`
 **Surface:** 7 tables + 6 functions wrapping 13 MCP tools
 
@@ -32,46 +12,37 @@ against any service in your organization.
 
 ## Setup
 
-The Cloud MCP server is HTTP-only with OAuth, but `coral-engine`'s MCP
-backend only speaks stdio. We bridge with `mcp-remote` — it runs as a
-stdio child process and proxies traffic to the HTTPS endpoint.
-
-### One-time authentication
-
-Run `mcp-remote` once interactively to complete the OAuth flow. A browser
-window opens; sign in with your ClickHouse Cloud account.
-
-```bash
-npx -y mcp-remote@0.1.37 https://mcp.clickhouse.cloud/mcp
-# Browser opens automatically.
-# After you authorize, the proxy prints "Proxy established successfully".
-# Press Ctrl+C.
-```
-
-Tokens are cached to `~/.mcp-auth/mcp-remote-<version>/`. The access token
-lasts 1 hour and refreshes automatically via the cached refresh token, so
-day-to-day querying needs no further interaction.
-
-If the refresh token ever expires, re-run the command above to re-auth.
+Coral talks to `mcp.clickhouse.cloud` directly over the MCP Streamable HTTP
+transport and drives the OAuth flow itself — no `mcp-remote` proxy and no
+manual token handling required.
 
 ### Register the source
 
 ```bash
-coral source add --file sources/community/clickhouse_mcp/manifest.yaml
+coral source add --file sources/community/clickhouse_cloud/manifest.yaml --interactive
 ```
 
-This registers the source and prints its catalog. The MCP child process is
-not spawned here — `mcp-remote` runs (and any cached OAuth tokens are read
-or refreshed) on the first real `coral sql` query. Run the `Verify` query
-below to exercise the end-to-end path.
+When prompted for `CLICKHOUSE_ACCESS_TOKEN`, choose **Connect with ClickHouse
+Cloud**. Coral binds a loopback callback on port 53683, opens your browser
+to ClickHouse's authorization page, exchanges the resulting code for an
+access token, and stores it as the source's secret. The catalog prints
+immediately after.
 
 ### Verify
 
 ```bash
-coral sql "SELECT id, name FROM clickhouse_mcp.organizations"
+coral sql "SELECT id, name FROM clickhouse_cloud.organizations"
 ```
 
 You should see your accessible ClickHouse Cloud organizations.
+
+### Re-authenticating
+
+Access tokens expire after one hour. Automatic refresh is on the MCP-HTTP
+follow-up plan; until then, when queries start failing with
+`MCP_AUTH_REQUIRED`, re-run the same `coral source add` command above to
+mint a fresh access token. The browser may complete the flow without
+re-prompting if the session at ClickHouse is still valid.
 
 ## Tables
 
@@ -118,7 +89,7 @@ you'll get a clear error rather than a runaway scan.
 All functions require **named arguments**, not positional:
 
 ```sql
-SELECT * FROM clickhouse_mcp.run_select_query(
+SELECT * FROM clickhouse_cloud.run_select_query(
   query => 'SELECT 1',
   service_id => '...'
 )
@@ -152,59 +123,56 @@ organizations.id
 ## Quick start
 
 ```bash
-# 1. Authenticate once
-npx -y mcp-remote@0.1.37 https://mcp.clickhouse.cloud/mcp   # browser flow, then Ctrl+C
+# 1. Register the source (browser opens automatically for OAuth)
+coral source add --file sources/community/clickhouse_cloud/manifest.yaml --interactive
 
-# 2. Register the source
-coral source add --file sources/community/clickhouse_mcp/manifest.yaml
+# 2. List orgs
+coral sql "SELECT id, name FROM clickhouse_cloud.organizations"
 
-# 3. List orgs
-coral sql "SELECT id, name FROM clickhouse_mcp.organizations"
-
-# 4. List services in an org
+# 3. List services in an org
 coral sql "
   SELECT id, name, provider, region, state, \"clickhouseVersion\"
-  FROM clickhouse_mcp.services
+  FROM clickhouse_cloud.services
   WHERE organization_id = '<org-id>'
 "
 
-# 5. List databases in a service
+# 4. List databases in a service
 coral sql "
   SELECT name
-  FROM clickhouse_mcp.databases
+  FROM clickhouse_cloud.databases
   WHERE service_id = '<service-id>'
 "
 
-# 6. List tables in a database
+# 5. List tables in a database
 coral sql "
   SELECT name, engine, primary_key
-  FROM clickhouse_mcp.tables
+  FROM clickhouse_cloud.tables
   WHERE service_id = '<service-id>' AND database_filter = 'default'
   LIMIT 20
 "
 
-# 7. Run SQL against the service
+# 6. Run SQL against the service
 coral sql "
   SELECT row
-  FROM clickhouse_mcp.run_select_query(
+  FROM clickhouse_cloud.run_select_query(
     query => 'SELECT version() AS v, currentDatabase() AS db',
     service_id => '<service-id>'
   )
 "
 
-# 8. Inspect a single service
+# 7. Inspect a single service
 coral sql "
   SELECT id, name, region, \"clickhouseVersion\", \"numReplicas\"
-  FROM clickhouse_mcp.get_service_details(
+  FROM clickhouse_cloud.get_service_details(
     organization_id => '<org-id>',
     service_id => '<service-id>'
   )
 "
 
-# 9. Aggregate costs
+# 8. Aggregate costs
 coral sql "
   SELECT SUM(json_get_float(row, 'totalCHC')) AS total
-  FROM clickhouse_mcp.organization_costs
+  FROM clickhouse_cloud.organization_costs
   WHERE organization_id = '<org-id>'
     AND from_date = '2026-04-01'
     AND to_date = '2026-05-01'
@@ -220,7 +188,7 @@ The Cloud API returns camelCase fields (`clickhouseVersion`, `sizeInBytes`,
 identifiers, so you must double-quote them in SQL:
 
 ```sql
-SELECT "sizeInBytes" FROM clickhouse_mcp.service_backups WHERE ...
+SELECT "sizeInBytes" FROM clickhouse_cloud.service_backups WHERE ...
 ```
 
 snake_case columns from the manifest (`organization_id`, `service_id`,
@@ -230,10 +198,10 @@ snake_case columns from the manifest (`organization_id`, `service_id`,
 
 ```sql
 -- WRONG: errors with "requires named arguments"
-SELECT * FROM clickhouse_mcp.run_select_query('SELECT 1', '<id>')
+SELECT * FROM clickhouse_cloud.run_select_query('SELECT 1', '<id>')
 
 -- RIGHT
-SELECT * FROM clickhouse_mcp.run_select_query(
+SELECT * FROM clickhouse_cloud.run_select_query(
   query => 'SELECT 1',
   service_id => '<id>'
 )
@@ -248,24 +216,20 @@ ClickHouse SQL query. To project a specific field:
 SELECT
   json_get_str(row, 'name')   AS name,
   json_get_str(row, 'engine') AS engine
-FROM clickhouse_mcp.run_select_query(
+FROM clickhouse_cloud.run_select_query(
   query => 'SELECT name, engine FROM system.tables LIMIT 10',
   service_id => '<id>'
 )
 ```
 
-### `mcp-remote` chatter in stderr
+### Each tool call opens a fresh MCP session
 
-Every scan spawns a fresh `mcp-remote` child; its handshake logs (port
-discovery, OAuth check, connection established) print to stderr. That's
-noise, not errors.
-
-### Each scan spawns a new process
-
-Coral spawns `mcp-remote` per query, so every scan does the
-OAuth-token-read + connect handshake (~1s overhead). Fine for interactive
-use; less ideal for many small queries in a loop. Tracked in
-the MCP backend follow-up plan.
+Coral creates a new Streamable HTTP MCP session for every underlying
+`tools/call` — not once per SQL query. A single query that scans several
+tables, or that joins across two MCP tables, runs the initialize +
+notifications/initialized handshake for each tool call, adding a few
+hundred ms of latency per call. Session pooling is tracked in the MCP
+backend follow-up plan.
 
 ### Error responses surface as `MCP_TOOL_RETURNED_ERROR`
 
@@ -279,3 +243,7 @@ Each table and function in this manifest sets
 `response.error_path: [result, message]`, so an error branch is converted
 into a structured `MCP_TOOL_RETURNED_ERROR` carrying the upstream message
 instead of silently producing zero rows.
+
+Service-idle responses surface the same way — when a service is woken on
+demand, you'll see `Service ... is currently idle. A wake command has been
+sent. Please try again shortly.` Retry after a few seconds.

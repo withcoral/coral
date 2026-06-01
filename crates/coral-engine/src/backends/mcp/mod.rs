@@ -6,6 +6,7 @@ mod fetch;
 mod function;
 mod provider;
 mod response;
+mod trace;
 mod transport;
 
 pub(crate) use error::McpProviderQueryError;
@@ -14,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::backends::mcp::McpSourceManifest;
+use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest};
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
@@ -22,7 +23,7 @@ use datafusion::error::Result;
 use self::client::{McpSourceClient, McpToolCaller};
 use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
-use self::transport::StdioMcpToolCaller;
+use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
     RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
@@ -59,7 +60,7 @@ impl McpSourceInputs {
         }
     }
 
-    fn static_inputs(fallback: Arc<BTreeMap<String, String>>) -> Self {
+    pub(super) fn static_inputs(fallback: Arc<BTreeMap<String, String>>) -> Self {
         Self {
             fallback,
             source: None,
@@ -97,11 +98,22 @@ pub(crate) fn compile_manifest(
         ),
         None => McpSourceInputs::static_inputs(Arc::clone(&resolved_inputs)),
     });
-    let caller = Arc::new(StdioMcpToolCaller {
-        source_name: manifest.common.name.clone(),
-        server: manifest.server.clone(),
-        source_inputs: Arc::clone(&source_inputs),
-    });
+    let body_capture =
+        self::trace::McpBodyCapture::new(request.runtime_context.body_capture_max_bytes);
+    let caller: Arc<dyn McpToolCaller> = match &manifest.server {
+        McpServerSpec::Stdio { .. } => Arc::new(StdioMcpToolCaller {
+            source_name: manifest.common.name.clone(),
+            server: manifest.server.clone(),
+            source_inputs: Arc::clone(&source_inputs),
+            body_capture,
+        }),
+        McpServerSpec::StreamableHttp { .. } => Arc::new(StreamableHttpMcpToolCaller {
+            source_name: manifest.common.name.clone(),
+            server: manifest.server.clone(),
+            source_inputs: Arc::clone(&source_inputs),
+            body_capture,
+        }),
+    };
     compile_source_with_caller(
         manifest.clone(),
         source_input_resolution,
