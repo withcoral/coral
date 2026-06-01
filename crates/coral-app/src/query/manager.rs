@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
-    QueryRuntimeContext, QuerySource, SourceValidationReport, StatusCode, TableInfo,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, SourceValidationReport, StatusCode,
+    TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
@@ -91,6 +92,21 @@ impl QueryManager {
             .map_err(QueryManagerError::Core)
     }
 
+    pub(crate) async fn describe_table(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<DescribeTableInfo, QueryManagerError> {
+        let sources = self
+            .load_query_sources(workspace_name)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self.runtime_config(workspace_name, &sources);
+        CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
+            .await
+            .map_err(QueryManagerError::Core)
+    }
+
     pub(crate) async fn execute_sql(
         &self,
         workspace_name: &WorkspaceName,
@@ -167,6 +183,12 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<QuerySource>, AppError> {
+        let span = tracing::info_span!(
+            "coral.app.query_sources.load",
+            workspace = %workspace_name,
+            source.count = tracing::field::Empty,
+        );
+        let _guard = span.enter();
         let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
         for source in catalog.workspace_sources(workspace_name) {
@@ -184,6 +206,7 @@ impl QueryManager {
                 }
             }
         }
+        span.record("source.count", query_sources.len());
         Ok(query_sources)
     }
 
