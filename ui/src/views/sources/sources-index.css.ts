@@ -150,8 +150,23 @@ export const cardFooter = style({
   alignItems: 'center',
   color: theme.content.tertiary,
   display: 'flex',
+  gap: 8,
   justifyContent: 'space-between',
   marginBlockStart: 'auto',
+})
+
+export const connectedPill = style({
+  alignItems: 'center',
+  background: theme.pill.green.background,
+  border: `1px solid ${theme.pill.green.stroke}`,
+  borderRadius: 999,
+  color: theme.pill.green.color,
+  display: 'inline-flex',
+  flexShrink: 0,
+  fontSize: 11,
+  fontWeight: 600,
+  gap: 4,
+  padding: '2px 8px',
 })
 
 export const originPill = style({
