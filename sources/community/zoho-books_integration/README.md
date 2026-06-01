@@ -37,7 +37,6 @@ Zoho Books is widely used by small and medium-sized businesses for accounting an
 | Input                | Type     | Required | Default                   |
 | -------------------- | -------- | -------- | ------------------------- |
 | ZOHO_API_DOMAIN      | Variable | No       | https://www.zohoapis.com  |
-| ZOHO_ACCOUNTS_DOMAIN | Variable | No       | https://accounts.zoho.com |
 | ZOHO_ORGANIZATION_ID | Variable | Yes      | -                         |
 | ZOHO_OAUTH_TOKEN     | Secret   | Yes      | -                         |
 
@@ -98,12 +97,6 @@ Configure the appropriate domain through:
 
 ```text
 ZOHO_API_DOMAIN
-```
-
-and
-
-```text
-ZOHO_ACCOUNTS_DOMAIN
 ```
 
 ---
