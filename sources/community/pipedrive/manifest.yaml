@@ -540,9 +540,11 @@ tables:
       account. Supports optional filtering by done status, type, and owner.
     guide: |
       No required filters. Optional filters push down to the API: `done`
-      (true/false), `owner_id`, `type`. Join with `pipedrive.deals` on
+      (true/false), `owner_id`. Join with `pipedrive.deals` on
       `deal_id = id` for deal activity timelines. Join with
       `pipedrive.users` on `owner_id = id` to report activity per rep.
+      Note: `type` is a column on the activities table but is not a
+      supported API query parameter; filter on it locally after fetching.
     filters:
       - name: done
         type: Boolean

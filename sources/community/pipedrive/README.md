@@ -288,6 +288,8 @@ cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM co
 - The `access` column on `users` is a raw JSON array — parse it to determine per-application admin status
 - API permissions and data visibility depend on the authenticated user's role
 - Large CRM accounts should always use `LIMIT` when querying
+- **`activities.type`** is a response column but is not a supported query parameter on `GET /api/v2/activities`; apply `WHERE type = ...` locally after fetching
+- **Rate limits:** Pipedrive uses a daily token budget shared across all users and integrations in the account. Each API endpoint has a token cost; v2 endpoints cost up to half as much as equivalent v1 endpoints. Broad scans across large tables will consume significant budget. Use pushed filters (`status`, `pipeline_id`, etc.) to reduce token consumption. On budget exhaustion, requests return `429 Too Many Requests` until the budget resets at midnight server time. See [Pipedrive rate limiting docs](https://pipedrive.readme.io/docs/core-api-concepts-rate-limiting) for headers and top-up options.
 
 ## Out of scope for v1
 
