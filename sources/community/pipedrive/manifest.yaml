@@ -537,14 +537,13 @@ tables:
   - name: activities
     description: >-
       Activities (calls, meetings, tasks, emails, etc.) in your Pipedrive
-      account. Supports optional filtering by done status, type, and owner.
+      account. Supports optional filtering by done status, owner, deal,
+      person, organization, and update time.
     guide: |
       No required filters. Optional filters push down to the API: `done`
-      (true/false), `owner_id`. Join with `pipedrive.deals` on
+      (true/false), `owner_id`, `type`. Join with `pipedrive.deals` on
       `deal_id = id` for deal activity timelines. Join with
       `pipedrive.users` on `owner_id = id` to report activity per rep.
-      Note: `type` is a column on the activities table but is not a
-      supported API query parameter; filter on it locally after fetching.
     filters:
       - name: done
         type: Boolean
@@ -552,6 +551,9 @@ tables:
       - name: owner_id
         type: Int64
         description: Filter activities by owner user ID.
+      - name: type
+        type: Utf8
+        description: Filter by activity type key (e.g. call, meeting, task, email, lunch).
     request:
       method: GET
       path: /api/v2/activities
@@ -562,6 +564,9 @@ tables:
         - name: owner_id
           from: filter
           key: owner_id
+        - name: type
+          from: filter
+          key: type
     response:
       rows_path:
         - data
@@ -928,6 +933,14 @@ tables:
     response:
       rows_path:
         - data
+    pagination:
+      mode: offset
+      offset_param: start
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
     columns:
       - name: id
         type: Int64
@@ -1000,7 +1013,6 @@ functions:
     search_limits:
       default_top_k: 10
       max_top_k: 100
-      max_calls_per_query: 1
     request:
       method: GET
       path: /api/v2/deals/search
@@ -1027,13 +1039,15 @@ functions:
         query_param: limit
     args:
       - name: term
+        type: Utf8
         required: true
-        bind:
-          arg: term
+        description: >-
+          Search term (minimum 2 characters). Matched against deal titles,
+          notes, and custom fields.
       - name: exact_match
+        type: Boolean
         required: false
-        bind:
-          arg: exact_match
+        description: When true, only exact full-string matches are returned.
     columns:
       - name: result_score
         type: Float64
@@ -1108,7 +1122,6 @@ functions:
     search_limits:
       default_top_k: 10
       max_top_k: 100
-      max_calls_per_query: 1
     request:
       method: GET
       path: /api/v2/persons/search
@@ -1138,17 +1151,19 @@ functions:
         query_param: limit
     args:
       - name: term
+        type: Utf8
         required: true
-        bind:
-          arg: term
+        description: >-
+          Search term (minimum 2 characters). Matched against name, email,
+          phone, and notes.
       - name: exact_match
+        type: Boolean
         required: false
-        bind:
-          arg: exact_match
+        description: When true, only exact full-string matches are returned.
       - name: organization_id
+        type: Int64
         required: false
-        bind:
-          arg: organization_id
+        description: Limit results to persons belonging to this organization ID.
     columns:
       - name: result_score
         type: Float64
@@ -1208,7 +1223,6 @@ functions:
     search_limits:
       default_top_k: 10
       max_top_k: 100
-      max_calls_per_query: 1
     request:
       method: GET
       path: /api/v2/organizations/search
@@ -1235,13 +1249,15 @@ functions:
         query_param: limit
     args:
       - name: term
+        type: Utf8
         required: true
-        bind:
-          arg: term
+        description: >-
+          Search term (minimum 2 characters). Matched against name, address,
+          and notes.
       - name: exact_match
+        type: Boolean
         required: false
-        bind:
-          arg: exact_match
+        description: When true, only exact full-string matches are returned.
     columns:
       - name: result_score
         type: Float64
