@@ -31,7 +31,7 @@ test_queries:
 | `name`        | Source name, also used as the SQL schema name      |
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http` or `file` |
+| `backend`     | How data is fetched: `http`, `file`, or `mcp` |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
 
 ## Test queries
@@ -543,6 +543,163 @@ provider-side filtering on list/detail tables.
 capped at 1000, `max_calls_per_query` is capped at 100, and
 `max_top_k * max_calls_per_query` cannot exceed 10000 candidates.
 
+### MCP sources
+
+MCP sources expose Model Context Protocol tools as SQL tables and source-scoped
+table functions. The manifest remains the contract for SQL names, filters,
+arguments, response shape, and columns; Coral does not introspect MCP tools at
+query time.
+
+Stdio MCP servers run as child processes:
+
+```yaml
+backend: mcp
+server:
+  transport: stdio
+  command: github-mcp-server
+  args: []
+  env:
+    - name: GITHUB_TOKEN
+      from: input
+      key: GITHUB_TOKEN
+```
+
+Remote MCP servers that implement Streamable HTTP can be called directly:
+
+```yaml
+backend: mcp
+server:
+  transport: streamable_http
+  url: https://mcp.example.com/mcp
+```
+
+If the Streamable HTTP server needs bearer authentication, declare the token as
+a secret input and reference it from `server.auth`. OAuth credential metadata is
+authored the same way as HTTP sources: under the top-level secret input's
+`credential.methods`. The `server.auth` block only decides how the stored secret
+is attached to MCP HTTP requests.
+
+```yaml
+inputs:
+  MCP_ACCESS_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/oauth/token
+            client:
+              id:
+                default: coral-client-id
+            scopes:
+              scope:
+                delimiter: space
+                values: [read]
+
+server:
+  transport: streamable_http
+  url: https://mcp.example.com/mcp
+  auth:
+    type: bearer
+    from: input
+    key: MCP_ACCESS_TOKEN
+```
+
+MCP tables call one tool and map the JSON result into rows:
+
+```yaml
+tables:
+  - name: issues
+    tool: list_issues
+    filters:
+      - name: state
+        type: Utf8
+        required: false
+        mode: equality
+        tool_arg: state
+    response:
+      rows_path: [items]
+    columns:
+      - name: id
+        type: Utf8
+      - name: title
+        type: Utf8
+```
+
+MCP table functions use named SQL arguments:
+
+```yaml
+functions:
+  - name: run_query
+    tool: run_query
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    response:
+      rows_path: [rows]
+    columns:
+      - name: row
+        type: Json
+        expr:
+          kind: current_row
+```
+
+```sql
+SELECT * FROM my_mcp.run_query(query => 'SELECT 1');
+```
+
+MCP tables and functions can also declare cursor pagination:
+
+```yaml
+pagination:
+  cursor_arg: cursor
+  response_cursor_path: [meta, nextCursor]
+  max_pages: 5
+```
+
+Streamable HTTP token refresh is not handled by the MCP transport itself. If a
+server rejects an expired token, Coral surfaces an auth failure; refresh support
+is owned by the shared OAuth credential flow.
+
+Each tool call opens a fresh MCP session: stdio sources spawn a child process
+per `tools/call`, and Streamable HTTP sources run the initialize handshake on
+every call. A single SQL query that scans multiple MCP tables incurs that
+handshake once per table scan. Session pooling is a future optimization.
+
+#### MCP error reasons
+
+Query-time failures surface as one of the following structured error reasons.
+Every reason carries `source` and `mcp_stage` metadata. Tool-scoped reasons
+(`MCP_TOOL_CALL_FAILED`, `MCP_TOOL_RETURNED_ERROR`, `MCP_RESULT_DECODE_FAILED`,
+`MCP_PAGINATION_FAILED`) additionally carry `relation` and `tool`. Transport,
+auth, and server-start reasons do not, since they fire before a specific tool
+call is identified.
+
+| Reason | Meaning |
+| ------ | ------- |
+| `MCP_SERVER_START_FAILED` | The stdio MCP server process could not be spawned. |
+| `MCP_INITIALIZE_FAILED` | The MCP `initialize` handshake failed. Retryable. |
+| `MCP_AUTH_REQUIRED` | A Streamable HTTP server returned 401 with `WWW-Authenticate`. Reinstall the source with a valid credential. |
+| `MCP_AUTH_FAILED` | A Streamable HTTP server returned 403 with insufficient scope. Update the manifest scopes and reinstall. |
+| `MCP_HTTP_REQUEST_FAILED` | The HTTP request to a Streamable HTTP MCP server failed before a response was received (connect, DNS, TLS). Retryable. |
+| `MCP_HTTP_STATUS_FAILED` | A Streamable HTTP MCP server returned a non-success status that is not an authentication failure. Retryable. |
+| `MCP_HTTP_SSE_DECODE_FAILED` | A Streamable HTTP MCP server returned an undecodable SSE stream or an unexpected content type. |
+| `MCP_SESSION_EXPIRED` | A Streamable HTTP MCP session was rejected (HTTP 404) and the transport could not transparently reinitialize. Retryable. |
+| `MCP_TOOL_CALL_FAILED` | The transport or protocol layer rejected the `tools/call`. Retryable. |
+| `MCP_TOOL_RETURNED_ERROR` | The tool ran and reported a business-logic failure on the manifest's declared `response.error_path`. |
+| `MCP_RESULT_DECODE_FAILED` | The tool's structured content did not match the declared `response.rows_path` or column types. |
+| `MCP_PAGINATION_FAILED` | Cursor pagination exceeded `max_pages` without terminating. |
+
 ### HTTP authentication
 
 The top-level `auth` block declares how Coral authenticates outgoing requests. It does not collect or store credentials; reference values declared under [Source inputs](/reference/source-spec-reference#source-inputs) when auth needs API keys, bearer tokens, usernames, passwords, or signing material. Pick one of three `type` values:
@@ -866,7 +1023,7 @@ pagination:
 
 ## Source inputs
 
-HTTP source specs can declare the variables and secrets this source needs under a top-level `inputs` map. Inputs are where credentials and other configuration values are set up. They are not where those values are sent. Runtime request fields, such as `auth`, `request_headers`, table request headers, query params, and body fields, decide where stored inputs are used.
+Source specs can declare the variables and secrets this source needs under a top-level `inputs` map. Inputs are where credentials and other configuration values are set up. They are not where those values are sent. Runtime fields, such as HTTP `auth`, `request_headers`, table request headers, query params, body fields, and MCP `server.auth`, decide where stored inputs are used.
 
 ### Input map basics
 
