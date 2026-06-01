@@ -22,7 +22,7 @@ use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
 use crate::sources::SourceName;
-use crate::sources::catalog::{is_dsl_v4_feature_required_error, resolve_installed_manifest};
+use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{load_v4_materialization, stale_materialization_error};
 use crate::sources::model::InstalledSource;
 use crate::state::{AppStateLayout, ConfigStore};
@@ -223,9 +223,6 @@ impl QueryManager {
                 Err(error @ AppError::FailedPrecondition(_))
                     if error.to_string().contains("DSL v4 materialized artifacts") =>
                 {
-                    return Err(error);
-                }
-                Err(error) if is_dsl_v4_feature_required_error(&error) => {
                     return Err(error);
                 }
                 Err(error) => {

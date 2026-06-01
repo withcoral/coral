@@ -13,8 +13,6 @@ use crate::state::{
 /// Runtime feature keys recognized by Coral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
-    /// Enables preview DSL v4 source manifests.
-    DslV4,
     /// Expose the optional MCP `feedback` tool.
     Feedback,
 }
@@ -67,24 +65,14 @@ struct FeatureSpec {
     disable_flag: &'static str,
 }
 
-const FEATURE_SPECS: &[FeatureSpec] = &[
-    FeatureSpec {
-        feature: Feature::DslV4,
-        key: "dsl_v4",
-        default_enabled: false,
-        description: "Enables preview DSL v4 source manifests.",
-        enable_flag: "enable-dsl-v4",
-        disable_flag: "disable-dsl-v4",
-    },
-    FeatureSpec {
-        feature: Feature::Feedback,
-        key: "feedback",
-        default_enabled: false,
-        description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
-        enable_flag: "enable-feedback",
-        disable_flag: "disable-feedback",
-    },
-];
+const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
+    feature: Feature::Feedback,
+    key: "feedback",
+    default_enabled: false,
+    description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
+    enable_flag: "enable-feedback",
+    disable_flag: "disable-feedback",
+}];
 
 /// How a feature's value is configured in Coral's local config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,13 +336,6 @@ mod tests {
         let features = Features::default();
 
         assert!(!features.enabled(Feature::Feedback));
-    }
-
-    #[test]
-    fn defaults_disable_dsl_v4() {
-        let features = Features::default();
-
-        assert!(!features.enabled(Feature::DslV4));
     }
 
     #[test]

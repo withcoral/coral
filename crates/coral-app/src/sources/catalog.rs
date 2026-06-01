@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
-use crate::features::{Feature, Features};
+use crate::features::Features;
 use crate::sources::SourceName;
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -94,7 +94,6 @@ pub(crate) fn resolve_installed_manifest(
     };
     let source_spec = parse_source_manifest_yaml(&manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-    ensure_manifest_allowed(&source_spec, features)?;
     let mut candidate = candidate_from_manifest(&source_spec, source.origin, false)?;
     if candidate.name != source.name {
         return Err(AppError::FailedPrecondition(format!(
@@ -109,28 +108,6 @@ pub(crate) fn resolve_installed_manifest(
         candidate,
         manifest_yaml,
     })
-}
-
-pub(crate) fn ensure_manifest_allowed(
-    manifest: &ValidatedSourceManifest,
-    features: &Features,
-) -> Result<(), AppError> {
-    if manifest.as_v4().is_some() && !features.enabled(Feature::DslV4) {
-        return Err(dsl_v4_feature_required_error(&SourceName::parse(
-            manifest.schema_name(),
-        )?));
-    }
-    Ok(())
-}
-
-pub(crate) fn dsl_v4_feature_required_error(source_name: &SourceName) -> AppError {
-    AppError::FailedPrecondition(format!(
-        "source '{source_name}' requires experimental feature 'dsl_v4'; run `coral features enable dsl_v4`"
-    ))
-}
-
-pub(crate) fn is_dsl_v4_feature_required_error(error: &AppError) -> bool {
-    matches!(error, AppError::FailedPrecondition(message) if message.contains("requires experimental feature 'dsl_v4'"))
 }
 
 pub(crate) fn describe_manifest(
@@ -175,7 +152,7 @@ mod tests {
     use coral_spec::ManifestInputKind;
 
     use super::{describe_manifest, list_bundled_sources, load_bundled_source};
-    use crate::features::{Feature, FeatureOverrides, Features};
+    use crate::features::Features;
     use crate::sources::SourceName;
     use crate::sources::model::SourceOrigin;
 
@@ -211,14 +188,6 @@ mod tests {
 
         let error = load_bundled_source(&github_v4, &Features::default())
             .expect_err("v4 source should not be bundled");
-        assert!(error.to_string().contains("unknown bundled source"));
-
-        let mut overrides = FeatureOverrides::default();
-        overrides.set(Feature::DslV4, true);
-        let mut features = Features::default();
-        features.apply_overrides(&overrides);
-        let error = load_bundled_source(&github_v4, &features)
-            .expect_err("feature flag should not make preview sources bundled");
         assert!(error.to_string().contains("unknown bundled source"));
     }
 

@@ -18,8 +18,8 @@ use crate::credentials::{
 use crate::features::Features;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
-    BundledSourceManifest, describe_manifest, ensure_manifest_allowed, list_bundled_sources,
-    load_bundled_source, resolve_installed_manifest,
+    BundledSourceManifest, describe_manifest, list_bundled_sources, load_bundled_source,
+    resolve_installed_manifest,
 };
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationDescriptorSource, SourceMaterializationSummary,
@@ -336,7 +336,6 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        ensure_manifest_allowed(&manifest, &self.features)?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
         let manifest = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -363,7 +362,6 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        ensure_manifest_allowed(&manifest, &self.features)?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
         let manifest = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -629,7 +627,6 @@ impl SourceManager {
         };
         let manifest = parse_source_manifest_yaml(&manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        ensure_manifest_allowed(&manifest, &self.features)?;
         Ok((manifest_yaml, manifest, bundled))
     }
 
@@ -1618,21 +1615,12 @@ mod tests {
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore,
     };
-    use crate::features::{Feature, FeatureOverrides, Features};
     use crate::sources::SourceName;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
 
     fn default_workspace() -> WorkspaceName {
         WorkspaceName::default()
-    }
-
-    fn enable_dsl_v4() -> Features {
-        let mut overrides = FeatureOverrides::default();
-        overrides.set(Feature::DslV4, true);
-        let mut features = Features::default();
-        features.apply_overrides(&overrides);
-        features
     }
 
     fn manifest_with_secret() -> String {
@@ -1912,46 +1900,6 @@ tables:
     }
 
     #[test]
-    fn import_v4_source_requires_dsl_v4_feature() {
-        let temp = TempDir::new().expect("temp dir");
-        let descriptor_root = std::env::current_dir()
-            .expect("cwd")
-            .join("target")
-            .join("v4-test-fixtures");
-        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
-        let descriptor_temp = tempfile::Builder::new()
-            .prefix("github-v4-disabled-")
-            .tempdir_in(descriptor_root)
-            .expect("descriptor temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout);
-
-        let error = manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect_err("v4 import should be gated");
-
-        assert!(
-            error
-                .to_string()
-                .contains("requires experimental feature 'dsl_v4'"),
-            "{error}"
-        );
-    }
-
-    #[test]
     fn discover_sources_omits_core_v4_preview_sources() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -1967,25 +1915,6 @@ tables:
             .expect("discover sources");
         assert!(
             !disabled
-                .iter()
-                .any(|source| source.name.as_str() == "github_v4")
-        );
-
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_with_features(
-            config_store,
-            credential_manager,
-            layout,
-            enable_dsl_v4(),
-        );
-
-        let enabled = manager
-            .discover_sources(&default_workspace())
-            .expect("discover sources");
-        assert!(
-            !enabled
                 .iter()
                 .any(|source| source.name.as_str() == "github_v4")
         );
@@ -2011,12 +1940,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_with_features(
-            config_store,
-            credential_manager,
-            layout.clone(),
-            enable_dsl_v4(),
-        );
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
 
         let installed = manager
             .import_source(
@@ -2041,20 +1965,10 @@ tables:
                 .exists()
         );
 
-        let disabled_manager = SourceManager::new(
-            ConfigStore::new(layout.clone()),
-            CredentialManager::new(CredentialStore::new(layout.clone())),
-            layout,
-        );
-        let error = disabled_manager
+        let info = manager
             .get_source_info(&default_workspace(), &source_name)
-            .expect_err("installed v4 source should be gated when feature is disabled");
-        assert!(
-            error
-                .to_string()
-                .contains("requires experimental feature 'dsl_v4'"),
-            "{error}"
-        );
+            .expect("installed v4 source should be usable without a runtime feature gate");
+        assert_eq!(info.name.as_str(), "github_v4_test");
     }
 
     #[test]
@@ -2076,11 +1990,10 @@ tables:
             .strip_prefix(&cwd)
             .expect("fixture under cwd")
             .to_path_buf();
-        let manager = SourceManager::new_with_features(
+        let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
-            enable_dsl_v4(),
         );
 
         manager
@@ -2126,11 +2039,10 @@ tables:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture_with_metadata()).expect("write fixture");
-        let manager = SourceManager::new_with_features(
+        let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
-            enable_dsl_v4(),
         );
 
         manager
@@ -2177,12 +2089,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_with_features(
-            config_store,
-            credential_manager,
-            layout.clone(),
-            enable_dsl_v4(),
-        );
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
 
         manager
             .import_source(
