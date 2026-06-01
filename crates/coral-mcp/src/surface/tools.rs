@@ -373,8 +373,9 @@ pub(crate) fn list_columns_arguments(
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
     let pretty = serde_json::to_string_pretty(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(pretty)];
+    let mut result = CallToolResult::success(vec![Content::text(pretty)]);
+    result.is_error = Some(false);
+    result.structured_content = Some(value);
     Ok(result)
 }
 

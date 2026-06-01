@@ -2,8 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use std::time::UNIX_EPOCH;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
@@ -22,7 +24,7 @@ use crate::query::extensions::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::model::InstalledSource;
+use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
@@ -35,6 +37,36 @@ pub(crate) enum QueryManagerError {
 pub(crate) struct ValidatedSource {
     pub(crate) source: InstalledSource,
     pub(crate) report: SourceValidationReport,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CatalogCacheKey {
+    sources: Vec<CatalogSourceCacheKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CatalogSourceCacheKey {
+    name: String,
+    version: Option<String>,
+    variables: BTreeMap<String, String>,
+    secrets: Vec<String>,
+    credential_storage: Option<crate::credentials::CredentialStorageKind>,
+    credential_material: Option<CredentialMaterialCacheState>,
+    origin: SourceOrigin,
+    manifest: Option<FileStamp>,
+    secret_file: Option<FileStamp>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CredentialMaterialCacheState {
+    Keys(Vec<String>),
+    Error(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileStamp {
+    len: u64,
+    modified_nanos: Option<u128>,
 }
 
 #[derive(Clone)]
@@ -78,7 +110,7 @@ impl QueryManager {
             .map_err(QueryManagerError::Core)
     }
 
-    pub(crate) async fn list_catalog(
+    pub(crate) async fn list_catalog_summaries(
         &self,
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
@@ -87,7 +119,7 @@ impl QueryManager {
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(workspace_name, &sources);
-        CoralQuery::list_catalog(&sources, runtime, schema_filter)
+        CoralQuery::list_catalog_summaries(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
     }
@@ -105,6 +137,19 @@ impl QueryManager {
         CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
             .await
             .map_err(QueryManagerError::Core)
+    }
+
+    pub(crate) fn catalog_cache_key(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<CatalogCacheKey, AppError> {
+        let catalog = self.config_store.load_catalog()?;
+        let sources = catalog
+            .workspace_sources(workspace_name)
+            .into_iter()
+            .map(|source| self.source_cache_key(workspace_name, source))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CatalogCacheKey { sources })
     }
 
     pub(crate) async fn execute_sql(
@@ -257,6 +302,57 @@ impl QueryManager {
         ))
     }
 
+    fn source_cache_key(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<CatalogSourceCacheKey, AppError> {
+        let manifest = match source.origin {
+            SourceOrigin::Bundled => None,
+            SourceOrigin::Imported => {
+                file_stamp(&self.layout.manifest_file(workspace_name, &source.name))
+            }
+        };
+        let credential_storage = source.credential_storage_for_material();
+        let credential_material = credential_storage
+            .map(|storage| self.credential_material_cache_state(workspace_name, &source, storage))
+            .transpose()?;
+        let secret_file = credential_storage
+            .filter(|storage| *storage == crate::credentials::CredentialStorageKind::File)
+            .and_then(|_| file_stamp(&self.layout.secret_file(workspace_name, &source.name)));
+
+        Ok(CatalogSourceCacheKey {
+            name: source.name.as_str().to_string(),
+            version: source.version,
+            variables: source.variables,
+            secrets: source.secrets,
+            credential_storage: source.credential_storage,
+            credential_material,
+            origin: source.origin,
+            manifest,
+            secret_file,
+        })
+    }
+
+    fn credential_material_cache_state(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        storage: crate::credentials::CredentialStorageKind,
+    ) -> Result<CredentialMaterialCacheState, AppError> {
+        let credential_set_id = CredentialSetId::for_source(&source.name);
+        match self
+            .credential_manager
+            .read_material(workspace_name, &credential_set_id, storage)
+        {
+            Ok(material) => Ok(CredentialMaterialCacheState::Keys(
+                material.keys().cloned().collect(),
+            )),
+            Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => Err(error),
+            Err(error) => Ok(CredentialMaterialCacheState::Error(error.to_string())),
+        }
+    }
+
     fn runtime_config(
         &self,
         workspace_name: &WorkspaceName,
@@ -273,6 +369,19 @@ impl QueryManager {
         )));
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    Some(FileStamp {
+        len: metadata.len(),
+        modified_nanos,
+    })
 }
 
 #[derive(Clone, Copy)]

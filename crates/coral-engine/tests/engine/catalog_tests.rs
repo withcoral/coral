@@ -673,6 +673,53 @@ async fn list_catalog_collects_tables_and_functions_together() {
 }
 
 #[tokio::test]
+async fn list_catalog_summaries_omit_table_columns() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    let catalog = CoralQuery::list_catalog_summaries(&sources, test_runtime(), Some("searchy"))
+        .await
+        .expect("list_catalog_summaries should succeed");
+
+    assert_eq!(
+        catalog
+            .tables
+            .iter()
+            .map(|table| table.table_name.as_str())
+            .collect::<Vec<_>>(),
+        ["issue_details", "placeholder"]
+    );
+    assert!(catalog.tables.iter().all(|table| table.columns.is_empty()));
+    assert_eq!(catalog.table_functions.len(), 1);
+    assert_eq!(catalog.table_functions[0].function_name, "search_issues");
+    assert_eq!(catalog.table_functions[0].result_columns.len(), 3);
+}
+
+#[tokio::test]
+async fn list_catalog_summaries_skip_http_registration_failures() {
+    let mut manifest = http_manifest_with_function();
+    manifest.as_object_mut().expect("manifest object").insert(
+        "auth".to_string(),
+        json!({
+            "type": "CustomAuth",
+            "authenticator": "missing_authenticator"
+        }),
+    );
+    let sources = vec![build_source(manifest)];
+
+    let full_catalog = CoralQuery::list_catalog(&sources, test_runtime(), None)
+        .await
+        .expect("full catalog should skip invalid source");
+    let summary_catalog = CoralQuery::list_catalog_summaries(&sources, test_runtime(), None)
+        .await
+        .expect("summary catalog should skip invalid source");
+
+    assert!(full_catalog.tables.is_empty());
+    assert!(full_catalog.table_functions.is_empty());
+    assert!(summary_catalog.tables.is_empty());
+    assert!(summary_catalog.table_functions.is_empty());
+}
+
+#[tokio::test]
 async fn coral_inputs_exposes_variable_values_and_defaults() {
     let sources = vec![build_demo_source(
         &[("ACCOUNT_ID", "123456")],

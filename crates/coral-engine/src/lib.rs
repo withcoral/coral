@@ -119,6 +119,25 @@ impl CoralQuery {
             .catalog_info(schema_filter))
     }
 
+    /// Lists queryable catalog summaries without materializing column metadata or
+    /// the SQL system catalog.
+    ///
+    /// This is intended for discovery surfaces that only need table/function
+    /// summaries and already expose column details through a separate path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if credential resolution fails, if any validated
+    /// source spec cannot be compiled, or if the underlying query runtime
+    /// cannot be built.
+    pub async fn list_catalog_summaries(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        schema_filter: Option<&str>,
+    ) -> Result<CatalogInfo, CoreError> {
+        runtime::catalog_summary::list_catalog_summaries(sources, runtime, schema_filter).await
+    }
+
     /// Describes one table or returns lightweight table metadata for missing-table help.
     ///
     /// This builds the runtime once, clones only the matched table on exact

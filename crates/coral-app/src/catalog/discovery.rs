@@ -1,12 +1,14 @@
 //! Workspace-scoped catalog discovery operations.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
+use tokio::sync::Mutex;
 
 use crate::bootstrap::AppError;
-use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::query::manager::{CatalogCacheKey, QueryManager, QueryManagerError};
 use crate::workspaces::WorkspaceName;
 
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
@@ -154,12 +156,21 @@ pub(crate) struct ListColumnsQuery<'a> {
 #[derive(Clone)]
 pub(crate) struct CatalogDiscovery {
     queries: QueryManager,
+    cache: Arc<Mutex<Option<CatalogItemsCache>>>,
+}
+
+#[derive(Clone)]
+struct CatalogItemsCache {
+    workspace_name: WorkspaceName,
+    key: CatalogCacheKey,
+    items: Vec<CatalogItem>,
 }
 
 impl CatalogDiscovery {
     pub(crate) fn new(query_manager: QueryManager) -> Self {
         Self {
             queries: query_manager,
+            cache: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -170,12 +181,11 @@ impl CatalogDiscovery {
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
     ) -> Result<CatalogPage, QueryManagerError> {
-        let catalog = self
-            .queries
-            .list_catalog(workspace_name, schema_name)
+        let all_items = self
+            .catalog_items(workspace_name, schema_name, None)
             .await?;
-        let counts = catalog_counts(&catalog);
-        let items = catalog_items(catalog, kind);
+        let counts = catalog_counts(&all_items);
+        let items = filter_catalog_items(&all_items, None, kind);
         Ok(CatalogPage {
             items: page_items(items, pagination),
             counts,
@@ -188,11 +198,33 @@ impl CatalogDiscovery {
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
+        let key = self
+            .queries
+            .catalog_cache_key(workspace_name)
+            .map_err(QueryManagerError::App)?;
+        {
+            let cache = self.cache.lock().await;
+            if let Some(cached) = cache.as_ref()
+                && cached.workspace_name == *workspace_name
+                && cached.key == key
+            {
+                return Ok(filter_catalog_items(&cached.items, schema_name, kind));
+            }
+        }
+
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name)
+            .list_catalog_summaries(workspace_name, None)
             .await?;
-        Ok(catalog_items(catalog, kind))
+        let items = catalog_items(catalog, None);
+        let filtered = filter_catalog_items(&items, schema_name, kind);
+        let mut cache = self.cache.lock().await;
+        *cache = Some(CatalogItemsCache {
+            workspace_name: workspace_name.clone(),
+            key,
+            items,
+        });
+        Ok(filtered)
     }
 
     pub(crate) async fn describe_table(
@@ -250,10 +282,17 @@ fn catalog_items(catalog: CatalogInfo, kind: Option<CatalogItemKind>) -> Vec<Cat
     items
 }
 
-fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
+fn catalog_counts(items: &[CatalogItem]) -> CatalogCounts {
+    let (table_count, table_function_count) =
+        items
+            .iter()
+            .fold((0_u32, 0_u32), |(tables, functions), item| match item {
+                CatalogItem::Table(_) => (tables.saturating_add(1), functions),
+                CatalogItem::TableFunction(_) => (tables, functions.saturating_add(1)),
+            });
     CatalogCounts {
-        table_count: u32::try_from(catalog.tables.len()).unwrap_or(u32::MAX),
-        table_function_count: u32::try_from(catalog.table_functions.len()).unwrap_or(u32::MAX),
+        table_count,
+        table_function_count,
     }
 }
 
@@ -340,6 +379,35 @@ fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {
             &function.function_name,
             "table_function",
         ),
+    }
+}
+
+fn filter_catalog_items(
+    items: &[CatalogItem],
+    schema_name: Option<&str>,
+    kind: Option<CatalogItemKind>,
+) -> Vec<CatalogItem> {
+    items
+        .iter()
+        .filter(|item| catalog_item_matches_filter(item, schema_name, kind))
+        .cloned()
+        .collect()
+}
+
+fn catalog_item_matches_filter(
+    item: &CatalogItem,
+    schema_name: Option<&str>,
+    kind: Option<CatalogItemKind>,
+) -> bool {
+    match item {
+        CatalogItem::Table(table) => {
+            kind.is_none_or(|kind| kind == CatalogItemKind::Table)
+                && schema_name.is_none_or(|schema_name| table.schema_name == schema_name)
+        }
+        CatalogItem::TableFunction(function) => {
+            kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction)
+                && schema_name.is_none_or(|schema_name| function.schema_name == schema_name)
+        }
     }
 }
 

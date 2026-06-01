@@ -25,7 +25,7 @@ pub(crate) mod function;
 mod pagination;
 pub(crate) mod provider;
 mod rate_limit;
-mod registration_checks;
+pub(crate) mod registration_checks;
 mod request;
 mod response;
 pub(crate) mod target;

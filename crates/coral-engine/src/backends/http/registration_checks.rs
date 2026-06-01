@@ -23,7 +23,7 @@ struct HttpRequestSite<'a> {
     request: &'a ManifestRequestSpec,
 }
 
-pub(super) fn validate_source_scoped_http_config(
+pub(crate) fn validate_source_scoped_http_config(
     manifest: &HttpSourceManifest,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     resolved_inputs: &BTreeMap<String, String>,

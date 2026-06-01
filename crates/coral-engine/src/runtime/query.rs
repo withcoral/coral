@@ -34,17 +34,50 @@ pub(crate) struct QueryRuntimeAdapter {
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimeBuildOptions {
+    register_system_catalog: bool,
+    include_table_columns: bool,
+}
+
+impl RuntimeBuildOptions {
+    const fn full() -> Self {
+        Self {
+            register_system_catalog: true,
+            include_table_columns: true,
+        }
+    }
+
+    pub(crate) const fn catalog_summary() -> Self {
+        Self {
+            register_system_catalog: false,
+            include_table_columns: false,
+        }
+    }
+}
+
 pub(crate) async fn build_runtime(
     sources: &[QuerySource],
     runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
+    build_runtime_with_options(sources, runtime, RuntimeBuildOptions::full()).await
+}
+
+pub(crate) async fn build_runtime_with_options(
+    sources: &[QuerySource],
+    runtime: QueryRuntimeConfig,
+    options: RuntimeBuildOptions,
+) -> Result<QueryRuntimeAdapter, CoreError> {
     let span = info_span!("coral.engine.runtime.build", source.count = sources.len());
-    build_runtime_inner(sources, runtime).instrument(span).await
+    build_runtime_inner(sources, runtime, options)
+        .instrument(span)
+        .await
 }
 
 async fn build_runtime_inner(
     sources: &[QuerySource],
     runtime: QueryRuntimeConfig,
+    options: RuntimeBuildOptions,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let session_config = SessionConfig::new().with_information_schema(true).set_bool(
         "datafusion.execution.listing_table_ignore_subdirectory",
@@ -111,19 +144,24 @@ async fn build_runtime_inner(
         extensions.source_decorators.as_mut_slice(),
     )
     .await?;
-    catalog::register(&ctx, &registration.active_sources)
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_tables(&registration.active_sources);
+    if options.register_system_catalog {
+        catalog::register(&ctx, &registration.active_sources)
+            .map_err(|err| datafusion_to_core(&err, &[]))?;
+    }
+    let tables =
+        catalog::collect_tables(&registration.active_sources, options.include_table_columns);
     let table_functions = catalog::collect_table_functions(&registration.active_sources);
-    let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
-            .iter()
-            .flat_map(|source| source.table_functions.iter()),
-    );
-    if !source_functions.is_empty() {
-        ctx.register_relation_planner(Arc::new(source_functions))
-            .map_err(|err| datafusion_to_core(&err, &tables))?;
+    if options.register_system_catalog {
+        let source_functions = SourceFunctionRegistry::new(
+            registration
+                .active_sources
+                .iter()
+                .flat_map(|source| source.table_functions.iter()),
+        );
+        if !source_functions.is_empty() {
+            ctx.register_relation_planner(Arc::new(source_functions))
+                .map_err(|err| datafusion_to_core(&err, &tables))?;
+        }
     }
     for failure in &registration.failures {
         tracing::warn!(

@@ -52,11 +52,6 @@ enum ToolCallOutcome {
 }
 
 #[derive(Serialize)]
-struct SqlRowsValue {
-    rows: Vec<Value>,
-}
-
-#[derive(Serialize)]
 struct FeedbackStoredValue {
     feedback_id: String,
     created_at: String,
@@ -231,9 +226,12 @@ impl CoralMcpServer {
     }
 
     async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
-        serialize_tool_value(SqlRowsValue {
-            rows: self.query_rows(sql).await?,
-        })
+        let mut value = Map::with_capacity(1);
+        value.insert(
+            "rows".to_string(),
+            Value::Array(self.query_rows(sql).await?),
+        );
+        Ok(Value::Object(value))
     }
 
     async fn submit_feedback_value(
@@ -457,9 +455,10 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (visible_table_count, visible_function_count) =
-                tokio::try_join!(self.load_table_count(), self.load_table_function_count())
-                    .map_err(|status| status_to_error_data(&status))?;
+            let (visible_table_count, visible_function_count) = self
+                .load_catalog_counts()
+                .await
+                .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
                 sql_tool(visible_table_count),
                 list_catalog_tool(visible_table_count, visible_function_count),

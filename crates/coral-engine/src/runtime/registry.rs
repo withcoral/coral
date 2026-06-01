@@ -68,6 +68,21 @@ fn check_reserved_schema(schema: &str) -> DataFusionResult<()> {
     Ok(())
 }
 
+pub(crate) fn check_source_schema(
+    schema: &str,
+    seen_schemas: &mut std::collections::HashSet<String>,
+) -> DataFusionResult<()> {
+    check_reserved_schema(schema)?;
+
+    if !seen_schemas.insert(schema.to_string()) {
+        return Err(DataFusionError::Execution(format!(
+            "duplicate source schema '{schema}'"
+        )));
+    }
+
+    Ok(())
+}
+
 /// Register all configured source manifests into the active `SessionContext`.
 ///
 /// # Errors
@@ -218,14 +233,7 @@ async fn register_source(
     seen_schemas: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
 ) -> DataFusionResult<BackendRegistration> {
-    check_reserved_schema(source.schema_name())?;
-
-    if !seen_schemas.insert(source.schema_name().to_string()) {
-        return Err(DataFusionError::Execution(format!(
-            "duplicate source schema '{}'",
-            source.schema_name()
-        )));
-    }
+    check_source_schema(source.schema_name(), seen_schemas)?;
 
     source.register(ctx, registration_context).await
 }

@@ -165,7 +165,10 @@ fn utf8_column<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> ArrayRe
 
 /// Collect typed query-visible table metadata for the active source set.
 #[must_use]
-pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableInfo> {
+pub(crate) fn collect_tables(
+    active_sources: &[RegisteredSource],
+    include_columns: bool,
+) -> Vec<TableInfo> {
     let mut tables = active_sources
         .iter()
         .flat_map(|source| {
@@ -174,20 +177,7 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
                 table_name: table.table_name.clone(),
                 description: table.description.clone(),
                 guide: table.guide.clone(),
-                columns: table
-                    .columns
-                    .iter()
-                    .enumerate()
-                    .map(|(position, column)| ColumnInfo {
-                        name: column.name.clone(),
-                        data_type: column.data_type.clone(),
-                        nullable: column.nullable,
-                        is_virtual: column.is_virtual,
-                        is_required_filter: column.is_required_filter,
-                        description: column.description.clone(),
-                        ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
-                    })
-                    .collect(),
+                columns: table_columns(table, include_columns),
                 required_filters: table.required_filters.clone(),
             })
         })
@@ -196,6 +186,29 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
         (&left.schema_name, &left.table_name).cmp(&(&right.schema_name, &right.table_name))
     });
     tables
+}
+
+fn table_columns(
+    table: &crate::backends::RegisteredTable,
+    include_columns: bool,
+) -> Vec<ColumnInfo> {
+    if !include_columns {
+        return Vec::new();
+    }
+    table
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(position, column)| ColumnInfo {
+            name: column.name.clone(),
+            data_type: column.data_type.clone(),
+            nullable: column.nullable,
+            is_virtual: column.is_virtual,
+            is_required_filter: column.is_required_filter,
+            description: column.description.clone(),
+            ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
+        })
+        .collect()
 }
 
 /// Collect typed source-scoped table function metadata for the active source set.
