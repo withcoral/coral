@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest};
+use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest, McpTableSpec};
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
@@ -154,7 +154,7 @@ impl CompiledBackendSource for McpCompiledSource {
         self.manifest
             .tables
             .iter()
-            .flat_map(|table| table.filters())
+            .flat_map(McpTableSpec::filters)
             .any(|filter| filter.bindable)
     }
 
