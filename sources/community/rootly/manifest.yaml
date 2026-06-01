@@ -439,7 +439,8 @@ tables:
       No required filters. All filters push down to the Rootly API.
 
       Common filter patterns:
-      - `status` = started | mitigated | resolved | cancelled | in_triage | acknowledged | closed (see Rootly incident lifecycle docs for the full status list)
+      - `status` = started | mitigated | resolved | cancelled | in_triage | acknowledged | closed 
+      (see Rootly incident lifecycle docs for the full status list)
       - `severity` = slug of the severity (e.g. sev0, sev1, critical, high)
       - `started_at_gte` / `started_at_lte` for time-bounded incident windows
       - `created_at_gte` / `created_at_lte` for creation date ranges
