@@ -1,0 +1,1050 @@
+
+name: zoho_books
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+base_url: "{{input.ZOHO_API_DOMAIN}}/books/v3"
+
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+inputs:
+  ZOHO_API_DOMAIN:
+    kind: variable
+    default: https://www.zohoapis.com
+    hint: >-
+      Zoho API domain for your data center. US: https://www.zohoapis.com,
+      EU: https://www.zohoapis.eu, IN: https://www.zohoapis.in,
+      AU: https://www.zohoapis.com.au, JP: https://www.zohoapis.jp,
+      CA: https://www.zohoapis.ca, CN: https://www.zohoapis.com.cn,
+      SA: https://www.zohoapis.sa
+
+  ZOHO_ACCOUNTS_DOMAIN:
+    kind: variable
+    default: https://accounts.zoho.com
+    hint: >-
+      Zoho Accounts (OAuth) domain for your data center. Mirror your
+      ZOHO_API_DOMAIN region (.com / .eu / .in / .com.au / .jp / .ca / .com.cn / .sa).
+
+  ZOHO_ORGANIZATION_ID:
+    kind: variable
+    hint: >-
+      Your Zoho Books organization_id. Look it up with
+      GET {ZOHO_API_DOMAIN}/books/v3/organizations or copy it from the
+      Zoho Books URL after signing in. Required on every API call.
+
+  ZOHO_OAUTH_TOKEN:
+    kind: secret
+    hint: >-
+      Zoho Books OAuth access token. Generate this from Zoho API Console
+      or your OAuth flow and provide it as a secret during source install.
+
+# ---------------------------------------------------------------------------
+# Auth — Zoho uses `Zoho-oauthtoken <token>`, not `Bearer <token>`
+# ---------------------------------------------------------------------------
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Zoho-oauthtoken {{input.ZOHO_OAUTH_TOKEN}}"
+
+# Non-auth request headers applied to every request.
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+# Zoho Books rate limit: 100 requests/minute/organization. 429 on exceed.
+rate_limit:
+  extra_statuses: [429]
+  retry_after_header: Retry-After
+
+# ---------------------------------------------------------------------------
+# Shared pagination + organization_id pattern
+# ---------------------------------------------------------------------------
+# Each table:
+#   - sends organization_id as a query param on every request
+#   - paginates via ?page=N&per_page=M, starting at page 1
+#   - reads rows from the resource-specific top-level key (contacts, invoices, …)
+# Zoho signals end-of-data via response.page_context.has_more_page=false;
+# Coral's page mode stops automatically when a page returns zero rows, which
+# Zoho does once has_more_page becomes false on the next page.
+
+tables:
+
+  # -------------------------------------------------------------------------
+  # organizations — does NOT require organization_id; useful for discovery
+  # -------------------------------------------------------------------------
+  - name: organizations
+    description: Zoho Books organizations the authenticated user can access.
+    request:
+      method: GET
+      path: /organizations
+    response:
+      rows_path: [organizations]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: organization_id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: contact_name
+        type: Utf8
+      - name: company_id_label
+        type: Utf8
+      - name: company_id_value
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: currency_symbol
+        type: Utf8
+      - name: time_zone
+        type: Utf8
+      - name: date_format
+        type: Utf8
+      - name: country
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: industry_type
+        type: Utf8
+      - name: is_default_org
+        type: Boolean
+      - name: fiscal_year_start_month
+        type: Utf8
+
+  # -------------------------------------------------------------------------
+  # contacts — both customers and vendors
+  # -------------------------------------------------------------------------
+  - name: contacts
+    description: Customers and vendors in Zoho Books.
+    request:
+      method: GET
+      path: /contacts
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [contacts]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: contact_id
+        type: Utf8
+      - name: contact_name
+        type: Utf8
+      - name: company_name
+        type: Utf8
+      - name: contact_type
+        type: Utf8
+        description: customer | vendor
+      - name: status
+        type: Utf8
+      - name: payment_terms
+        type: Int64
+      - name: payment_terms_label
+        type: Utf8
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: outstanding_receivable_amount
+        type: Float64
+      - name: outstanding_payable_amount
+        type: Float64
+      - name: unused_credits_receivable_amount
+        type: Float64
+      - name: unused_credits_payable_amount
+        type: Float64
+      - name: first_name
+        type: Utf8
+      - name: last_name
+        type: Utf8
+      - name: email
+        type: Utf8
+      - name: phone
+        type: Utf8
+      - name: mobile
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # invoices
+  # -------------------------------------------------------------------------
+  - name: invoices
+    description: Sales invoices in Zoho Books.
+    request:
+      method: GET
+      path: /invoices
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [invoices]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: invoice_id
+        type: Utf8
+      - name: invoice_number
+        type: Utf8
+      - name: customer_id
+        type: Utf8
+      - name: customer_name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: invoice_date
+        type: Utf8
+        description: ISO date (yyyy-mm-dd) per Zoho org date format.
+      - name: due_date
+        type: Utf8
+      - name: total
+        type: Float64
+      - name: balance
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: exchange_rate
+        type: Float64
+      - name: reference_number
+        type: Utf8
+      - name: project_name
+        type: Utf8
+      - name: is_emailed
+        type: Boolean
+      - name: reminders_sent
+        type: Int64
+      - name: payment_expected_date
+        type: Utf8
+      - name: last_payment_date
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # estimates
+  # -------------------------------------------------------------------------
+  - name: estimates
+    description: Estimates (quotes) in Zoho Books.
+    request:
+      method: GET
+      path: /estimates
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [estimates]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: estimate_id
+        type: Utf8
+      - name: estimate_number
+        type: Utf8
+      - name: customer_id
+        type: Utf8
+      - name: customer_name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: expiry_date
+        type: Utf8
+      - name: total
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: project_name
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # sales_orders
+  # -------------------------------------------------------------------------
+  - name: sales_orders
+    description: Sales orders in Zoho Books.
+    request:
+      method: GET
+      path: /salesorders
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [salesorders]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: salesorder_id
+        type: Utf8
+      - name: salesorder_number
+        type: Utf8
+      - name: customer_id
+        type: Utf8
+      - name: customer_name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: shipment_date
+        type: Utf8
+      - name: total
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # bills
+  # -------------------------------------------------------------------------
+  - name: bills
+    description: Vendor bills in Zoho Books.
+    request:
+      method: GET
+      path: /bills
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [bills]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: bill_id
+        type: Utf8
+      - name: bill_number
+        type: Utf8
+      - name: vendor_id
+        type: Utf8
+      - name: vendor_name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: due_date
+        type: Utf8
+      - name: total
+        type: Float64
+      - name: balance
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # purchase_orders
+  # -------------------------------------------------------------------------
+  - name: purchase_orders
+    description: Purchase orders in Zoho Books.
+    request:
+      method: GET
+      path: /purchaseorders
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [purchaseorders]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: purchaseorder_id
+        type: Utf8
+      - name: purchaseorder_number
+        type: Utf8
+      - name: vendor_id
+        type: Utf8
+      - name: vendor_name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: delivery_date
+        type: Utf8
+      - name: total
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # expenses
+  # -------------------------------------------------------------------------
+  - name: expenses
+    description: Recorded expenses in Zoho Books.
+    request:
+      method: GET
+      path: /expenses
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [expenses]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: expense_id
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: account_name
+        type: Utf8
+      - name: paid_through_account_name
+        type: Utf8
+      - name: vendor_id
+        type: Utf8
+      - name: vendor_name
+        type: Utf8
+      - name: customer_id
+        type: Utf8
+      - name: customer_name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: total
+        type: Float64
+      - name: bcy_total
+        type: Float64
+        description: Total in the organization's base currency.
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: is_billable
+        type: Boolean
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # credit_notes
+  # -------------------------------------------------------------------------
+  - name: credit_notes
+    description: Credit notes in Zoho Books.
+    request:
+      method: GET
+      path: /creditnotes
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [creditnotes]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: creditnote_id
+        type: Utf8
+      - name: creditnote_number
+        type: Utf8
+      - name: customer_id
+        type: Utf8
+      - name: customer_name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: total
+        type: Float64
+      - name: balance
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # customer_payments
+  # -------------------------------------------------------------------------
+  - name: customer_payments
+    description: Payments received from customers.
+    request:
+      method: GET
+      path: /customerpayments
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [customerpayments]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: payment_id
+        type: Utf8
+      - name: payment_number
+        type: Utf8
+      - name: customer_id
+        type: Utf8
+      - name: customer_name
+        type: Utf8
+      - name: payment_mode
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: amount
+        type: Float64
+      - name: unused_amount
+        type: Float64
+      - name: bank_charges
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # vendor_payments
+  # -------------------------------------------------------------------------
+  - name: vendor_payments
+    description: Payments made to vendors.
+    request:
+      method: GET
+      path: /vendorpayments
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [vendorpayments]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: payment_id
+        type: Utf8
+      - name: vendor_id
+        type: Utf8
+      - name: vendor_name
+        type: Utf8
+      - name: payment_mode
+        type: Utf8
+      - name: date
+        type: Utf8
+      - name: amount
+        type: Float64
+      - name: bcy_amount
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # items — products and services
+  # -------------------------------------------------------------------------
+  - name: items
+    description: Products and services in Zoho Books.
+    request:
+      method: GET
+      path: /items
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [items]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: item_id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: sku
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: source
+        type: Utf8
+      - name: unit
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: rate
+        type: Float64
+      - name: account_id
+        type: Utf8
+      - name: account_name
+        type: Utf8
+      - name: tax_id
+        type: Utf8
+      - name: tax_name
+        type: Utf8
+      - name: tax_percentage
+        type: Float64
+      - name: product_type
+        type: Utf8
+      - name: is_taxable
+        type: Boolean
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # chart_of_accounts
+  # -------------------------------------------------------------------------
+  - name: chart_of_accounts
+    description: Chart of accounts.
+    request:
+      method: GET
+      path: /chartofaccounts
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [chartofaccounts]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: account_id
+        type: Utf8
+      - name: account_name
+        type: Utf8
+      - name: account_code
+        type: Utf8
+      - name: account_type
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: is_active
+        type: Boolean
+      - name: is_user_created
+        type: Boolean
+      - name: is_system_account
+        type: Boolean
+      - name: can_show_in_ze
+        type: Boolean
+      - name: current_balance
+        type: Float64
+      - name: parent_account_id
+        type: Utf8
+      - name: parent_account_name
+        type: Utf8
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+
+  # -------------------------------------------------------------------------
+  # journals
+  # -------------------------------------------------------------------------
+  - name: journals
+    description: Manual journal entries.
+    request:
+      method: GET
+      path: /journals
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [journals]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: journal_id
+        type: Utf8
+      - name: journal_date
+        type: Utf8
+      - name: entry_number
+        type: Utf8
+      - name: reference_number
+        type: Utf8
+      - name: notes
+        type: Utf8
+      - name: journal_type
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: total
+        type: Float64
+      - name: bcy_total
+        type: Float64
+      - name: currency_id
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+      - name: last_modified_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [last_modified_time]
+
+  # -------------------------------------------------------------------------
+  # projects
+  # -------------------------------------------------------------------------
+  - name: projects
+    description: Projects in Zoho Books.
+    request:
+      method: GET
+      path: /projects
+      query:
+        - name: organization_id
+          from: template
+          template: "{{input.ZOHO_ORGANIZATION_ID}}"
+    response:
+      rows_path: [projects]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 200
+        max: 200
+        query_param: per_page
+    columns:
+      - name: project_id
+        type: Utf8
+      - name: project_name
+        type: Utf8
+      - name: customer_id
+        type: Utf8
+      - name: customer_name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: billing_type
+        type: Utf8
+      - name: rate
+        type: Float64
+      - name: budget_type
+        type: Utf8
+      - name: budget_hours
+        type: Float64
+      - name: budget_amount
+        type: Float64
+      - name: total_hours
+        type: Utf8
+      - name: billable_hours
+        type: Utf8
+      - name: non_billable_hours
+        type: Utf8
+      - name: currency_code
+        type: Utf8
+      - name: created_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_time]
+
+# ---------------------------------------------------------------------------
+# Smoke checks. Read-only. `coral source test zoho_books` runs these.
+# ---------------------------------------------------------------------------
+test_queries:
+  - SELECT * FROM zoho_books.organizations LIMIT 1
+  - SELECT * FROM zoho_books.contacts LIMIT 1
+  - SELECT * FROM zoho_books.invoices LIMIT 1
+  - SELECT * FROM zoho_books.items LIMIT 1
