@@ -394,6 +394,45 @@ fn http_manifest_with_function() -> Value {
     })
 }
 
+fn http_manifest_with_empty_table_columns() -> Value {
+    json!({
+        "name": "bad_table",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "items",
+            "description": "Items without a runtime schema",
+            "request": {
+                "method": "GET",
+                "path": "/items"
+            },
+            "columns": []
+        }]
+    })
+}
+
+fn http_manifest_with_empty_function_columns() -> Value {
+    json!({
+        "name": "bad_function",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "functions": [{
+            "name": "search_items",
+            "kind": "table",
+            "description": "Function without a runtime schema",
+            "request": {
+                "method": "GET",
+                "path": "/search"
+            },
+            "columns": []
+        }]
+    })
+}
+
 fn build_demo_source(variables: &[(&str, &str)], secrets: &[(&str, &str)]) -> QuerySource {
     let to_map = |items: &[(&str, &str)]| -> BTreeMap<String, String> {
         items
@@ -717,6 +756,28 @@ async fn list_catalog_summaries_skip_http_registration_failures() {
     assert!(full_catalog.table_functions.is_empty());
     assert!(summary_catalog.tables.is_empty());
     assert!(summary_catalog.table_functions.is_empty());
+}
+
+#[tokio::test]
+async fn list_catalog_summaries_skip_http_schema_failures() {
+    for manifest in [
+        http_manifest_with_empty_table_columns(),
+        http_manifest_with_empty_function_columns(),
+    ] {
+        let sources = vec![build_source(manifest)];
+
+        let full_catalog = CoralQuery::list_catalog(&sources, test_runtime(), None)
+            .await
+            .expect("full catalog should skip invalid source");
+        let summary_catalog = CoralQuery::list_catalog_summaries(&sources, test_runtime(), None)
+            .await
+            .expect("summary catalog should skip invalid source");
+
+        assert!(full_catalog.tables.is_empty());
+        assert!(full_catalog.table_functions.is_empty());
+        assert!(summary_catalog.tables.is_empty());
+        assert!(summary_catalog.table_functions.is_empty());
+    }
 }
 
 #[tokio::test]
