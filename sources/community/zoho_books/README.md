@@ -31,7 +31,6 @@ Zoho Books is widely used by small and medium-sized businesses for accounting an
 * Configurable API and Accounts domains
 
 ---
-
 ## Source Inputs
 
 | Input                | Type     | Required | Default                   |
