@@ -111,6 +111,18 @@ impl AppStateLayout {
         self.source_dir(workspace_name, source_name)
             .join(INSTALLED_SECRETS_FILE_NAME)
     }
+
+    pub(crate) fn credential_refresh_lock_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.config_dir
+            .join("locks")
+            .join("credentials")
+            .join(workspace_name.as_str())
+            .join(format!("{}.refresh.lock", source_name.as_str()))
+    }
 }
 
 #[cfg(test)]

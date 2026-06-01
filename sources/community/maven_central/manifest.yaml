@@ -1,0 +1,184 @@
+name: maven_central
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Search Java and JVM artifacts on Maven Central. No auth required.
+base_url: https://search.maven.org
+
+test_queries:
+  - SELECT * FROM maven_central.artifacts WHERE q = 'guice' LIMIT 5
+  - SELECT * FROM maven_central.versions WHERE q = 'g:"com.google.guava" AND a:"guava"' LIMIT 10
+
+tables:
+  - name: artifacts
+    description: |
+      Search Maven Central for Java/JVM artifacts by keyword. Returns one row
+      per groupId and artifactId pair with the latest published version.
+      Requires WHERE q = 'search term'.
+    guide: >
+      Use this table to discover artifacts by keyword. The q filter maps
+      directly to the Solr query param and supports Solr syntax such as
+      g:"com.google.guava" or g:"org.springframework" AND a:"spring-core".
+      Each row is one groupId:artifactId pair at its latest version.
+      To list all published versions of a specific artifact, use
+      maven_central.versions with q = 'g:"groupId" AND a:"artifactId"'.
+    fetch_limit_default: 50
+    filters:
+      - name: q
+        required: true
+    request:
+      method: GET
+      path: /solrsearch/select
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: wt
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - response
+        - docs
+    pagination:
+      mode: offset
+      offset_param: start
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 200
+        query_param: rows
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Artifact identifier in the form groupId:artifactId.
+      - name: g
+        type: Utf8
+        nullable: true
+        description: Maven Group ID, e.g. com.google.guava.
+      - name: a
+        type: Utf8
+        nullable: true
+        description: Maven Artifact ID, e.g. guava.
+      - name: latest_version
+        type: Utf8
+        nullable: true
+        description: Most recently published version string.
+        expr:
+          kind: path
+          path:
+            - latestVersion
+      - name: version_count
+        type: Int64
+        nullable: true
+        description: Total number of published versions.
+        expr:
+          kind: path
+          path:
+            - versionCount
+      - name: packaging
+        type: Utf8
+        nullable: true
+        description: Primary packaging type such as jar, bundle, or pom.
+        expr:
+          kind: path
+          path:
+            - p
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: Unix milliseconds when the latest version was published.
+      - name: repository_id
+        type: Utf8
+        nullable: true
+        description: Repository identifier, typically central.
+        expr:
+          kind: path
+          path:
+            - repositoryId
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the q filter used for this scan.
+        expr:
+          kind: from_filter
+          key: q
+
+  - name: versions
+    description: |
+      List all published versions of a specific Maven artifact.
+      Requires WHERE q = 'g:"groupId" AND a:"artifactId"'.
+    guide: >
+      Use this table to inspect the full version history of a known artifact.
+      The q filter must be a Solr expression identifying one artifact, for
+      example g:"com.google.guava" AND a:"guava" or
+      g:"org.springframework.boot" AND a:"spring-boot-starter".
+      To discover the groupId and artifactId first, use maven_central.artifacts.
+    fetch_limit_default: 50
+    filters:
+      - name: q
+        required: true
+    request:
+      method: GET
+      path: /solrsearch/select
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: core
+          from: literal
+          value: gav
+        - name: wt
+          from: literal
+          value: json
+    response:
+      rows_path:
+        - response
+        - docs
+    pagination:
+      mode: offset
+      offset_param: start
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 200
+        query_param: rows
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Version record identifier in the form groupId:artifactId:version.
+      - name: g
+        type: Utf8
+        nullable: true
+        description: Maven Group ID.
+      - name: a
+        type: Utf8
+        nullable: true
+        description: Maven Artifact ID.
+      - name: v
+        type: Utf8
+        nullable: true
+        description: Version string, e.g. 33.4.8-jre.
+      - name: packaging
+        type: Utf8
+        nullable: true
+        description: Packaging type for this version such as jar or bundle.
+        expr:
+          kind: path
+          path:
+            - p
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: Unix milliseconds when this version was published.
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the q filter used for this scan.
+        expr:
+          kind: from_filter
+          key: q

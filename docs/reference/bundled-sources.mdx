@@ -180,7 +180,26 @@ Cloud; for GitHub Enterprise Server, use
 
 `GITHUB_TOKEN` (required)
 
-If you're already authenticated in GitHub CLI, run
+For GitHub Cloud, choose "Connect with GitHub device code" for the
+simplest setup. It signs in through GitHub and does not require you
+to create an OAuth app or enter a client secret.
+
+If you want to use your own GitHub OAuth app, set
+GITHUB_OAUTH_CLIENT_ID to the app's Client ID. To create an app,
+follow GitHub's guide:
+https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app.
+Enable device flow on the app before using the device-code option.
+For the browser "Connect with GitHub OAuth app" option, set the
+app's Authorization callback URL to
+`http://127.0.0.1:53682/oauth/callback` and set
+GITHUB_OAUTH_CLIENT_SECRET to the app's Client secret.
+
+The OAuth options request `repo`, `read:org`, `read:user`, and
+`user:email` scopes. Use the token method instead if you need a
+narrower or more elevated scope set, or if you are connecting
+to GitHub Enterprise Server.
+
+For token auth, if you're already authenticated in GitHub CLI, run
 `gh auth token`, or create a new personal access token (PAT).
 Grant read access to the repositories and organizations you plan
 to query; some admin tables require elevated scopes.
@@ -197,8 +216,8 @@ Base URL of your GitLab instance. Keep the default for
 
 `GITLAB_TOKEN` (required)
 
-Create a personal access token (PAT) with the `read_api` scope;
-some admin tables require elevated scopes.
+Use GitLab OAuth or create a personal access token (PAT) with
+the `read_api` scope; some admin tables require elevated scopes.
 See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
 
 ### `google_calendar`
@@ -292,12 +311,17 @@ See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys).
 
 `NOTION_API_KEY` (required)
 
-Create an internal Notion integration and copy its internal integration
-token. Share the pages and databases you want to query with the
-integration from Notion's "Add connections" menu.
+Notion doesn't ship a workspace-wide read token. You must create a
+connection on a workspace you own, then grant it access to the pages
+and databases you want to query.
+
+Create the connection at [notion.so/developers](https://www.notion.so/developers)
+and copy its internal integration token. Then open the integration's
+content access settings and give it edit access to each page or
+database you want Coral to read.
 
 The token needs read content capabilities for most tables. See the
-[Notion authorization docs](https://developers.notion.com/reference/authorization).
+[Notion authorization docs](https://developers.notion.com/guides/get-started/authorization).
 
 ### `openobserve`
 
@@ -362,35 +386,25 @@ See [Sentry auth token docs](https://docs.sentry.io/api/guides/create-auth-token
 
 `SLACK_TOKEN` (required)
 
-Slack has no general-purpose API for reading messages, so Coral
-connects with a token from a Slack app.
+Slack doesn't provide a general-purpose API for reading messages.
+Instead, you need a Slack app with an OAuth token.
 
-Coral ships no shared Slack app. Slack only lets an app authorize
-users outside its home workspace when it is publicly distributed
-over HTTPS, which is incompatible with Coral's local
-`http://localhost` OAuth redirect. You create your own Slack app
-once and reuse it.
+If you already have a Slack app with the required scopes, you can
+find your OAuth token on its OAuth & Permissions page. The
+required scopes are: channels:read, channels:history, groups:read,
+groups:history, users:read, users:read.email.
 
-To connect with OAuth:
-1. [Create a Slack app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback%22%5D%2C%22scopes%22%3A%7B%22user%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Aread%22%2C%22channels%3Aread%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%2C%22pkce_enabled%22%3Atrue%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D)
-   — the link pre-fills the app name, required user scopes,
-   redirect URL, and PKCE.
-2. Open the new app's Basic Information page and copy its Client ID.
-3. Run `coral source add --interactive slack`, choose "Connect
-   with Slack", and paste the Client ID when prompted.
+If you don't have a Slack app, create one with the required
+scopes pre-filled:
 
-Coral uses Slack's public-client PKCE user token flow. The token
-is tied to the Slack user who authorizes Coral, so channel access
-follows that user's visibility and workspace policy.
+- [User token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback%22%5D%2C%22scopes%22%3A%7B%22user%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Aread%22%2C%22channels%3Aread%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%2C%22pkce_enabled%22%3Atrue%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D)
+  — works with the "Connect with Slack" OAuth flow. Reads the
+  channels the authorizing user belongs to.
+- [Bot token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D)
+  — install it, then paste the bot token. Reads the channels the
+  bot has been added to.
 
-Alternatively, paste an existing token from a Slack app's OAuth &
-Permissions page. A user token and a bot token both work: a user
-token reads the channels that user belongs to, a bot token reads
-the channels the bot has been added to. Required scopes:
-channels:read, channels:history, groups:read, groups:history,
-users:read, users:read.email.
-
-Full walkthrough: https://withcoral.com/docs/guides/connect-slack
+For more details, see the [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
 
 ### `statusgator`
 
