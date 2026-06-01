@@ -1,7 +1,7 @@
 import { sourceLifecycleHandlers } from './support/source-handlers'
 import { expect, test } from './playwright.setup'
 
-test('lists core sources, searches, and shows the connected origin badge', async ({
+test('lists core sources by category, searches, and shows connected status', async ({
   network,
   page,
   review,
@@ -15,8 +15,12 @@ test('lists core sources, searches, and shows the connected origin badge', async
   await page.goto('/#/sources')
 
   await expect(page.getByRole('heading', { name: 'Sources', level: 1 })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Connected' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Observability' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Developer Tools' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Communication' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Project Management' })).toBeVisible()
   await expect(page.getByRole('button', { name: /Github/i })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Github/i }).getByText('Connected')).toBeVisible()
   await expect(page.getByRole('button', { name: /Linear/i })).toBeVisible()
   await expect(page.getByRole('button', { name: /Slack/i })).toBeVisible()
   await expect(page.getByRole('button', { name: /Sentry/i })).toBeVisible()

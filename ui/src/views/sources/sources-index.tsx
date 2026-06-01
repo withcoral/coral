@@ -6,6 +6,7 @@ import { Typography } from '@/wax/components/typography'
 
 import { ErrorBanner } from '@/components/error-banner'
 import { providerIcon } from '@/lib/provider-icons'
+import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
 import {
   discoverBundled,
   listInstalledSources,
@@ -101,8 +102,26 @@ export function SourcesIndex() {
     )
   }, [allEntries, search])
 
-  const connected = useMemo(() => filtered.filter((entry) => entry.installed), [filtered])
-  const available = useMemo(() => filtered.filter((entry) => !entry.installed), [filtered])
+  const sections = useMemo(() => {
+    const grouped = new Map<string, IndexEntry[]>()
+    for (const entry of filtered) {
+      const category = getCategoryForSource(entry.name)
+      const group = grouped.get(category)
+      if (group) {
+        group.push(entry)
+      } else {
+        grouped.set(category, [entry])
+      }
+    }
+
+    const ordered = SOURCE_CATEGORY_ORDER.map((category) => ({
+      ...category,
+      entries: grouped.get(category.key) ?? [],
+    })).filter((category) => category.entries.length > 0)
+    const other = grouped.get('other')
+    if (other?.length) ordered.push({ key: 'other', label: 'Other', entries: other })
+    return ordered
+  }, [filtered])
 
   const onPick = (entry: IndexEntry) => {
     if (entry.installed) {
@@ -171,10 +190,10 @@ export function SourcesIndex() {
           </div>
         ) : null}
 
-        {connected.length > 0 ? (
-          <Section title="Connected" count={connected.length}>
+        {sections.map((section) => (
+          <Section key={section.key} title={section.label} count={section.entries.length}>
             <div className={styles.cardGrid}>
-              {connected.map((entry) => (
+              {section.entries.map((entry) => (
                 <SourceCard
                   key={`${entry.origin}:${entry.name}`}
                   entry={entry}
@@ -183,21 +202,9 @@ export function SourcesIndex() {
               ))}
             </div>
           </Section>
-        ) : null}
+        ))}
 
-        {available.length > 0 ? (
-          <Section title="Available" count={available.length}>
-            <div className={styles.cardGrid}>
-              {available.map((entry) => (
-                <SourceCard
-                  key={`${entry.origin}:${entry.name}`}
-                  entry={entry}
-                  onClick={() => onPick(entry)}
-                />
-              ))}
-            </div>
-          </Section>
-        ) : !loading && !error && allEntries.length > 0 ? (
+        {sections.length === 0 && !loading && !error && allEntries.length > 0 ? (
           <Typography.BodySmall variant="tertiary">
             No sources match your search.
           </Typography.BodySmall>
@@ -275,6 +282,12 @@ function SourceCard({ entry, onClick }: { entry: IndexEntry; onClick: () => void
         <Typography.BodySmall variant="tertiary">
           v{entry.installedVersion ?? entry.version}
         </Typography.BodySmall>
+        {entry.installed ? (
+          <span className={styles.connectedPill}>
+            <Icon name="CircleCheck" size="14" color="inherit" />
+            Connected
+          </span>
+        ) : null}
       </div>
     </button>
   )
