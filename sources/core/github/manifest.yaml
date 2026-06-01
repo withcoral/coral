@@ -1,5 +1,5 @@
 name: github
-version: 1.1.7
+version: 1.1.8
 dsl_version: 3
 backend: http
 description: >-
@@ -57223,9 +57223,8 @@ tables:
   - name: memberships
     description: Get team membership for a user (Legacy)
     guide: >
-      Use this table to inspect one team membership. Requires team_id and username. If you only
-      know org and team_slug, resolve team_id from github.teams first; org and team_slug then select
-      the matching org team route instead of the legacy team_id path.
+      Use this legacy table when you already have the numeric team_id. Requires team_id and
+      username. If you only know org and team_slug, use github.org_team_memberships instead.
     filters:
       - name: team_id
         required: true
@@ -57313,6 +57312,81 @@ tables:
         expr:
           kind: from_filter
           key: team_slug
+  - name: org_team_memberships
+    description: Get organization team membership for a user
+    guide: >
+      Requires org, team_slug, and username. Use this table when you know the organization and team
+      slug. A missing membership returns an empty result instead of failing the query.
+    filters:
+      - name: org
+        required: true
+      - name: team_slug
+        required: true
+      - name: username
+        required: true
+    request:
+      method: GET
+      path: /orgs/{{filter.org}}/teams/{{filter.team_slug}}/memberships/{{filter.username}}
+    response:
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_start: 0
+      page_step: 1
+      offset_start: 0
+      link_header_require_results: false
+    columns:
+      - name: role
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: The role of the user in the team.
+        expr:
+          kind: path
+          path:
+            - role
+      - name: state
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: The state of the user's membership in the team.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - url
+      - name: org
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: The organization name.
+        expr:
+          kind: from_filter
+          key: org
+      - name: team_slug
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: The slug of the team name.
+        expr:
+          kind: from_filter
+          key: team_slug
+      - name: username
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: The handle for the GitHub user account.
+        expr:
+          kind: from_filter
+          key: username
   - name: meta
     description: Get GitHub meta information
     guide: >
@@ -89706,7 +89780,8 @@ tables:
       Requires owner and repo. By default this table requests state=all from GitHub so aggregates include open and closed
       pull requests; add state when you need only open, closed, or all. Other useful optional filters are head and base. Add
       pull_number to jump from the default list call to a specific record lookup. GitHub only populates diff-stat columns
-      such as additions, deletions, and changed_files on that per-PR lookup, so include pull_number before using them.
+      such as additions, deletions, changed_files, and the merged boolean on that per-PR lookup, so include pull_number
+      before using them. For list queries, use merged_at IS NOT NULL to identify merged pull requests.
     filters:
       - name: owner
         required: true
@@ -90219,6 +90294,16 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        expr:
+          kind: path
+          path:
+            - base
+            - ref
+      - name: base_ref
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for base__ref.
         expr:
           kind: path
           path:
@@ -91325,6 +91410,16 @@ tables:
           path:
             - base
             - sha
+      - name: base_sha
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for base__sha.
+        expr:
+          kind: path
+          path:
+            - base
+            - sha
       - name: base__user
         type: Utf8
         nullable: true
@@ -91674,6 +91769,16 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        expr:
+          kind: path
+          path:
+            - head
+            - ref
+      - name: head_ref
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for head__ref.
         expr:
           kind: path
           path:
@@ -92780,6 +92885,16 @@ tables:
           path:
             - head
             - sha
+      - name: head_sha
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for head__sha.
+        expr:
+          kind: path
+          path:
+            - head
+            - sha
       - name: head__user
         type: Utf8
         nullable: true
@@ -93098,6 +93213,7 @@ tables:
         type: Boolean
         nullable: true
         virtual: false
+        description: Only populated by the per-PR lookup. Filter pull_number before using this boolean; for list workflows, use merged_at IS NOT NULL.
         expr:
           kind: path
           path:
@@ -93106,6 +93222,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Timestamp set when a pull request was merged. Use this to identify merged PRs in list responses.
         expr:
           kind: path
           path:
@@ -93726,11 +93843,12 @@ tables:
       - name: pull_number
         type: Int64
         nullable: true
-        virtual: true
-        description: The number that identifies the pull request.
+        virtual: false
+        description: Pull request number. Also usable as an optional pushed-down filter for per-PR lookup.
         expr:
-          kind: from_filter
-          key: pull_number
+          kind: path
+          path:
+            - number
       - name: rebaseable
         type: Utf8
         nullable: true
@@ -93953,6 +94071,16 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        expr:
+          kind: path
+          path:
+            - user
+            - login
+      - name: user_login
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for user__login.
         expr:
           kind: path
           path:
@@ -147864,18 +147992,75 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw requested team objects as JSON text. Use team_names or team_slugs for compact projections.
         expr:
           kind: path
           path:
             - teams
+      - name: team_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated names for requested teams.
+        expr:
+          kind: join_array_path
+          path:
+            - teams
+          item_path:
+            - name
+      - name: requested_team_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for team_names, matching the compact projection on github.pulls.
+        expr:
+          kind: join_array_path
+          path:
+            - teams
+          item_path:
+            - name
+      - name: team_slugs
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated slugs for requested teams.
+        expr:
+          kind: join_array_path
+          path:
+            - teams
+          item_path:
+            - slug
       - name: users
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw requested reviewer user objects as JSON text. Use user_logins for a compact projection.
         expr:
           kind: path
           path:
             - users
+      - name: user_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated logins for requested user reviewers.
+        expr:
+          kind: join_array_path
+          path:
+            - users
+          item_path:
+            - login
+      - name: requested_reviewer_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for user_logins, matching the compact projection on github.pulls.
+        expr:
+          kind: join_array_path
+          path:
+            - users
+          item_path:
+            - login
   - name: required_pull_request_reviews
     description: Get pull request review protection
     guide: >
@@ -165921,11 +166106,111 @@ tables:
         expr:
           kind: from_filter
           key: org
+  - name: authenticated_user
+    description: Get the authenticated user
+    guide: >
+      Works without WHERE filters. Alias for the current token's user profile; use github.user when
+      you need the broader generated user table or the account_id lookup route.
+    request:
+      method: GET
+      path: /user
+    response:
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_start: 0
+      page_step: 1
+      offset_start: 0
+      link_header_require_results: false
+    columns:
+      - name: login
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: The handle for the authenticated GitHub user.
+        expr:
+          kind: path
+          path:
+            - login
+      - name: id
+        type: Int64
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: node_id
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - node_id
+      - name: name
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - email
+      - name: html_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - html_url
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - type
+      - name: site_admin
+        type: Boolean
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - site_admin
+      - name: created_at
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - updated_at
   - name: user
     description: Get the authenticated user
     guide: >
-      Works without WHERE filters. Most useful optional filters: account_id. Add account_id to jump from the
-      default list call to a specific record lookup.
+      Works without WHERE filters. The default route returns the current authenticated user. Most useful optional
+      filters: account_id. Add account_id to jump from the default route to a specific record lookup. For the
+      current token's user profile, github.authenticated_user is the shorter alias.
     filters:
       - name: account_id
         required: false
