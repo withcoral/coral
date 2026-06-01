@@ -7,8 +7,8 @@ use coral_api::v1::{
     TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
-    decode_execute_sql_response, default_workspace,
+    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient,
+    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -242,7 +242,7 @@ impl CoralMcpServer {
             .into_inner();
         let result = decode_execute_sql_response(&response)
             .map_err(|error| tonic::Status::internal(error.to_string()))?;
-        batches_to_json_rows(result.batches())
+        batches_to_json_rows_json_safe_numbers(result.batches())
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
