@@ -1,5 +1,5 @@
 name: vapi
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: Query calls, assistants, and phone_numbers from Vapi Voice AI.
@@ -30,12 +30,19 @@ tables:
   - name: calls
     description: Call logs from Vapi, including status, cost, transcript, and AI analysis results.
     guide: |
-      The `type` column is one of: inboundPhoneCall, outboundPhoneCall, webCall.
-      The `status` column is one of: queued, ringing, in-progress, forwarding, ended.
+      The `type` column includes values such as inboundPhoneCall, outboundPhoneCall,
+      webCall, and vapi.websocketCall. Vapi may add further types; do not filter with
+      a closed IN list.
+      The `status` column includes values such as queued, ringing, in-progress,
+      forwarding, and ended. Additional non-happy-path statuses exist; avoid closed
+      enum filters.
       Use `created_at_lt` and `created_at_gt` filters for time-windowed queries and
-      manual date-cursor pagination (Vapi returns up to 1000 rows per request).
+      manual date-cursor pagination. Vapi defaults to 100 rows and accepts up to 1000
+      per request via the `limit` filter.
       `analysis__summary` and `artifact__transcript` are null for in-progress or
       very short calls. Join to vapi.assistants on assistant_id = id.
+      Use `phone_number_id_filter` to scope calls to a specific phone number without
+      scanning the full call history.
     filters:
       - name: created_at_gt
         description: Return calls created after this ISO 8601 timestamp (maps to createdAtGt).
@@ -43,8 +50,10 @@ tables:
         description: Return calls created before this ISO 8601 timestamp (maps to createdAtLt).
       - name: assistant_id_filter
         description: Filter calls by assistant ID (maps to assistantId query param).
+      - name: phone_number_id_filter
+        description: Filter calls by phone number ID (maps to phoneNumberId query param).
       - name: limit
-        description: Maximum number of calls to return. Vapi maximum is 1000.
+        description: Maximum number of calls to return. Vapi defaults to 100, maximum is 1000.
     request:
       method: GET
       path: /call
@@ -58,6 +67,9 @@ tables:
         - name: assistantId
           from: filter
           key: assistant_id_filter
+        - name: phoneNumberId
+          from: filter
+          key: phone_number_id_filter
         - name: limit
           from: filter
           key: limit
@@ -107,7 +119,7 @@ tables:
       - name: type
         type: Utf8
         nullable: true
-        description: "Call type: inboundPhoneCall, outboundPhoneCall, or webCall."
+        description: "Call type: inboundPhoneCall, outboundPhoneCall, webCall, vapi.websocketCall, and others."
         expr:
           kind: path
           path:
@@ -115,7 +127,7 @@ tables:
       - name: status
         type: Utf8
         nullable: true
-        description: "Call status: queued, ringing, in-progress, forwarding, or ended."
+        description: "Call status: queued, ringing, in-progress, forwarding, ended, and other non-happy-path values."
         expr:
           kind: path
           path:
@@ -216,9 +228,28 @@ tables:
       `model__provider` identifies the LLM provider (e.g. openai, anthropic, google).
       `voice__provider` identifies the TTS provider (e.g. 11labs, deepgram, playht).
       Join to vapi.calls on id = assistant_id to see calls handled by each assistant.
+      Vapi defaults to 100 rows per request. Use `limit`, `created_at_gt`, and
+      `created_at_lt` to page through large assistant lists.
+    filters:
+      - name: created_at_gt
+        description: Return assistants created after this ISO 8601 timestamp (maps to createdAtGt).
+      - name: created_at_lt
+        description: Return assistants created before this ISO 8601 timestamp (maps to createdAtLt).
+      - name: limit
+        description: Maximum number of assistants to return. Vapi defaults to 100, maximum is 1000.
     request:
       method: GET
       path: /assistant
+      query:
+        - name: createdAtGt
+          from: filter
+          key: created_at_gt
+        - name: createdAtLt
+          from: filter
+          key: created_at_lt
+        - name: limit
+          from: filter
+          key: limit
     response:
       row_strategy: direct
     pagination:
@@ -321,9 +352,28 @@ tables:
       `number` is in E.164 format (e.g. +14155552671).
       Join to vapi.calls on id = phone_number_id to see calls made through each number.
       `assistant_id` links to the default assistant assigned to inbound calls on this number.
+      Vapi defaults to 100 rows per request. Use `limit`, `created_at_gt`, and
+      `created_at_lt` to page through large phone number lists.
+    filters:
+      - name: created_at_gt
+        description: Return phone numbers created after this ISO 8601 timestamp (maps to createdAtGt).
+      - name: created_at_lt
+        description: Return phone numbers created before this ISO 8601 timestamp (maps to createdAtLt).
+      - name: limit
+        description: Maximum number of phone numbers to return. Vapi defaults to 100, maximum is 1000.
     request:
       method: GET
       path: /phone-number
+      query:
+        - name: createdAtGt
+          from: filter
+          key: created_at_gt
+        - name: createdAtLt
+          from: filter
+          key: created_at_lt
+        - name: limit
+          from: filter
+          key: limit
     response:
       row_strategy: direct
     pagination:
