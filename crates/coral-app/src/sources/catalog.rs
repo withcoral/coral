@@ -68,9 +68,6 @@ pub(crate) fn load_bundled_source(
         .into_iter()
         .find(|entry| entry.name == name.as_str())
     else {
-        if dsl_v4_bundled_source_exists(name) {
-            return Err(dsl_v4_feature_required_error(name));
-        }
         return Err(AppError::InvalidInput(format!(
             "unknown bundled source '{name}'"
         )));
@@ -146,18 +143,8 @@ pub(crate) fn describe_manifest(
     candidate_from_manifest(&manifest, origin, installed)
 }
 
-fn enabled_bundled_sources(features: &Features) -> Vec<&'static BundledSourceEntry> {
-    let mut entries = BUNDLED_SOURCES.iter().collect::<Vec<_>>();
-    if features.enabled(Feature::DslV4) {
-        entries.extend(DSL_V4_BUNDLED_SOURCES);
-    }
-    entries
-}
-
-fn dsl_v4_bundled_source_exists(name: &SourceName) -> bool {
-    DSL_V4_BUNDLED_SOURCES
-        .iter()
-        .any(|entry| entry.name == name.as_str())
+fn enabled_bundled_sources(_features: &Features) -> Vec<&'static BundledSourceEntry> {
+    BUNDLED_SOURCES.iter().collect::<Vec<_>>()
 }
 
 fn candidate_from_manifest(
@@ -219,29 +206,20 @@ mod tests {
     }
 
     #[test]
-    fn dsl_v4_bundled_sources_require_feature() {
+    fn core_v4_preview_sources_are_not_bundled() {
         let github_v4 = SourceName::parse("github_v4").expect("source");
 
         let error = load_bundled_source(&github_v4, &Features::default())
-            .expect_err("v4 source should be gated");
-        assert!(
-            error
-                .to_string()
-                .contains("requires experimental feature 'dsl_v4'")
-        );
+            .expect_err("v4 source should not be bundled");
+        assert!(error.to_string().contains("unknown bundled source"));
 
         let mut overrides = FeatureOverrides::default();
         overrides.set(Feature::DslV4, true);
         let mut features = Features::default();
         features.apply_overrides(&overrides);
-        let bundled = load_bundled_source(&github_v4, &features).expect("v4 source");
-        assert!(bundled.manifest_yaml.contains("name: github_v4"));
-        assert!(
-            bundled
-                .manifest_yaml
-                .contains("github/rest-api-description")
-        );
-        assert_eq!(bundled.descriptors.len(), 0);
+        let error = load_bundled_source(&github_v4, &features)
+            .expect_err("feature flag should not make preview sources bundled");
+        assert!(error.to_string().contains("unknown bundled source"));
     }
 
     #[test]

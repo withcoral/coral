@@ -135,21 +135,6 @@ coral source test github
 coral source test local_messages
 ```
 
-### `coral source refresh <NAME>`
-
-Rebuild materialized artifacts for an installed DSL v4 source without changing
-its manifest, variables, or secrets.
-
-```shellscript
-coral source refresh github
-coral source refresh github --json
-```
-
-Refresh re-fetches or re-reads the pinned surface descriptors declared by the
-manifest, verifies their SHA-256 hashes, regenerates semantic IR and SQL
-projections, and atomically replaces `materialized/v4` only after the new
-artifacts validate. It does not run provider data queries or `test_queries`.
-
 ### `coral source remove <NAME>`
 
 Remove an installed source.
@@ -193,12 +178,6 @@ feature is listed in [Configuration](/reference/configuration#runtime-features).
 coral features enable feedback
 ```
 
-Enable preview DSL v4 source specs with:
-
-```shellscript
-coral features enable dsl_v4
-```
-
 ### `coral features disable <FEATURE>`
 
 Persistently disables an experimental runtime feature.
@@ -206,9 +185,6 @@ Persistently disables an experimental runtime feature.
 ```shellscript
 coral features disable feedback
 ```
-
-Disabling `dsl_v4` leaves already-installed v4 sources in config, but they
-cannot be used again until the feature is re-enabled.
 
 ## `coral ui`
 

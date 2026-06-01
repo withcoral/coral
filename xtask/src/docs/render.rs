@@ -443,7 +443,6 @@ const INDEX_TYPES: &str = concat!(
     "- **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.\n",
     "- **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.\n",
     "- **MCP** — Coral exposes tools from a Model Context Protocol server as queryable catalog entries.\n",
-    "- **DSL v4** — Coral materializes generated projections from declared API surfaces. DSL v4 bundled sources are experimental and require the `dsl_v4` feature.\n",
 );
 
 const INDEX_UPGRADING: &str = concat!(

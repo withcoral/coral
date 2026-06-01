@@ -15,31 +15,8 @@ Coral is extensible through source specs. These are YAML files that describe how
 
 ## DSL versions
 
-Coral supports the existing table-authored `dsl_version: 3` manifests and the
-additive `dsl_version: 4` surface-first manifest shape. DSL v3 keeps top-level
-`backend`, `tables`, `functions`, and source-level `inputs`. DSL v4 removes
-those top-level execution/projection fields and declares one or more upstream
-`surfaces` instead.
-
-DSL v4 is OpenAPI-first in this release. Coral imports pinned OpenAPI 3.0.x
-descriptions during `coral source add`, materializes semantic IR plus generated
-SQL projections under the installed source directory, and uses those artifacts
-at query time. Query loading does not fetch OpenAPI documents, rerun importers,
-or regenerate projections. GraphQL and other surface types are reserved for a
-future release.
-
-DSL v4 is currently experimental and gated behind the `dsl_v4` runtime feature.
-Enable it before installing preview bundled sources or importing a custom
-`dsl_version: 4` manifest:
-
-```shellscript
-coral features enable dsl_v4
-```
-
-Preview bundled v4 sources use distinct schema names such as `github_v4`, so
-they can coexist with stable v3 sources such as `github`. Enabling the feature
-does not migrate or replace installed sources. Any migration from a v3 source
-to a v4 source is explicit and source-specific.
+Coral source specs currently use `dsl_version: 3`. Manifests declare a top-level
+`backend`, optional `inputs`, and authored `tables` or `functions`.
 
 ## Top-level fields
 
@@ -58,92 +35,9 @@ test_queries:
 | ------------- | -------------------------------------------------- |
 | `name`        | Source name, also used as the SQL schema name      |
 | `version`     | Source spec version string                         |
-| `dsl_version` | Coral source spec DSL version: `3` or `4`          |
-| `backend`     | DSL v3 only. How data is fetched: `http`, `file`, or `mcp` |
+| `dsl_version` | Coral source spec DSL version: `3`                 |
+| `backend`     | How data is fetched: `http`, `file`, or `mcp`      |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
-
-DSL v4 top-level fields are limited to `name`, `version`, `dsl_version`,
-`description`, `test_queries`, `onboarding`, `surfaces`, and
-`projection_policy`. If `description` is omitted, Coral uses the OpenAPI
-document's `info.description` when available during source add/materialization.
-Top-level `backend`, `inputs`, `tables`, `functions`, HTTP runtime fields, and
-`projection_overrides` are rejected for DSL v4.
-
-## DSL v4 surfaces
-
-A v4 manifest declares upstream surfaces and lets Coral generate SQL projections
-from imported provider descriptions:
-
-```yaml
-name: github_v4
-version: 2.0.0
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/pinned/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
-    inputs:
-      GITHUB_API_BASE:
-        kind: variable
-        default: https://api.github.com
-      GITHUB_TOKEN:
-        kind: secret
-    base_url: "{{input.GITHUB_API_BASE}}"
-    auth:
-      type: HeaderAuth
-      headers:
-        - name: Authorization
-          from: template
-          template: Bearer {{input.GITHUB_TOKEN}}
-projection_policy:
-  default: derive_read_operations
-```
-
-Each surface requires:
-
-- `id`: stable source-local identifier matching `[a-z][a-z0-9_]*`
-- `type`: currently only `openapi`
-- exactly one descriptor location, either `url` or `file`
-- `sha256`: lowercase hex SHA-256 of the exact descriptor bytes
-- `base_url`: optional runtime base URL template. If omitted, Coral derives it
-  from the OpenAPI document's first non-empty `servers[].url` during source
-  add/materialization, substituting OpenAPI server variable defaults.
-
-Remote descriptors must use HTTPS and are always pinned by `sha256`. Local
-`file` descriptors are for imported development sources only; they must be
-regular files under the current working directory, must not be symlinks, and
-are bounded to the same descriptor size limit as remote descriptors. Bundled
-sources must not depend on local OpenAPI files. Providers with mutable OpenAPI
-URLs should be mirrored to a stable Coral-owned artifact URL and pinned there.
-
-Surface `inputs` reuse the v3 input declaration shape, but v4 inputs are scoped
-to the surface that uses them. During `source add`, Coral prompts for the union
-of compatible surface inputs and persists them through the existing
-source-scoped variable/secret storage. Reusing an input key across surfaces is
-valid only when the declarations are structurally identical.
-
-## DSL v4 projection generation
-
-`projection_policy.default` currently supports only
-`derive_read_operations`, which is also the default when the block is omitted.
-Coral publishes deterministic SQL tables and table functions for supported
-read-only OpenAPI `GET` operations. Mutating operations, request-body
-operations, no-body responses, unsupported parameter serialization, and
-unknown-cardinality responses are imported as diagnostics or hidden projections.
-
-Generated artifacts are stored under:
-
-```text
-workspaces/<workspace>/sources/<source>/materialized/v4/
-```
-
-The directory contains `fingerprint.yaml`, `diagnostics.yaml`,
-`projections.yaml`, per-surface `semantic-ir.yaml`, the exact
-`source-document.raw`, and a normalized `source-document.yaml`. If these
-artifacts are missing or stale, catalog and query operations fail with a
-message that points to `coral source refresh <source>` or reinstalling the
-source.
 
 ## Test queries
 

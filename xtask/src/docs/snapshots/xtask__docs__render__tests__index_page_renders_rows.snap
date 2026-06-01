@@ -31,7 +31,6 @@ Supported sources fall into these backend families.
 - **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.
 - **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.
 - **MCP** — Coral exposes tools from a Model Context Protocol server as queryable catalog entries.
-- **DSL v4** — Coral materializes generated projections from declared API surfaces. DSL v4 bundled sources are experimental and require the `dsl_v4` feature.
 
 ## Upgrading bundled sources
 

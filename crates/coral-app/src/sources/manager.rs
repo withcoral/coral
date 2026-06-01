@@ -1952,7 +1952,7 @@ tables:
     }
 
     #[test]
-    fn discover_sources_gates_dsl_v4_bundled_sources() {
+    fn discover_sources_omits_core_v4_preview_sources() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1985,7 +1985,7 @@ tables:
             .discover_sources(&default_workspace())
             .expect("discover sources");
         assert!(
-            enabled
+            !enabled
                 .iter()
                 .any(|source| source.name.as_str() == "github_v4")
         );
