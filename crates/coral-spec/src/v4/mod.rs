@@ -1613,18 +1613,17 @@ fn resolve_projection_name_collisions(
         let keep = indexes
             .iter()
             .copied()
-            .max_by_key(|index| {
+            .min_by_key(|index| {
                 let projection = projections
                     .get(*index)
                     .expect("projection index came from projections");
-                operations
+                let operation = operations
                     .get(&(
                         projection.surface_id.as_str(),
                         projection.operation_id.as_str(),
                     ))
-                    .map_or(0, |operation| {
-                        projection_name_priority(projection, operation)
-                    })
+                    .copied();
+                projection_name_priority(projection, operation, *index)
             })
             .expect("group has at least one projection");
         keep_base_name.insert(keep);
@@ -1678,72 +1677,63 @@ fn resolve_projection_name_collisions(
     }
 }
 
-fn projection_name_priority(projection: &Projection, operation: &IrOperation) -> i32 {
-    let mut priority = 0;
-    if projection.visibility == ProjectionVisibility::Published {
-        priority += 1_000;
-    }
-    if matches!(projection.kind, ProjectionKind::Table) {
-        priority += 100;
-    }
-    if is_repository_scoped(operation) {
-        priority += 500;
-    }
-    if operation.id.contains("_list_for_repo") || operation.id.contains("_list_for_repository") {
-        priority += 300;
-    }
-    if operation.id.starts_with("repos_list_") {
-        priority += 250;
-    }
-    if operation.id.ends_with("_list") {
-        priority += 300;
-    }
-    if operation.id.contains("authenticated_user") {
-        priority -= 200;
-    }
-    if operation.inputs.iter().all(|input| !input.required) {
-        priority -= 100;
-    }
-    priority
+fn projection_name_priority(
+    projection: &Projection,
+    operation: Option<&IrOperation>,
+    index: usize,
+) -> (bool, bool, usize, usize, usize) {
+    (
+        projection.visibility != ProjectionVisibility::Published,
+        !matches!(projection.kind, ProjectionKind::Table),
+        operation.map_or(usize::MAX, required_input_count),
+        operation.map_or(usize::MAX, rest_literal_path_depth),
+        index,
+    )
+}
+
+fn required_input_count(operation: &IrOperation) -> usize {
+    operation
+        .inputs
+        .iter()
+        .filter(|input| input.required && input.default_value.is_none())
+        .count()
+}
+
+fn rest_literal_path_depth(operation: &IrOperation) -> usize {
+    rest_literal_path_segments(operation).len()
 }
 
 fn contextual_projection_name(base_name: &str, operation: &IrOperation) -> String {
-    let context = projection_context(operation);
-    if context.is_empty() {
+    let Some(context) = projection_path_context(operation) else {
         return normalize_identifier(&operation.id, base_name);
-    }
-    if base_name.starts_with(&format!("{context}_")) {
+    };
+    if base_name == context || base_name.starts_with(&format!("{context}_")) {
         base_name.to_string()
     } else {
         format!("{context}_{base_name}")
     }
 }
 
-fn projection_context(operation: &IrOperation) -> &'static str {
-    if operation.id.contains("authenticated_user") {
-        return "authenticated_user";
-    }
-    if operation.id.contains("_for_org") || has_operation_input(operation, "org") {
-        return "organization";
-    }
-    if operation.id.contains("_for_enterprise") || has_operation_input(operation, "enterprise") {
-        return "enterprise";
-    }
-    if operation.id.contains("_for_user") || has_operation_input(operation, "username") {
-        return "user";
-    }
-    if is_repository_scoped(operation) {
-        return "repository";
-    }
-    ""
+fn projection_path_context(operation: &IrOperation) -> Option<String> {
+    let mut segments = rest_literal_path_segments(operation);
+    segments.pop();
+    (!segments.is_empty()).then(|| segments.join("_"))
 }
 
-fn has_operation_input(operation: &IrOperation, name: &str) -> bool {
-    operation.inputs.iter().any(|input| input.name == name)
+fn rest_literal_path_segments(operation: &IrOperation) -> Vec<String> {
+    let IrExecutionAttachment::Rest(rest) = &operation.execution;
+    rest.path_template
+        .split('/')
+        .filter_map(normalized_path_literal_segment)
+        .collect()
 }
 
-fn is_repository_scoped(operation: &IrOperation) -> bool {
-    has_operation_input(operation, "owner") && has_operation_input(operation, "repo")
+fn normalized_path_literal_segment(segment: &str) -> Option<String> {
+    if segment.is_empty() || segment.starts_with('{') {
+        return None;
+    }
+    let normalized = normalize_identifier(segment, "path");
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn projection_guide(
@@ -1790,17 +1780,9 @@ fn projection_guide(
         ));
     }
 
-    if has_required(inputs, "owner") && has_required(inputs, "repo") {
-        sentences.push(
-            "Keep queries repository-scoped; fan out across repos client-side when you need broader coverage."
-                .to_string(),
-        );
-    }
-
     if is_search {
         sentences.push(
-            "Use LIMIT to control result size; GitHub search endpoints are rate-limited."
-                .to_string(),
+            "Use LIMIT to control result size; search endpoints can be rate-limited.".to_string(),
         );
     } else if pagination.mode != PaginationMode::None {
         sentences
@@ -1808,12 +1790,6 @@ fn projection_guide(
     }
 
     sentences.join(" ")
-}
-
-fn has_required(inputs: &[ProjectionInput], name: &str) -> bool {
-    inputs
-        .iter()
-        .any(|input| input.name == name && input.required)
 }
 
 fn human_join(items: &[&str]) -> String {
@@ -1880,10 +1856,7 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
 }
 
 fn projection_name(operation: &IrOperation, is_search: bool) -> String {
-    let entity = operation.entity.as_ref().map_or_else(
-        || normalize_identifier(&operation.id, "projection"),
-        |_| projection_entity_name(operation, is_search),
-    );
+    let entity = projection_entity_name(operation, is_search);
     if is_search {
         return format!("search_{}", pluralize(&entity));
     }
@@ -1900,27 +1873,20 @@ fn projection_name(operation: &IrOperation, is_search: bool) -> String {
 }
 
 fn projection_entity_name(operation: &IrOperation, is_search: bool) -> String {
-    if is_search && let Some(search_entity) = search_entity_from_operation_id(&operation.id) {
+    if is_search && let Some(search_entity) = search_entity_from_path(operation) {
         return search_entity;
     }
     operation.entity.as_ref().map_or_else(
         || normalize_identifier(&operation.id, "projection"),
-        |entity| {
-            let entity_name = normalize_entity_identifier(&entity.name);
-            if operation.id.starts_with("pulls_") && entity_name == "pull_request" {
-                "pull".to_string()
-            } else {
-                entity_name
-            }
-        },
+        |entity| normalize_entity_identifier(&entity.name),
     )
 }
 
-fn search_entity_from_operation_id(operation_id: &str) -> Option<String> {
-    let mut raw = operation_id.strip_prefix("search_")?;
-    raw = raw.strip_suffix("_and_pull_requests").unwrap_or(raw);
-    raw = raw.strip_suffix("_result_items").unwrap_or(raw);
-    Some(singularize(raw))
+fn search_entity_from_path(operation: &IrOperation) -> Option<String> {
+    rest_literal_path_segments(operation)
+        .into_iter()
+        .next_back()
+        .map(|segment| singularize(&segment))
 }
 
 fn normalize_entity_identifier(raw: &str) -> String {
@@ -2532,7 +2498,7 @@ components:
         clippy::too_many_lines,
         reason = "The OpenAPI fixture keeps related collision cases together."
     )]
-    fn projection_names_prefer_repository_lists_and_contextual_collisions() {
+    fn projection_names_use_path_context_for_collisions() {
         let manifest = parse_source_manifest_yaml(
             r"
 name: github
@@ -2651,19 +2617,19 @@ components:
         let issues_list = names_by_operation
             .get("issues_list")
             .expect("issues_list projection");
-        assert_eq!(issues_list.0, "issues_list");
+        assert_eq!(issues_list.0, "issues");
         let org_issues = names_by_operation
             .get("issues_list_for_org")
             .expect("issues_list_for_org projection");
-        assert_eq!(org_issues.0, "organization_issues");
+        assert_eq!(org_issues.0, "orgs_issues");
         let repo_issues = names_by_operation
             .get("issues_list_for_repo")
             .expect("issues_list_for_repo projection");
-        assert_eq!(repo_issues.0, "issues");
+        assert_eq!(repo_issues.0, "repos_issues");
         let pulls = names_by_operation
             .get("pulls_list")
             .expect("pulls_list projection");
-        assert_eq!(pulls.0, "pulls");
+        assert_eq!(pulls.0, "pull_requests");
         assert!(matches!(pulls.1, ProjectionKind::Table));
         let commits = names_by_operation
             .get("repos_list_commits")
@@ -2672,7 +2638,7 @@ components:
         let pull_commits = names_by_operation
             .get("pulls_list_commits")
             .expect("pulls_list_commits projection");
-        assert_eq!(pull_commits.0, "repository_commits");
+        assert_eq!(pull_commits.0, "repos_pulls_commits");
     }
 
     #[test]
