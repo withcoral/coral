@@ -42,6 +42,7 @@ pub(crate) fn build_joined_batches(
             dependent_table.columns(),
             Arc::clone(&dependent_schema),
             &filter_values,
+            &HashMap::new(),
             rows,
         )?;
         let dependent_batch = project_dependent_batch(&dependent_batch, dependent_projection)?;

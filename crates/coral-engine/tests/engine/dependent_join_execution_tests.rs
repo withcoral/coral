@@ -981,10 +981,11 @@ fn issues_manifest(dir: &Path) -> Value {
         "name": "issues",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "items",
             "description": "Issue fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -1004,10 +1005,11 @@ fn issues_float_binding_manifest(dir: &Path) -> Value {
         "name": "issues",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "items",
             "description": "Issue fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -1027,10 +1029,11 @@ fn slack_channels_manifest(dir: &Path) -> Value {
         "name": "slack_channels",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "channels",
             "description": "Slack channel fixture",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
