@@ -36,14 +36,14 @@ To disable trace history:
 enabled = false
 ```
 
-HTTP request and response body previews are not recorded by default. To enable local body recording:
+HTTP and MCP request and response body previews are not recorded by default. To enable local body recording:
 
 ```toml
 [trace_history]
 record_http_bodies = true
 ```
 
-Recorded HTTP body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. Body preview spans are never exported to OTLP, even if a broad `[otel].trace_filter` would otherwise match `coral.http.body`.
+The same flag enables HTTP body previews under the `coral.http.body` target and MCP tool-call argument and result previews under the `coral.mcp.body` target. Recorded body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. Body preview spans are never exported to OTLP, even if a broad `[otel].trace_filter` would otherwise match `coral.http.body` or `coral.mcp.body`.
 
 ## Configuration reference
 
@@ -56,7 +56,7 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | `endpoint`                     | string  | unset                                                                  | OTLP/HTTP base URL. When unset, no signals are exported to an external collector. |
 | `headers`                      | string  | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
 | `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
-| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off,coral.mcp.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
 
 ### `[trace_history]`
@@ -65,8 +65,8 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
 | `enabled`             | boolean | `true`  | Enables trace history without requiring an OTLP collector.                        |
 | `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
-| `record_http_bodies`  | boolean | `false` | Records HTTP request and response bodies in local traces when local tracing is enabled. |
-| `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace.                 |
+| `record_http_bodies`  | boolean | `false` | Records HTTP request and response bodies, and MCP tool-call argument and result payloads, in local traces when local tracing is enabled. |
+| `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace. Applies to both HTTP body previews and MCP tool-call payload previews. |
 
 Example with auth headers and a hosted endpoint:
 
@@ -82,31 +82,47 @@ trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=
 
 ### Traces
 
-Each CLI query produces a `coral.cli` root span exported as an OpenTelemetry `client` span, with child spans for query orchestration, source loading, HTTP backend calls, and (optionally) DataFusion execution. The root span includes CLI process attributes such as `process.executable.name`, `process.pid`, and `process.exit.code`; Coral does not collect raw `process.command_args` by default. Spans are exported with the W3C Trace Context propagator.
+Coral emits five families of trace spans, all exported with the W3C Trace Context propagator.
 
-When Coral runs over MCP, each MCP tool or resource request produces a `coral.mcp.*` server span before the request calls into the local Coral app. The MCP adapter then emits `grpc.client.*` client spans for its local gRPC calls, which parent the app's gRPC server handler spans. This keeps MCP discovery such as `list_sources` and `list_catalog` attached to Coral-owned request spans without turning the long-running `mcp-stdio` process into one giant CLI trace.
+#### Adjusting what gets exported
 
-Inbound Coral gRPC handler spans are exported as OpenTelemetry `server` spans with `rpc.system.name`, `rpc.method`, and `rpc.response.status_code`. HTTP source calls are exported as OpenTelemetry `client` spans with upstream dependency attributes including `peer.service`, `server.address`, `server.port`, `http.host`, `net.peer.name`, `http.request.method`, `http.request.resend_count` on retries, `http.response.status_code`, low-cardinality `error.type` on failures, and sanitized `url.full`. Coral also injects W3C Trace Context headers into outbound source requests, so an instrumented upstream API can emit a related `server` span in the same trace. Service-map tools that support virtual peer nodes can draw edges directly from Coral's HTTP client spans; tools that require related client/server span pairs, such as HyperDX, need the upstream service to emit the matching server span. Tools that group strictly by resource `service.name` may still display a single `coral` service for local CLI runs, because the CLI client span and local server span are emitted by the same Coral process.
-
-By default, the `coral_engine::datafusion` target is disabled for OTLP export to keep external span volume low. Enable it when you want to send DataFusion physical-plan execution and optimizer-rule spans to your external backend:
+`[otel].trace_filter` uses [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.Targets.html) syntax. Enable noisy targets when you want them (`coral_engine::datafusion` covers physical-plan and optimizer-rule spans, off by default to keep export volume low), and disable any you do not (`coral_engine::http` silences the HTTP backend):
 
 ```toml
 [otel]
 endpoint = "http://localhost:4318"
-trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace"
+trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace,coral_engine::http=off"
 ```
 
-Conversely, you can silence noisy targets. The HTTP backend instrumentation lives under `coral_engine::http` and can be disabled while keeping the rest of the engine spans:
+If the filter fails to parse, Coral logs a warning and falls back to the default. Changing `[otel].trace_filter` does not reduce local trace capture — the local trace UI uses a fixed filter so debugging evidence stays available regardless of export policy.
 
-```toml
-[otel]
-endpoint = "http://localhost:4318"
-trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::http=off"
-```
+For request/response body previews, see [Trace History](#trace-history) above.
 
-The filter syntax is the same one accepted by [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.Targets.html). If the filter fails to parse, Coral logs a warning and falls back to the default.
+#### CLI root span
 
-Changing `[otel].trace_filter` does not reduce local trace capture. The local trace UI uses Coral's fixed local trace filter so debugging evidence remains available without changing external export policy.
+Each CLI query produces a `coral.cli` root span exported as an OpenTelemetry `client` span. The root span includes CLI process attributes such as `process.executable.name`, `process.pid`, and `process.exit.code`; Coral does not collect raw `process.command_args` by default.
+
+#### MCP server spans (Coral as the MCP server)
+
+When Coral runs over MCP — the `coral mcp-stdio` entry point handling tool calls from an agent — each MCP tool or resource request produces a `coral.mcp.*` server span before the request calls into the local Coral app. The MCP adapter then emits `grpc.client.*` client spans for its local gRPC calls, which parent the app's gRPC server handler spans.
+
+#### gRPC handler spans
+
+Inbound Coral gRPC handler spans are exported as OpenTelemetry `server` spans with `rpc.system.name`, `rpc.method`, and `rpc.response.status_code`.
+
+#### HTTP source-call spans (Coral as the HTTP client)
+
+HTTP source calls are exported as OpenTelemetry `client` spans with upstream dependency attributes including `peer.service`, `server.address`, `server.port`, `http.host`, `net.peer.name`, `http.request.method`, `http.request.resend_count` on retries, `http.response.status_code`, low-cardinality `error.type` on failures, and sanitized `url.full`. Coral also injects W3C Trace Context headers into outbound source requests, so an instrumented upstream API can emit a related `server` span in the same trace.
+
+Service-map tools that require paired client/server spans (such as HyperDX) need the upstream service to emit its own server span; tools that support virtual peer nodes can draw edges directly from Coral's HTTP client spans.
+
+#### MCP source-call spans (Coral as the MCP client)
+
+MCP-backed source calls (the `mcp` backend reaching out to a remote tool server) are exported as OpenTelemetry `client` spans with operation name set to the called tool. Attributes include `coral.source`, `coral.mcp.relation`, `coral.mcp.tool`, `coral.mcp.transport` (`stdio` or `streamable_http`), `coral.mcp.request_id`, and a stable `error.type` label drawn from the [MCP error reasons](/reference/source-spec-reference#mcp-error-reasons).
+
+Streamable HTTP calls additionally carry `url.full`, `server.address`, `server.port`, `peer.service`, `http.host`, and `net.peer.name`, and Coral injects W3C Trace Context headers into the HTTP request so an instrumented MCP server can continue the trace. Stdio calls carry `coral.mcp.command` and `coral.mcp.args.count`; trace-context propagation is not yet wired for stdio.
+
+These spans live under the `coral_engine::mcp` target — not to be confused with the `coral.mcp.*` server spans above, which come from Coral acting as the MCP server.
 
 ### Logs
 

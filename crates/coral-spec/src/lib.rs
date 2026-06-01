@@ -88,8 +88,8 @@ mod validate;
 
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 pub use backends::mcp::{
-    McpEnvSpec, McpLimitBinding, McpServerSpec, McpSourceManifest, McpTableFilterBinding,
-    McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
+    McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
+    McpTableFilterBinding, McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
 };
 pub(crate) use common::validate_test_queries;
 pub use common::{
