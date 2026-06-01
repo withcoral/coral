@@ -269,12 +269,12 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let http_body_capture_max_bytes = telemetry_config
+        let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
         let query_runtime_context = env
             .query_runtime_context()
-            .with_http_body_capture_max_bytes(http_body_capture_max_bytes);
+            .with_body_capture_max_bytes(body_capture_max_bytes);
 
         let query_manager = QueryManager::new(
             config_store,

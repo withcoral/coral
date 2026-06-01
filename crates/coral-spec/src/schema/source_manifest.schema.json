@@ -711,11 +711,17 @@
       "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
     "mcp_server": {
+      "oneOf": [
+        { "$ref": "#/$defs/mcp_stdio_server" },
+        { "$ref": "#/$defs/mcp_streamable_http_server" }
+      ]
+    },
+    "mcp_stdio_server": {
       "type": "object",
       "additionalProperties": false,
       "required": ["transport", "command"],
       "properties": {
-        "transport": { "type": "string", "enum": ["stdio"] },
+        "transport": { "const": "stdio" },
         "command": { "type": "string", "minLength": 1 },
         "args": {
           "type": "array",
@@ -725,6 +731,31 @@
           "type": "array",
           "items": { "$ref": "#/$defs/mcp_env" }
         }
+      }
+    },
+    "mcp_streamable_http_server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "url"],
+      "properties": {
+        "transport": { "const": "streamable_http" },
+        "url": { "type": "string", "minLength": 1 },
+        "auth": { "$ref": "#/$defs/mcp_http_auth" }
+      }
+    },
+    "mcp_http_auth": {
+      "oneOf": [
+        { "$ref": "#/$defs/mcp_bearer_auth" }
+      ]
+    },
+    "mcp_bearer_auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "from", "key"],
+      "properties": {
+        "type": { "const": "bearer" },
+        "from": { "const": "input" },
+        "key": { "type": "string", "minLength": 1 }
       }
     },
     "mcp_env": {
