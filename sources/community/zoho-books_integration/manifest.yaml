@@ -20,13 +20,6 @@ inputs:
       CA: https://www.zohoapis.ca, CN: https://www.zohoapis.com.cn,
       SA: https://www.zohoapis.sa
 
-  ZOHO_ACCOUNTS_DOMAIN:
-    kind: variable
-    default: https://accounts.zoho.com
-    hint: >-
-      Zoho Accounts (OAuth) domain for your data center. Mirror your
-      ZOHO_API_DOMAIN region (.com / .eu / .in / .com.au / .jp / .ca / .com.cn / .sa).
-
   ZOHO_ORGANIZATION_ID:
     kind: variable
     hint: >-
