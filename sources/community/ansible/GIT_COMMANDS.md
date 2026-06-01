@@ -134,11 +134,12 @@ cp sources/community/ansible/fixtures/*.jsonl ~/.coral/ansible-facts/
 Windows PowerShell:
 
 ```powershell
-New-Item -ItemType Directory -Force C:\tmp\coral-ansible-facts
-Copy-Item sources\community\ansible\fixtures\*.jsonl C:\tmp\coral-ansible-facts\ -Force
+$ansibleFacts = Join-Path $HOME ".coral\ansible-facts"
+New-Item -ItemType Directory -Force $ansibleFacts
+Copy-Item sources\community\ansible\fixtures\*.jsonl $ansibleFacts\ -Force
 ```
 
-## 9. Windows-only local manifest
+## 9. Windows manifest path
 
 The committed manifest uses:
 
@@ -149,35 +150,11 @@ location: file://~/.coral/ansible-facts/
 On Windows, the same home-directory location is used by the Coral CLI:
 
 ```powershell
-Copy-Item `
-  sources\community\ansible\manifest.yaml `
-  sources\community\ansible\manifest.windows.local.yaml `
-  -Force
-
-$manifest = Join-Path (Get-Location) "sources\community\ansible\manifest.windows.local.yaml"
-$text = [System.IO.File]::ReadAllText($manifest)
-$text = $text.Replace(
-  "file://~/.coral/ansible-facts/",
-  "file://~/.coral/ansible-facts/"
-)
-$text = $text -replace "`r`n", "`n"
-[System.IO.File]::WriteAllText(
-  $manifest,
-  $text,
-  [System.Text.UTF8Encoding]::new($false)
-)
-
-Add-Content .git\info\exclude "sources/community/ansible/manifest.windows.local.yaml"
+$ansibleFacts = Join-Path $HOME ".coral\ansible-facts"
+Get-ChildItem $ansibleFacts
 ```
 
-Verify it is ignored:
-
-```powershell
-git status --ignored
-git check-ignore -v sources/community/ansible/manifest.windows.local.yaml
-```
-
-`git ls-files` should print nothing.
+No Windows-only manifest copy is needed.
 
 ## 10. Run Coral source lint
 
@@ -202,7 +179,7 @@ Manifest is valid
 For Windows local test:
 
 ```powershell
-cargo run --locked -p coral-cli -- source lint sources/community/ansible/manifest.windows.local.yaml
+cargo run --locked -p coral-cli -- source lint sources/community/ansible/manifest.yaml
 ```
 
 ## 11. Add and test the source
@@ -217,7 +194,7 @@ coral source test ansible
 Windows local test:
 
 ```powershell
-cargo run --locked -p coral-cli -- source add --file sources/community/ansible/manifest.windows.local.yaml
+cargo run --locked -p coral-cli -- source add --file sources/community/ansible/manifest.yaml
 cargo run --locked -p coral-cli -- source test ansible
 ```
 
@@ -226,7 +203,7 @@ Expected:
 ```text
 ansible connected successfully
 7 tables discovered
-5 declared query tests passed
+7 declared query tests passed
 0 failed
 ```
 

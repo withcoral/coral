@@ -109,7 +109,7 @@ flowchart TD
   PackageFacts --> RawFacts
 
   RawFacts --> Normalizer["scripts/normalize-ansible-facts.py"]
-  Normalizer --> JSONL["/tmp/coral-ansible-facts/*.jsonl"]
+  Normalizer --> JSONL["~/.coral/ansible-facts/*.jsonl"]
 
   JSONL --> Manifest["manifest.yaml"]
   Manifest --> Coral["Coral file-backed source"]
@@ -189,8 +189,8 @@ python scripts/normalize-ansible-facts.py \
   --input raw-facts \
   --output normalized-facts
 
-mkdir -p /tmp/coral-ansible-facts
-cp normalized-facts/*.jsonl /tmp/coral-ansible-facts/
+mkdir -p ~/.coral/ansible-facts
+cp normalized-facts/*.jsonl ~/.coral/ansible-facts/
 
 coral source test ansible
 ```
@@ -405,7 +405,7 @@ Role variables may contain sensitive values or internal policy. Therefore, `ansi
 It is only a curated table such as:
 
 ```json
-{"hostname":"debian-db","role":"database","environment":"homelab","source_file":"inventory/host_roles.yml","expected_service":"postgresql"}
+{"hostname":"debian-db","role":"database","environment":"homelab","source_file":"inventory/host_roles.yml","expected_service":"postgresql.service"}
 ```
 
 Good:
@@ -437,7 +437,7 @@ Do not overwrite live JSONL files while Coral may be querying them.
 Bad:
 
 ```text
-/tmp/coral-ansible-facts/hosts.jsonl is overwritten in place
+the live source.location directory is overwritten in place
 ```
 
 Better:

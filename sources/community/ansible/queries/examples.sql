@@ -258,7 +258,20 @@ COALESCE(s.status, 'missing') AS service_status
 FROM ansible.hosts h
 LEFT JOIN ansible.services s
 ON s.hostname = h.hostname
-AND s.name IN ('nginx', 'postgresql', 'rabbitmq-server', 'datadog-agent', 'sshd')
+AND LOWER(s.name) IN (
+'nginx',
+'nginx.service',
+'postgresql',
+'postgresql.service',
+'rabbitmq-server',
+'rabbitmq-server.service',
+'datadog-agent',
+'datadog-agent.service',
+'ssh',
+'ssh.service',
+'sshd.service',
+'sshd'
+)
 ORDER BY h.hostname, service_name;
 
 -- ============================================================

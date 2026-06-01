@@ -55,6 +55,8 @@ def validate_file(path: Path) -> int:
             for key in keys:
                 if key not in row:
                     raise ValueError(f"{path}:{lineno} missing required key: {key}")
+            if path.name == "interfaces.jsonl" and not isinstance(row.get("ipv6_addresses", []), list):
+                raise ValueError(f"{path}:{lineno} ipv6_addresses must be a JSON array")
             count += 1
     if count == 0:
         raise ValueError(f"{path} has no rows")

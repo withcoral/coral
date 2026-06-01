@@ -14,6 +14,8 @@ The `ansible` source exposes selected Ansible-derived infrastructure facts as SQ
 
 This source is intentionally **file-backed** and **read-only**. Coral does not SSH into hosts, run Ansible playbooks, call AWX/Ansible Automation Platform, or mutate infrastructure. Users gather facts with Ansible first, normalize those facts into JSONL files, and then Coral reads those files as SQL tables.
 
+The example playbook writes raw Ansible facts to a restricted local directory before normalization. Treat those raw files as sensitive temporary input; only the normalized JSONL output is the allowlisted Coral source data.
+
 ## What this source provides
 
 After installation, Coral exposes the source as the `ansible` SQL schema:
@@ -168,6 +170,12 @@ For the full list of example queries, see:
 queries/examples.sql
 ```
 
+For review-focused test SQL that exercises JSON shape, service-name matching, security posture, and role drift, see:
+
+```text
+queries/review_tests.sql
+```
+
 For security boundaries, see:
 
 ```text
@@ -218,7 +226,7 @@ Expected result:
 ```text
 ansible connected successfully
 7 tables discovered
-5 declared query tests passed
+7 declared query tests passed
 0 failed
 ```
 
@@ -249,35 +257,16 @@ location: file://~/.coral/ansible-facts/
 Example PowerShell workflow:
 
 ```powershell
-Copy-Item `
-  sources\community\ansible\manifest.yaml `
-  sources\community\ansible\manifest.windows.local.yaml `
-  -Force
+$ansibleFacts = Join-Path $HOME ".coral\ansible-facts"
+New-Item -ItemType Directory -Force $ansibleFacts
+Copy-Item sources\community\ansible\fixtures\*.jsonl $ansibleFacts\ -Force
 
-$manifest = Join-Path (Get-Location) "sources\community\ansible\manifest.windows.local.yaml"
-$text = [System.IO.File]::ReadAllText($manifest)
-$text = $text.Replace(
-  "file://~/.coral/ansible-facts/",
-  "file://~/.coral/ansible-facts/"
-)
-$text = $text -replace "`r`n", "`n"
-[System.IO.File]::WriteAllText(
-  $manifest,
-  $text,
-  [System.Text.UTF8Encoding]::new($false)
-)
-
-Add-Content .git\info\exclude "sources/community/ansible/manifest.windows.local.yaml"
-
-New-Item -ItemType Directory -Force C:\tmp\coral-ansible-facts
-Copy-Item sources\community\ansible\fixtures\*.jsonl C:\tmp\coral-ansible-facts\ -Force
-
-cargo run --locked -p coral-cli -- source lint sources/community/ansible/manifest.windows.local.yaml
-cargo run --locked -p coral-cli -- source add --file sources/community/ansible/manifest.windows.local.yaml
+cargo run --locked -p coral-cli -- source lint sources/community/ansible/manifest.yaml
+cargo run --locked -p coral-cli -- source add --file sources/community/ansible/manifest.yaml
 cargo run --locked -p coral-cli -- source test ansible
 ```
 
-If commiting , try not to commit `manifest.windows.local.yaml`.
+The PowerShell workflow copies fixtures to the same home-relative path used by the committed manifest.
 
 ## Gathering facts from real hosts
 
@@ -308,6 +297,8 @@ python scripts/normalize-ansible-facts.py \
 mkdir -p ~/.coral/ansible-facts
 cp normalized-facts/*.jsonl ~/.coral/ansible-facts/
 ```
+
+The normalizer accepts the de-prefixed `ansible_facts` shape produced by the example playbook and the `ansible_*`-prefixed keys commonly seen in raw setup-style fact payloads.
 
 Then test:
 
@@ -479,7 +470,7 @@ Expected result:
 ```text
 ansible connected successfully
 7 tables discovered
-5 declared query tests passed
+7 declared query tests passed
 0 failed
 ```
 
@@ -501,7 +492,7 @@ Windows:
 location: file://~/.coral/ansible-facts/
 ```
 
-Use a local ignored manifest for Windows testing.
+No OS-specific manifest copy is needed when the fixture data is copied to that home-relative directory.
 
 ### `Table ansible.hosts not found`
 
@@ -530,7 +521,7 @@ ls ~/.coral/ansible-facts
 Windows:
 
 ```powershell
-Get-ChildItem C:\tmp\coral-ansible-facts
+Get-ChildItem (Join-Path $HOME ".coral\ansible-facts")
 ```
 
 ### YAML syntax errors after PowerShell edits , If edited.
@@ -570,4 +561,3 @@ examples/               Ansible inventory and fact-gathering example
 scripts/                fact normalization script
 tests/                  fixture validation script
 ```
-
