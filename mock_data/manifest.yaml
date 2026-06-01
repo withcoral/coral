@@ -1,0 +1,56 @@
+dsl_version: 3
+name: mock_data
+version: 0.1.0
+description: "Mock data for testing TUI and SQL"
+backend: file
+tables:
+  - name: users
+    description: "Users dataset"
+    format: jsonl
+    source:
+      location: "file:///C:/Users/THRISHAL/coral/mock_data/users.jsonl"
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: email
+        type: Utf8
+      - name: tier
+        type: Utf8
+      - name: joined
+        type: Utf8
+  - name: products
+    description: "Products dataset"
+    format: jsonl
+    source:
+      location: "file:///C:/Users/THRISHAL/coral/mock_data/products.jsonl"
+    columns:
+      - name: product_id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: category
+        type: Utf8
+      - name: price
+        type: Float64
+      - name: stock
+        type: Int64
+  - name: orders
+    description: "Orders dataset"
+    format: jsonl
+    source:
+      location: "file:///C:/Users/THRISHAL/coral/mock_data/orders.jsonl"
+    columns:
+      - name: order_id
+        type: Int64
+      - name: user_id
+        type: Int64
+      - name: product_id
+        type: Int64
+      - name: quantity
+        type: Int64
+      - name: status
+        type: Utf8
+      - name: order_date
+        type: Utf8

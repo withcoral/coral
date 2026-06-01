@@ -1,0 +1,10 @@
+{"product_id": 101, "name": "Mechanical Keyboard", "category": "Electronics", "price": 120.50, "stock": 45}
+{"product_id": 102, "name": "Wireless Mouse", "category": "Electronics", "price": 45.99, "stock": 120}
+{"product_id": 103, "name": "Standing Desk", "category": "Furniture", "price": 350.00, "stock": 15}
+{"product_id": 104, "name": "Ergonomic Chair", "category": "Furniture", "price": 280.00, "stock": 25}
+{"product_id": 105, "name": "Noise Cancelling Headphones", "category": "Electronics", "price": 250.00, "stock": 60}
+{"product_id": 106, "name": "USB-C Hub", "category": "Accessories", "price": 35.50, "stock": 200}
+{"product_id": 107, "name": "Laptop Stand", "category": "Accessories", "price": 40.00, "stock": 80}
+{"product_id": 108, "name": "Monitor Arm", "category": "Accessories", "price": 75.00, "stock": 40}
+{"product_id": 109, "name": "Coffee Maker", "category": "Appliances", "price": 150.00, "stock": 30}
+{"product_id": 110, "name": "Smart Mug", "category": "Appliances", "price": 95.00, "stock": 50}

@@ -24,6 +24,7 @@ clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true
 dialoguer.workspace = true
+ratatui.workspace = true
 rust-embed = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true

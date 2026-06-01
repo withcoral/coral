@@ -16,6 +16,7 @@ pub mod env;
 mod onboard;
 mod query_error;
 mod source_ops;
+mod tui_viewer;
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -295,6 +296,7 @@ enum SourceCommand {
 enum OutputFormat {
     Table,
     Json,
+    Tui,
 }
 
 /// Typed CLI error whose stderr rendering and exit code are owned by the binary.
@@ -682,11 +684,11 @@ fn print_batches(
     batches: &[arrow::record_batch::RecordBatch],
     format: OutputFormat,
 ) -> Result<(), anyhow::Error> {
-    let output = match format {
-        OutputFormat::Table => format_batches_table(batches)?,
-        OutputFormat::Json => format_batches_json(batches)?,
-    };
-    println!("{output}");
+    match format {
+        OutputFormat::Table => println!("{}", format_batches_table(batches)?),
+        OutputFormat::Json => println!("{}", format_batches_json(batches)?),
+        OutputFormat::Tui => tui_viewer::run_tui_viewer(batches)?,
+    }
     Ok(())
 }
 
