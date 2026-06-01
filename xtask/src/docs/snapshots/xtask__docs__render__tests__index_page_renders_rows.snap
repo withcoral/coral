@@ -26,11 +26,10 @@ If the source you need is not available, you can extend Coral by [writing a cust
 
 ## Supported data source types
 
-Supported sources fall into these backend families.
+Supported sources fall into two categories.
 
 - **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.
 - **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.
-- **MCP** — Coral exposes tools from a Model Context Protocol server as queryable catalog entries.
 
 ## Upgrading bundled sources
 

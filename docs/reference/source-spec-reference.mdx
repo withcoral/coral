@@ -13,11 +13,6 @@ Coral is extensible through source specs. These are YAML files that describe how
   page for field-level details.
 </Tip>
 
-## DSL versions
-
-Coral source specs currently use `dsl_version: 3`. Manifests declare a top-level
-`backend`, optional `inputs`, and authored `tables` or `functions`.
-
 ## Top-level fields
 
 Every source spec starts with:
@@ -35,8 +30,8 @@ test_queries:
 | ------------- | -------------------------------------------------- |
 | `name`        | Source name, also used as the SQL schema name      |
 | `version`     | Source spec version string                         |
-| `dsl_version` | Coral source spec DSL version: `3`                 |
-| `backend`     | How data is fetched: `http`, `file`, or `mcp`      |
+| `dsl_version` | Coral source spec DSL version (currently `3`)      |
+| `backend`     | How data is fetched: `http`, `file`, or `mcp` |
 | `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
 
 ## Test queries

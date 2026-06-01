@@ -259,10 +259,6 @@ fn backend_label(manifest: &ValidatedSourceManifest) -> &'static str {
         "http"
     } else if manifest.as_file().is_some() {
         "file"
-    } else if manifest.as_mcp().is_some() {
-        "mcp"
-    } else if manifest.as_v4().is_some() {
-        "dsl v4"
     } else {
         // ValidatedSourceManifest covers all current backends; unreachable in
         // practice but we avoid `unreachable!` to keep the generator robust.
@@ -439,10 +435,9 @@ const INDEX_INTRO: &str = concat!(
 
 const INDEX_TYPES: &str = concat!(
     "\n## Supported data source types\n\n",
-    "Supported sources fall into these backend families.\n\n",
+    "Supported sources fall into two categories.\n\n",
     "- **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.\n",
     "- **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.\n",
-    "- **MCP** — Coral exposes tools from a Model Context Protocol server as queryable catalog entries.\n",
 );
 
 const INDEX_UPGRADING: &str = concat!(
@@ -571,18 +566,6 @@ tables:
         expr:
           kind: path
           path: [id]
-";
-
-    const V4_OPENAPI_MANIFEST: &str = r"
-name: github_v4_local
-version: 0.1.0
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    file: /tmp/github-openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
-    base_url: https://api.github.com
 ";
 
     #[test]
@@ -718,12 +701,6 @@ surfaces:
         let demo = parse_source_manifest_yaml(SAMPLE_MANIFEST).expect("parse demo");
         let minimal = parse_source_manifest_yaml(NO_INPUTS_MANIFEST).expect("parse minimal");
         insta::assert_snapshot!("index_page_renders_rows", index_page(&[demo, minimal]));
-    }
-
-    #[test]
-    fn backend_label_renders_v4_manifest_generation() {
-        let manifest = parse_source_manifest_yaml(V4_OPENAPI_MANIFEST).expect("parse v4");
-        assert_eq!(super::backend_label(&manifest), "dsl v4");
     }
 
     #[test]
