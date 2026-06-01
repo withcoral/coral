@@ -102,9 +102,12 @@ export function SourcesIndex() {
     )
   }, [allEntries, search])
 
+  const connected = useMemo(() => filtered.filter((entry) => entry.installed), [filtered])
+
   const sections = useMemo(() => {
     const grouped = new Map<string, IndexEntry[]>()
     for (const entry of filtered) {
+      if (entry.installed) continue
       const category = getCategoryForSource(entry.name)
       const group = grouped.get(category)
       if (group) {
@@ -190,6 +193,20 @@ export function SourcesIndex() {
           </div>
         ) : null}
 
+        {connected.length > 0 ? (
+          <Section title="Connected" count={connected.length}>
+            <div className={styles.cardGrid}>
+              {connected.map((entry) => (
+                <SourceCard
+                  key={`${entry.origin}:${entry.name}`}
+                  entry={entry}
+                  onClick={() => onPick(entry)}
+                />
+              ))}
+            </div>
+          </Section>
+        ) : null}
+
         {sections.map((section) => (
           <Section key={section.key} title={section.label} count={section.entries.length}>
             <div className={styles.cardGrid}>
@@ -204,7 +221,11 @@ export function SourcesIndex() {
           </Section>
         ))}
 
-        {sections.length === 0 && !loading && !error && allEntries.length > 0 ? (
+        {connected.length === 0 &&
+        sections.length === 0 &&
+        !loading &&
+        !error &&
+        allEntries.length > 0 ? (
           <Typography.BodySmall variant="tertiary">
             No sources match your search.
           </Typography.BodySmall>
