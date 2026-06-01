@@ -261,46 +261,15 @@ function SourceDetailDialogContent({
           <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
         </section>
       ) : (
-        <section className={styles.section}>
-          <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
-          {!editable ? (
-            <Typography.BodySmall variant="tertiary">
-              Imported sources can't be edited here yet — re-import the source spec to change its
-              credentials.
-            </Typography.BodySmall>
-          ) : null}
-          <div className={styles.bindingList}>
-            {source.variables.map((v) => {
-              const draftKey = `var:${v.key}`
-              return (
-                <div key={draftKey} className={styles.bindingRow}>
-                  <span className={styles.keyLabel}>{v.key}</span>
-                  <TextInput
-                    value={drafts[draftKey] ?? v.value}
-                    onChange={(value) => setDrafts((p) => ({ ...p, [draftKey]: value }))}
-                    placeholder={v.key}
-                    disabled={!editable || saving}
-                  />
-                </div>
-              )
-            })}
-            {source.secrets.map((s) => {
-              const draftKey = `sec:${s.key}`
-              return (
-                <div key={draftKey} className={styles.bindingRow}>
-                  <span className={styles.keyLabel}>{s.key}</span>
-                  <TextInput
-                    type="password"
-                    value={drafts[draftKey] ?? ''}
-                    onChange={(value) => setDrafts((p) => ({ ...p, [draftKey]: value }))}
-                    placeholder={SECRET_PLACEHOLDER}
-                    disabled={!editable || saving}
-                  />
-                </div>
-              )
-            })}
-          </div>
-        </section>
+        <FallbackBindings
+          disabled={!editable || saving}
+          drafts={drafts}
+          editable={editable}
+          onValueChange={(draftKey, value) =>
+            setDrafts((previous) => ({ ...previous, [draftKey]: value }))
+          }
+          source={source}
+        />
       )}
 
       <Dialog.Actions>
@@ -356,6 +325,67 @@ function SourceDetailDialogContent({
         </Dialog.Portal>
       </Dialog.Root>
     </>
+  )
+}
+
+function FallbackBindings({
+  disabled,
+  drafts,
+  editable,
+  onValueChange,
+  source,
+}: {
+  disabled: boolean
+  drafts: Record<string, string>
+  editable: boolean
+  onValueChange: (draftKey: string, value: string) => void
+  source: Source
+}) {
+  return (
+    <section className={styles.section}>
+      <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+      {!editable ? (
+        <Typography.BodySmall variant="tertiary">
+          Imported sources can't be edited here yet — re-import the source spec to change its
+          credentials.
+        </Typography.BodySmall>
+      ) : null}
+      <div className={styles.fieldGroup}>
+        {source.variables.map((v) => {
+          const draftKey = `var:${v.key}`
+          return (
+            <div key={draftKey} className={styles.fieldItem}>
+              <Typography.Body className={styles.fieldLabel}>
+                {formatFieldName(v.key)}
+              </Typography.Body>
+              <TextInput
+                value={drafts[draftKey] ?? v.value}
+                onChange={(value) => onValueChange(draftKey, value)}
+                placeholder={formatFieldName(v.key)}
+                disabled={disabled}
+              />
+            </div>
+          )
+        })}
+        {source.secrets.map((s) => {
+          const draftKey = `sec:${s.key}`
+          return (
+            <div key={draftKey} className={styles.fieldItem}>
+              <Typography.Body className={styles.fieldLabel}>
+                {formatFieldName(s.key)}
+              </Typography.Body>
+              <TextInput
+                type="password"
+                value={drafts[draftKey] ?? ''}
+                onChange={(value) => onValueChange(draftKey, value)}
+                placeholder={SECRET_PLACEHOLDER}
+                disabled={disabled}
+              />
+            </div>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 

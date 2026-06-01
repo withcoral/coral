@@ -82,29 +82,6 @@ export const fieldLabel = style({
   fontWeight: 500,
 })
 
-export const bindingList = style({
-  background: theme.surface.onMainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 8,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 6,
-  padding: 12,
-})
-
-export const bindingRow = style({
-  alignItems: 'center',
-  display: 'grid',
-  gap: 10,
-  gridTemplateColumns: 'minmax(120px, max-content) 1fr',
-})
-
-export const keyLabel = style({
-  color: theme.content.secondary,
-  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-  fontSize: 12,
-})
-
 export const alertError = style({
   alignItems: 'center',
   background: theme.pill.red.background,
