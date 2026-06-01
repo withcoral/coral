@@ -541,7 +541,11 @@ tables:
       - name: status
         type: Utf8
         nullable: true
-        description: "Incident status: started, mitigated, resolved, or cancelled."
+        description: >-
+          Incident status. Common values: started, mitigated, resolved,
+          cancelled, in_triage, acknowledged, closed. See
+          https://docs.rootly.com/incidents/incident-lifecycle for the
+          full list including planned-maintenance states.
         expr:
           kind: path
           path:

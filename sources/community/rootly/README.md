@@ -39,7 +39,7 @@ export ROOTLY_TOKEN="<your-api-key-or-oauth-token>"
 ### 3. Add the source
 
 ```sh
-cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.yaml
+coral source add --file sources/community/rootly/manifest.yaml
 ```
 
 ### 4. First successful query (recommended)
@@ -207,33 +207,37 @@ LIMIT 20;
 ### Lint manifest
 
 ```sh
-cargo run -p coral-cli -- source lint sources/community/rootly/manifest.yaml
+coral source lint sources/community/rootly/manifest.yaml
 ```
 
 ### Add source
 
 ```sh
 export ROOTLY_TOKEN="<your-api-key>"
-cargo run -p coral-cli -- source add --file sources/community/rootly/manifest.yaml
+coral source add --file sources/community/rootly/manifest.yaml
 ```
 
 ### Validate tables
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.services LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, slug FROM rootly.teams LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, title, status, severity__slug FROM rootly.incidents LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, short_id, summary, source, status FROM rootly.alerts LIMIT 5"
-cargo run -p coral-cli -- sql "SELECT id, name, owner_user_id FROM rootly.schedules LIMIT 5"
+coral sql "SELECT id, full_name, email FROM rootly.users LIMIT 5"
+coral sql "SELECT id, name, slug FROM rootly.services LIMIT 5"
+coral sql "SELECT id, name, slug FROM rootly.teams LIMIT 5"
+coral sql "SELECT id, title, status, severity__slug FROM rootly.incidents LIMIT 5"
+coral sql "SELECT id, short_id, summary, source, status FROM rootly.alerts LIMIT 5"
+coral sql "SELECT id, name, owner_user_id FROM rootly.schedules LIMIT 5"
 ```
 
 ### Inspect registered tables and columns
 
 ```sh
-cargo run -p coral-cli -- sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'rootly'"
-cargo run -p coral-cli -- sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'rootly' ORDER BY table_name, ordinal_position"
+coral sql "SELECT table_name, description FROM coral.tables WHERE schema_name = 'rootly'"
+coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE schema_name = 'rootly' ORDER BY table_name, ordinal_position"
 ```
+
+---
+
+> **Building from source?** Replace `coral` with `cargo run -p coral-cli --` in all commands above.
 
 ---
 
