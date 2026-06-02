@@ -2,11 +2,22 @@ import { create } from '@bufbuild/protobuf'
 
 import {
   CreateBundledSourceResponseSchema,
+  CreateBundledSourceWithOAuthResponseSchema,
   DeleteSourceResponseSchema,
   DiscoverSourcesResponseSchema,
   GetSourceInfoResponseSchema,
   GetSourceResponseSchema,
   ListSourcesResponseSchema,
+  OAuthCredentialClientIdSchema,
+  OAuthCredentialClientSchema,
+  OAuthCredentialAuthorizationSchema,
+  OAuthCredentialCompletedSchema,
+  OAuthCredentialEndpointsSchema,
+  OAuthCredentialMethodSchema,
+  OauthCredentialFlowType,
+  SourceConfigCredentialMethodSchema,
+  SourceCredentialMethodSchema,
+  SourceCredentialSchema,
   SourceCredentialStorage,
   SourceInfoSchema,
   SourceInputSpecSchema,
@@ -42,50 +53,71 @@ function makeSourceInfo(name: string, description: string, installed: boolean): 
   })
 }
 
-function makeBundledSourceWithVariable(
-  name: string,
-  description: string,
-  variableKey: string,
-  variableDefault: string,
-  installed: boolean,
-): SourceInfo {
-  return create(SourceInfoSchema, {
-    name,
-    description,
-    version: '1.1.6',
-    installed,
-    origin: SourceOrigin.BUNDLED,
-    credentialStorage: SourceCredentialStorage.FILE,
-    inputs: [
-      create(SourceInputSpecSchema, {
-        key: variableKey,
-        required: false,
-        hint: `Override the default ${variableKey}.`,
-        input: {
-          case: 'variable',
-          value: create(SourceVariableInputSchema, { defaultValue: variableDefault }),
-        },
-      }),
-      create(SourceInputSpecSchema, {
-        key: `${name.toUpperCase()}_TOKEN`,
-        required: true,
-        hint: `Personal access token for ${name}.`,
-        input: {
-          case: 'secret',
-          value: create(SourceSecretInputSchema, {}),
-        },
-      }),
-    ],
-  })
-}
+const githubInfo = create(SourceInfoSchema, {
+  name: 'github',
+  description: 'Query repositories, issues, and pull requests from GitHub.',
+  version: '1.1.6',
+  installed: true,
+  origin: SourceOrigin.BUNDLED,
+  credentialStorage: SourceCredentialStorage.FILE,
+  inputs: [
+    create(SourceInputSpecSchema, {
+      key: 'GITHUB_API_BASE',
+      required: false,
+      hint: 'Override the default GITHUB_API_BASE.',
+      input: {
+        case: 'variable',
+        value: create(SourceVariableInputSchema, { defaultValue: 'https://api.github.com' }),
+      },
+    }),
+    create(SourceInputSpecSchema, {
+      key: 'GITHUB_TOKEN',
+      required: true,
+      hint: 'Personal access token for github.',
+      input: {
+        case: 'secret',
+        value: create(SourceSecretInputSchema, {
+          credential: create(SourceCredentialSchema, {
+            methods: [
+              create(SourceCredentialMethodSchema, {
+                label: 'Connect with GitHub device code',
+                description: 'Sign in to GitHub with a device code.',
+                method: {
+                  case: 'oauth',
+                  value: create(OAuthCredentialMethodSchema, {
+                    flow: OauthCredentialFlowType.DEVICE_CODE,
+                    endpoints: create(OAuthCredentialEndpointsSchema, {
+                      deviceAuthorizationUrl: 'https://github.com/login/device/code',
+                      tokenUrl: 'https://github.com/login/oauth/access_token',
+                    }),
+                    client: create(OAuthCredentialClientSchema, {
+                      id: create(OAuthCredentialClientIdSchema, {
+                        defaultValue: 'test-client-id',
+                        input: 'GITHUB_OAUTH_CLIENT_ID',
+                      }),
+                    }),
+                  }),
+                },
+              }),
+              create(SourceCredentialMethodSchema, {
+                label: 'Paste token',
+                method: {
+                  case: 'sourceConfig',
+                  value: create(SourceConfigCredentialMethodSchema, {}),
+                },
+              }),
+            ],
+          }),
+        }),
+      },
+    }),
+  ],
+})
 
-const githubInfo = makeBundledSourceWithVariable(
-  'github',
-  'Query repositories, issues, and pull requests from GitHub.',
-  'GITHUB_API_BASE',
-  'https://api.github.com',
-  true,
-)
+export const githubOauthCatalogInfo = create(SourceInfoSchema, {
+  ...githubInfo,
+  installed: false,
+})
 
 const cloudwatchLogsInfo = create(SourceInfoSchema, {
   name: 'cloudwatch_logs',
@@ -163,12 +195,17 @@ export const bundledCatalog: SourceInfo[] = [
 const installedGithub: Source = create(SourceSchema, {
   name: 'github',
   version: '1.1.6',
-  origin: SourceOrigin.BUNDLED,
+  origin: SourceOrigin.IMPORTED,
   credentialStorage: SourceCredentialStorage.FILE,
   variables: [
     create(SourceVariableSchema, { key: 'GITHUB_API_BASE', value: 'https://api.github.com' }),
   ],
   secrets: [create(SourceSecretSchema, { key: 'GITHUB_TOKEN', value: '' })],
+})
+
+const installedBundledGithub: Source = create(SourceSchema, {
+  ...installedGithub,
+  origin: SourceOrigin.BUNDLED,
 })
 
 const installedCloudwatchLogs: Source = create(SourceSchema, {
@@ -213,6 +250,18 @@ export const listInitialResponse = create(ListSourcesResponseSchema, {
   sources: initialInstalledSources,
 })
 
+export const listEmptyResponse = create(ListSourcesResponseSchema, {
+  sources: [],
+})
+
+export const listAfterGithubOauthResponse = create(ListSourcesResponseSchema, {
+  sources: [installedBundledGithub],
+})
+
+export const discoverGithubOauthResponse = create(DiscoverSourcesResponseSchema, {
+  sources: [githubOauthCatalogInfo],
+})
+
 export const listAfterLinearInstallResponse = create(ListSourcesResponseSchema, {
   sources: [...initialInstalledSources, installedLinear],
 })
@@ -228,6 +277,9 @@ export const getInfoCloudwatchLogsResponse = create(GetSourceInfoResponseSchema,
 export const getInstalledGithubResponse = create(GetSourceResponseSchema, {
   source: installedGithub,
 })
+export const getInstalledBundledGithubResponse = create(GetSourceResponseSchema, {
+  source: installedBundledGithub,
+})
 export const getInstalledCloudwatchLogsResponse = create(GetSourceResponseSchema, {
   source: installedCloudwatchLogs,
 })
@@ -238,5 +290,36 @@ export const getInstalledLinearResponse = create(GetSourceResponseSchema, {
 export const createLinearResponse = create(CreateBundledSourceResponseSchema, {
   source: installedLinear,
 })
+
+export const createGithubOauthResponses = [
+  create(CreateBundledSourceWithOAuthResponseSchema, {
+    event: {
+      case: 'oauthAuthorization',
+      value: create(OAuthCredentialAuthorizationSchema, {
+        inputKey: 'GITHUB_TOKEN',
+        authorizationUrl: 'https://github.com/login/device?user_code=ABCD-1234',
+        expiresInSeconds: 900n,
+        userCode: 'ABCD-1234',
+        verificationUri: 'https://github.com/login/device',
+        verificationUriComplete: 'https://github.com/login/device?user_code=ABCD-1234',
+      }),
+    },
+  }),
+  create(CreateBundledSourceWithOAuthResponseSchema, {
+    event: {
+      case: 'oauthCompleted',
+      value: create(OAuthCredentialCompletedSchema, {
+        inputKey: 'GITHUB_TOKEN',
+        metadata: [],
+      }),
+    },
+  }),
+  create(CreateBundledSourceWithOAuthResponseSchema, {
+    event: {
+      case: 'source',
+      value: installedBundledGithub,
+    },
+  }),
+]
 
 export const deleteSourceResponse = create(DeleteSourceResponseSchema, {})

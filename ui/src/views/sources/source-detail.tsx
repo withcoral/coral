@@ -11,7 +11,6 @@ import { TextInput } from '@/wax/components/inputs/text'
 import { addToast } from '@/wax/components/toast'
 import { Typography } from '@/wax/components/typography'
 
-import { Markdown } from '@/components/markdown'
 import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
@@ -22,15 +21,10 @@ import {
   type InstallInput,
   type SourceOriginLabel,
 } from '@/lib/sources'
-import { toSentenceCase } from '@/utils/to-sentence-case'
 
 import * as styles from './source-detail.css'
 
 const SECRET_PLACEHOLDER = '••••••••'
-
-function formatFieldName(key: string): string {
-  return toSentenceCase(key.replace(/_/g, ' '))
-}
 
 export function SourceDetailDialog({
   name,
@@ -355,13 +349,11 @@ function FallbackBindings({
           const draftKey = `var:${v.key}`
           return (
             <div key={draftKey} className={styles.fieldItem}>
-              <Typography.Body className={styles.fieldLabel}>
-                {formatFieldName(v.key)}
-              </Typography.Body>
+              <Typography.Body className={styles.fieldLabel}>{v.key}</Typography.Body>
               <TextInput
                 value={drafts[draftKey] ?? v.value}
                 onChange={(value) => onValueChange(draftKey, value)}
-                placeholder={formatFieldName(v.key)}
+                placeholder={v.key}
                 disabled={disabled}
               />
             </div>
@@ -371,9 +363,7 @@ function FallbackBindings({
           const draftKey = `sec:${s.key}`
           return (
             <div key={draftKey} className={styles.fieldItem}>
-              <Typography.Body className={styles.fieldLabel}>
-                {formatFieldName(s.key)}
-              </Typography.Body>
+              <Typography.Body className={styles.fieldLabel}>{s.key}</Typography.Body>
               <TextInput
                 type="password"
                 value={drafts[draftKey] ?? ''}
@@ -466,7 +456,7 @@ function SourceInfoInputRow({
         <TextInput
           value={draft ?? resolved}
           onChange={(next) => onValueChange(input.key, next, false)}
-          placeholder={resolved || formatFieldName(input.key)}
+          placeholder={resolved || input.key}
           disabled={disabled}
         />
       </Field>
@@ -483,7 +473,7 @@ function SourceInfoInputRow({
         onBlur={() => onSecretBlur(input.key)}
         onChange={(next) => onValueChange(input.key, next, true)}
         onFocus={() => onSecretFocus(input.key)}
-        placeholder={formatFieldName(input.key)}
+        placeholder={input.key}
         disabled={disabled}
       />
     </Field>
@@ -493,9 +483,8 @@ function SourceInfoInputRow({
 function Field({ input, children }: { input: SourceInputSpec; children: React.ReactNode }) {
   return (
     <div className={styles.fieldItem}>
-      <Typography.Body className={styles.fieldLabel}>{formatFieldName(input.key)}</Typography.Body>
+      <Typography.Body className={styles.fieldLabel}>{input.key}</Typography.Body>
       {children}
-      {input.hint ? <Markdown>{input.hint}</Markdown> : null}
     </div>
   )
 }

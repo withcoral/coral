@@ -123,6 +123,9 @@ export interface OAuthFlowCallbacks {
     inputKey: string
     authorizationUrl: string
     expiresInSeconds: bigint
+    userCode: string
+    verificationUri: string
+    verificationUriComplete: string
   }) => void
   onCompleted?: (event: { inputKey: string; metadata: Map<string, string> }) => void
 }
@@ -152,7 +155,15 @@ export async function createBundledSourceWithOAuth(
         inputKey: event.value.inputKey,
         authorizationUrl: event.value.authorizationUrl,
         expiresInSeconds: event.value.expiresInSeconds,
+        userCode: event.value.userCode,
+        verificationUri: event.value.verificationUri,
+        verificationUriComplete: event.value.verificationUriComplete,
       })
+      // Keep the device-code prompt visible if a fast backend streams the
+      // completion event immediately after authorization starts.
+      if (event.value.userCode) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
     } else if (event.case === 'oauthCompleted') {
       const metadata = new Map<string, string>()
       for (const item of event.value.metadata) metadata.set(item.key, item.value)

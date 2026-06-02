@@ -34,7 +34,14 @@ import * as styles from './source-install.css'
 type InstallProgress =
   | { kind: 'idle' }
   | { kind: 'busy' }
-  | { kind: 'awaiting-oauth'; inputKey: string; authorizationUrl: string }
+  | {
+      kind: 'awaiting-oauth'
+      inputKey: string
+      authorizationUrl: string
+      userCode: string
+      verificationUri: string
+      verificationUriComplete: string
+    }
   | { kind: 'oauth-completed'; inputKey: string }
 
 function formatFieldName(key: string): string {
@@ -159,11 +166,20 @@ function SourceInstallDialogContent({
       }
 
       const callbacks = {
-        onAuthorization: (event: { inputKey: string; authorizationUrl: string }) => {
+        onAuthorization: (event: {
+          inputKey: string
+          authorizationUrl: string
+          userCode: string
+          verificationUri: string
+          verificationUriComplete: string
+        }) => {
           setProgress({
             kind: 'awaiting-oauth',
             inputKey: event.inputKey,
             authorizationUrl: event.authorizationUrl,
+            userCode: event.userCode,
+            verificationUri: event.verificationUri,
+            verificationUriComplete: event.verificationUriComplete,
           })
           window.open(event.authorizationUrl, '_blank', 'noopener,noreferrer')
         },
@@ -244,6 +260,9 @@ function SourceInstallDialogContent({
             <OAuthProgress
               authorizationUrl={progress.authorizationUrl}
               inputKey={progress.inputKey}
+              userCode={progress.userCode}
+              verificationUri={progress.verificationUri}
+              verificationUriComplete={progress.verificationUriComplete}
             />
           ) : null}
           {progress.kind === 'oauth-completed' ? (
@@ -414,10 +433,19 @@ function OAuthFields({
 function OAuthProgress({
   authorizationUrl,
   inputKey,
+  userCode,
+  verificationUri,
+  verificationUriComplete,
 }: {
   authorizationUrl: string
   inputKey: string
+  userCode: string
+  verificationUri: string
+  verificationUriComplete: string
 }) {
+  const link = verificationUriComplete || authorizationUrl
+  const displayUri = verificationUri || authorizationUrl
+
   return (
     <div className={styles.oauthBox}>
       <Icon name="Loader" size="16" color="secondary" />
@@ -425,13 +453,28 @@ function OAuthProgress({
         <Typography.BodySmall variant="primary">
           Waiting for {formatFieldName(inputKey)} authorization in your browser…
         </Typography.BodySmall>
-        <Typography.BodySmall variant="tertiary">
-          If the new tab didn't open,{' '}
-          <a href={authorizationUrl} target="_blank" rel="noopener noreferrer">
-            click here to open it
-          </a>
-          .
-        </Typography.BodySmall>
+        {userCode ? (
+          <>
+            <Typography.BodySmall variant="secondary">
+              Enter code <code className={styles.oauthCode}>{userCode}</code> at{' '}
+              <a href={link} target="_blank" rel="noopener noreferrer">
+                {displayUri}
+              </a>
+              .
+            </Typography.BodySmall>
+            <Typography.BodySmall variant="tertiary">
+              If the new tab didn't open, use the link above.
+            </Typography.BodySmall>
+          </>
+        ) : (
+          <Typography.BodySmall variant="tertiary">
+            If the new tab didn't open,{' '}
+            <a href={authorizationUrl} target="_blank" rel="noopener noreferrer">
+              click here to open it
+            </a>
+            .
+          </Typography.BodySmall>
+        )}
       </div>
     </div>
   )

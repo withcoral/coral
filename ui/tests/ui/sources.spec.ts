@@ -1,4 +1,4 @@
-import { sourceLifecycleHandlers } from './support/source-handlers'
+import { sourceLifecycleHandlers, sourceOAuthInstallHandlers } from './support/source-handlers'
 import { expect, test } from './playwright.setup'
 
 test('lists core sources by category, searches, and shows connected status', async ({
@@ -18,6 +18,7 @@ test('lists core sources by category, searches, and shows connected status', asy
   await expect(page.getByRole('heading', { name: 'Connected' })).toBeVisible()
   await expect(page.getByRole('button', { name: /Github/i })).toBeVisible()
   await expect(page.getByRole('button', { name: /Github/i }).getByText('Connected')).toBeVisible()
+  await expect(page.getByRole('button', { name: /Github/i }).getByText('Imported')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Observability' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Communication' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Project Management' })).toBeVisible()
@@ -75,7 +76,7 @@ test('installs a core source via paste, edits a binding, and removes it', async 
   )
   const detailDialog = page.getByRole('dialog', { name: /Linear/i })
   await expect(detailDialog.getByRole('heading', { name: 'Configuration' })).toBeVisible()
-  await expect(detailDialog.getByText('Linear api token', { exact: true })).toBeVisible()
+  await expect(detailDialog.getByText('LINEAR_API_TOKEN', { exact: true })).toBeVisible()
   await review.pause()
 
   await review.chapter(
@@ -119,7 +120,11 @@ test('installed source detail uses manifest fields and masked secrets', async ({
 
   const dialog = page.getByRole('dialog', { name: /cloudwatch_logs/i })
   await expect(dialog.getByRole('heading', { name: 'Configuration' })).toBeVisible()
-  await expect(dialog.getByText('Aws region', { exact: true })).toBeVisible()
+  await expect(dialog.getByText('AWS_REGION', { exact: true })).toBeVisible()
+  await expect(dialog.getByText('AWS_ACCESS_KEY_ID', { exact: true })).toBeVisible()
+  await expect(
+    dialog.getByText('AWS access key ID with CloudWatch Logs read permissions.'),
+  ).toHaveCount(0)
   const variableInputs = dialog.locator('input[type="text"]')
   await expect(variableInputs.nth(0)).toHaveValue('us-east-1')
   await expect(variableInputs.nth(1)).toHaveValue('amazonaws.com')
@@ -138,6 +143,33 @@ test('installed source detail uses manifest fields and masked secrets', async ({
   await secretInputs.first().fill('AKIAUPDATED')
   await expect(dialog.getByRole('button', { name: 'Save changes' })).toBeVisible()
   await review.pause()
+})
+
+test('installs GitHub through OAuth device code', async ({ network, page, review }) => {
+  network.use(...sourceOAuthInstallHandlers())
+
+  await page.goto('/#/sources')
+  await page.getByRole('button', { name: /Github/i }).click()
+
+  const dialog = page.getByRole('dialog', { name: /Github/i })
+  await expect(dialog.getByRole('button', { name: 'Add source' })).toBeEnabled()
+
+  await review.chapter(
+    'Start device-code OAuth',
+    'Click Add source and show the provider code while authorization is pending',
+  )
+  await dialog.getByRole('button', { name: 'Add source' }).click()
+
+  await expect(dialog.getByText('ABCD-1234')).toBeVisible()
+  const verificationLink = dialog.getByRole('link', { name: 'https://github.com/login/device' })
+  await expect(verificationLink).toBeVisible()
+  await expect(verificationLink).toHaveAttribute(
+    'href',
+    'https://github.com/login/device?user_code=ABCD-1234',
+  )
+  await review.pause()
+
+  await expect(page.getByText('Installed github')).toBeVisible()
 })
 
 test('cmd-F focuses the search input', async ({ network, page, review }) => {

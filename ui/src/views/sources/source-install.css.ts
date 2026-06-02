@@ -127,6 +127,12 @@ export const oauthBox = style({
   padding: 12,
 })
 
+export const oauthCode = style({
+  color: theme.content.primary,
+  fontFamily: 'monospace',
+  fontWeight: 700,
+})
+
 export const alertBox = style({
   alignItems: 'center',
   borderRadius: 6,

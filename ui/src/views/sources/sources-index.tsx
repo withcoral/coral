@@ -77,6 +77,7 @@ export function SourcesIndex() {
         if (target) {
           target.installed = true
           target.installedVersion = installedSource.version
+          target.origin = installedSource.origin
         }
       } else {
         merged.push({
