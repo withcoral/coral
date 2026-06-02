@@ -1,14 +1,12 @@
 //! Workspace-scoped catalog discovery operations.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
-use tokio::sync::Mutex;
 
 use crate::bootstrap::AppError;
-use crate::query::manager::{CatalogCacheKey, QueryManager, QueryManagerError};
+use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::workspaces::WorkspaceName;
 
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
@@ -156,21 +154,12 @@ pub(crate) struct ListColumnsQuery<'a> {
 #[derive(Clone)]
 pub(crate) struct CatalogDiscovery {
     queries: QueryManager,
-    cache: Arc<Mutex<Option<CatalogItemsCache>>>,
-}
-
-#[derive(Clone)]
-struct CatalogItemsCache {
-    workspace_name: WorkspaceName,
-    key: CatalogCacheKey,
-    items: Vec<CatalogItem>,
 }
 
 impl CatalogDiscovery {
     pub(crate) fn new(query_manager: QueryManager) -> Self {
         Self {
             queries: query_manager,
-            cache: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -198,33 +187,12 @@ impl CatalogDiscovery {
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
-        let key = self
-            .queries
-            .catalog_cache_key(workspace_name)
-            .map_err(QueryManagerError::App)?;
-        {
-            let cache = self.cache.lock().await;
-            if let Some(cached) = cache.as_ref()
-                && cached.workspace_name == *workspace_name
-                && cached.key == key
-            {
-                return Ok(filter_catalog_items(&cached.items, schema_name, kind));
-            }
-        }
-
         let catalog = self
             .queries
             .list_catalog_summaries(workspace_name, None)
             .await?;
         let items = catalog_items(catalog, None);
-        let filtered = filter_catalog_items(&items, schema_name, kind);
-        let mut cache = self.cache.lock().await;
-        *cache = Some(CatalogItemsCache {
-            workspace_name: workspace_name.clone(),
-            key,
-            items,
-        });
-        Ok(filtered)
+        Ok(filter_catalog_items(&items, schema_name, kind))
     }
 
     pub(crate) async fn describe_table(
