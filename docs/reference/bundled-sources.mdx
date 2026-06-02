@@ -202,14 +202,13 @@ Base URL of your GitLab instance. Keep the default for
 
 `GITLAB_TOKEN` (required)
 
-Use GitLab OAuth or create a personal access token (PAT) with
-the `read_api` scope; some admin tables require elevated scopes.
-See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
+Connect with GitLab OAuth or paste a personal access token. Both
+need the `read_api` scope; some admin tables require elevated scopes.
 
 Credential methods:
 
-- **Connect with GitLab.com OAuth** — Use GitLab.com OAuth authorization code with PKCE.
-- **Paste token**
+- **Connect with GitLab.com OAuth** — Sign in to GitLab.com in your browser. Requests the `read_api` scope. To use your own GitLab OAuth application, set GITLAB_OAUTH_CLIENT_ID to its Application ID.
+- **Paste token** — Create a personal access token with the `read_api` scope; some admin tables need elevated scopes. See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
 
 ### `gmail`
 
@@ -221,20 +220,13 @@ account, or an email address when the token has delegated access.
 
 `GMAIL_TOKEN` (required)
 
-Use a read-only OAuth 2.0 access token for the Gmail API with the
-`https://www.googleapis.com/auth/gmail.readonly` scope.
-For the guided OAuth flow, enable the Gmail API in a Google Cloud
-project and create an OAuth 2.0 client of type "Desktop app". The
-guided OAuth credential method uses that client ID and client secret,
-then requests that read-only scope.
-See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
-
-To paste a token manually, use a token issued with that same scope.
+Connect with Google OAuth or paste an access token. Either way the
+token needs the `https://www.googleapis.com/auth/gmail.readonly` scope.
 
 Credential methods:
 
-- **Connect with Google** — Use a Google OAuth client ID and client secret.
-- **Paste access token**
+- **Connect with Google** — Enable the Gmail API in a Google Cloud project and create an OAuth 2.0 client of type "Desktop app", then enter its Client ID and Client secret below. Requests read-only access with the `https://www.googleapis.com/auth/gmail.readonly` scope. See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
+- **Paste access token** — Paste a read-only OAuth 2.0 access token issued with the `https://www.googleapis.com/auth/gmail.readonly` scope.
 
 ### `google_calendar`
 
@@ -393,19 +385,14 @@ Your Sentry organization slug (found in the Sentry URL after `/organizations/`)
 
 `SENTRY_TOKEN` (required)
 
-Use OAuth during interactive setup, or create an internal integration
-and generate a token with the following read scopes: org:read,
-event:read, member:read, project:read, project:releases, and
-team:read.
-
-OAuth setup requires a Sentry OAuth app; use that app's client ID
-when prompted.
-See [Sentry auth docs](https://docs.sentry.io/api/auth/).
+Connect with Sentry OAuth or paste an internal-integration token.
+Both need the `org:read`, `event:read`, `member:read`, `project:read`,
+`project:releases`, and `team:read` scopes.
 
 Credential methods:
 
-- **Connect with Sentry device flow** — Use a Sentry OAuth app instead of pasting an auth token.
-- **Paste auth token** — Paste a Sentry personal or internal integration token.
+- **Connect with Sentry device flow** — Sign in to Sentry with a device code. Enter your Sentry OAuth app's Client ID when prompted. Requests the `org:read`, `event:read`, `member:read`, `project:read`, `project:releases`, and `team:read` scopes. See [Sentry auth docs](https://docs.sentry.io/api/auth/).
+- **Paste auth token** — Create an internal integration and paste its token, granting the `org:read`, `event:read`, `member:read`, `project:read`, `project:releases`, and `team:read` read scopes. See [Sentry auth docs](https://docs.sentry.io/api/auth/).
 
 ### `slack`
 
