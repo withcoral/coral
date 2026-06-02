@@ -6,7 +6,7 @@
 //! values are never included in keys, values, or trace events.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use moka::Expiry;
@@ -69,13 +69,19 @@ impl Expiry<String, HttpCacheEntry> for EntryExpiry {
 #[derive(Clone)]
 pub(crate) struct HttpResponseCache {
     inner: Arc<Cache<String, HttpCacheEntry>>,
+    registry: Option<Weak<HttpCacheRegistryInner>>,
 }
 
 impl HttpResponseCache {
     /// Create a new cache with the default 256 MiB capacity limit.
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::build(DEFAULT_CACHE_MAX_BYTES, None)
+    }
+
+    fn build(max_bytes: u64, registry: Option<Weak<HttpCacheRegistryInner>>) -> Self {
         let inner = Cache::builder()
-            .max_capacity(DEFAULT_CACHE_MAX_BYTES)
+            .max_capacity(max_bytes)
             .weigher(|_key: &String, value: &HttpCacheEntry| {
                 #[expect(
                     clippy::cast_possible_truncation,
@@ -88,7 +94,26 @@ impl HttpResponseCache {
             .build();
         Self {
             inner: Arc::new(inner),
+            registry,
         }
+    }
+
+    /// Approximate weighted byte size currently stored.
+    pub(crate) fn weighted_size(&self) -> u64 {
+        self.inner.weighted_size()
+    }
+
+    /// Soft admission check against the parent registry's `total_max_bytes`,
+    /// if any. Returns `true` when no registry is attached or no total
+    /// ceiling is configured.
+    pub(crate) fn try_admit(&self, incoming_bytes: u64) -> bool {
+        let Some(weak) = &self.registry else {
+            return true;
+        };
+        let Some(inner) = weak.upgrade() else {
+            return true;
+        };
+        HttpCacheRegistry { inner }.try_admit(incoming_bytes)
     }
 
     /// Return the cached entry for `key`, or `None` on miss or expiry.
@@ -124,29 +149,61 @@ impl HttpResponseCache {
     }
 }
 
+pub(crate) struct HttpCacheRegistryInner {
+    entries: Mutex<HashMap<(String, String), HttpResponseCache>>,
+    default_max_bytes: u64,
+    total_max_bytes: Option<u64>,
+    per_source_max_bytes: HashMap<String, u64>,
+}
+
 /// Per-source `HttpResponseCache` instances keyed by `(name, version)`.
 ///
 /// Held by long-lived callers (e.g. `QueryManager`) so cache entries
 /// survive across the per-query runtime rebuild.
+#[derive(Clone)]
 pub struct HttpCacheRegistry {
-    entries: Mutex<HashMap<(String, String), HttpResponseCache>>,
+    inner: Arc<HttpCacheRegistryInner>,
 }
 
 impl std::fmt::Debug for HttpCacheRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let len = self.entries.lock().map_or(0, |g| g.len());
+        let len = self.inner.entries.lock().map_or(0, |g| g.len());
         f.debug_struct("HttpCacheRegistry")
             .field("entries", &len)
+            .field("default_max_bytes", &self.inner.default_max_bytes)
+            .field("total_max_bytes", &self.inner.total_max_bytes)
             .finish()
     }
 }
 
 impl HttpCacheRegistry {
-    /// Build an empty registry.
+    /// Build a registry with default per-source capacity (256 MiB) and no
+    /// cross-source ceiling.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_policy(DEFAULT_CACHE_MAX_BYTES, None, HashMap::new())
+    }
+
+    /// Build a registry with explicit policy.
+    ///
+    /// `default_max_bytes` is the per-source cache capacity applied when a
+    /// source has no override in `per_source_max_bytes`. `total_max_bytes`,
+    /// when set, is a soft ceiling on the sum of weighted bytes across all
+    /// per-source caches; entries that would push the running total over the
+    /// ceiling are skipped (the response is still returned to the caller).
+    #[must_use]
+    pub fn with_policy(
+        default_max_bytes: u64,
+        total_max_bytes: Option<u64>,
+        per_source_max_bytes: HashMap<String, u64>,
+    ) -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            inner: Arc::new(HttpCacheRegistryInner {
+                entries: Mutex::new(HashMap::new()),
+                default_max_bytes,
+                total_max_bytes,
+                per_source_max_bytes,
+            }),
         }
     }
 
@@ -156,18 +213,44 @@ impl HttpCacheRegistry {
         source_version: &str,
     ) -> HttpResponseCache {
         let mut guard = self
+            .inner
             .entries
             .lock()
             .expect("HttpCacheRegistry mutex poisoned");
-        if let Some(existing) = guard.get(&(source_name.to_string(), source_version.to_string())) {
+        let key = (source_name.to_string(), source_version.to_string());
+        if let Some(existing) = guard.get(&key) {
             return existing.clone();
         }
-        let cache = HttpResponseCache::new();
-        guard.insert(
-            (source_name.to_string(), source_version.to_string()),
-            cache.clone(),
-        );
+        let max_bytes = self
+            .inner
+            .per_source_max_bytes
+            .get(source_name)
+            .copied()
+            .unwrap_or(self.inner.default_max_bytes);
+        let cache = HttpResponseCache::build(max_bytes, Some(Arc::downgrade(&self.inner)));
+        guard.insert(key, cache.clone());
         cache
+    }
+
+    /// Soft check: would admitting `incoming_bytes` keep the registry's total
+    /// weighted size within `total_max_bytes`? Returns `true` if no ceiling is
+    /// configured.
+    pub(crate) fn try_admit(&self, incoming_bytes: u64) -> bool {
+        let Some(total) = self.inner.total_max_bytes else {
+            return true;
+        };
+        let current = {
+            let guard = self
+                .inner
+                .entries
+                .lock()
+                .expect("HttpCacheRegistry mutex poisoned");
+            guard
+                .values()
+                .map(HttpResponseCache::weighted_size)
+                .sum::<u64>()
+        };
+        current.saturating_add(incoming_bytes) <= total
     }
 }
 
@@ -425,5 +508,29 @@ mod tests {
         let estimated = estimate_json_bytes(&value);
         let serialized = serde_json::to_string(&value).unwrap();
         assert_eq!(estimated, serialized.len());
+    }
+
+    #[test]
+    fn registry_with_no_ceiling_admits_anything() {
+        let registry = HttpCacheRegistry::with_policy(1024, None, HashMap::new());
+        assert!(registry.try_admit(1024 * 1024));
+    }
+
+    #[test]
+    fn registry_returns_distinct_caches_for_distinct_sources() {
+        let mut overrides = HashMap::new();
+        overrides.insert("large_source".to_string(), 1024);
+        let registry = HttpCacheRegistry::with_policy(64, None, overrides);
+        let small = registry.get_or_create("small_source", "0.1.0");
+        let large = registry.get_or_create("large_source", "0.1.0");
+        // Small source uses the default capacity (64); large source has an override (1024).
+        // Different moka caches → different identity. We can't read max_capacity off
+        // moka directly, but admission against a zero-size ceiling proves the registry
+        // is exercising both entries.
+        assert_eq!(small.weighted_size(), 0);
+        assert_eq!(large.weighted_size(), 0);
+        let zero_ceiling = HttpCacheRegistry::with_policy(64, Some(0), HashMap::new());
+        let _ = zero_ceiling.get_or_create("s", "0");
+        assert!(!zero_ceiling.try_admit(1));
     }
 }

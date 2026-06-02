@@ -284,45 +284,50 @@ pub(super) async fn fetch_rows(
             (query_pairs, body)
         };
 
-        let cache_key: Option<(String, usize, Duration)> = target
-            .cache()
-            .filter(|p| p.mode == HttpCacheMode::Ttl)
-            .filter(|policy| {
-                policy
-                    .max_pages
-                    .is_none_or(|max_cache_pages| page_count <= max_cache_pages)
-            })
-            .map(|policy| {
-                let body_hash = body.as_ref().map(hash_request_body);
-                let vary_headers = cache_vary_header_hashes(
-                    &client.request_headers,
-                    &active_request.headers,
-                    body.as_ref(),
-                    &render_context,
-                    &policy.vary_headers,
-                )?;
-                let key = build_cache_key(
-                    &client.source_schema,
-                    &client.source_version,
-                    target.name(),
-                    http_method_label(active_request.method),
-                    &url,
-                    &query_pairs,
-                    body_hash,
-                    &vary_headers,
-                    policy.ttl.as_secs(),
-                );
-                let max_entry = policy.max_entry_bytes.unwrap_or(usize::MAX);
-                Ok::<_, DataFusionError>((key, max_entry, policy.ttl))
-            })
-            .transpose()?;
+        let cache_key: Option<(String, usize, Duration)> = if client.cache.is_some() {
+            target
+                .cache()
+                .filter(|p| p.mode == HttpCacheMode::Ttl)
+                .filter(|policy| {
+                    policy
+                        .max_pages
+                        .is_none_or(|max_cache_pages| page_count <= max_cache_pages)
+                })
+                .map(|policy| {
+                    let body_hash = body.as_ref().map(hash_request_body);
+                    let vary_headers = cache_vary_header_hashes(
+                        &client.request_headers,
+                        &active_request.headers,
+                        body.as_ref(),
+                        &render_context,
+                        &policy.vary_headers,
+                    )?;
+                    let key = build_cache_key(
+                        &client.source_schema,
+                        &client.source_version,
+                        target.name(),
+                        http_method_label(active_request.method),
+                        &url,
+                        &query_pairs,
+                        body_hash,
+                        &vary_headers,
+                        policy.ttl.as_secs(),
+                    );
+                    let max_entry = policy.max_entry_bytes.unwrap_or(usize::MAX);
+                    Ok::<_, DataFusionError>((key, max_entry, policy.ttl))
+                })
+                .transpose()?
+        } else {
+            None
+        };
 
-        let page = if let Some((ref key, max_entry_bytes, ttl)) = cache_key {
+        let page = if let (Some(cache), Some((ref key, max_entry_bytes, ttl))) =
+            (client.cache.as_ref(), cache_key)
+        {
             let source_schema = client.source_schema.clone();
             let table_name = target.name().to_string();
             let ok_path = target.response().ok_path.clone();
-            let result = client
-                .cache
+            let result = cache
                 .try_get_or_insert_with::<_, FetchSkipped>(key, async {
                     tracing::trace!(
                         source = %source_schema,
@@ -376,6 +381,15 @@ pub(super) async fn fetch_rows(
                             table = %table_name,
                             estimated_bytes,
                             "http cache entry skipped: exceeds max_entry_bytes"
+                        );
+                        return Err(FetchSkipped::not_cacheable(payload, next_url));
+                    }
+                    if !cache.try_admit(estimated_bytes as u64) {
+                        tracing::trace!(
+                            source = %source_schema,
+                            table = %table_name,
+                            estimated_bytes,
+                            "http cache entry skipped: exceeds total_max_bytes"
                         );
                         return Err(FetchSkipped::not_cacheable(payload, next_url));
                     }
@@ -592,6 +606,18 @@ mod tests {
 
     fn build_test_client(manifest: &HttpSourceManifest) -> HttpSourceClient {
         HttpSourceClient::from_manifest(
+            manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &HashMap::new(),
+            None,
+            reqwest::Client::new(),
+        )
+        .expect("test client should build")
+    }
+
+    fn build_test_client_without_cache(manifest: &HttpSourceManifest) -> HttpSourceClient {
+        HttpSourceClient::from_manifest_without_cache(
             manifest,
             &BTreeMap::new(),
             &BTreeMap::new(),
@@ -954,6 +980,36 @@ mod tests {
             .await
             .expect("second");
         // .expect(2) verifies both calls made it to the server (no caching)
+    }
+
+    #[tokio::test]
+    async fn cache_runtime_absence_disables_table_cache_policy() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "data": [{ "id": 1 }] })),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let manifest = cached_users_manifest(&server.uri());
+        let client = build_test_client_without_cache(&manifest);
+        let table = first_table(&manifest);
+        let filters = HashMap::new();
+
+        fetch_table(&client, table, &filters, None)
+            .await
+            .expect("first");
+        fetch_table(&client, table, &filters, None)
+            .await
+            .expect("second");
+        // The table declares `cache: { mode: ttl }`, but no runtime cache is
+        // installed, so both calls must reach the server.
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub struct EngineExtensions {
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
     pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    /// Caller-owned HTTP cache registry; `None` means per-runtime caches.
+    /// Caller-owned HTTP cache registry; `None` disables HTTP response caching.
     pub http_cache_registry: Option<Arc<HttpCacheRegistry>>,
 }
 

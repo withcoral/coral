@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    HttpCacheRegistry, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, HttpCacheRegistry, QueryExecution,
+    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
     SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -48,7 +48,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    http_cache_registry: Arc<HttpCacheRegistry>,
+    http_cache_registry: Option<Arc<HttpCacheRegistry>>,
 }
 
 impl QueryManager {
@@ -58,15 +58,23 @@ impl QueryManager {
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, AppError> {
+        let cache_config = crate::http_cache::HttpCacheConfig::load(&layout)?;
+        let http_cache_registry = cache_config.enabled.then(|| {
+            Arc::new(HttpCacheRegistry::with_policy(
+                cache_config.default_max_bytes_per_source,
+                cache_config.total_max_bytes,
+                cache_config.per_source_max_bytes,
+            ))
+        });
+        Ok(Self {
             config_store,
             credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
-            http_cache_registry: Arc::new(HttpCacheRegistry::new()),
-        }
+            http_cache_registry,
+        })
     }
 
     pub(crate) async fn list_tables(
@@ -310,7 +318,7 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
-        extensions.http_cache_registry = Some(Arc::clone(&self.http_cache_registry));
+        extensions.http_cache_registry = self.http_cache_registry.as_ref().map(Arc::clone);
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
@@ -522,7 +530,8 @@ mod tests {
             runtime_context,
             layout,
             providers,
-        );
+        )
+        .expect("query manager should build");
         QueryManagerFixture {
             _temp: temp,
             manager,
@@ -814,7 +823,8 @@ surfaces:
             QueryRuntimeContext::default(),
             layout,
             Vec::new(),
-        );
+        )
+        .expect("query manager should build");
 
         let error = manager
             .load_query_sources(&workspace_name)

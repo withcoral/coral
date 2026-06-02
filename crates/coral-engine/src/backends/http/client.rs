@@ -38,7 +38,7 @@ pub(crate) struct HttpSourceClient {
     pub(super) rate_limit: RateLimitSpec,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
     pub(super) body_capture: HttpBodyCapture,
-    pub(super) cache: HttpResponseCache,
+    pub(super) cache: Option<HttpResponseCache>,
 }
 
 pub(crate) struct HttpSourceClientRuntime {
@@ -68,6 +68,20 @@ impl HttpSourceClientRuntime {
 
     #[cfg(test)]
     fn static_inputs(body_capture_max_bytes: Option<usize>, http: reqwest::Client) -> Self {
+        Self {
+            source_input_resolution_context: None,
+            source_input_resolver: None,
+            body_capture_max_bytes,
+            http,
+            cache: Some(HttpResponseCache::new()),
+        }
+    }
+
+    #[cfg(test)]
+    fn static_inputs_without_cache(
+        body_capture_max_bytes: Option<usize>,
+        http: reqwest::Client,
+    ) -> Self {
         Self {
             source_input_resolution_context: None,
             source_input_resolver: None,
@@ -135,6 +149,24 @@ impl HttpSourceClient {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_manifest_without_cache(
+        manifest: &HttpSourceManifest,
+        source_secrets: &BTreeMap<String, String>,
+        source_variables: &BTreeMap<String, String>,
+        request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+        body_capture_max_bytes: Option<usize>,
+        http: reqwest::Client,
+    ) -> Result<Self> {
+        Self::build(
+            manifest,
+            source_secrets,
+            source_variables,
+            request_authenticators,
+            HttpSourceClientRuntime::static_inputs_without_cache(body_capture_max_bytes, http),
+        )
+    }
+
     pub(crate) fn from_manifest_with_source_input_resolver(
         manifest: &HttpSourceManifest,
         source_secrets: &BTreeMap<String, String>,
@@ -178,7 +210,7 @@ impl HttpSourceClient {
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
             body_capture: HttpBodyCapture::new(runtime.body_capture_max_bytes),
-            cache: runtime.cache.unwrap_or_else(HttpResponseCache::new),
+            cache: runtime.cache,
         })
     }
 
