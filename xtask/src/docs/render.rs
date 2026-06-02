@@ -228,9 +228,15 @@ fn render_credential_methods(out: &mut String, methods: &[ManifestCredentialMeth
         let detail = method
             .hint
             .as_deref()
-            .or(method.description.as_deref())
             .map(str::trim)
-            .filter(|detail| !detail.is_empty());
+            .filter(|detail| !detail.is_empty())
+            .or_else(|| {
+                method
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|detail| !detail.is_empty())
+            });
         if let Some(detail) = detail {
             write!(out, " — {}", escape_mdx(&flatten_for_table_cell(detail)))
                 .expect("writing to String is infallible");
@@ -244,7 +250,7 @@ fn render_credential_methods(out: &mut String, methods: &[ManifestCredentialMeth
 fn default_method_label(kind: ManifestCredentialMethodKind) -> &'static str {
     match kind {
         ManifestCredentialMethodKind::SourceConfig => "Paste token",
-        ManifestCredentialMethodKind::OAuth => "OAuth",
+        ManifestCredentialMethodKind::OAuth => "Connect with OAuth",
     }
 }
 
@@ -471,8 +477,12 @@ const COMMUNITY_OUTRO: &str = concat!(
 
 #[cfg(test)]
 mod tests {
-    use super::{changelog_page, community_sources_page, escape_mdx, index_page};
-    use coral_spec::parse_source_manifest_yaml;
+    use super::{
+        changelog_page, community_sources_page, escape_mdx, index_page, render_credential_methods,
+    };
+    use coral_spec::{
+        ManifestCredentialMethod, ManifestCredentialMethodKind, parse_source_manifest_yaml,
+    };
 
     const SAMPLE_MANIFEST: &str = r#"
 name: demo
@@ -701,5 +711,60 @@ tables:
             "community_sources_page_renders_catalog",
             community_sources_page(&[demo, minimal])
         );
+    }
+
+    fn method(
+        kind: ManifestCredentialMethodKind,
+        label: Option<&str>,
+        description: Option<&str>,
+        hint: Option<&str>,
+    ) -> ManifestCredentialMethod {
+        ManifestCredentialMethod {
+            kind,
+            label: label.map(ToString::to_string),
+            description: description.map(ToString::to_string),
+            hint: hint.map(ToString::to_string),
+            oauth: None,
+        }
+    }
+
+    #[test]
+    fn credential_method_detail_prefers_hint_then_falls_back_to_description() {
+        let mut out = String::new();
+        render_credential_methods(
+            &mut out,
+            &[
+                // Real hint wins over description.
+                method(
+                    ManifestCredentialMethodKind::SourceConfig,
+                    Some("Paste token"),
+                    Some("short blurb"),
+                    Some("Create a read-only token."),
+                ),
+                // Blank hint must fall back to the description, not suppress it.
+                method(
+                    ManifestCredentialMethodKind::OAuth,
+                    Some("Connect"),
+                    Some("Authorize in your browser."),
+                    Some("   "),
+                ),
+            ],
+        );
+        assert!(out.contains("- **Paste token** — Create a read-only token."));
+        assert!(out.contains("- **Connect** — Authorize in your browser."));
+    }
+
+    #[test]
+    fn credential_method_label_falls_back_to_cli_defaults() {
+        let mut out = String::new();
+        render_credential_methods(
+            &mut out,
+            &[
+                method(ManifestCredentialMethodKind::OAuth, None, None, None),
+                method(ManifestCredentialMethodKind::SourceConfig, None, None, None),
+            ],
+        );
+        assert!(out.contains("- **Connect with OAuth**"));
+        assert!(out.contains("- **Paste token**"));
     }
 }
