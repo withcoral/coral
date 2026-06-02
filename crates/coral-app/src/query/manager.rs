@@ -195,10 +195,10 @@ impl QueryManager {
         for source in catalog.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
-                Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
-                    return Err(error);
-                }
-                Err(error @ AppError::MissingOrIncompatibleV4Materialization { .. }) => {
+                Err(
+                    error @ (AppError::Credentials(CredentialsError::Unavailable(_))
+                    | AppError::MissingOrIncompatibleV4Materialization { .. }),
+                ) => {
                     return Err(error);
                 }
                 Err(error) => {
