@@ -181,6 +181,10 @@ Cloud; for GitHub Enterprise Server, use
 
 `GITHUB_TOKEN` (required)
 
+Connect with GitHub OAuth or paste a personal access token. The
+OAuth methods request the `repo`, `read:org`, `read:user`, and
+`user:email` scopes.
+
 Credential methods:
 
 - **Connect with GitHub device code** — Signs you in through GitHub, with no app setup or client secret needed. Requests the `repo`, `read:org`, `read:user`, and `user:email` scopes. To use your own GitHub app instead, set GITHUB_OAUTH_CLIENT_ID to its Client ID and enable device flow on the app.
@@ -241,6 +245,10 @@ Base URL for the Google Calendar API. Keep the default unless you are
 testing against a mock Calendar-compatible API.
 
 `GOOGLE_CALENDAR_ACCESS_TOKEN` (required)
+
+Connect with Google OAuth or paste an access token. Either way the
+token needs the read-only
+`https://www.googleapis.com/auth/calendar.readonly` scope.
 
 Credential methods:
 

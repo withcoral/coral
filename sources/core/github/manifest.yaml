@@ -20,6 +20,10 @@ inputs:
       `https://<host>/api/v3`.
   GITHUB_TOKEN:
     kind: secret
+    hint: |
+      Connect with GitHub OAuth or paste a personal access token. The
+      OAuth methods request the `repo`, `read:org`, `read:user`, and
+      `user:email` scopes.
     credential:
       methods:
         - type: oauth

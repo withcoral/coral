@@ -13,6 +13,10 @@ inputs:
       testing against a mock Calendar-compatible API.
   GOOGLE_CALENDAR_ACCESS_TOKEN:
     kind: secret
+    hint: |
+      Connect with Google OAuth or paste an access token. Either way the
+      token needs the read-only
+      `https://www.googleapis.com/auth/calendar.readonly` scope.
     credential:
       methods:
         - type: oauth
