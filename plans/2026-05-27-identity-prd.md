@@ -36,13 +36,17 @@ There is no global `Connection` object, no source-owned identity, no global-pool
 identity selection at query time, and no first-wave per-identity ACL. Query-time
 identity resolution still happens, but only as a deterministic lookup of the
 surface binding for the current member — never as a policy that chooses among
-candidate identities. Those concepts either duplicate the surface binding or
-create a second permission model.
+candidate identities. When multiple compatible identities exist, the choice is
+made during setup and recorded as a binding; query execution only reads that
+binding. Those concepts either duplicate the surface binding or create a second
+permission model.
 
 Users should experience this as a simple authentication UX: source, connected
 as, available to, status, permissions needed, affected sources, and fix. Users
 should not manage credential material, injection methods, or source IR during
-ordinary setup and recovery.
+ordinary setup and recovery. Recovery means guided repair when an identity or
+binding no longer works, such as refreshing credentials, reauthorizing, choosing
+a replacement identity, or filling a missing per-member slot.
 
 ## Goals
 
@@ -54,8 +58,8 @@ ordinary setup and recovery.
 - Let one workspace serve both org-tied (shared) and user-tied (per-member)
   authority without changing access control.
 - Support private user workspaces, shared workspaces, and local CLI defaults.
-- Allow the same source surface to use different identities in different
-  workspaces.
+- Allow the same source surface to use different binding modes and identities in
+  different workspaces.
 - Allow one source to have multiple surfaces, each with its own identity
   requirements.
 - Keep matching provider-native: issuer, capabilities, injection method, and
@@ -72,6 +76,9 @@ ordinary setup and recovery.
 
 - Redesign DSL v4 source IR, projections, OpenAPI import, or source
   materialization internals.
+- Define DSL v4 surface granularity. This PRD binds identities to the surfaces
+  declared by source specs; whether a provider is modeled as one surface or many
+  is a source-spec decision.
 - Make source specs own identity materialization.
 - Select among multiple candidate identities at query time. Resolution is a
   deterministic assignment lookup, not a policy.
@@ -109,7 +116,11 @@ by one workspace.
 
 A surface is a provider interface declared by a source spec, such as GitHub
 REST, GitHub GraphQL, Slack Web API, or an AWS service API family. A surface
-declares identity requirements. It does not choose a concrete identity.
+declares identity requirements. It does not choose a concrete identity, owner, or
+binding mode. For providers with several authority shapes, such as Slack bot
+tokens and Slack user tokens, a surface may accept more than one compatible
+identity shape; the workspace source setup decides which one to bind for that
+workspace.
 
 ### Identity Spec
 
@@ -126,6 +137,13 @@ Examples:
 An identity spec owns setup, principal discovery, audience discovery,
 capability request or validation, runtime injection method, refresh, recovery,
 and supported non-interactive setup.
+
+An identity spec is not source-aware. It describes how to create or refresh
+provider-facing authority, not which source surfaces will use that authority.
+When a provider-specific setup flow supports both ownership modes, the same
+identity spec can materialize workspace-owned identities or member-owned
+identities; ownership is chosen by the setup flow and later constrained by the
+workspace source binding.
 
 ### Identity
 
@@ -207,7 +225,8 @@ dependency this PRD assumes but does not define.
 A workspace source is a workspace's use of a materialized source. It owns:
 
 - availability
-- per-surface binding: a shared assignment or a per-member slot
+- per-surface binding for each enabled surface: exactly one shared assignment or
+  one per-member slot
 - readiness status, which for slots is evaluated per member
 
 ### Surface Binding: Shared Assignment or Per-Member Slot
@@ -217,6 +236,12 @@ a property of the surface in that workspace, configured through the workspace
 source setup path, and is often inferred from the issuer or archetype
 (human-tied issuers default to a slot; app/bot/service-account/trusted-role/OIDC
 default to shared).
+
+One workspace source surface has one binding mode. It is not both a shared
+assignment and a per-member slot at the same time. The same materialized source
+surface can still be configured differently in different workspaces: one
+workspace can bind it to a shared bot identity, while another declares a
+per-member slot for user identities.
 
 A **shared assignment** binds the surface to one workspace-owned identity:
 
@@ -253,6 +278,13 @@ audience rules, except the identity must be member-owned by the binding member.
 Bindings and assignments, not identities, determine where an identity is used. A
 slot with no binding for a member is not an error; it is that member's "needs
 action" until they bind.
+
+If a member has several compatible member-owned identities for one slot, such as
+multiple Google accounts, the member chooses one during setup or when repairing
+that slot. The stored binding then makes query-time resolution deterministic.
+First-wave workspace sources expose one slot per surface; supporting multiple
+instances of the same source in one workspace would be the extension point for
+multiple slots against the same source surface.
 
 ### Availability
 
@@ -315,7 +347,7 @@ Proposed first-wave shape:
 ```yaml
 surfaces:
   - id: github-rest
-    type: open-api
+    type: openapi
     url: https://example.com/github-openapi.yaml
     sha256: ...
     base_url: https://api.github.com
@@ -383,14 +415,16 @@ Materialized source: github
 Surface: github-rest
 
 Workspace: saul-private
-github.github-rest -> github-saul-work        (member-owned)
+github.github-rest -> per-member slot (issuer: github)
+                       Saul -> github-saul-work        (member-owned)
 
 Workspace: eng-shared
 github.github-rest -> github-coral-app-acme   (workspace-owned, shared)
 ```
 
-The source and surface are the same. The binding — its owner and identity —
-differs per workspace.
+The materialized source and surface are the same. The workspace source binding
+differs: one workspace declares a per-member slot and Saul fills it with his own
+identity, while another workspace assigns a shared workspace-owned identity.
 
 ### One Source, Multiple Surfaces
 
@@ -427,7 +461,7 @@ Adding a source to a workspace composes the two:
 
 1. Ensure the materialized source exists.
 2. Create or select the workspace source.
-3. Read identity requirements for each required surface.
+3. Read identity requirements for each enabled surface that requires authority.
 4. Decide each surface's binding mode: shared assignment or per-member slot
    (default inferred from issuer/archetype, overridable during workspace source
    setup).
@@ -438,6 +472,11 @@ Adding a source to a workspace composes the two:
 7. Validate and report ready, partially ready, or blocked. Slot readiness is per
    member: a workspace can be ready for one member and need action for another
    who has not bound yet.
+
+Each enabled surface gets one binding mode in that workspace source. For a
+provider such as Slack, a workspace source can choose a shared bot identity or a
+per-member user-token slot when the surface requirements permit both, but Coral
+does not keep both active and choose between them at query time.
 
 Setup should use the smallest safe user-visible decision. Compact setup is fine
 when there is one obvious private identity path. Reuse, shared access, broader
@@ -618,6 +657,11 @@ slots; app/bot, profile, and cloud-trust identities are typically workspace-owne
 and bound through shared assignments. Binding mode is the workspace's choice, so
 either archetype can be bound either way when a use case requires it.
 
+Slack-style providers with both bot tokens and user tokens fit this model without
+a runtime resolver. The surface requirements can accept both identity shapes when
+both are valid for the source surface, and each workspace source chooses the
+binding mode that matches its use case.
+
 The first implementation does not need to ship all of them, but it must not
 choose concepts that break any of them.
 
@@ -628,6 +672,10 @@ choose concepts that break any of them.
 - A surface can be bound as a shared assignment or a per-member slot, with the
   default inferred from the issuer/archetype and overridable during workspace
   source setup.
+- Each workspace source surface has exactly one binding mode at a time; Coral
+  does not choose between shared and per-member identities at query time.
+- The same materialized source surface can use a shared assignment in one
+  workspace and a per-member slot in another workspace.
 - `coral source add gmail` in a local default workspace can declare a per-member
   slot on `gmail.gmail-api`, let the local user bind their own member-owned Google
   identity, and keep availability private.
@@ -636,6 +684,8 @@ choose concepts that break any of them.
   deterministic per-member lookup with no global resolver.
 - A member-owned identity is reusable across that member's own workspace slots and
   is never visible or usable to another member.
+- If a member has multiple compatible identities for one slot, setup records the
+  member's choice as the binding before queries run.
 - A shared Engineering workspace can use Slack or GitHub through a workspace-owned
   app, bot, service account, trusted-role, or OIDC identity shared by all members.
 - One workspace-owned identity can back multiple compatible surfaces in the same
@@ -666,8 +716,8 @@ choose concepts that break any of them.
   surface?
 - Which first-wave identity specs support non-interactive materialization?
 - Should a surface's default binding mode (shared assignment vs per-member slot)
-  be declared by the identity spec archetype, inferred from the issuer, or always
-  an explicit workspace choice?
+  be declared by the identity spec archetype, inferred from the issuer, or
+  inferred some other way before workspace source setup can override it?
 - Where do member-owned identities and slot bindings live in app state, and how
   does that storage key by member without a full principal layer in the first
   local wave?
