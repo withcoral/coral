@@ -21,7 +21,9 @@
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
 - Run `make schema-check` before submitting PRs that touch generated source
   manifest schemas or the Rust helpers that generate them. Use
-  `make schema-generate` to refresh generated schema files.
+  `make schema-generate` to refresh generated schema files. The Validate
+  workflow enforces this through its `schema-freshness` job when schema inputs
+  change.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
