@@ -104,6 +104,11 @@
     }
   },
   "$defs": {
+    "table_function_identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "description": "Source-scoped table function identifier: starts with an ASCII letter or underscore, then uses only ASCII letters, numbers, or underscores"
+    },
     "inputs": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/input" },
@@ -577,7 +582,7 @@
       ],
       "required": ["name", "request"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": { "$ref": "#/$defs/table_function_identifier" },
         "kind": { "type": "string", "enum": ["table", "search"] },
         "description": { "type": "string" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
@@ -604,7 +609,7 @@
       "additionalProperties": false,
       "required": ["name", "tool"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": { "$ref": "#/$defs/table_function_identifier" },
         "tool": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },

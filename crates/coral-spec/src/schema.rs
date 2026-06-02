@@ -67,6 +67,59 @@ tables:
     }
 
     #[test]
+    fn validate_manifest_schema_accepts_quoted_sql_table_names() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: player.stats
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+  - name: message-events
+    description: Event messages
+    request:
+      method: GET
+      path: /events
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("table names that require SQL quoting should pass schema validation");
+    }
+
+    #[test]
+    fn validate_manifest_schema_rejects_invalid_table_function_identifier() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search-messages
+    request:
+      method: GET
+      path: /messages/search
+",
+        );
+
+        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("source manifest failed schema validation:"),
+            "{message}"
+        );
+        assert!(message.contains("/functions/0/name"), "{message}");
+        assert!(message.contains("^[A-Za-z_][A-Za-z0-9_]*$"), "{message}");
+    }
+
+    #[test]
     fn validate_manifest_schema_accepts_one_of_bearer_auth_headers() {
         let manifest = manifest_json(
             r"
