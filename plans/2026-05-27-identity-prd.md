@@ -332,12 +332,13 @@ Compatibility uses `id` and provider semantics. UX uses `label`.
 
 ## DSL v4 Compatibility
 
-This PRD is authoritative for identity and credentials. DSL v4 did not model
-identity; its surface-level `auth:` block and source-scoped credential `inputs`
-are carryover from v3. For v4 sources, those are superseded by identity binding:
-a surface declares `identity_requirements`, and the bound identity — workspace-
-owned or member-owned — owns credential material and injection. DSL v3 sources
-are unaffected and keep their existing source-scoped credentials.
+This PRD is authoritative for identity and credentials. Earlier DSL v4 drafts did
+not model identity; any surface-level `auth:` block or source-scoped credential
+`inputs` from those drafts are carryover from v3. For v4 sources, those are
+superseded by identity binding: a surface declares `identity_requirements`, and
+the bound identity — workspace-owned or member-owned — owns credential material
+and injection. DSL v3 sources are unaffected and keep their existing
+source-scoped credentials.
 
 DSL v4 keeps source specs focused on source materialization. Identity adds one
 surface-level contract: `identity_requirements`.
@@ -357,7 +358,7 @@ surfaces:
           issuer: github
           injection_method: bearer_authorization_header
           audience:
-            host: github.com
+            host: api.github.com
           capabilities:
             - id: repo:read
               kind: github_permission
@@ -517,8 +518,10 @@ the surface binding for the current member:
 4. Load the bound identity: for a shared assignment, the workspace identity; for
    a per-member slot, the member's binding for that slot.
 5. Confirm the identity still satisfies the surface requirements.
-6. Inject the identity using the declared injection method.
-7. Execute the query.
+6. Resolve the effective request destination for the surface operation and
+   confirm it is covered by the bound identity's audience constraints.
+7. Inject the identity using the declared injection method.
+8. Execute the query.
 
 If no binding exists — no shared assignment, or no per-member binding for this
 member — the query is blocked with setup guidance for that member. If the bound
