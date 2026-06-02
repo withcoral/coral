@@ -1,20 +1,31 @@
 # Linear Connector
 
-- **Version:** 2.3.0
+- **Version:** 2.4.0
 - **Backend:** HTTP
 - **Tables:** 10 plus 4 table functions
 - **Base URL:** `https://api.linear.app`
 
 ## Authentication
 
-Requires a `LINEAR_API_KEY` with Linear's Read permission. You can optionally
-scope the key to specific teams.
+Requires one of `LINEAR_OAUTH_ACCESS_TOKEN` or `LINEAR_API_KEY`.
+
+For guided setup, connect with Linear OAuth:
 
 ```bash
-coral source add linear
+coral source add linear --interactive
 ```
 
-To rotate or update your key, run the same command again.
+Coral uses a built-in OAuth client by default. To use your own Linear OAuth app,
+enter its client ID when prompted for `LINEAR_OAUTH_CLIENT_ID`. The app needs
+the `read` scope and the redirect callback URL
+`http://127.0.0.1:53682/oauth/callback`.
+
+You can also paste a raw OAuth access token or provide a `LINEAR_API_KEY` with
+Linear's Read permission. Raw pasted OAuth tokens are not refreshed
+automatically and must be replaced once they expire. API keys can optionally be
+scoped to specific teams.
+
+To rotate or update credentials, run the same command again.
 
 ## Tables
 

@@ -457,6 +457,20 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             println!("      {}", style(&input.hint).dim());
         }
     }
+    for requirement in &source.one_of_input_requirements {
+        let keys = requirement
+            .keys
+            .iter()
+            .map(String::as_str)
+            .filter(|key| !key.is_empty())
+            .collect::<Vec<_>>();
+        if !keys.is_empty() {
+            println!(
+                "    {}",
+                style(format!("At least one required: {}", keys.join(", "))).dim()
+            );
+        }
+    }
 }
 
 pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {

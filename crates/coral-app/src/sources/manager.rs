@@ -1231,6 +1231,9 @@ fn collect_unique_secrets(secrets: &[SourceBinding]) -> Result<BTreeMap<String, 
     let mut values = BTreeMap::new();
     for secret in secrets {
         let key = normalize_binding_key("source secret key", &secret.key)?;
+        if secret.value.is_empty() {
+            continue;
+        }
         if values.insert(key.clone(), secret.value.clone()).is_some() {
             return Err(AppError::InvalidInput(format!(
                 "source secret '{key}' is repeated"
@@ -2502,6 +2505,71 @@ tables:
                 .keys()
                 .any(|key| key.starts_with("__coral_oauth.QVBJX1RPS0VO.")),
             "stale OAuth metadata must be cleared"
+        );
+    }
+
+    #[test]
+    fn empty_auth_one_of_secret_does_not_clear_stored_sibling_credential() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let workspace_name = default_workspace();
+        let manifest_yaml = manifest_with_alternative_auth_secrets();
+
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_yaml.clone(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_KEY".to_string(),
+                            value: "raw-api-key".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("first import");
+
+        let updated = manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml,
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "OAUTH_TOKEN".to_string(),
+                            value: String::new(),
+                        }],
+                    },
+                },
+            )
+            .expect("empty sibling should be ignored");
+        assert_eq!(updated.secrets, vec!["API_KEY".to_string()]);
+
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material after empty sibling");
+        assert_eq!(
+            material.get("API_KEY").map(String::as_str),
+            Some("raw-api-key")
+        );
+        assert!(
+            !material.contains_key("OAUTH_TOKEN"),
+            "empty sibling should not be persisted"
         );
     }
 
