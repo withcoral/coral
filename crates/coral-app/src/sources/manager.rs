@@ -513,13 +513,17 @@ impl SourceManager {
             secrets,
             replaced_credential_inputs,
         } = request.bindings;
+        // Switching one branch of an auth `one_of` supersedes its siblings, so
+        // expand the replaced set to cover every sibling. This is computed
+        // unconditionally — independent of the credential-storage decision
+        // below — so the purge is a property of the validated bindings rather
+        // than of whichever storage branch happens to run.
+        let replaced_credential_inputs = expand_auth_one_of_siblings(
+            replaced_credential_inputs,
+            &request.candidate.auth_one_of_secret_requirements,
+        );
         let (visible_secret_keys, credential_storage) =
             if let Some(requested_storage) = request.credential_storage {
-                // Switching one branch of an auth `one_of` supersedes its siblings.
-                let replaced_credential_inputs = expand_auth_one_of_siblings(
-                    replaced_credential_inputs,
-                    &request.candidate.auth_one_of_secret_requirements,
-                );
                 let credential_write = match credential_guard.update_material_or_empty_on_parse(
                     requested_storage,
                     |credential_material| {
@@ -1307,7 +1311,8 @@ mod tests {
     use super::{
         ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
-        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, normalize_binding_key,
+        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, SourceOrigin,
+        describe_manifest, normalize_binding_key,
     };
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
@@ -1503,6 +1508,57 @@ auth:
           key: OAUTH_TOKEN
         - from: input
           key: API_KEY
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#
+        .to_string()
+    }
+
+    fn manifest_with_two_one_of_auth_headers() -> String {
+        r#"
+name: secured_messages
+version: 0.3.0
+dsl_version: 3
+backend: http
+inputs:
+  PRIMARY_TOKEN:
+    kind: secret
+    required: false
+  PRIMARY_KEY:
+    kind: secret
+    required: false
+  SECONDARY_TOKEN:
+    kind: secret
+    required: false
+  SECONDARY_KEY:
+    kind: secret
+    required: false
+base_url: "https://example.com"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: bearer
+          key: PRIMARY_TOKEN
+        - from: input
+          key: PRIMARY_KEY
+    - name: X-Workspace-Token
+      from: one_of
+      values:
+        - from: bearer
+          key: SECONDARY_TOKEN
+        - from: input
+          key: SECONDARY_KEY
 tables:
   - name: messages
     description: Secured messages
@@ -2573,6 +2629,174 @@ tables:
         );
     }
 
+    #[test]
+    fn auth_one_of_requirements_cover_each_one_of_header() {
+        let candidate = describe_manifest(
+            &manifest_with_two_one_of_auth_headers(),
+            SourceOrigin::Imported,
+            false,
+        )
+        .expect("describe manifest");
+
+        let requirements = &candidate.auth_one_of_secret_requirements;
+        assert_eq!(
+            requirements.len(),
+            2,
+            "each one_of auth header should produce its own requirement"
+        );
+        let first = requirements.first().expect("first requirement");
+        assert_eq!(first.context, "auth header 'Authorization'");
+        assert_eq!(
+            first.keys,
+            vec!["PRIMARY_TOKEN".to_string(), "PRIMARY_KEY".to_string()]
+        );
+        let second = requirements.get(1).expect("second requirement");
+        assert_eq!(second.context, "auth header 'X-Workspace-Token'");
+        assert_eq!(
+            second.keys,
+            vec!["SECONDARY_TOKEN".to_string(), "SECONDARY_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn switching_one_auth_one_of_branch_leaves_other_group_intact() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let workspace_name = default_workspace();
+
+        // Both auth headers were previously satisfied by their API-key branch.
+        credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([
+                    ("PRIMARY_KEY".to_string(), "old-primary-key".to_string()),
+                    ("SECONDARY_KEY".to_string(), "secondary-key".to_string()),
+                ]),
+            )
+            .expect("seed material");
+
+        // Switch only the first header to its token branch.
+        let updated = manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_two_one_of_auth_headers(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "PRIMARY_TOKEN".to_string(),
+                            value: "new-primary-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("switch primary header branch");
+        assert!(updated.secrets.contains(&"PRIMARY_TOKEN".to_string()));
+        assert!(updated.secrets.contains(&"SECONDARY_KEY".to_string()));
+
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material after switch");
+        assert_eq!(
+            material.get("PRIMARY_TOKEN").map(String::as_str),
+            Some("new-primary-token")
+        );
+        assert!(
+            !material.contains_key("PRIMARY_KEY"),
+            "the switched header's sibling must be purged"
+        );
+        assert_eq!(
+            material.get("SECONDARY_KEY").map(String::as_str),
+            Some("secondary-key"),
+            "an unrelated one_of group must be left untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_with_oauth_rejects_empty_access_token() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        // The provider returns a 200 with an empty access token.
+        let fixture =
+            OAuthFixture::with_token_response(r#"{"access_token":"","token_type":"Bearer"}"#);
+        let redirect_port = free_loopback_port();
+        let (event_tx, mut event_rx) = import_event_channel();
+        let workspace_name = default_workspace();
+        let import = manager.import_source_with_credentials(
+            &workspace_name,
+            ImportSourceWithCredentialsCommand {
+                manifest_yaml: manifest_with_oauth_one_of_auth_secret(
+                    &fixture.token_url,
+                    redirect_port,
+                ),
+                bindings: SourceBindings::default(),
+                oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
+                    input_key: "API_TOKEN".to_string(),
+                    method_index: 0,
+                    credential_inputs: Vec::new(),
+                }],
+            },
+            event_tx,
+        );
+        // The flow errors during the token exchange, so only the authorization
+        // event is emitted — there is no completion event to await.
+        let callback = async {
+            let event = event_rx
+                .recv()
+                .await
+                .expect("authorization event")
+                .into_event();
+            let ImportSourceWithCredentialsEvent::OAuthAuthorization {
+                authorization_url, ..
+            } = event
+            else {
+                panic!("unexpected import event");
+            };
+            callback(&authorization_url, redirect_port).await;
+        };
+
+        let (source, ()) = tokio::join!(import, callback);
+        let error = source.expect_err("empty access token must be rejected");
+        assert!(
+            error.to_string().contains("access_token"),
+            "unexpected error: {error:#}"
+        );
+        // Nothing should be persisted for the failed import.
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material");
+        assert!(
+            !material.contains_key("API_TOKEN"),
+            "no credential should be stored when OAuth yields an empty token"
+        );
+    }
+
     #[tokio::test]
     async fn import_with_oauth_does_not_overwrite_installed_credentials_when_validation_fails() {
         let temp = TempDir::new().expect("temp dir");
@@ -2739,6 +2963,11 @@ tables:
 
     impl OAuthFixture {
         fn new() -> Self {
+            Self::with_token_response(r#"{"access_token":"access-token","token_type":"Bearer"}"#)
+        }
+
+        fn with_token_response(response_body: &str) -> Self {
+            let response_body = response_body.to_string();
             let token_listener = StdTcpListener::bind("127.0.0.1:0").expect("token listener");
             let token_url = format!(
                 "http://{}/token",
@@ -2747,7 +2976,6 @@ tables:
             let token_server = tokio::task::spawn_blocking(move || {
                 let (mut stream, _) = token_listener.accept().expect("accept token request");
                 let request = read_http_request(&mut stream);
-                let response_body = r#"{"access_token":"access-token","token_type":"Bearer"}"#;
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response_body}",
                     response_body.len()

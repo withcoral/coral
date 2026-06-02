@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use coral_spec::{AuthSpec, ManifestInputSpec, ValidatedSourceManifest, ValueSourceSpec};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
@@ -62,28 +63,56 @@ impl AuthOneOfSecretRequirement {
         let ValueSourceSpec::OneOf { values } = value else {
             return None;
         };
-        if values.is_empty() {
-            return None;
-        }
 
         let mut keys = Vec::new();
         for value in values {
-            let key = match value {
+            match value {
+                // Secret credential branch: a value the caller can supply (or
+                // already have stored) to satisfy this auth choice. Repeated
+                // keys fail the guard and fall through to be skipped below.
                 ValueSourceSpec::Input { key } | ValueSourceSpec::Bearer { key }
-                    if declared_secret_names.contains(key) =>
+                    if declared_secret_names.contains(key) && !keys.contains(key) =>
                 {
-                    key
+                    keys.push(key.clone());
                 }
-                _ => return None,
-            };
-            if !keys.contains(key) {
-                keys.push(key.clone());
+                // A branch that always yields a value at auth time without any
+                // user-supplied secret (e.g. a literal). The choice can
+                // authenticate on its own, so there is nothing to require — even
+                // if other branches are secrets.
+                _ if value_source_always_resolves(value) => return None,
+                // Any other branch (template, runtime state, …) only *might*
+                // resolve at auth time, so it neither satisfies nor cancels the
+                // requirement. Skip it and keep scanning for secret branches so a
+                // mixed `one_of` still enforces its secret alternatives.
+                _ => {}
             }
         }
+
         if keys.is_empty() {
             return None;
         }
         Some(Self { context, keys })
+    }
+}
+
+/// Returns `true` when `value` is guaranteed to resolve to a non-empty value at
+/// auth time without any user-supplied secret, so a `one_of` containing it can
+/// always authenticate on its own and needs no install-time credential.
+fn value_source_always_resolves(value: &ValueSourceSpec) -> bool {
+    match value {
+        ValueSourceSpec::Literal { value } => !literal_renders_empty(value),
+        ValueSourceSpec::NowEpochMinusSeconds { .. } => true,
+        _ => false,
+    }
+}
+
+/// Mirrors the runtime treatment of a literal value source: only `null` and the
+/// empty string render to an empty header value.
+fn literal_renders_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(text) => text.is_empty(),
+        _ => false,
     }
 }
 
@@ -142,5 +171,132 @@ impl SourceOrigin {
             Self::Bundled => "bundled",
             Self::Imported => "imported",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn declared_secrets(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    fn requirement(value: &ValueSourceSpec, secrets: &[&str]) -> Option<AuthOneOfSecretRequirement> {
+        AuthOneOfSecretRequirement::from_value_source(
+            "auth header 'Authorization'".to_string(),
+            value,
+            &declared_secrets(secrets),
+        )
+    }
+
+    #[test]
+    fn one_of_of_secret_branches_requires_one_of_them() {
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+            ],
+        };
+        let requirement = requirement(&value, &["OAUTH_TOKEN", "API_KEY"]).expect("requirement");
+        assert_eq!(
+            requirement.keys,
+            vec!["OAUTH_TOKEN".to_string(), "API_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn one_of_mixing_secret_with_runtime_branch_still_requires_the_secret() {
+        // A runtime branch (here: `state`) only *might* hold a value at auth
+        // time, so it must not silently drop the secret requirement.
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+                ValueSourceSpec::State {
+                    key: "SESSION".to_string(),
+                },
+            ],
+        };
+        let requirement = requirement(&value, &["OAUTH_TOKEN"]).expect("requirement");
+        assert_eq!(requirement.keys, vec!["OAUTH_TOKEN".to_string()]);
+    }
+
+    #[test]
+    fn one_of_with_guaranteed_literal_fallback_requires_nothing() {
+        // The literal always supplies a header value, so auth never depends on
+        // the secret and the source must remain installable without it.
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+                ValueSourceSpec::Literal {
+                    value: Value::String("anonymous".to_string()),
+                },
+            ],
+        };
+        assert!(requirement(&value, &["OAUTH_TOKEN"]).is_none());
+    }
+
+    #[test]
+    fn one_of_with_empty_literal_fallback_still_requires_the_secret() {
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+                ValueSourceSpec::Literal {
+                    value: Value::String(String::new()),
+                },
+            ],
+        };
+        let requirement = requirement(&value, &["OAUTH_TOKEN"]).expect("requirement");
+        assert_eq!(requirement.keys, vec!["OAUTH_TOKEN".to_string()]);
+    }
+
+    #[test]
+    fn one_of_without_any_secret_branch_requires_nothing() {
+        let value = ValueSourceSpec::OneOf {
+            values: vec![ValueSourceSpec::State {
+                key: "SESSION".to_string(),
+            }],
+        };
+        assert!(requirement(&value, &["OAUTH_TOKEN"]).is_none());
+    }
+
+    #[test]
+    fn one_of_deduplicates_repeated_secret_keys_in_runtime_order() {
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+            ],
+        };
+        let requirement = requirement(&value, &["OAUTH_TOKEN", "API_KEY"]).expect("requirement");
+        assert_eq!(
+            requirement.keys,
+            vec!["OAUTH_TOKEN".to_string(), "API_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn non_one_of_value_source_requires_nothing() {
+        let value = ValueSourceSpec::Bearer {
+            key: "OAUTH_TOKEN".to_string(),
+        };
+        assert!(requirement(&value, &["OAUTH_TOKEN"]).is_none());
     }
 }

@@ -461,9 +461,18 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
         if requirement.keys.is_empty() {
             continue;
         }
+        let location = if requirement.context.is_empty() {
+            String::new()
+        } else {
+            format!(" for {}", requirement.context)
+        };
         println!(
             "    {}",
-            style(format!("At least one required: {}", requirement.keys.join(", "))).dim()
+            style(format!(
+                "At least one required{location}: {}",
+                requirement.keys.join(", ")
+            ))
+            .dim()
         );
     }
 }

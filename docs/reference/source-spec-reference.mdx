@@ -729,9 +729,11 @@ raw token but the API expects an `Authorization: Bearer <token>` header.
 
 Use `from: one_of` when a source supports multiple credential shapes. Coral
 tries the values in order and uses the first one that has been configured. Put
-the credential users should prefer first. When every choice references a secret
-input, Coral requires at least one of those secrets before the source can be
-installed or updated:
+the credential users should prefer first. When a choice references a secret
+input, Coral requires at least one of those secrets to be supplied or already
+stored before the source can be installed or updated — unless another choice
+always provides a value on its own (such as a literal), in which case auth never
+depends on a secret and none is required:
 
 ```yaml
 inputs:

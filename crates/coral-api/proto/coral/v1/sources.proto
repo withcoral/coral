@@ -243,6 +243,9 @@ message OAuthCredentialScope {
 message SourceInputOneOfRequirement {
   // Input keys that can satisfy the requirement.
   repeated string keys = 1;
+  // Human-readable location the requirement comes from (e.g. the auth header
+  // it guards). Empty when no location label is available.
+  string context = 2;
 }
 
 // One bundled or imported source metadata record.

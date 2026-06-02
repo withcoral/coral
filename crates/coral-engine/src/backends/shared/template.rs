@@ -729,6 +729,42 @@ mod tests {
     }
 
     #[test]
+    fn one_of_bearer_first_prefers_oauth_then_falls_back_to_api_key() {
+        // Mirrors the Linear manifest auth order: the OAuth bearer token is
+        // listed first, so a stored OAuth token wins over a raw API key. This is
+        // exactly why SourceManager must purge a superseded OAuth sibling when a
+        // user switches to the API key — otherwise the dead token would keep
+        // authenticating here.
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+            ],
+        };
+
+        let both = inputs(&[("OAUTH_TOKEN", "oauth"), ("API_KEY", "lin_api_key")]);
+        assert_eq!(
+            resolve_value_source(&value, &RenderContext::source_scoped(&both))
+                .expect("one_of should resolve"),
+            Some(json!("Bearer oauth")),
+            "OAuth bearer is listed first, so it wins when both are present"
+        );
+
+        // With the OAuth token purged (empty), resolution falls through to the
+        // API key — the post-switch state the purge logic is meant to produce.
+        let api_only = inputs(&[("OAUTH_TOKEN", ""), ("API_KEY", "lin_api_key")]);
+        assert_eq!(
+            resolve_value_source(&value, &RenderContext::source_scoped(&api_only))
+                .expect("one_of should resolve"),
+            Some(json!("lin_api_key")),
+        );
+    }
+
+    #[test]
     fn one_of_ignores_empty_bearer_values() {
         let resolved_inputs = inputs(&[("OAUTH_TOKEN", "")]);
 

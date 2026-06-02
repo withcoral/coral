@@ -288,8 +288,10 @@ async fn source_info_renders_one_of_input_requirements() {
         "expected API key input key: {stdout}"
     );
     assert!(
-        stdout.contains("At least one required: LINEAR_OAUTH_ACCESS_TOKEN, LINEAR_API_KEY"),
-        "expected one-of input requirement: {stdout}"
+        stdout.contains(
+            "At least one required for auth header 'Authorization': LINEAR_OAUTH_ACCESS_TOKEN, LINEAR_API_KEY"
+        ),
+        "expected one-of input requirement with context: {stdout}"
     );
 
     server.shutdown().await;

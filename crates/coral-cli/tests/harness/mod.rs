@@ -386,6 +386,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
                     "LINEAR_OAUTH_ACCESS_TOKEN".to_string(),
                     "LINEAR_API_KEY".to_string(),
                 ],
+                context: "auth header 'Authorization'".to_string(),
             }],
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),

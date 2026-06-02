@@ -577,6 +577,7 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
             .into_iter()
             .map(|requirement| SourceInputOneOfRequirement {
                 keys: requirement.keys,
+                context: requirement.context,
             })
             .collect(),
     }
