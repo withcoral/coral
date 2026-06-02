@@ -136,17 +136,19 @@ SELECT name
 ### Railway-generated domains
 
 ```sql
-SELECT domain, suffix, target_port, created_at
+SELECT domain, suffix, target_port, sync_status, created_at
   FROM railway.domains
  WHERE project_id     = 'your-project-id'
    AND service_id     = 'your-service-id'
    AND environment_id = 'your-env-id';
 ```
 
-### Custom domains
+### Custom domain readiness
 
 ```sql
-SELECT domain, target_port, certificate_status, verification_token, dns_records
+SELECT domain, target_port, verified, sync_status,
+       certificate_status, certificate_error_message,
+       verification_token, verification_dns_host, dns_records
   FROM railway.custom_domains
  WHERE project_id     = 'your-project-id'
    AND service_id     = 'your-service-id'

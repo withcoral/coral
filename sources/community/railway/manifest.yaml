@@ -749,6 +749,7 @@ tables:
                   domain
                   suffix
                   targetPort
+                  syncStatus
                   createdAt
                   updatedAt
                 }
@@ -850,6 +851,14 @@ tables:
           kind: path
           path:
             - targetPort
+      - name: sync_status
+        type: Utf8
+        nullable: true
+        description: Domain sync status (e.g. ACTIVE, PENDING).
+        expr:
+          kind: path
+          path:
+            - syncStatus
       - name: created_at
         type: Utf8
         nullable: true
@@ -902,9 +911,15 @@ tables:
                   id
                   domain
                   targetPort
+                  syncStatus
                   status {
+                    verified
                     verificationToken
+                    verificationDnsHost
                     certificateStatus
+                    certificateErrorMessage
+                    certificateErrorType
+                    certificateRetryable
                     dnsRecords {
                       hostlabel
                       requiredValue
@@ -1006,6 +1021,59 @@ tables:
           path:
             - status
             - certificateStatus
+      - name: sync_status
+        type: Utf8
+        nullable: true
+        description: Domain sync status (e.g. ACTIVE, PENDING).
+        expr:
+          kind: path
+          path:
+            - syncStatus
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the custom domain has been verified.
+        expr:
+          kind: path
+          path:
+            - status
+            - verified
+      - name: verification_dns_host
+        type: Utf8
+        nullable: true
+        description: DNS hostname for the verification TXT record.
+        expr:
+          kind: path
+          path:
+            - status
+            - verificationDnsHost
+      - name: certificate_error_message
+        type: Utf8
+        nullable: true
+        description: Certificate issuance error message, if any.
+        expr:
+          kind: path
+          path:
+            - status
+            - certificateErrorMessage
+      - name: certificate_error_type
+        type: Utf8
+        nullable: true
+        description: Certificate error classification.
+        expr:
+          kind: path
+          path:
+            - status
+            - certificateErrorType
+      - name: certificate_retryable
+        type: Boolean
+        nullable: true
+        description: Whether the certificate error is retryable.
+        expr:
+          kind: path
+          path:
+            - status
+            - certificateRetryable
       - name: dns_records
         type: Json
         nullable: true
@@ -1277,7 +1345,7 @@ tables:
           path:
             - sizeMB
       - name: current_size_mb
-        type: Int64
+        type: Float64
         nullable: true
         description: Current used volume size in MB.
         expr:
