@@ -194,7 +194,10 @@ function SourceInstallDialogContent({
         await createBundledSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
       }
 
-      addToast('success', { title: `Installed ${name}` })
+      addToast('success', {
+        title: `Saved ${name}`,
+        description: 'Credentials were saved but not verified.',
+      })
       onInstalled(name)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

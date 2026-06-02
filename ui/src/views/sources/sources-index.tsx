@@ -18,9 +18,7 @@ import { SourceDetailDialog } from './source-detail'
 import { SourceInstallDialog } from './source-install'
 import * as styles from './sources-index.css'
 
-interface IndexEntry extends CatalogEntry {
-  installedVersion?: string
-}
+type IndexEntry = CatalogEntry
 
 export function SourcesIndex() {
   const [bundled, setBundled] = useState<CatalogEntry[] | null>(null)
@@ -76,7 +74,6 @@ export function SourcesIndex() {
         const target = merged.find((entry) => entry.name === installedSource.name)
         if (target) {
           target.installed = true
-          target.installedVersion = installedSource.version
           target.origin = installedSource.origin
         }
       } else {
@@ -86,7 +83,6 @@ export function SourcesIndex() {
           version: installedSource.version,
           installed: true,
           origin: installedSource.origin === 'bundled' ? 'bundled' : 'imported',
-          installedVersion: installedSource.version,
         })
       }
     }
@@ -300,17 +296,14 @@ function SourceCard({ entry, onClick }: { entry: IndexEntry; onClick: () => void
           {entry.description}
         </Typography.Body>
       ) : null}
-      <div className={styles.cardFooter}>
-        <Typography.BodySmall variant="tertiary">
-          v{entry.installedVersion ?? entry.version}
-        </Typography.BodySmall>
-        {entry.installed ? (
+      {entry.installed ? (
+        <div className={styles.cardFooter}>
           <span className={styles.connectedPill}>
             <Icon name="CircleCheck" size="14" color="inherit" />
             Connected
           </span>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </button>
   )
 }

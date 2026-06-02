@@ -151,7 +151,7 @@ export const cardFooter = style({
   color: theme.content.tertiary,
   display: 'flex',
   gap: 8,
-  justifyContent: 'space-between',
+  justifyContent: 'flex-end',
   marginBlockStart: 'auto',
 })
 
