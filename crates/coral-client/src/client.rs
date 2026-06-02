@@ -62,7 +62,6 @@ impl AppClient {
     ///
     /// Returns [`ClientError`] if the gRPC clients cannot connect.
     pub async fn connect(endpoint_uri: &str) -> Result<Self, ClientError> {
-        crate::propagation::ensure_global_propagator();
         let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
         let grpc_endpoint = GrpcClientEndpoint::from_endpoint_uri(endpoint_uri);
