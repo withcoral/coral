@@ -289,6 +289,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::File as i32,
+                one_of_input_requirements: Vec::new(),
             },
             SourceInfo {
                 name: "slack".to_string(),
@@ -298,6 +299,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::Unspecified as i32,
+                one_of_input_requirements: Vec::new(),
             },
         ],
     }
@@ -332,6 +334,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            one_of_input_requirements: Vec::new(),
         }),
         "slack" => Ok(SourceInfo {
             name: "slack".to_string(),
@@ -341,6 +344,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: false,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
+            one_of_input_requirements: Vec::new(),
         }),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
@@ -350,6 +354,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            one_of_input_requirements: Vec::new(),
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }

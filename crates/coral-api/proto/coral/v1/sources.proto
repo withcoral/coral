@@ -238,6 +238,13 @@ message OAuthCredentialScope {
   repeated string values = 2;
 }
 
+// A machine-readable requirement where at least one listed source input must
+// be configured.
+message SourceInputOneOfRequirement {
+  // Input keys that can satisfy the requirement.
+  repeated string keys = 1;
+}
+
 // One bundled or imported source metadata record.
 message SourceInfo {
   // Canonical source name.
@@ -254,6 +261,8 @@ message SourceInfo {
   SourceOrigin origin = 6;
   // Where credential material is stored when this source is installed.
   SourceCredentialStorage credential_storage = 7;
+  // Input groups where at least one listed input must be configured.
+  repeated SourceInputOneOfRequirement one_of_input_requirements = 8;
 }
 
 // Lists all bundled sources available for one workspace.

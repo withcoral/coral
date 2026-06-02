@@ -17,10 +17,10 @@ use coral_api::v1::{
     OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
     OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
     SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
-    SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
-    SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
-    create_bundled_source_with_o_auth_response, import_source_response,
+    SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo,
+    SourceInputOneOfRequirement, SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret,
+    SourceSecretInput, SourceVariable, SourceVariableInput, ValidateSourceRequest,
+    ValidateSourceResponse, create_bundled_source_with_o_auth_response, import_source_response,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -572,6 +572,13 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
+        one_of_input_requirements: source
+            .auth_one_of_secret_requirements
+            .into_iter()
+            .map(|requirement| SourceInputOneOfRequirement {
+                keys: requirement.keys,
+            })
+            .collect(),
     }
 }
 
