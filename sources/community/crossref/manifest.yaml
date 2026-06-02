@@ -1,11 +1,11 @@
 name: crossref
-version: 0.2.1
+version: 0.2.2
 dsl_version: 3
 backend: http
 description: >
   Query the Crossref REST API with SQL. Covers scholarly works, journals,
-  publishers, funders, licences, and work types across 150M+ registered DOIs.
-  No authentication required.
+  publishers, funders, licences, work types, authors, and references across
+  150M+ registered DOIs. No authentication required.
 
 inputs:
   CROSSREF_EMAIL:
@@ -35,6 +35,8 @@ test_queries:
   - SELECT id, name FROM crossref.funders LIMIT 1
   - SELECT id, label FROM crossref.types LIMIT 1
   - SELECT url, work_count FROM crossref.licenses LIMIT 1
+  - SELECT doi, given, family, sequence FROM crossref.authors WHERE query = 'machine learning' LIMIT 5
+  - SELECT doi, article_title, unstructured FROM crossref.references WHERE query = 'machine learning' LIMIT 5
 
 tables:
   # ---------------------------------------------------------------------------
@@ -145,6 +147,189 @@ tables:
       - name: url
         type: Utf8
         expr: { kind: path, path: [URL] }
+
+  # ---------------------------------------------------------------------------
+  # crossref.authors
+  # — Surfaces author sub-fields directly from the works endpoint.
+  #   Each row is one work; author data is joined as comma-separated strings.
+  #   Use the search_authors() function for per-author row granularity.
+  # ---------------------------------------------------------------------------
+  - name: authors
+    description: >
+      Author metadata surfaced from Crossref works. Each row is one work;
+      the given, family, sequence, orcid, and affiliation columns contain
+      comma-separated values across all authors on that work.
+      Requires a query or filter — unfiltered scans are not supported.
+      For per-author row granularity use the search_authors() function.
+    request:
+      method: GET
+      path: /works
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path: [message, items]
+    pagination:
+      mode: offset
+      page_size:
+        default: 20
+        max: 1000
+        query_param: rows
+      offset_param: offset
+    filters:
+      - name: query
+        type: Utf8
+      - name: filter
+        type: Utf8
+    columns:
+      - name: query
+        type: Utf8
+        expr: { kind: path, path: [_query] }
+      - name: filter
+        type: Utf8
+        expr: { kind: path, path: [_filter] }
+      - name: doi
+        type: Utf8
+        expr: { kind: path, path: [DOI] }
+      - name: given
+        type: Utf8
+        description: Given (first) names of all authors, comma-separated.
+        expr:
+          kind: join_array_path
+          path: [author]
+          item_path: [given]
+          separator: ","
+      - name: family
+        type: Utf8
+        description: Family (last) names of all authors, comma-separated.
+        expr:
+          kind: join_array_path
+          path: [author]
+          item_path: [family]
+          separator: ","
+      - name: sequence
+        type: Utf8
+        description: Author order values ("first", "additional"), comma-separated.
+        expr:
+          kind: join_array_path
+          path: [author]
+          item_path: [sequence]
+          separator: ","
+      - name: orcid
+        type: Utf8
+        description: ORCID identifier URLs, comma-separated, if deposited.
+        expr:
+          kind: join_array_path
+          path: [author]
+          item_path: [ORCID]
+          separator: ","
+      - name: affiliation
+        type: Utf8
+        description: Affiliation names across all authors, comma-separated.
+        expr:
+          kind: join_array_path
+          path: [author]
+          item_path: [affiliation, name]
+          separator: ","
+
+  # ---------------------------------------------------------------------------
+  # crossref.references
+  # — Surfaces reference sub-fields directly from the works endpoint.
+  #   Each row is one work; reference data is joined as pipe-separated strings.
+  #   Use the search_references() function for per-reference row granularity.
+  # ---------------------------------------------------------------------------
+  - name: references
+    description: >
+      Reference metadata surfaced from Crossref works. Each row is one work;
+      the doi, article_title, author, journal_title, year, and unstructured
+      columns contain pipe-separated values across all references in that work.
+      Requires a query or filter — unfiltered scans are not supported.
+    request:
+      method: GET
+      path: /works
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path: [message, items]
+    pagination:
+      mode: offset
+      page_size:
+        default: 20
+        max: 1000
+        query_param: rows
+      offset_param: offset
+    filters:
+      - name: query
+        type: Utf8
+      - name: filter
+        type: Utf8
+    columns:
+      - name: query
+        type: Utf8
+        expr: { kind: path, path: [_query] }
+      - name: filter
+        type: Utf8
+        expr: { kind: path, path: [_filter] }
+      - name: source_doi
+        type: Utf8
+        expr: { kind: path, path: [DOI] }
+      - name: doi
+        type: Utf8
+        description: DOIs of referenced works, pipe-separated, where resolved.
+        expr:
+          kind: join_array_path
+          path: [reference]
+          item_path: [DOI]
+          separator: "|"
+      - name: article_title
+        type: Utf8
+        description: Titles of referenced articles, pipe-separated, where deposited.
+        expr:
+          kind: join_array_path
+          path: [reference]
+          item_path: [article-title]
+          separator: "|"
+      - name: author
+        type: Utf8
+        description: First authors of referenced works, pipe-separated, where deposited.
+        expr:
+          kind: join_array_path
+          path: [reference]
+          item_path: [author]
+          separator: "|"
+      - name: journal_title
+        type: Utf8
+        description: Journal titles of referenced works, pipe-separated, where deposited.
+        expr:
+          kind: join_array_path
+          path: [reference]
+          item_path: [journal-title]
+          separator: "|"
+      - name: year
+        type: Utf8
+        description: Publication years of referenced works, pipe-separated, where deposited.
+        expr:
+          kind: join_array_path
+          path: [reference]
+          item_path: [year]
+          separator: "|"
+      - name: unstructured
+        type: Utf8
+        description: Raw citation strings, pipe-separated, where structured fields unavailable.
+        expr:
+          kind: join_array_path
+          path: [reference]
+          item_path: [unstructured]
+          separator: "|"
 
   # ---------------------------------------------------------------------------
   # crossref.members
