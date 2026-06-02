@@ -46,7 +46,7 @@ List the [bundled sources](/reference/bundled-sources) available in your current
 coral source discover
 ```
 
-The output includes each source name, the bundled version currently shipped in the binary, and whether it is already `installed` or still `available`. Sources without an authored manifest version render `-` in the version column.
+The output includes each source name, the bundled version currently shipped in the binary, and whether it is already `installed` or still `available`.
 
 ### `coral source list`
 
@@ -57,11 +57,11 @@ coral source list
 ```
 
 The output includes the source's secret storage route: `keychain` or
-`file (plaintext)`. Sources without an authored manifest version render `-` in the version column.
+`file (plaintext)`.
 
 ### `coral source info <NAME>`
 
-Show metadata for a source: whether it is installed, its origin, authored version when present, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`. Sources without an authored manifest version omit the `Version:` line.
+Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`.
 
 ```shellscript
 coral source info datadog
@@ -118,21 +118,9 @@ Add a custom source spec from a YAML file. Input values come from environment va
 coral source add --file ./local-messages.yaml
 ```
 
-For DSL v4 OpenAPI surfaces, `file:` descriptors may be absolute paths or
-paths relative to the manifest file's directory. Coral resolves relative
-descriptor paths during `source add --file` and stores the canonical absolute
-path in the imported manifest, so descriptor resolution does not depend on the
-directory from which the Coral app server was launched. Absolute descriptor
-paths are used directly after canonicalization. Local OpenAPI descriptors must
-be readable regular files and must not be symlinks.
-
 ### `coral source lint <FILE>`
 
-Validate a source spec YAML file without installing it. Checks YAML syntax, JSON
-schema conformance, and semantic rules such as duplicate columns or references
-to unknown filters. For DSL v4 manifests, it resolves local OpenAPI `file:`
-descriptors from the manifest directory using the same path policy as
-`source add --file`.
+Validate a source spec YAML file without installing it. Checks YAML syntax, JSON schema conformance, and semantic rules such as duplicate columns or references to unknown filters.
 
 ```shellscript
 coral source lint ./my-source.yaml
