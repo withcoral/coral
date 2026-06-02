@@ -707,12 +707,16 @@ tables:
       account. Uses the v1 endpoint; no v2 equivalent is currently documented.
     guide: |
       No required filters. Optional filters push down to the API: `deal_id`,
-      `person_id`, `org_id`, `owner_id`. Join with `pipedrive.deals` on
-      `deal_id = id` for deal context.
+      `lead_id`, `person_id`, `org_id`, `owner_id`. Join with
+      `pipedrive.deals` on `deal_id = id` or `pipedrive.leads` on
+      `lead_id = id` for entity context.
     filters:
       - name: deal_id
         type: Int64
         description: Filter notes by linked deal ID.
+      - name: lead_id
+        type: Utf8
+        description: Filter notes by linked lead ID (UUID string).
       - name: person_id
         type: Int64
         description: Filter notes by linked person ID.
@@ -729,6 +733,9 @@ tables:
         - name: deal_id
           from: filter
           key: deal_id
+        - name: lead_id
+          from: filter
+          key: lead_id
         - name: person_id
           from: filter
           key: person_id
@@ -762,6 +769,10 @@ tables:
         type: Int64
         nullable: true
         description: ID of the linked deal.
+      - name: lead_id
+        type: Utf8
+        nullable: true
+        description: ID of the linked lead (UUID string).
       - name: person_id
         type: Int64
         nullable: true
@@ -782,6 +793,10 @@ tables:
         type: Boolean
         nullable: true
         description: True when this note is pinned on the deal.
+      - name: pinned_to_lead_flag
+        type: Boolean
+        nullable: true
+        description: True when this note is pinned on the lead.
       - name: pinned_to_person_flag
         type: Boolean
         nullable: true

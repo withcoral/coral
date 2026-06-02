@@ -68,7 +68,7 @@ coral sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
 | `pipedrive.persons` | Contacts/persons | — | `owner_id`, `org_id` |
 | `pipedrive.organizations` | Organizations/companies | — | `owner_id` |
 | `pipedrive.activities` | Calls, meetings, tasks, emails | — | `done`, `owner_id`, `deal_id`, `lead_id`, `person_id`, `org_id`, `updated_since`, `updated_until` |
-| `pipedrive.notes` | Notes attached to entities | — | `deal_id`, `person_id`, `org_id`, `owner_id` |
+| `pipedrive.notes` | Notes attached to entities | — | `deal_id`, `lead_id`, `person_id`, `org_id`, `owner_id` |
 | `pipedrive.leads` | Leads Inbox leads | — | — |
 | `pipedrive.products` | Product catalog | — | — |
 | `pipedrive.users` | Company users/team members | — | — |
@@ -116,8 +116,9 @@ Key v2 behavioral notes:
 
 ## Search functions
 
-All search functions require a non-empty `term`. Omitting it will cause a
-validation error before the request is sent.
+All search functions require a `term` of at least 2 characters. When
+`exact_match` is set to `true`, a single character is accepted. Shorter terms
+will be rejected by Pipedrive's API before any results are returned.
 
 | Function | Description |
 |---|---|
