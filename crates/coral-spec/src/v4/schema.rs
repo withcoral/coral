@@ -123,6 +123,12 @@ fn post_process_schema(schema: &mut Value) {
         {
             items.insert("minLength".to_string(), json!(1));
         }
+        if let Some(surfaces) = properties
+            .get_mut("surfaces")
+            .and_then(Value::as_object_mut)
+        {
+            surfaces.insert("minItems".to_string(), json!(1));
+        }
     }
 
     let Some(surface) = root
@@ -237,5 +243,16 @@ mod tests {
                 "explicit null should be rejected: {surface_fields}"
             );
         }
+    }
+
+    #[test]
+    fn generated_schema_rejects_empty_surfaces_and_parser_agrees() {
+        let raw = "name: demo\ndsl_version: 4\nsurfaces: []\n";
+
+        assert!(
+            validator().validate(&manifest_json(raw)).is_err(),
+            "empty surfaces should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser should reject empty surfaces");
     }
 }
