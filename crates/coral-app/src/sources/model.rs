@@ -182,7 +182,10 @@ mod tests {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    fn requirement(value: &ValueSourceSpec, secrets: &[&str]) -> Option<AuthOneOfSecretRequirement> {
+    fn requirement(
+        value: &ValueSourceSpec,
+        secrets: &[&str],
+    ) -> Option<AuthOneOfSecretRequirement> {
         AuthOneOfSecretRequirement::from_value_source(
             "auth header 'Authorization'".to_string(),
             value,
