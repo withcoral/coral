@@ -55,7 +55,13 @@ These checks should be based on the authoritative API docs for the API the sourc
 - Required filters are explicit and described in table `description` or `guide`.
 - Guides tell users how to start, which IDs to join through, and any provider-specific timestamp or query syntax traps.
 - Provider endpoints that accept query text and return ranked candidates use `kind: search` table functions with `search_limits`, stable result identifiers, and useful candidate metadata. Non-retrieval table functions keep the default kind for parameterized operations such as scoped child collections, time-range logs, metrics queries, or detail operations. Ordinary table filters are for exact lookup, scoping, or provider-side filtering; `mode: contains` is only substring matching. Flag provider-native search modeled as a filter and require a `kind: search` function.
-- Table and column names are snake_case, stable, and obvious. Avoid leaking odd provider operation names unless the source is intentionally generated.
+- Table, table-function, and column names are snake_case, stable, and obvious.
+  Table and table-function names must be unique within the source's
+  case-insensitive relation namespace. Table-function names must use SQL
+  identifier syntax: start with an ASCII letter or underscore, then use only
+  ASCII letters, numbers, or underscores. Prefer plain `snake_case` table names;
+  quoted SQL table names are valid for compatibility but should not leak odd
+  provider operation names unless the source is intentionally generated.
 
 ### HTTP and API Semantics
 

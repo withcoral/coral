@@ -16,16 +16,16 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::{
-    ColumnSpec, DetailHintDeclaringSurface, DetailHintSpec, DetailHintTargetTable, FilterSpec,
-    HeaderSpec, ManifestError, ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec,
-    RequestSpec, ResponseSpec, Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
-    SourceTableFunctionSpec, TableCommon,
+    ColumnSpec, DeclaredRelation, DetailHintDeclaringSurface, DetailHintSpec,
+    DetailHintTargetTable, FilterSpec, HeaderSpec, ManifestError, ManifestInputSpec,
+    PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
+    SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate::validate_template,
-    validate_detail_hint_references, validate_http_function, validate_http_function_names,
-    validate_http_table, validate_table_names, validate_test_queries,
+    validate_declared_relation_namespace, validate_detail_hint_references, validate_http_function,
+    validate_http_table, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -288,18 +288,23 @@ impl HttpSourceManifest {
             )));
         }
         validate_test_queries(&name, &test_queries)?;
-        validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
+        validate_declared_relation_namespace(
+            &name,
+            tables
+                .iter()
+                .map(|table| DeclaredRelation::table(table.name.as_str()))
+                .chain(
+                    functions
+                        .iter()
+                        .map(|function| DeclaredRelation::function(function.name.as_str())),
+                ),
+        )?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
             .into_iter()
             .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
-        validate_http_function_names(
-            &common.name,
-            tables.iter().map(HttpTableSpec::name),
-            &functions,
-        )?;
         let functions = functions
             .into_iter()
             .map(|function| {

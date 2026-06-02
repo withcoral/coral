@@ -1,5 +1,5 @@
 name: sentry
-version: 2.1.0
+version: 2.1.1
 dsl_version: 3
 backend: http
 description: >-
@@ -12,19 +12,20 @@ inputs:
   SENTRY_TOKEN:
     kind: secret
     hint: |
-      Use OAuth during interactive setup, or create an internal integration
-      and generate a token with the following read scopes: org:read,
-      event:read, member:read, project:read, project:releases, and
-      team:read.
-
-      OAuth setup requires a Sentry OAuth app; use that app's client ID
-      when prompted.
-      See [Sentry auth docs](https://docs.sentry.io/api/auth/).
+      Connect with Sentry OAuth or paste an internal-integration token.
+      Both need the `org:read`, `event:read`, `member:read`, `project:read`,
+      `project:releases`, and `team:read` scopes.
     credential:
       methods:
         - type: oauth
           label: Connect with Sentry device flow
           description: Use a Sentry OAuth app instead of pasting an auth token.
+          hint: |
+            Sign in to Sentry with a device code. Enter your Sentry OAuth
+            app's Client ID when prompted. Requests the `org:read`,
+            `event:read`, `member:read`, `project:read`, `project:releases`,
+            and `team:read` scopes. See
+            [Sentry auth docs](https://docs.sentry.io/api/auth/).
           oauth:
             flow:
               type: device_code
@@ -47,6 +48,11 @@ inputs:
         - type: source_config
           label: Paste auth token
           description: Paste a Sentry personal or internal integration token.
+          hint: |
+            Create an internal integration and paste its token, granting the
+            `org:read`, `event:read`, `member:read`, `project:read`,
+            `project:releases`, and `team:read` read scopes. See
+            [Sentry auth docs](https://docs.sentry.io/api/auth/).
 base_url: https://sentry.io
 auth:
   type: HeaderAuth

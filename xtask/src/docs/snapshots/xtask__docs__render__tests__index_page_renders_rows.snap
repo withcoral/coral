@@ -1,6 +1,5 @@
 ---
 source: xtask/src/docs/render.rs
-assertion_line: 455
 expression: "index_page(&[demo, minimal])"
 ---
 ---
@@ -52,6 +51,11 @@ Use the `admin` account's `token` value.
 `DEMO_TOKEN` (required)
 
 Create an API token in Settings → Tokens
+
+Credential methods:
+
+- **Connect with demo** — Sign in through the demo provider in your browser.
+- **Paste token** — Create a read-only API token in Settings.
 
 ### `minimal`
 
