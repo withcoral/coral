@@ -530,6 +530,79 @@ pub(crate) fn fixture_manifest_with_search_ranking_yaml() -> String {
     }))
 }
 
+pub(crate) fn fixture_manifest_with_source_aware_search_yaml(name: &str) -> String {
+    let tables = match name {
+        "github" => json!([
+            {
+                "name": "users",
+                "description": "GitHub users",
+                "request": {
+                    "method": "GET",
+                    "path": "/users",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "login", "type": "Utf8" },
+                ],
+            },
+        ]),
+        "linear" => json!([
+            {
+                "name": "issues",
+                "description": "Linear issues",
+                "request": {
+                    "method": "GET",
+                    "path": "/issues",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "assignee", "type": "Utf8" },
+                    { "name": "state", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "users",
+                "description": "Linear users",
+                "request": {
+                    "method": "GET",
+                    "path": "/users",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "name", "type": "Utf8" },
+                ],
+            },
+        ]),
+        "notion" => json!([
+            {
+                "name": "users",
+                "description": "Notion users",
+                "request": {
+                    "method": "GET",
+                    "path": "/users",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "name", "type": "Utf8" },
+                ],
+            },
+        ]),
+        source => panic!("unsupported source-aware search fixture source: {source}"),
+    };
+    manifest_yaml(&json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": tables,
+    }))
+}
+
 pub(crate) fn fixture_function_only_manifest_yaml() -> String {
     manifest_yaml(&json!({
         "name": "searchy",

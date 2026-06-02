@@ -13,7 +13,7 @@ use tonic::Request;
 use super::harness::{
     GrpcHarness, fixture_manifest_with_column_preview_yaml, fixture_manifest_with_functions_yaml,
     fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_filter_yaml,
-    fixture_manifest_with_search_ranking_yaml,
+    fixture_manifest_with_search_ranking_yaml, fixture_manifest_with_source_aware_search_yaml,
 };
 
 fn search_result_item_name(result: &coral_api::v1::CatalogSearchResult) -> &str {
@@ -27,6 +27,20 @@ fn search_result_item_name(result: &coral_api::v1::CatalogSearchResult) -> &str 
     {
         catalog_item::Item::Table(table) => table.name.as_str(),
         catalog_item::Item::TableFunction(function) => function.name.as_str(),
+    }
+}
+
+fn search_result_schema_name(result: &coral_api::v1::CatalogSearchResult) -> &str {
+    match result
+        .item
+        .as_ref()
+        .expect("search result")
+        .item
+        .as_ref()
+        .expect("catalog item")
+    {
+        catalog_item::Item::Table(table) => table.schema_name.as_str(),
+        catalog_item::Item::TableFunction(function) => function.schema_name.as_str(),
     }
 }
 
@@ -212,6 +226,150 @@ async fn search_catalog_preserves_stable_order_for_schema_only_matches() {
             .items
             .iter()
             .all(|item| item.matched_fields == ["schema_name"])
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_ranks_clearly_named_source_before_cross_source_matches() {
+    let harness = GrpcHarness::new().await;
+    for source in ["github", "linear", "notion"] {
+        harness
+            .import_source(
+                fixture_manifest_with_source_aware_search_yaml(source),
+                Vec::new(),
+                Vec::new(),
+            )
+            .await;
+    }
+
+    let response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "linear|issue|assignee|user|state".to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("source-aware search catalog")
+        .into_inner();
+
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(|result| (
+                search_result_schema_name(result),
+                search_result_item_name(result)
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("linear", "issues"),
+            ("linear", "users"),
+            ("github", "users"),
+            ("notion", "users"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_preserves_stable_order_when_no_source_is_named() {
+    let harness = GrpcHarness::new().await;
+    for source in ["github", "linear", "notion"] {
+        harness
+            .import_source(
+                fixture_manifest_with_source_aware_search_yaml(source),
+                Vec::new(),
+                Vec::new(),
+            )
+            .await;
+    }
+
+    let response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "issue|user".to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("source-neutral search catalog")
+        .into_inner();
+
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(|result| (
+                search_result_schema_name(result),
+                search_result_item_name(result)
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("github", "users"),
+            ("linear", "issues"),
+            ("linear", "users"),
+            ("notion", "users"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_does_not_source_boost_broad_pattern() {
+    let harness = GrpcHarness::new().await;
+    for source in ["github", "linear", "notion"] {
+        harness
+            .import_source(
+                fixture_manifest_with_source_aware_search_yaml(source),
+                Vec::new(),
+                Vec::new(),
+            )
+            .await;
+    }
+
+    let response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: ".*".to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("broad search catalog")
+        .into_inner();
+
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(|result| (
+                search_result_schema_name(result),
+                search_result_item_name(result)
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("github", "users"),
+            ("linear", "issues"),
+            ("linear", "users"),
+            ("notion", "users"),
+        ]
     );
 }
 

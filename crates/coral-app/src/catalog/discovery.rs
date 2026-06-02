@@ -309,15 +309,19 @@ impl CatalogDiscovery {
         pagination: Pagination,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
         let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
-        let mut matches = self
+        let items = self
             .searchable_catalog_items(workspace_name, schema_name, kind)
-            .await?
+            .await?;
+        let preferred_schemas = preferred_source_schemas(&items, &regex);
+        let mut matches = items
             .into_iter()
-            .filter_map(|mut item| {
+            .enumerate()
+            .filter_map(|(original_position, mut item)| {
                 let matched_fields = catalog_item_matched_fields(&item, &regex);
                 if matched_fields.is_empty() {
                     return None;
                 }
+                let source_preferred = preferred_schemas.contains(catalog_item_schema_name(&item));
                 let rank = catalog_match_rank(&item, &matched_fields, &regex);
                 let table_column_preview = match &item {
                     CatalogItem::Table(table) => Some(table_column_preview(table, &regex)),
@@ -325,7 +329,9 @@ impl CatalogDiscovery {
                 };
                 clear_catalog_item_columns(&mut item);
                 Some((
+                    source_preferred,
                     rank,
+                    original_position,
                     CatalogSearchResult {
                         item,
                         matched_fields,
@@ -334,10 +340,16 @@ impl CatalogDiscovery {
                 ))
             })
             .collect::<Vec<_>>();
-        matches.sort_by_key(|(rank, _)| Reverse(*rank));
+        matches.sort_by_key(|(source_preferred, rank, original_position, _)| {
+            (
+                Reverse(*source_preferred),
+                Reverse(*rank),
+                *original_position,
+            )
+        });
         let matches = matches
             .into_iter()
-            .map(|(_, result)| result)
+            .map(|(_, _, _, result)| result)
             .collect::<Vec<_>>();
         Ok(page_items(matches, pagination))
     }
@@ -399,6 +411,34 @@ fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {
             &function.function_name,
             "table_function",
         ),
+    }
+}
+
+fn catalog_item_schema_name(item: &CatalogItem) -> &str {
+    match item {
+        CatalogItem::Table(table) => table.schema_name.as_str(),
+        CatalogItem::TableFunction(function) => function.schema_name.as_str(),
+    }
+}
+
+fn preferred_source_schemas(items: &[CatalogItem], regex: &Regex) -> BTreeSet<String> {
+    let visible_schemas = items
+        .iter()
+        .map(catalog_item_schema_name)
+        .collect::<BTreeSet<_>>();
+    if visible_schemas.len() <= 1 {
+        return BTreeSet::new();
+    }
+
+    let preferred_schemas = visible_schemas
+        .iter()
+        .filter(|schema| regex_matches_entire_value(regex, schema))
+        .map(|schema| (*schema).to_string())
+        .collect::<BTreeSet<_>>();
+    if preferred_schemas.is_empty() || preferred_schemas.len() == visible_schemas.len() {
+        BTreeSet::new()
+    } else {
+        preferred_schemas
     }
 }
 
