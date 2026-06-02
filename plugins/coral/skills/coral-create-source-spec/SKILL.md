@@ -214,12 +214,15 @@ For an OAuth-backed HTTP source, add the retrieval method to that same secret in
 inputs:
   FOOBAR_API_TOKEN:
     kind: secret
-    hint: Access token for the Foobar API. Use OAuth setup or paste a token with read access.
+    hint: Connect with Foobar OAuth or paste a token with read access.
     credential:
       methods:
         - type: oauth
           label: Connect with Foobar
           description: Open a browser and authorize Coral to read Foobar data.
+          hint: |
+            Signs you in through Foobar and requests the `read` scope. To
+            use your own app, set FOOBAR_OAUTH_CLIENT_ID to its Client ID.
           oauth:
             flow:
               type: authorization_code
@@ -239,6 +242,7 @@ inputs:
                   - read
         - type: source_config
           label: Paste token
+          hint: Paste a Foobar API token with read access to the data you query.
 auth:
   type: HeaderAuth
   headers:
