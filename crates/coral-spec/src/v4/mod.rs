@@ -22,7 +22,7 @@ use crate::{
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 1;
 pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v2";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v2";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v3";
 
 pub use schema::generated_v4_source_manifest_schema;
 
@@ -1494,17 +1494,17 @@ fn generate_projection(
     } else {
         SqlInputExposure::FunctionArg
     };
+    let pagination_query_params = pagination_query_param_names(&rest.pagination);
     let inputs = operation
         .inputs
         .iter()
         .map(|input| {
-            let exposure = match input.location {
-                OpenApiParameterLocation::Path | OpenApiParameterLocation::Query => sql_exposure,
-                OpenApiParameterLocation::Header
-                | OpenApiParameterLocation::Cookie
-                | OpenApiParameterLocation::Body => SqlInputExposure::Internal,
-            };
-            if exposure == SqlInputExposure::Internal && input.required {
+            let (exposure, pagination_owned_query_input) =
+                projection_input_sql_exposure(input, sql_exposure, &pagination_query_params);
+            if exposure == SqlInputExposure::Internal
+                && input.required
+                && !pagination_owned_query_input
+            {
                 visibility = ProjectionVisibility::Hidden;
                 projection_diagnostics.push(Diagnostic::warning(
                     "PROJECTION_INPUT_UNSUPPORTED",
@@ -1555,6 +1555,49 @@ fn generate_projection(
     };
     diagnostics.extend(projection_diagnostics);
     projection
+}
+
+fn projection_input_sql_exposure(
+    input: &IrOperationInput,
+    default_exposure: SqlInputExposure,
+    pagination_query_params: &HashSet<&str>,
+) -> (SqlInputExposure, bool) {
+    let pagination_owned_query_input = input.location == OpenApiParameterLocation::Query
+        && pagination_query_params.contains(input.name.as_str());
+    let exposure = match input.location {
+        OpenApiParameterLocation::Query if pagination_owned_query_input => {
+            SqlInputExposure::Internal
+        }
+        OpenApiParameterLocation::Path | OpenApiParameterLocation::Query => default_exposure,
+        OpenApiParameterLocation::Header
+        | OpenApiParameterLocation::Cookie
+        | OpenApiParameterLocation::Body => SqlInputExposure::Internal,
+    };
+    (exposure, pagination_owned_query_input)
+}
+
+fn pagination_query_param_names(pagination: &PaginationSpec) -> HashSet<&str> {
+    let mut names = HashSet::new();
+    if let Some(name) = pagination.page_param.as_deref() {
+        names.insert(name);
+    }
+    if let Some(name) = pagination.offset_param.as_deref() {
+        names.insert(name);
+    }
+    if let Some(name) = pagination.cursor_param.as_deref() {
+        names.insert(name);
+    }
+    if let Some(page_size) = &pagination.page_size
+        && let Some(name) = page_size.query_param.as_deref()
+    {
+        names.insert(name);
+    }
+    names
+}
+
+fn pagination_owns_input(input: &ProjectionInput, pagination_query_params: &HashSet<&str>) -> bool {
+    input.source_location == OpenApiParameterLocation::Query
+        && pagination_query_params.contains(input.wire_name.as_str())
 }
 
 fn resolve_projection_name_collisions(
@@ -1914,10 +1957,12 @@ fn manifest_type(scalar: IrScalarType) -> ManifestDataType {
 }
 
 pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
+    let pagination_query_params = pagination_query_param_names(&projection.pagination);
     projection
         .inputs
         .iter()
         .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
+        .filter(|input| !pagination_owns_input(input, &pagination_query_params))
         .map(|input| FilterSpec {
             name: input.name.clone(),
             data_type: manifest_data_type_name(input.data_type).to_string(),
@@ -1929,10 +1974,12 @@ pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
 }
 
 pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec> {
+    let pagination_query_params = pagination_query_param_names(&projection.pagination);
     projection
         .inputs
         .iter()
         .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
+        .filter(|input| !pagination_owns_input(input, &pagination_query_params))
         .map(|input| TableFunctionArgSpec {
             name: input.name.clone(),
             required: input.required,
@@ -1945,6 +1992,7 @@ pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec
 }
 
 pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
+    let pagination_query_params = pagination_query_param_names(&projection.pagination);
     let mut columns = projection
         .columns
         .iter()
@@ -1968,6 +2016,7 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
             .inputs
             .iter()
             .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
+            .filter(|input| !pagination_owns_input(input, &pagination_query_params))
             .filter(|input| !existing.contains(&input.name))
             .map(|input| ColumnSpec {
                 name: input.name.clone(),
@@ -1999,6 +2048,7 @@ pub fn request_spec_for_projection(
     operation: &IrOperation,
 ) -> Result<RequestSpec> {
     let IrExecutionAttachment::Rest(rest) = &operation.execution;
+    let pagination_query_params = pagination_query_param_names(&projection.pagination);
     let mut path = rest.path_template.clone();
     for input in &projection.inputs {
         if input.source_location == OpenApiParameterLocation::Path {
@@ -2014,9 +2064,9 @@ pub fn request_spec_for_projection(
         .inputs
         .iter()
         .filter(|input| input.source_location == OpenApiParameterLocation::Query)
-        .map(|input| crate::QueryParamSpec {
-            name: input.wire_name.clone(),
-            value: match input.sql_exposure {
+        .filter(|input| !pagination_owns_input(input, &pagination_query_params))
+        .filter_map(|input| {
+            let value = match input.sql_exposure {
                 SqlInputExposure::Filter => crate::ValueSourceSpec::Filter {
                     key: input.name.clone(),
                     default: input
@@ -2031,10 +2081,12 @@ pub fn request_spec_for_projection(
                         .as_ref()
                         .map(|value| Value::String(value.clone())),
                 },
-                SqlInputExposure::Internal => {
-                    crate::ValueSourceSpec::Literal { value: Value::Null }
-                }
-            },
+                SqlInputExposure::Internal => return None,
+            };
+            Some(crate::QueryParamSpec {
+                name: input.wire_name.clone(),
+                value,
+            })
         })
         .collect();
     Ok(RequestSpec {
@@ -2325,6 +2377,118 @@ surfaces:
         assert!(published.contains(&"issues"), "{published:?}");
         assert!(published.contains(&"search_issues"), "{published:?}");
         assert!(published.contains(&"get_issue"), "{published:?}");
+    }
+
+    #[test]
+    fn projection_generation_keeps_pagination_inputs_internal() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(v4, surface, github_openapi().as_bytes()).expect("import");
+        let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+        let projection = catalog
+            .projections
+            .iter()
+            .find(|projection| projection.operation_id == "issues_list_for_repo")
+            .expect("repo issues projection");
+        let operation = ir
+            .operations
+            .iter()
+            .find(|operation| operation.id == projection.operation_id)
+            .expect("repo issues operation");
+
+        assert_eq!(projection.pagination.mode, PaginationMode::Page);
+        assert_eq!(projection.pagination.page_param.as_deref(), Some("page"));
+        assert_eq!(
+            projection
+                .pagination
+                .page_size
+                .as_ref()
+                .and_then(|page_size| page_size.query_param.as_deref()),
+            Some("per_page")
+        );
+
+        let exposures = projection
+            .inputs
+            .iter()
+            .map(|input| (input.wire_name.as_str(), input.sql_exposure))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(exposures.get("owner"), Some(&SqlInputExposure::Filter));
+        assert_eq!(exposures.get("repo"), Some(&SqlInputExposure::Filter));
+        assert_eq!(exposures.get("state"), Some(&SqlInputExposure::Filter));
+        assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Internal));
+        assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Internal));
+
+        let filter_names = projection_filter_specs(projection)
+            .into_iter()
+            .map(|filter| filter.name)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            filter_names,
+            BTreeSet::from(["owner".to_string(), "repo".to_string(), "state".to_string()])
+        );
+
+        let column_names = projection_column_specs(projection)
+            .into_iter()
+            .map(|column| column.name)
+            .collect::<BTreeSet<_>>();
+        assert!(column_names.contains("owner"));
+        assert!(column_names.contains("repo"));
+        assert!(column_names.contains("state"));
+        assert!(!column_names.contains("page"));
+        assert!(!column_names.contains("per_page"));
+
+        let request = request_spec_for_projection(projection, operation).expect("request");
+        let query_names = request
+            .query
+            .iter()
+            .map(|param| param.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(query_names, BTreeSet::from(["state"]));
+
+        let mut stale_projection = projection.clone();
+        for input in &mut stale_projection.inputs {
+            if matches!(input.wire_name.as_str(), "page" | "per_page") {
+                input.sql_exposure = SqlInputExposure::Filter;
+            }
+        }
+        let stale_filter_names = projection_filter_specs(&stale_projection)
+            .into_iter()
+            .map(|filter| filter.name)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(stale_filter_names, filter_names);
+
+        let stale_request =
+            request_spec_for_projection(&stale_projection, operation).expect("stale request");
+        let stale_query_names = stale_request
+            .query
+            .iter()
+            .map(|param| param.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(stale_query_names, query_names);
+
+        for input in &mut stale_projection.inputs {
+            if matches!(input.wire_name.as_str(), "page" | "per_page") {
+                input.sql_exposure = SqlInputExposure::FunctionArg;
+            }
+        }
+        let stale_arg_names = projection_arg_specs(&stale_projection)
+            .into_iter()
+            .map(|arg| arg.name)
+            .collect::<BTreeSet<_>>();
+        assert!(!stale_arg_names.contains("page"));
+        assert!(!stale_arg_names.contains("per_page"));
     }
 
     #[test]
