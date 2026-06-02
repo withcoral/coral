@@ -870,12 +870,10 @@ V1 capability metadata is deliberately narrow:
 | Field | Scope | Type | Default | Description |
 | ----- | ----- | ---- | ------- | ----------- |
 | `filters[].bindable` | filter | boolean | `false` | Allows the filter to be supplied from a runtime join key |
-| `filters[].wire_type` | filter | string | `string` | Runtime binding serialization; V1 supports only `string` |
-| `search_index` | table | boolean | `false` | Marks filtered results as ranked, capped, fuzzy, or otherwise incomplete |
 
-Bindable filters must use `mode: equality`. Search-index-backed tables cannot
-declare bindable filters because their filtered result sets are not complete
-enough to preserve SQL join correctness.
+Bindable filters must use `mode: equality`. Do not mark ranked, capped, fuzzy,
+or otherwise incomplete search-result filters as bindable; dependent joins rely
+on complete filtered result sets to preserve SQL join correctness.
 
 In V1, dependent join execution buffers resolver rows and dependent fetch
 results before producing joined output. Row, binding, and fanout limits are
@@ -899,15 +897,6 @@ tables:
     columns:
       - name: number
         type: Int64
-
-  - name: search_issues
-    description: Search issues
-    search_index: true
-    request:
-      path: /search/issues
-    filters:
-      - name: q
-        mode: search
 ```
 
 ### HTTP value sources

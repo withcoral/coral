@@ -152,8 +152,6 @@ struct RawHttpTableSpec {
     pagination: PaginationSpec,
     #[serde(default)]
     columns: Vec<ColumnSpec>,
-    #[serde(default)]
-    search_index: bool,
 }
 
 /// One validated HTTP table declaration.
@@ -164,7 +162,6 @@ pub struct HttpTableSpec {
     pub requests: Vec<RequestRouteSpec>,
     pub response: ResponseSpec,
     pub pagination: PaginationSpec,
-    pub search_index: bool,
 }
 
 impl HttpTableSpec {
@@ -244,7 +241,6 @@ impl RawHttpTableSpec {
             pagination: &self.pagination,
             search_limits: self.search_limits.as_ref(),
             detail_hints: &self.detail_hints,
-            search_index: self.search_index,
         })?;
 
         Ok(HttpTableSpec {
@@ -262,7 +258,6 @@ impl RawHttpTableSpec {
             requests: self.requests,
             response: self.response,
             pagination: self.pagination,
-            search_index: self.search_index,
         })
     }
 }
@@ -391,6 +386,5 @@ pub(crate) fn test_http_table_spec(
         requests: vec![],
         response: ResponseSpec::default(),
         pagination: PaginationSpec::default(),
-        search_index: false,
     }
 }

@@ -290,7 +290,6 @@ impl McpTableFilterSpec {
             mode: self.mode,
             description: self.description.clone(),
             bindable: false,
-            wire_type: crate::WireType::default(),
         }
     }
 

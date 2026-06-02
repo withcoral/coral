@@ -433,7 +433,6 @@ mod tests {
             mode,
             description: String::new(),
             bindable: false,
-            wire_type: coral_spec::WireType::String,
         }
     }
 

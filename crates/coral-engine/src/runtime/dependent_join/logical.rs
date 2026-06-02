@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 
-use coral_spec::WireType;
 use datafusion::common::{Column, DFSchemaRef, Result, TableReference, plan_err};
 use datafusion::logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore};
 
@@ -25,23 +23,11 @@ pub(crate) struct DependentJoinNode {
     pub(crate) page_hint: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct BindingKey {
     pub(crate) resolver_column: Column,
     pub(crate) resolver_binding_name: String,
     pub(crate) dependent_filter: String,
-    pub(crate) wire_type: WireType,
-}
-
-impl Hash for BindingKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.resolver_column.hash(state);
-        self.resolver_binding_name.hash(state);
-        self.dependent_filter.hash(state);
-        match self.wire_type {
-            WireType::String => "string".hash(state),
-        }
-    }
 }
 
 impl PartialOrd for DependentJoinNode {

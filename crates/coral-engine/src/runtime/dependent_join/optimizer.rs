@@ -3,7 +3,6 @@ use std::fmt;
 use std::sync::Arc;
 
 use arrow::datatypes::DataType;
-use coral_spec::WireType;
 use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Column, DFSchemaRef, ExprSchema, NullEquality, Result, TableReference};
@@ -423,7 +422,7 @@ fn resolver_with_binding_columns(
             .iter()
             .find(|filter| filter.name == dependent_column.name)?;
 
-        if !filter.bindable || filter.wire_type != WireType::String {
+        if !filter.bindable {
             return None;
         }
         if !binding_filter_names.insert(filter.name.as_str()) {
@@ -442,7 +441,6 @@ fn resolver_with_binding_columns(
             resolver_column: Column::new(resolver_column.relation.clone(), &resolver_column.name),
             resolver_binding_name,
             dependent_filter: filter.name.clone(),
-            wire_type: filter.wire_type,
         });
     }
 
