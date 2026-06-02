@@ -23,8 +23,9 @@ inputs:
     hint: |
       Connect with Linear OAuth, or paste a raw OAuth access token.
       Coral uses a built-in OAuth client by default; to use your own,
-      set LINEAR_OAUTH_CLIENT_ID — the app needs the `read` scope and the
-      redirect callback URL `http://127.0.0.1:53682/oauth/callback`.
+      enter a client ID when prompted for LINEAR_OAUTH_CLIENT_ID.
+      The app needs the `read` scope and the redirect callback URL
+      `http://127.0.0.1:53682/oauth/callback`.
       A pasted raw token is not refreshed automatically and must be
       replaced once it expires; connect with guided OAuth instead to
       store a refresh token and reconnect without re-pasting.
