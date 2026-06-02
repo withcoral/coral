@@ -35,14 +35,19 @@ Requires a Help Scout OAuth application and access token.
 1. Sign in to [Help Scout](https://www.helpscout.com/).
 2. Open **Your Profile → My apps**.
 3. Click **Create My App**.
-4. Register a loopback redirect URI, for example `http://127.0.0.1/oauth/callback`
-   (Coral may bind a random port on `127.0.0.1` during interactive setup).
+4. Register this **exact** loopback redirect URI (Help Scout does not accept
+   variable localhost ports):
+
+   `http://127.0.0.1:8765/oauth/callback`
 5. Copy the **Application ID** and **Application Secret**.
-6. Grant these OAuth scopes to the app:
-   - `mailboxes:read`
-   - `conversations:read`
-   - `customers:read`
-   - `users:read`
+
+Help Scout documents two OAuth2 flows: **Authorization Code** (user signs in
+in the browser; this source uses that flow via Coral’s **Connect Help Scout**)
+and **Client Credentials** (machine-to-machine for internal integrations). API
+access requires a token associated with an **active, invited** Help Scout user.
+Help Scout does not document per-resource OAuth scope names in their auth
+overview—configure the app and complete authorization as described in their
+docs.
 
 See [Help Scout authentication](https://developer.helpscout.com/mailbox-api/overview/authentication/).
 
@@ -58,7 +63,9 @@ When prompted:
 
 - Choose **Connect Help Scout**
 - Enter your OAuth application ID and secret
-- Complete sign-in in the browser
+- Complete sign-in in the browser (callback goes to `127.0.0.1:8765`)
+- If the browser cannot reach localhost, paste the full redirect URL from the
+  address bar into the terminal when Coral prompts for it
 
 Or paste an existing token:
 
@@ -118,6 +125,157 @@ LIMIT 25;
 
 Other examples: `(number:123)`, `(email:"user@example.com")`,
 `(subject:"billing")`. See [Help Scout conversation search](https://developer.helpscout.com/mailbox-api/endpoints/conversations/list/).
+
+For community source PRs, include sanitized output from the commands below:
+`coral source lint`, `coral source add` (or interactive Connect), `coral source
+test helpscout`, and at least one row query per table plus
+`search_conversations`.
+
+### Commands to capture
+
+```bash
+coral source lint sources/community/helpscout/manifest.yaml
+coral source add --interactive --file sources/community/helpscout/manifest.yaml
+# or: export HELPSCOUT_ACCESS_TOKEN=... && coral source add --file sources/community/helpscout/manifest.yaml
+coral source test helpscout
+coral sql "SELECT id, name, slug FROM helpscout.mailboxes LIMIT 3"
+coral sql "SELECT id, email, first_name FROM helpscout.customers LIMIT 3"
+coral sql "SELECT id, number, subject, status, customer_email FROM helpscout.conversations LIMIT 3"
+coral sql "SELECT id, email, first_name, last_name FROM helpscout.users LIMIT 3"
+coral sql "SELECT id, number, subject, status FROM helpscout.search_conversations(query => 'status:active') LIMIT 3"
+```
+
+## Live validation output
+
+The following output was captured against Help Scout Mailbox API v2 with Coral
+using interactive OAuth (`redirect_uri` `http://127.0.0.1:8765/oauth/callback`).
+
+```text
+$ coral source lint sources/community/helpscout/manifest.yaml
+Manifest is valid
+```
+
+```text
+$ coral source add --interactive --file sources/community/helpscout/manifest.yaml
+Added source helpscout (secrets: keychain)
+
+  ✓ helpscout connected successfully
+  Secrets: keychain
+
+    helpscout (4 tables)
+    ├─ conversations
+    ├─ customers
+    ├─ mailboxes
+    └─ users
+    Query tests
+    4 declared · 4 passed · 0 failed
+
+    ✓ SELECT id, name, email FROM helpscout.mailboxes LIMIT 5
+      1 row
+
+    ✓ SELECT id, first_name, last_name, email FROM helpscout.customers LIMIT 5
+      2 rows
+
+    ✓ SELECT id, number, subject, status, customer_email FROM helpscout.conversations LIMIT 5
+      4 rows
+
+    ✓ SELECT id, email, first_name, last_name FROM helpscout.users LIMIT 5
+      1 row
+```
+
+```text
+$ coral source test helpscout
+
+  ✓ helpscout connected successfully
+  Secrets: keychain
+
+    helpscout (4 tables)
+    ├─ conversations
+    ├─ customers
+    ├─ mailboxes
+    └─ users
+    Query tests
+    4 declared · 4 passed · 0 failed
+
+    ✓ SELECT id, name, email FROM helpscout.mailboxes LIMIT 5
+      1 row
+
+    ✓ SELECT id, first_name, last_name, email FROM helpscout.customers LIMIT 5
+      2 rows
+
+    ✓ SELECT id, number, subject, status, customer_email FROM helpscout.conversations LIMIT 5
+      4 rows
+
+    ✓ SELECT id, email, first_name, last_name FROM helpscout.users LIMIT 5
+      1 row
+```
+
+```sql
+SELECT id, name, slug FROM helpscout.mailboxes LIMIT 3;
+```
+
+```text
++--------+----------------+------------------+
+| id     | name           | slug             |
++--------+----------------+------------------+
+| 369162 | Support Inbox  | a1b2c3d4e5f6g7h8 |
++--------+----------------+------------------+
+```
+
+```sql
+SELECT id, email, first_name FROM helpscout.customers LIMIT 3;
+```
+
+```text
++-----------+-------+------------+
+| id        | email | first_name |
++-----------+-------+------------+
+| 883767758 |       | Example    |
+| 883767756 |       | Helper     |
++-----------+-------+------------+
+```
+
+```sql
+SELECT id, number, subject, status, customer_email FROM helpscout.conversations LIMIT 3;
+```
+
+```text
++------------+--------+---------------------+--------+-------------------+
+| id         | number | subject             | status | customer_email    |
++------------+--------+---------------------+--------+-------------------+
+| 3342196193 | 3      | Example subject one | active | user@example.com  |
+| 3342196197 | 4      | Example subject two | active | user@example.com  |
+| 3342196184 | 1      | Welcome message     | active | help@example.com  |
++------------+--------+---------------------+--------+-------------------+
+```
+
+```sql
+SELECT id, email, first_name, last_name FROM helpscout.users LIMIT 3;
+```
+
+```text
++--------+-------------------+------------+-----------+
+| id     | email             | first_name | last_name |
++--------+-------------------+------------+-----------+
+| 939115 | agent@example.com | Example    | Agent     |
++--------+-------------------+------------+-----------+
+```
+
+```sql
+SELECT id, number, subject, status
+FROM helpscout.search_conversations(query => 'status:active')
+LIMIT 3;
+```
+
+```text
++------------+--------+---------------------+--------+
+| id         | number | subject             | status |
++------------+--------+---------------------+--------+
+| 3342196193 | 3      | Example subject one | active |
+| 3342196197 | 4      | Example subject two | active |
+| 3342196184 | 1      | Welcome message     | active |
++------------+--------+---------------------+--------+
+```
 
 ## Cross-source JOIN examples
 
