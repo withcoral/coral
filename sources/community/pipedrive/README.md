@@ -67,7 +67,7 @@ coral sql "SELECT id, name FROM pipedrive.pipelines LIMIT 5"
 | `pipedrive.deals` | CRM deals/opportunities | — | `status`, `pipeline_id`, `stage_id`, `owner_id`, `person_id`, `org_id` |
 | `pipedrive.persons` | Contacts/persons | — | `owner_id`, `org_id` |
 | `pipedrive.organizations` | Organizations/companies | — | `owner_id` |
-| `pipedrive.activities` | Calls, meetings, tasks, emails | — | `done`, `owner_id`, `deal_id`, `person_id`, `org_id`, `updated_since`, `updated_until` |
+| `pipedrive.activities` | Calls, meetings, tasks, emails | — | `done`, `owner_id`, `deal_id`, `lead_id`, `person_id`, `org_id`, `updated_since`, `updated_until` |
 | `pipedrive.notes` | Notes attached to entities | — | `deal_id`, `person_id`, `org_id`, `owner_id` |
 | `pipedrive.leads` | Leads Inbox leads | — | — |
 | `pipedrive.products` | Product catalog | — | — |
@@ -95,7 +95,7 @@ full endpoint references.
 | `products` | v2 | cursor |
 | `notes` | v1 | offset (`start` / `limit`) |
 | `leads` | v1 | offset (`start` / `limit`) |
-| `users` | v1 | offset (`start` / `limit`) |
+| `users` | v1 | none (endpoint returns all users in one response) |
 | `search_deals` | v2 | cursor |
 | `search_persons` | v2 | cursor |
 | `search_organizations` | v2 | cursor |
@@ -112,6 +112,7 @@ Key v2 behavioral notes:
 - `busy_flag` on activities is renamed to `busy` in v2
 - `address` on organizations and `location` on activities are nested objects, flattened with double-underscore notation (e.g. `address__country`, `location__value`)
 - The `users` table exposes an `access` column containing the raw `access[]` JSON array per the documented v1 response shape; use this to determine admin status per application instead of a scalar `is_admin` field
+- The `GET /api/v1/users` endpoint returns all users in a single response and does not support pagination parameters
 
 ## Search functions
 
@@ -285,8 +286,8 @@ coral sql "SELECT table_name, column_name, data_type FROM coral.columns WHERE sc
 ## Notes
 
 - Authenticates with `x-api-token` header (personal API token only)
-- v2 tables use cursor pagination; v1 tables (`notes`, `leads`, `users`) use offset pagination (`start` / `limit`)
-- v1 tables (`notes`, `leads`, `users`) use offset pagination (`start` / `limit`)
+- v2 tables use cursor pagination; v1 tables (`notes`, `leads`) use offset pagination (`start` / `limit`)
+- `GET /api/v1/users` returns all users in a single response with no pagination parameters
 - `is_deleted = true` means soft-deleted; entities are fully deleted 30 days after last activity
 - Nested fields like `address` and `location` are flattened with double-underscore notation (e.g. `address__country`, `location__value`)
 - The `notes` table `owner_id` filter maps to the `user_id` query parameter on the v1 API

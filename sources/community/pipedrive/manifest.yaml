@@ -81,10 +81,6 @@ tables:
         type: Boolean
         nullable: true
         description: True when deal win probability is enabled for this pipeline.
-      - name: is_selected
-        type: Boolean
-        nullable: true
-        description: True when this is the default selected pipeline.
       - name: add_time
         type: Utf8
         nullable: true
@@ -537,11 +533,12 @@ tables:
   - name: activities
     description: >-
       Activities (calls, meetings, tasks, emails, etc.) in your Pipedrive
-      account. Supports optional filtering by done status, owner, deal,
-      person, organization, and update time.
+      account. Supports optional filtering by done status, owner, deal, lead,
+      person, organization, and update time range.
     guide: |
       No required filters. Optional filters push down to the API: `done`
-      (true/false), `owner_id`, `type`. Join with `pipedrive.deals` on
+      (true/false), `owner_id`, `deal_id`, `lead_id`, `person_id`, `org_id`,
+      `updated_since`, `updated_until`. Join with `pipedrive.deals` on
       `deal_id = id` for deal activity timelines. Join with
       `pipedrive.users` on `owner_id = id` to report activity per rep.
     filters:
@@ -551,22 +548,56 @@ tables:
       - name: owner_id
         type: Int64
         description: Filter activities by owner user ID.
-      - name: type
+      - name: deal_id
+        type: Int64
+        description: Filter activities by linked deal ID.
+      - name: lead_id
         type: Utf8
-        description: Filter by activity type key (e.g. call, meeting, task, email, lunch).
+        description: Filter activities by linked lead ID (UUID string).
+      - name: person_id
+        type: Int64
+        description: Filter activities by linked person ID.
+      - name: org_id
+        type: Int64
+        description: Filter activities by linked organization ID.
+      - name: updated_since
+        type: Utf8
+        description: >-
+          Return only activities updated at or after this timestamp.
+          RFC 3339 format, e.g. 2025-01-01T10:20:00Z.
+      - name: updated_until
+        type: Utf8
+        description: >-
+          Return only activities updated before this timestamp.
+          RFC 3339 format, e.g. 2025-01-01T10:20:00Z.
     request:
       method: GET
       path: /api/v2/activities
       query:
         - name: done
-          from: filter
+          from: filter_bool
           key: done
         - name: owner_id
-          from: filter
+          from: filter_int
           key: owner_id
-        - name: type
+        - name: deal_id
+          from: filter_int
+          key: deal_id
+        - name: lead_id
           from: filter
-          key: type
+          key: lead_id
+        - name: person_id
+          from: filter_int
+          key: person_id
+        - name: org_id
+          from: filter_int
+          key: org_id
+        - name: updated_since
+          from: filter
+          key: updated_since
+        - name: updated_until
+          from: filter
+          key: updated_until
     response:
       rows_path:
         - data
@@ -613,6 +644,10 @@ tables:
         type: Int64
         nullable: true
         description: ID of the linked deal.
+      - name: lead_id
+        type: Utf8
+        nullable: true
+        description: ID of the linked lead (UUID string).
       - name: person_id
         type: Int64
         nullable: true
@@ -934,13 +969,7 @@ tables:
       rows_path:
         - data
     pagination:
-      mode: offset
-      offset_param: start
-      offset_start: 0
-      page_size:
-        default: 100
-        max: 500
-        query_param: limit
+      mode: none
     columns:
       - name: id
         type: Int64
@@ -1013,6 +1042,7 @@ functions:
     search_limits:
       default_top_k: 10
       max_top_k: 100
+      max_calls_per_query: 1
     request:
       method: GET
       path: /api/v2/deals/search
@@ -1021,7 +1051,7 @@ functions:
           from: arg
           key: term
         - name: exact_match
-          from: arg
+          from: arg_bool
           key: exact_match
     response:
       rows_path:
@@ -1039,15 +1069,13 @@ functions:
         query_param: limit
     args:
       - name: term
-        type: Utf8
         required: true
-        description: >-
-          Search term (minimum 2 characters). Matched against deal titles,
-          notes, and custom fields.
+        bind:
+          arg: term
       - name: exact_match
-        type: Boolean
         required: false
-        description: When true, only exact full-string matches are returned.
+        bind:
+          arg: exact_match
     columns:
       - name: result_score
         type: Float64
@@ -1122,6 +1150,7 @@ functions:
     search_limits:
       default_top_k: 10
       max_top_k: 100
+      max_calls_per_query: 1
     request:
       method: GET
       path: /api/v2/persons/search
@@ -1130,10 +1159,10 @@ functions:
           from: arg
           key: term
         - name: exact_match
-          from: arg
+          from: arg_bool
           key: exact_match
         - name: organization_id
-          from: arg
+          from: arg_int
           key: organization_id
     response:
       rows_path:
@@ -1151,19 +1180,17 @@ functions:
         query_param: limit
     args:
       - name: term
-        type: Utf8
         required: true
-        description: >-
-          Search term (minimum 2 characters). Matched against name, email,
-          phone, and notes.
+        bind:
+          arg: term
       - name: exact_match
-        type: Boolean
         required: false
-        description: When true, only exact full-string matches are returned.
+        bind:
+          arg: exact_match
       - name: organization_id
-        type: Int64
         required: false
-        description: Limit results to persons belonging to this organization ID.
+        bind:
+          arg: organization_id
     columns:
       - name: result_score
         type: Float64
@@ -1223,6 +1250,7 @@ functions:
     search_limits:
       default_top_k: 10
       max_top_k: 100
+      max_calls_per_query: 1
     request:
       method: GET
       path: /api/v2/organizations/search
@@ -1231,7 +1259,7 @@ functions:
           from: arg
           key: term
         - name: exact_match
-          from: arg
+          from: arg_bool
           key: exact_match
     response:
       rows_path:
@@ -1249,15 +1277,13 @@ functions:
         query_param: limit
     args:
       - name: term
-        type: Utf8
         required: true
-        description: >-
-          Search term (minimum 2 characters). Matched against name, address,
-          and notes.
+        bind:
+          arg: term
       - name: exact_match
-        type: Boolean
         required: false
-        description: When true, only exact full-string matches are returned.
+        bind:
+          arg: exact_match
     columns:
       - name: result_score
         type: Float64
