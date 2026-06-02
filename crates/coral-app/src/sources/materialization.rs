@@ -600,8 +600,10 @@ fn read_url_descriptor(url: &str) -> Result<Vec<u8>, AppError> {
 }
 
 fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError> {
+    ensure_https_descriptor_url(url)?;
     let client = reqwest::blocking::Client::builder()
         .timeout(DESCRIPTOR_FETCH_TIMEOUT)
+        .https_only(true)
         .redirect(reqwest::redirect::Policy::limited(5))
         .user_agent(DESCRIPTOR_USER_AGENT)
         .build()
@@ -615,6 +617,12 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError
             "failed to fetch OpenAPI descriptor '{url}': {error}"
         ))
     })?;
+    if response.url().scheme() != "https" {
+        return Err(AppError::FailedPrecondition(format!(
+            "OpenAPI descriptor '{url}' redirected to non-HTTPS URL '{}'",
+            response.url()
+        )));
+    }
     if !response.status().is_success() {
         return Err(AppError::Unavailable(format!(
             "failed to fetch OpenAPI descriptor '{url}': HTTP {}",
@@ -641,6 +649,18 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError
         )));
     }
     Ok(bytes)
+}
+
+fn ensure_https_descriptor_url(url: &str) -> Result<(), AppError> {
+    let parsed = reqwest::Url::parse(url).map_err(|error| {
+        AppError::InvalidInput(format!("OpenAPI descriptor URL '{url}' is invalid: {error}"))
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(AppError::FailedPrecondition(format!(
+            "OpenAPI descriptor URL '{url}' must use HTTPS"
+        )));
+    }
+    Ok(())
 }
 
 fn stable_input_declarations_sha256(inputs: &[ManifestInputSpec]) -> Result<String, AppError> {
@@ -991,6 +1011,17 @@ surfaces:
             error
                 .to_string()
                 .contains("raw source document hash does not match"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn read_url_descriptor_rejects_non_https_urls() {
+        let error = read_url_descriptor_on_blocking_thread("http://example.com/openapi.yaml")
+            .expect_err("plain HTTP descriptor should fail");
+
+        assert!(
+            error.to_string().contains("must use HTTPS"),
             "unexpected error: {error}"
         );
     }
