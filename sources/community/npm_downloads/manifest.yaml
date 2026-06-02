@@ -34,7 +34,11 @@ tables:
       Total downloads over the trailing 30 days. Requires package_name and maps
       to GET /downloads/point/last-month/{package_name} on api.npmjs.org.
       Returns one row. Pair with downloads_last_week to estimate a trend
-      (week * 4 vs month).
+      (week * 4 vs month). Exactly ONE package name is supported per query.
+      npm's comma-separated bulk point endpoint returns a differently-shaped
+      object keyed by package name and is not modeled here; passing a
+      comma-separated value (e.g. 'npm,express') yields a single row with null
+      package/downloads/start/end. Query one package at a time.
     filters:
       - name: package_name
         required: true
@@ -86,7 +90,10 @@ tables:
       Total downloads over the trailing 7 days. Requires package_name and maps
       to GET /downloads/point/last-week/{package_name} on api.npmjs.org.
       Returns one row. A week's count multiplied by ~4 and compared against
-      downloads_last_month is a cheap momentum signal.
+      downloads_last_month is a cheap momentum signal. Exactly ONE package name
+      is supported per query; npm's comma-separated bulk point endpoint returns
+      a differently-shaped object keyed by package name and is not modeled here
+      (a comma-separated value yields null fields). Query one package at a time.
     filters:
       - name: package_name
         required: true
