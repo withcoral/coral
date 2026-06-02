@@ -87,7 +87,7 @@ Zoho Books scopes are module-specific. This source is read-only and requires `RE
 | customer_payments | `ZohoBooks.customerpayments.READ` |
 | vendor_payments | `ZohoBooks.vendorpayments.READ` |
 | items | `ZohoBooks.settings.READ` |
-| chart_of_accounts | `ZohoBooks.settings.READ` |
+| chart_of_accounts | `ZohoBooks.accountants.READ` |
 | journals | `ZohoBooks.accountants.READ` |
 | projects | `ZohoBooks.projects.READ` |
 

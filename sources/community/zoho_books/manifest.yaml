@@ -1,4 +1,3 @@
-
 name: zoho_books
 version: 0.1.0
 dsl_version: 3
@@ -264,7 +263,10 @@ tables:
         type: Utf8
       - name: invoice_date
         type: Utf8
-        description: ISO date (yyyy-mm-dd) per Zoho org date format.
+        description: ISO date (yyyy-mm-dd) mapped from Zoho's `date` field.
+        expr:
+          kind: path
+          path: [date]
       - name: due_date
         type: Utf8
       - name: total
@@ -841,8 +843,7 @@ tables:
     fetch_limit_default: 100
     filters:
       - name: customer_id
-      - name: date_start
-      - name: date_end
+      - name: date
       - name: reference_number
     request:
       method: GET
@@ -854,17 +855,14 @@ tables:
         - name: customer_id
           from: filter
           key: customer_id
-        - name: date_start
+        - name: date
           from: filter
-          key: date_start
-        - name: date_end
-          from: filter
-          key: date_end
+          key: date
         - name: reference_number
           from: filter
           key: reference_number
     response:
-      rows_path: [customerpayments]
+      rows_path: [customer_payments]
       row_strategy: direct
     pagination:
       mode: page
@@ -1087,9 +1085,9 @@ tables:
     description: Chart of accounts.
     fetch_limit_default: 100
     filters:
-      - name: account_type
-      - name: search_text
       - name: filter_by
+      - name: showbalance
+      - name: sort_column
     request:
       method: GET
       path: /chartofaccounts
@@ -1097,15 +1095,15 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
-        - name: account_type
-          from: filter
-          key: account_type
-        - name: search_text
-          from: filter
-          key: search_text
         - name: filter_by
           from: filter
           key: filter_by
+        - name: showbalance
+          from: filter
+          key: showbalance
+        - name: sort_column
+          from: filter
+          key: sort_column
     response:
       rows_path: [chartofaccounts]
       row_strategy: direct
