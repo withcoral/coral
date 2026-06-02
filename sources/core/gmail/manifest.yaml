@@ -1,0 +1,1230 @@
+name: gmail
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Gmail profile metadata, labels, messages, threads, drafts, history,
+  filters, and send-as aliases from the authenticated mailbox.
+base_url: https://gmail.googleapis.com
+inputs:
+  GMAIL_USER_ID:
+    kind: variable
+    default: me
+    hint: |
+      Gmail user ID to query. Use `me` for the authenticated Google
+      account, or an email address when the token has delegated access.
+  GMAIL_TOKEN:
+    kind: secret
+    hint: |
+      Use a read-only OAuth 2.0 access token for the Gmail API with the
+      `https://www.googleapis.com/auth/gmail.readonly` scope.
+      For the guided OAuth flow, enable the Gmail API in a Google Cloud
+      project and create an OAuth 2.0 client of type "Desktop app". The
+      guided OAuth credential method uses that client ID and client secret,
+      then requests that read-only scope.
+      See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
+
+      To paste a token manually, use a token issued with that same scope.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Google
+          description: Use a Google OAuth client ID and client secret.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/gmail.readonly
+        - type: source_config
+          label: Paste access token
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GMAIL_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM gmail.profile LIMIT 1
+  - SELECT * FROM gmail.search_messages(q => 'newer_than:7d') LIMIT 1
+functions:
+  - name: search_messages
+    kind: search
+    description: >-
+      Provider-native Gmail search over messages using the messages.list `q`
+      parameter. Accepts standard Gmail search syntax (for example `from:`,
+      `subject:`, `newer_than:`, `has:attachment`). Returns message and thread
+      IDs only; query `message_details` by `id` for headers, payload, or raw
+      content.
+    fetch_limit_default: 25
+    search_limits:
+      default_top_k: 25
+      max_top_k: 500
+      max_calls_per_query: 1
+    detail_hints:
+      - table: message_details
+        search_result_column: id
+        detail_filter: id
+        purpose: Fetch headers, payload, and raw content for a matched message.
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: label_id
+        bind:
+          arg: label_id
+      - name: include_spam_trash
+        bind:
+          arg: include_spam_trash
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/messages
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: labelIds
+          from: arg
+          key: label_id
+        - name: includeSpamTrash
+          from: arg_bool
+          key: include_spam_trash
+    response:
+      rows_path: [messages]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+    columns:
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gmail search query passed to the function
+        expr: {kind: from_arg, key: q}
+      - name: label_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional label ID the search was scoped to
+        expr: {kind: from_arg, key: label_id}
+      - name: include_spam_trash
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether SPAM and TRASH were included in the search
+        expr: {kind: from_arg, key: include_spam_trash}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail message ID
+        expr: {kind: path, path: [id]}
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: Gmail thread ID
+        expr: {kind: path, path: [threadId]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail message reference object
+        expr: {kind: current_row}
+  - name: search_threads
+    kind: search
+    description: >-
+      Provider-native Gmail search over threads using the threads.list `q`
+      parameter. Accepts standard Gmail search syntax. Query `thread_details`
+      by `id` to fetch the messages in a matched thread.
+    fetch_limit_default: 25
+    search_limits:
+      default_top_k: 25
+      max_top_k: 500
+      max_calls_per_query: 1
+    detail_hints:
+      - table: thread_details
+        search_result_column: id
+        detail_filter: id
+        purpose: Fetch the messages and metadata for a matched thread.
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: label_id
+        bind:
+          arg: label_id
+      - name: include_spam_trash
+        bind:
+          arg: include_spam_trash
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/threads
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: labelIds
+          from: arg
+          key: label_id
+        - name: includeSpamTrash
+          from: arg_bool
+          key: include_spam_trash
+    response:
+      rows_path: [threads]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+    columns:
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gmail search query passed to the function
+        expr: {kind: from_arg, key: q}
+      - name: label_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional label ID the search was scoped to
+        expr: {kind: from_arg, key: label_id}
+      - name: include_spam_trash
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether SPAM and TRASH were included in the search
+        expr: {kind: from_arg, key: include_spam_trash}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail thread ID
+        expr: {kind: path, path: [id]}
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Thread snippet when returned by Gmail
+        expr: {kind: path, path: [snippet]}
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: History ID for the thread when returned by Gmail
+        expr: {kind: path, path: [historyId]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail thread reference object
+        expr: {kind: current_row}
+  - name: search_drafts
+    kind: search
+    description: >-
+      Provider-native Gmail search over drafts using the drafts.list `q`
+      parameter. Accepts standard Gmail search syntax. Query `draft_details`
+      by `id` to fetch the full draft message.
+    fetch_limit_default: 25
+    search_limits:
+      default_top_k: 25
+      max_top_k: 500
+      max_calls_per_query: 1
+    detail_hints:
+      - table: draft_details
+        search_result_column: id
+        detail_filter: id
+        purpose: Fetch the full draft message for a matched draft.
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: include_spam_trash
+        bind:
+          arg: include_spam_trash
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/drafts
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: includeSpamTrash
+          from: arg_bool
+          key: include_spam_trash
+    response:
+      rows_path: [drafts]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+    columns:
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gmail search query passed to the function
+        expr: {kind: from_arg, key: q}
+      - name: include_spam_trash
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether SPAM and TRASH were included in the search
+        expr: {kind: from_arg, key: include_spam_trash}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail draft ID
+        expr: {kind: path, path: [id]}
+      - name: message_id
+        type: Utf8
+        nullable: true
+        description: Message ID associated with the draft
+        expr: {kind: path, path: [message, id]}
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: Thread ID associated with the draft message
+        expr: {kind: path, path: [message, threadId]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail draft reference object
+        expr: {kind: current_row}
+tables:
+  - name: profile
+    description: Profile metadata for the configured Gmail user.
+    guide: |
+      Start here to confirm the connected mailbox and capture the current
+      `history_id` for incremental history queries.
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/profile
+    response:
+      row_strategy: direct
+    columns:
+      - name: email_address
+        type: Utf8
+        nullable: false
+        description: Gmail address for this mailbox
+        expr: {kind: path, path: [emailAddress]}
+      - name: messages_total
+        type: Int64
+        nullable: true
+        description: Total messages in the mailbox
+        expr: {kind: path, path: [messagesTotal]}
+      - name: threads_total
+        type: Int64
+        nullable: true
+        description: Total threads in the mailbox
+        expr: {kind: path, path: [threadsTotal]}
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Current mailbox history ID. Use as the incremental-sync cursor:
+          re-read it after processing a `gmail.history` batch to get the
+          next `start_history_id`.
+        expr: {kind: path, path: [historyId]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail profile object
+        expr: {kind: current_row}
+
+  - name: labels
+    description: Gmail labels visible in the mailbox.
+    guide: |
+      Use this table to discover label IDs such as `INBOX`, `SENT`, custom
+      user labels, and system labels. Join to `label_details` by `id` when
+      you need counters or color metadata.
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/labels
+    response:
+      rows_path: [labels]
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Label ID
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Label display name
+        expr: {kind: path, path: [name]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Label type, such as system or user
+        expr: {kind: path, path: [type]}
+      - name: message_list_visibility
+        type: Utf8
+        nullable: true
+        description: Message list visibility for this label
+        expr: {kind: path, path: [messageListVisibility]}
+      - name: label_list_visibility
+        type: Utf8
+        nullable: true
+        description: Label list visibility in Gmail
+        expr: {kind: path, path: [labelListVisibility]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail label object
+        expr: {kind: current_row}
+
+  - name: label_details
+    description: Detailed Gmail label metadata for one label.
+    guide: |
+      Requires `id` from `gmail.labels`. This returns counters and color
+      metadata that the Gmail list endpoint can omit.
+    filters:
+      - name: id
+        required: true
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/labels/{{filter.id}}
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Label ID
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Label display name
+        expr: {kind: path, path: [name]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Label type, such as system or user
+        expr: {kind: path, path: [type]}
+      - name: messages_total
+        type: Int64
+        nullable: true
+        description: Total messages with this label
+        expr: {kind: path, path: [messagesTotal]}
+      - name: messages_unread
+        type: Int64
+        nullable: true
+        description: Unread messages with this label
+        expr: {kind: path, path: [messagesUnread]}
+      - name: threads_total
+        type: Int64
+        nullable: true
+        description: Total threads with this label
+        expr: {kind: path, path: [threadsTotal]}
+      - name: threads_unread
+        type: Int64
+        nullable: true
+        description: Unread threads with this label
+        expr: {kind: path, path: [threadsUnread]}
+      - name: color
+        type: Json
+        nullable: true
+        description: Label color object
+        expr: {kind: path, path: [color]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail label object
+        expr: {kind: current_row}
+
+  - name: messages
+    description: Gmail message references, optionally filtered by label.
+    guide: |
+      This table uses Gmail's list endpoint, so rows contain message IDs and
+      thread IDs only. Use `label_id` for a single label filter and
+      `include_spam_trash` to include spam and trash. For Gmail search syntax
+      (`from:`, `subject:`, `newer_than:`, etc.), use the
+      `gmail.search_messages` table function instead. Query `message_details`
+      by `id` to fetch headers, payload, or raw content for a message.
+    fetch_limit_default: 1000
+    filters:
+      - name: label_id
+      - name: include_spam_trash
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/messages
+      query:
+        - name: labelIds
+          from: filter
+          key: label_id
+        - name: includeSpamTrash
+          from: filter_bool
+          key: include_spam_trash
+    response:
+      rows_path: [messages]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail message ID
+        expr: {kind: path, path: [id]}
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: Gmail thread ID
+        expr: {kind: path, path: [threadId]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail message reference object
+        expr: {kind: current_row}
+
+  - name: message_details
+    description: Detailed metadata and payload for one Gmail message.
+    guide: |
+      Requires `id` from `gmail.messages`. The default `format` is `full`,
+      which returns parsed payload JSON. Use `format = 'metadata'` for
+      headers and labels only, or `format = 'raw'` for raw RFC 2822 content.
+    filters:
+      - name: id
+        required: true
+      - name: format
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/messages/{{filter.id}}
+      query:
+        - name: format
+          from: filter
+          key: format
+          default: full
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail message ID
+        expr: {kind: path, path: [id]}
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: Gmail thread ID
+        expr: {kind: path, path: [threadId]}
+      - name: label_ids
+        type: Json
+        nullable: true
+        description: Labels currently attached to the message
+        expr: {kind: path, path: [labelIds]}
+      - name: label_ids_text
+        type: Utf8
+        nullable: true
+        description: Comma-separated labels currently attached to the message
+        expr: {kind: join_array, path: [labelIds]}
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Short message snippet
+        expr: {kind: path, path: [snippet]}
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: History ID for the message
+        expr: {kind: path, path: [historyId]}
+      - name: internal_date
+        type: Timestamp
+        nullable: true
+        description: Internal message date from Gmail
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [internalDate]}
+      - name: size_estimate
+        type: Int64
+        nullable: true
+        description: Estimated message size in bytes
+        expr: {kind: path, path: [sizeEstimate]}
+      - name: from
+        type: Utf8
+        nullable: true
+        description: From header value
+        expr:
+          kind: tag_value
+          path: [payload, headers]
+          key: From
+          key_field: name
+          value_field: value
+      - name: to
+        type: Utf8
+        nullable: true
+        description: To header value
+        expr:
+          kind: tag_value
+          path: [payload, headers]
+          key: To
+          key_field: name
+          value_field: value
+      - name: cc
+        type: Utf8
+        nullable: true
+        description: Cc header value
+        expr:
+          kind: tag_value
+          path: [payload, headers]
+          key: Cc
+          key_field: name
+          value_field: value
+      - name: bcc
+        type: Utf8
+        nullable: true
+        description: Bcc header value
+        expr:
+          kind: tag_value
+          path: [payload, headers]
+          key: Bcc
+          key_field: name
+          value_field: value
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Subject header value
+        expr:
+          kind: tag_value
+          path: [payload, headers]
+          key: Subject
+          key_field: name
+          value_field: value
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Date header value
+        expr:
+          kind: tag_value
+          path: [payload, headers]
+          key: Date
+          key_field: name
+          value_field: value
+      - name: message_id
+        type: Utf8
+        nullable: true
+        description: Message-ID header value
+        expr:
+          kind: tag_value
+          path: [payload, headers]
+          key: Message-ID
+          key_field: name
+          value_field: value
+      - name: headers
+        type: Json
+        nullable: true
+        description: Message headers returned by Gmail
+        expr: {kind: path, path: [payload, headers]}
+      - name: payload
+        type: Json
+        nullable: true
+        description: Parsed message payload when returned by the selected format
+        expr: {kind: path, path: [payload]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail message object
+        expr: {kind: current_row}
+
+  - name: message_headers
+    description: Header rows for one Gmail message.
+    guide: |
+      Requires `id` from `gmail.messages`. This exposes each returned Gmail
+      header as a separate row.
+    filters:
+      - name: id
+        required: true
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/messages/{{filter.id}}
+      query:
+        - name: format
+          from: literal
+          value: metadata
+    response:
+      rows_path: [payload, headers]
+      row_strategy: direct
+    columns:
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: Gmail message ID used for this lookup
+        expr: {kind: from_filter, key: id}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Header name
+        expr: {kind: path, path: [name]}
+      - name: value
+        type: Utf8
+        nullable: true
+        description: Header value
+        expr: {kind: path, path: [value]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail header object
+        expr: {kind: current_row}
+
+  - name: message_attachments
+    description: Attachment body data for one Gmail message attachment.
+    guide: |
+      Requires `message_id` and `attachment_id`. Attachment IDs are exposed
+      inside `message_details.payload` parts. Gmail returns attachment data as
+      base64url text; Coral leaves it encoded.
+    filters:
+      - name: message_id
+        required: true
+      - name: attachment_id
+        required: true
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/messages/{{filter.message_id}}/attachments/{{filter.attachment_id}}
+    response:
+      row_strategy: direct
+    columns:
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: Gmail message ID used for this lookup
+        expr: {kind: from_filter, key: message_id}
+      - name: attachment_id
+        type: Utf8
+        nullable: false
+        description: Gmail attachment ID used for this lookup
+        expr: {kind: from_filter, key: attachment_id}
+      - name: size
+        type: Int64
+        nullable: true
+        description: Attachment data size in bytes
+        expr: {kind: path, path: [size]}
+      - name: data
+        type: Utf8
+        nullable: true
+        description: Base64url-encoded attachment data
+        expr: {kind: path, path: [data]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail attachment body object
+        expr: {kind: current_row}
+
+  - name: threads
+    description: Gmail thread references, optionally filtered by label.
+    guide: |
+      This table uses Gmail's list endpoint. Use `label_id` and
+      `include_spam_trash` to narrow the list. For Gmail search syntax, use
+      the `gmail.search_threads` table function instead. Query
+      `thread_details` by `id` to fetch messages in a thread.
+    fetch_limit_default: 1000
+    filters:
+      - name: label_id
+      - name: include_spam_trash
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/threads
+      query:
+        - name: labelIds
+          from: filter
+          key: label_id
+        - name: includeSpamTrash
+          from: filter_bool
+          key: include_spam_trash
+    response:
+      rows_path: [threads]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail thread ID
+        expr: {kind: path, path: [id]}
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Thread snippet when returned by Gmail
+        expr: {kind: path, path: [snippet]}
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: History ID for the thread when returned by Gmail
+        expr: {kind: path, path: [historyId]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail thread reference object
+        expr: {kind: current_row}
+
+  - name: thread_details
+    description: Detailed metadata and messages for one Gmail thread.
+    guide: |
+      Requires `id` from `gmail.threads`. The default `format` is `full`,
+      which returns parsed payload JSON for messages in the thread. Use
+      `format = 'metadata'` for headers and labels only.
+    filters:
+      - name: id
+        required: true
+      - name: format
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/threads/{{filter.id}}
+      query:
+        - name: format
+          from: filter
+          key: format
+          default: full
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail thread ID
+        expr: {kind: path, path: [id]}
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Thread snippet
+        expr: {kind: path, path: [snippet]}
+      - name: history_id
+        type: Utf8
+        nullable: true
+        description: History ID for the thread
+        expr: {kind: path, path: [historyId]}
+      - name: first_message_id
+        type: Utf8
+        nullable: true
+        description: First message ID returned in the thread
+        expr:
+          kind: first_array_item_path
+          path: [messages]
+          item_path: [id]
+      - name: messages
+        type: Json
+        nullable: true
+        description: Messages returned for this thread
+        expr: {kind: path, path: [messages]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail thread object
+        expr: {kind: current_row}
+
+  - name: drafts
+    description: Gmail draft references.
+    guide: |
+      This table lists draft IDs and their message IDs. For Gmail search
+      syntax, use the `gmail.search_drafts` table function instead. Query
+      `draft_details` by `id` to fetch full draft message metadata.
+    fetch_limit_default: 1000
+    filters:
+      - name: include_spam_trash
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/drafts
+      query:
+        - name: includeSpamTrash
+          from: filter_bool
+          key: include_spam_trash
+    response:
+      rows_path: [drafts]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail draft ID
+        expr: {kind: path, path: [id]}
+      - name: message_id
+        type: Utf8
+        nullable: true
+        description: Message ID associated with the draft
+        expr: {kind: path, path: [message, id]}
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: Thread ID associated with the draft message
+        expr: {kind: path, path: [message, threadId]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail draft reference object
+        expr: {kind: current_row}
+
+  - name: draft_details
+    description: Detailed metadata and payload for one Gmail draft.
+    guide: |
+      Requires `id` from `gmail.drafts`. The default `format` is `full`,
+      which returns parsed draft message payload JSON.
+    filters:
+      - name: id
+        required: true
+      - name: format
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/drafts/{{filter.id}}
+      query:
+        - name: format
+          from: filter
+          key: format
+          default: full
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gmail draft ID
+        expr: {kind: path, path: [id]}
+      - name: message_id
+        type: Utf8
+        nullable: true
+        description: Message ID associated with the draft
+        expr: {kind: path, path: [message, id]}
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: Thread ID associated with the draft message
+        expr: {kind: path, path: [message, threadId]}
+      - name: label_ids
+        type: Json
+        nullable: true
+        description: Labels attached to the draft message
+        expr: {kind: path, path: [message, labelIds]}
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Draft message snippet
+        expr: {kind: path, path: [message, snippet]}
+      - name: internal_date
+        type: Timestamp
+        nullable: true
+        description: Internal date for the draft message
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [message, internalDate]}
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Subject header value
+        expr:
+          kind: tag_value
+          path: [message, payload, headers]
+          key: Subject
+          key_field: name
+          value_field: value
+      - name: from
+        type: Utf8
+        nullable: true
+        description: From header value
+        expr:
+          kind: tag_value
+          path: [message, payload, headers]
+          key: From
+          key_field: name
+          value_field: value
+      - name: to
+        type: Utf8
+        nullable: true
+        description: To header value
+        expr:
+          kind: tag_value
+          path: [message, payload, headers]
+          key: To
+          key_field: name
+          value_field: value
+      - name: message
+        type: Json
+        nullable: true
+        description: Draft message object
+        expr: {kind: path, path: [message]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail draft object
+        expr: {kind: current_row}
+
+  - name: history
+    description: Gmail mailbox history records after a starting history ID.
+    guide: |
+      Requires `start_history_id`. For the first sync, read it from
+      `gmail.profile.history_id`. To advance incrementally, re-read
+      `gmail.profile.history_id` after processing a batch and pass it as the
+      next `start_history_id`: this table returns one row per change record
+      and does not surface the mailbox's latest `historyId`, so a query with
+      no new changes returns zero rows. Gmail can return HTTP 404 for old or
+      invalid history IDs; perform a full sync when that happens.
+    fetch_limit_default: 1000
+    filters:
+      - name: start_history_id
+        required: true
+      - name: label_id
+      - name: history_type
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/history
+      query:
+        - name: startHistoryId
+          from: filter
+          key: start_history_id
+        - name: labelId
+          from: filter
+          key: label_id
+        - name: historyTypes
+          from: filter
+          key: history_type
+    response:
+      rows_path: [history]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path: [nextPageToken]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: History record ID
+        expr: {kind: path, path: [id]}
+      - name: start_history_id
+        type: Utf8
+        nullable: false
+        description: Starting history ID used for this request
+        expr: {kind: from_filter, key: start_history_id}
+      - name: messages
+        type: Json
+        nullable: true
+        description: Messages changed by this history record
+        expr: {kind: path, path: [messages]}
+      - name: messages_added
+        type: Json
+        nullable: true
+        description: Messages added in this history record
+        expr: {kind: path, path: [messagesAdded]}
+      - name: messages_deleted
+        type: Json
+        nullable: true
+        description: Messages deleted in this history record
+        expr: {kind: path, path: [messagesDeleted]}
+      - name: labels_added
+        type: Json
+        nullable: true
+        description: Labels added in this history record
+        expr: {kind: path, path: [labelsAdded]}
+      - name: labels_removed
+        type: Json
+        nullable: true
+        description: Labels removed in this history record
+        expr: {kind: path, path: [labelsRemoved]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail history record object
+        expr: {kind: current_row}
+
+  - name: settings_filters
+    description: Gmail message filters for the configured mailbox.
+    guide: |
+      Use this table to inspect filter criteria and actions.
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/settings/filters
+    response:
+      rows_path: [filter]
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Filter ID
+        expr: {kind: path, path: [id]}
+      - name: criteria
+        type: Json
+        nullable: true
+        description: Filter matching criteria
+        expr: {kind: path, path: [criteria]}
+      - name: criteria_from
+        type: Utf8
+        nullable: true
+        description: Sender criteria
+        expr: {kind: path, path: [criteria, from]}
+      - name: criteria_to
+        type: Utf8
+        nullable: true
+        description: Recipient criteria
+        expr: {kind: path, path: [criteria, to]}
+      - name: criteria_subject
+        type: Utf8
+        nullable: true
+        description: Subject criteria
+        expr: {kind: path, path: [criteria, subject]}
+      - name: criteria_query
+        type: Utf8
+        nullable: true
+        description: Positive Gmail search criteria
+        expr: {kind: path, path: [criteria, query]}
+      - name: criteria_negated_query
+        type: Utf8
+        nullable: true
+        description: Negated Gmail search criteria
+        expr: {kind: path, path: [criteria, negatedQuery]}
+      - name: has_attachment
+        type: Boolean
+        nullable: true
+        description: Whether the filter requires attachments
+        expr: {kind: path, path: [criteria, hasAttachment]}
+      - name: exclude_chats
+        type: Boolean
+        nullable: true
+        description: Whether chats are excluded from the filter
+        expr: {kind: path, path: [criteria, excludeChats]}
+      - name: action
+        type: Json
+        nullable: true
+        description: Filter action object
+        expr: {kind: path, path: [action]}
+      - name: add_label_ids
+        type: Json
+        nullable: true
+        description: Labels added by this filter
+        expr: {kind: path, path: [action, addLabelIds]}
+      - name: remove_label_ids
+        type: Json
+        nullable: true
+        description: Labels removed by this filter
+        expr: {kind: path, path: [action, removeLabelIds]}
+      - name: forward
+        type: Utf8
+        nullable: true
+        description: Forwarding address used by this filter
+        expr: {kind: path, path: [action, forward]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail filter object
+        expr: {kind: current_row}
+
+  - name: send_as
+    description: Gmail send-as aliases configured for the mailbox.
+    guide: |
+      Use this table to inspect sender aliases and default reply behavior for
+      the authenticated mailbox.
+    request:
+      method: GET
+      path: /gmail/v1/users/{{input.GMAIL_USER_ID}}/settings/sendAs
+    response:
+      rows_path: [sendAs]
+      row_strategy: direct
+    columns:
+      - name: send_as_email
+        type: Utf8
+        nullable: false
+        description: Send-as email address
+        expr: {kind: path, path: [sendAsEmail]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name for this alias
+        expr: {kind: path, path: [displayName]}
+      - name: reply_to_address
+        type: Utf8
+        nullable: true
+        description: Reply-to address
+        expr: {kind: path, path: [replyToAddress]}
+      - name: signature
+        type: Utf8
+        nullable: true
+        description: Signature HTML for this alias
+        expr: {kind: path, path: [signature]}
+      - name: is_primary
+        type: Boolean
+        nullable: true
+        description: Whether this is the primary address
+        expr: {kind: path, path: [isPrimary]}
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether this alias is the default sender
+        expr: {kind: path, path: [isDefault]}
+      - name: treat_as_alias
+        type: Boolean
+        nullable: true
+        description: Whether Gmail treats this address as an alias
+        expr: {kind: path, path: [treatAsAlias]}
+      - name: verification_status
+        type: Utf8
+        nullable: true
+        description: Verification status for this alias
+        expr: {kind: path, path: [verificationStatus]}
+      - name: smtp_msa
+        type: Json
+        nullable: true
+        description: SMTP relay configuration for this alias
+        expr: {kind: path, path: [smtpMsa]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Gmail send-as object
+        expr: {kind: current_row}
