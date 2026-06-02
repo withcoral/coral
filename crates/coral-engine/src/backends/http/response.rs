@@ -100,6 +100,7 @@ pub(super) async fn decode_response_body(
                         method: Some(method_label.to_string()),
                         url: Some(logged_url.to_string()),
                         detail,
+                        retryable: false,
                     });
                     if is_retryable_json_decode_error(&error) {
                         ResponseDecodeFailure::retryable(provider_error)
@@ -127,6 +128,7 @@ fn decode_error(
         method: Some(method_label.to_string()),
         url: Some(logged_url.to_string()),
         detail: format!("source API response decoding failed: {error}"),
+        retryable: false,
     })
 }
 
@@ -143,6 +145,7 @@ fn json_decode_error(
         method: Some(method_label.to_string()),
         url: Some(logged_url.to_string()),
         detail: format!("source API response decoding failed: {error}"),
+        retryable: false,
     })
 }
 

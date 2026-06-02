@@ -56,6 +56,7 @@ pub(crate) enum ProviderQueryError {
         method: Option<String>,
         url: Option<String>,
         detail: String,
+        retryable: bool,
     },
 
     #[error("{source_schema}.{table} pagination failed: {detail}")]
@@ -95,6 +96,33 @@ pub(super) fn pagination_error(
 
 pub(super) fn provider_error(error: ProviderQueryError) -> DataFusionError {
     DataFusionError::External(Box::new(error))
+}
+
+pub(super) fn mark_decode_error_retryable(error: DataFusionError) -> DataFusionError {
+    match error {
+        DataFusionError::External(inner) => match inner.downcast::<ProviderQueryError>() {
+            Ok(boxed_error) => match *boxed_error {
+                ProviderQueryError::Decode {
+                    source_schema,
+                    table,
+                    method,
+                    url,
+                    detail,
+                    ..
+                } => provider_error(ProviderQueryError::Decode {
+                    source_schema,
+                    table,
+                    method,
+                    url,
+                    detail,
+                    retryable: true,
+                }),
+                other => provider_error(other),
+            },
+            Err(inner) => DataFusionError::External(inner),
+        },
+        other => other,
+    }
 }
 
 fn datafusion_detail(error: &DataFusionError) -> String {
@@ -172,12 +200,14 @@ impl ProviderQueryError {
                 method,
                 url,
                 detail,
+                retryable,
             } => provider_stage_failure_to_structured(provider_decode_failure(
                 source_schema,
                 table,
                 method.as_deref(),
                 url.as_deref(),
                 detail,
+                *retryable,
             )),
             Self::Pagination {
                 source_schema,
@@ -398,6 +428,7 @@ fn provider_decode_failure<'a>(
     method: Option<&'a str>,
     url: Option<&'a str>,
     detail: &'a str,
+    retryable: bool,
 ) -> ProviderStageFailure<'a> {
     ProviderStageFailure {
         source,
@@ -411,8 +442,12 @@ fn provider_decode_failure<'a>(
             "The upstream API returned a response that does not match the source manifest."
                 .to_string(),
         ),
-        retryable: false,
-        status: StatusCode::FailedPrecondition,
+        retryable,
+        status: if retryable {
+            StatusCode::Unavailable
+        } else {
+            StatusCode::FailedPrecondition
+        },
         timed_out: false,
     }
 }
@@ -646,6 +681,7 @@ mod tests {
             method: Some("GET".to_string()),
             url: Some("https://api.github.com/issues".to_string()),
             detail: "expected value at line 1 column 1".to_string(),
+            retryable: false,
         }
         .to_structured();
         assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");

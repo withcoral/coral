@@ -14,7 +14,7 @@ use tracing::field;
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::resolve_auth_headers;
-use crate::backends::http::error::{pagination_error, provider_error};
+use crate::backends::http::error::{mark_decode_error_retryable, pagination_error, provider_error};
 use crate::backends::http::pagination::extract_next_link_url;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
@@ -328,13 +328,19 @@ pub(super) async fn execute_request(
             {
                 Ok(payload) => ResponseOutcome::Done(Ok(Some((payload, next_url)))),
                 Err(error) => {
-                    if error.retryable && decode_retries < 2 && matches!(method, HttpMethod::GET) {
+                    let retryable_get_decode = error.retryable && matches!(method, HttpMethod::GET);
+                    if retryable_get_decode && decode_retries < 2 {
                         record_http_processing_error(&request_span, "DECODE_RETRY", &error.error);
                         decode_retries += 1;
                         ResponseOutcome::Retry(Duration::from_secs(2))
                     } else {
-                        record_http_processing_error(&request_span, "DECODE", &error.error);
-                        ResponseOutcome::Done(Err(error.error))
+                        let error = if retryable_get_decode {
+                            mark_decode_error_retryable(error.error)
+                        } else {
+                            error.error
+                        };
+                        record_http_processing_error(&request_span, "DECODE", &error);
+                        ResponseOutcome::Done(Err(error))
                     }
                 }
             }

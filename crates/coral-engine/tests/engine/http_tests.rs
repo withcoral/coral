@@ -1693,6 +1693,51 @@ async fn api_retries_truncated_json_response() {
 }
 
 #[tokio::test]
+async fn api_reports_exhausted_truncated_get_json_as_retryable() {
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let responder_attempts = Arc::clone(&attempts);
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(move |_request: &Request| {
+            responder_attempts.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"data":[{"id":1,"name":"Ada","email":"ada@example.com"#)
+        })
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest(
+        "http_exhausted_truncated_json",
+        &server.uri(),
+    ));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id, name, email FROM http_exhausted_truncated_json.users ORDER BY id",
+    )
+    .await
+    .expect_err("exhausted truncated GET JSON should surface as retryable");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(error.status_code(), StatusCode::Unavailable);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source response decode failed");
+            assert!(sqe.retryable());
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "decode"
+            );
+        }
+        other => panic!("unexpected exhausted truncated-json error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn api_does_not_retry_truncated_json_response_for_post() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
