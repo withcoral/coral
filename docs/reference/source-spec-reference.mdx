@@ -888,13 +888,13 @@ tables:
   - name: pull_requests
     description: Pull requests
     request:
-      path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
+      path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}
     filters:
       - name: owner
         bindable: true
       - name: repo
         bindable: true
-      - name: number
+      - name: pull_number
         bindable: true
     columns:
       - name: number

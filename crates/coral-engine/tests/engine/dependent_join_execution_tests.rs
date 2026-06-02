@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -8,6 +8,8 @@ use coral_engine::{
     CoralQuery, CoreError, DependentJoinConfig, DependentJoinSourceConfig, QueryRuntimeConfig,
     StatusCode,
 };
+use coral_spec::backends::http::HttpTableSpec;
+use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex, query_param, query_param_is_missing};
@@ -826,7 +828,7 @@ async fn resolver_rows_cap_retries_original_query_without_dependent_join_rewrite
 }
 
 #[tokio::test]
-async fn parent_limit_is_page_hint_not_dependent_row_limit() {
+async fn parent_limit_caps_dependent_row_limit() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
         temp.path(),
@@ -862,7 +864,7 @@ async fn parent_limit_is_page_hint_not_dependent_row_limit() {
                 "state": "closed"
             }]
         })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -870,7 +872,7 @@ async fn parent_limit_is_page_hint_not_dependent_row_limit() {
         .and(query_param("page", "3"))
         .and(query_param("per_page", "1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -902,6 +904,95 @@ async fn parent_limit_is_page_hint_not_dependent_row_limit() {
     assert_eq!(
         execution_to_rows(&execution),
         vec![json!({ "issue_title": "First", "pr_state": "open" })]
+    );
+}
+
+#[tokio::test]
+async fn parent_limit_caps_owner_repo_dependent_list_route() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .and(query_param("owner", "withcoral"))
+        .and(query_param("repo", "coral"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "owner": "withcoral", "repo": "coral", "number": 1, "state": "open" },
+                { "owner": "withcoral", "repo": "coral", "number": 2, "state": "closed" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .and(query_param("owner", "withcoral"))
+        .and(query_param("repo", "coral"))
+        .and(query_param("page", "2"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "owner": "withcoral", "repo": "coral", "number": 3, "state": "draft" },
+                { "owner": "withcoral", "repo": "coral", "number": 4, "state": "merged" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut github = github_broad_query_manifest(&server.uri());
+    first_table_object_mut(&mut github).insert(
+        "pagination".to_string(),
+        json!({
+            "mode": "page",
+            "page_param": "page",
+            "page_start": 1,
+            "page_size": {
+                "default": 100,
+                "max": 100,
+                "query_param": "per_page"
+            }
+        }),
+    );
+
+    let sources = [
+        build_source(issues_manifest(temp.path())),
+        build_source(github),
+    ];
+    let sql = "
+    SELECT pr.number, pr.state
+    FROM issues.items AS i
+    JOIN github.pull_requests AS pr
+      ON pr.owner = i.github_owner
+     AND pr.repo = i.github_repo
+    LIMIT 2
+    ";
+
+    let explain = execution_text(
+        &CoralQuery::execute_sql(&sources, test_runtime(), &format!("EXPLAIN {sql}"))
+            .await
+            .expect("explain should succeed"),
+    );
+    assert!(explain.contains("page_hint=2"), "{explain}");
+
+    let execution = CoralQuery::execute_sql(&sources, test_runtime(), sql)
+        .await
+        .expect("query should succeed");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![
+            json!({ "number": 1, "state": "open" }),
+            json!({ "number": 2, "state": "closed" }),
+        ]
     );
 }
 
@@ -1537,6 +1628,42 @@ async fn dependent_join_source_config_can_enable_one_source_when_default_is_disa
 
     let explain = execution_text(&execution);
     assert!(explain.contains("DependentJoinExec: table=github.pull_requests"));
+}
+
+#[test]
+fn live_pilot_manifests_keep_expected_dependent_join_surfaces() {
+    let github = core_http_manifest("sources/core/github/manifest.yaml");
+    let pulls = core_http_table(&github, "pulls");
+    assert_bindable_filters(pulls, &["owner", "repo", "pull_number"]);
+    assert_eq!(
+        request_path_for_filters(pulls, &["owner", "repo"]),
+        "/repos/{{filter.owner}}/{{filter.repo}}/pulls"
+    );
+    assert_eq!(
+        request_path_for_filters(pulls, &["owner", "repo", "pull_number"]),
+        "/repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}"
+    );
+    assert!(pulls.columns().iter().any(|column| column.name == "number"));
+
+    let linear = core_http_manifest("sources/core/linear/manifest.yaml");
+    let issues = core_http_table(&linear, "issues");
+    assert_bindable_filters(issues, &["team_id"]);
+    assert!(
+        issues
+            .columns()
+            .iter()
+            .any(|column| column.name == "team_id")
+    );
+
+    let slack = core_http_manifest("sources/core/slack/manifest.yaml");
+    let slack = slack.as_http().expect("slack should be an HTTP source");
+    let messages = slack
+        .functions
+        .iter()
+        .find(|function| function.name == "messages")
+        .expect("slack messages function should exist");
+    assert!(messages.args.iter().any(|arg| arg.name == "channel"));
+    assert_eq!(messages.request.path.raw(), "/api/conversations.history");
 }
 
 #[tokio::test]
@@ -2310,6 +2437,44 @@ fn runtime_with_dependent_join(config: DependentJoinConfig) -> QueryRuntimeConfi
     let mut runtime = test_runtime();
     runtime.dependent_join = config;
     runtime
+}
+
+fn core_http_manifest(relative_path: &str) -> ValidatedSourceManifest {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let raw = std::fs::read_to_string(repo_root.join(relative_path))
+        .expect("core source manifest should be readable");
+    parse_source_manifest_yaml(&raw).expect("core source manifest should parse")
+}
+
+fn core_http_table<'a>(
+    manifest: &'a ValidatedSourceManifest,
+    table_name: &str,
+) -> &'a HttpTableSpec {
+    manifest
+        .as_http()
+        .expect("core source should be an HTTP source")
+        .tables
+        .iter()
+        .find(|table| table.name() == table_name)
+        .expect("core source table should exist")
+}
+
+fn assert_bindable_filters(table: &HttpTableSpec, expected: &[&str]) {
+    let actual = table
+        .filters()
+        .iter()
+        .filter(|filter| filter.bindable)
+        .map(|filter| filter.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn request_path_for_filters(table: &HttpTableSpec, filters: &[&str]) -> String {
+    let filters = filters
+        .iter()
+        .map(|filter| (*filter).to_string())
+        .collect::<HashSet<_>>();
+    table.resolve_request(&filters).path.raw().to_string()
 }
 
 fn issue_row(title: &str, owner: &str, repo: &str, number: i64) -> Value {
