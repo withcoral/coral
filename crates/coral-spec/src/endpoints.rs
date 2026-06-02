@@ -1,9 +1,10 @@
 //! Outbound-host extraction for source specs.
 //!
 //! Source setup surfaces every network host a source will contact so a user
-//! can review and confirm them before installation. Hosts are derived
-//! statically from the manifest — the base URL, OAuth provider endpoints, and
-//! file or object-store table locations.
+//! can review and confirm them before setup proceeds. Hosts are derived
+//! statically from the manifest — the base URL, OAuth provider endpoints,
+//! remote MCP server URLs, and S3 service endpoints. Local filesystem paths and
+//! object-store locations are not themselves network hosts.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -11,7 +12,7 @@ use url::Url;
 
 use crate::{
     ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace, TemplatePart,
-    ValidatedSourceManifest,
+    ValidatedSourceManifest, backends::file::FileObjectStoreSpec,
 };
 
 impl ValidatedSourceManifest {
@@ -19,10 +20,11 @@ impl ValidatedSourceManifest {
     /// sorted.
     ///
     /// Hosts are collected from the HTTP base URL, OAuth provider
-    /// authorization/token endpoints, and file-backed table locations. A URL
-    /// whose host depends on an install-time input with no manifest default
-    /// cannot be resolved statically; its unresolved `{{...}}` template string
-    /// is returned verbatim so callers can still show it to the user.
+    /// authorization/token endpoints, remote MCP server URLs, and S3 service
+    /// endpoints. A URL whose host depends on a setup-time input with no
+    /// manifest default cannot be resolved statically; its unresolved `{{...}}`
+    /// template string is returned verbatim so callers can still show it to the
+    /// user.
     #[must_use]
     pub fn outbound_hosts(&self) -> Vec<String> {
         self.outbound_hosts_with_input_values(&BTreeMap::new())
@@ -92,9 +94,12 @@ impl ValidatedSourceManifest {
 
         if let Some(file) = self.as_file() {
             for table in &file.tables {
-                collect_host(
+                collect_file_source_hosts(
                     &mut hosts,
                     &render_with_input_values(&table.source.location, inputs, source_inputs),
+                    table.source.object_store.as_ref(),
+                    inputs,
+                    source_inputs,
                 );
             }
         }
@@ -159,6 +164,44 @@ fn render_with_input_values(
     rendered
 }
 
+fn collect_file_source_hosts(
+    hosts: &mut BTreeSet<String>,
+    rendered_location: &str,
+    object_store: Option<&FileObjectStoreSpec>,
+    inputs: &[ManifestInputSpec],
+    source_inputs: &BTreeMap<String, String>,
+) {
+    let rendered_location = rendered_location.trim();
+    if rendered_location.is_empty() || has_scheme(rendered_location, "file") {
+        return;
+    }
+    if has_scheme(rendered_location, "s3") {
+        collect_s3_service_host(hosts, object_store, inputs, source_inputs);
+        return;
+    }
+    collect_host(hosts, rendered_location);
+}
+
+fn collect_s3_service_host(
+    hosts: &mut BTreeSet<String>,
+    object_store: Option<&FileObjectStoreSpec>,
+    inputs: &[ManifestInputSpec],
+    source_inputs: &BTreeMap<String, String>,
+) {
+    let region = match object_store {
+        Some(FileObjectStoreSpec::S3 {
+            region: Some(region),
+            ..
+        }) => render_with_input_values(region, inputs, source_inputs),
+        _ => "us-east-1".to_string(),
+    };
+    let region = region.trim();
+    if region.is_empty() {
+        return;
+    }
+    hosts.insert(format!("s3.{region}.amazonaws.com"));
+}
+
 fn render_string_template_with_input_values(
     raw: &str,
     inputs: &[ManifestInputSpec],
@@ -174,13 +217,13 @@ fn render_string_template_with_input_values(
 /// it to `hosts`.
 fn collect_host(hosts: &mut BTreeSet<String>, raw: &str) {
     let raw = raw.trim();
-    if raw.is_empty() {
+    if raw.is_empty() || has_scheme(raw, "file") {
         return;
     }
     match Url::parse(raw) {
         Ok(url) => {
-            // A `file://` location reads from the local filesystem; there is no
-            // remote host to report.
+            // A `file://` location reads from the local filesystem; there is
+            // no remote host to report.
             if url.scheme() == "file" {
                 return;
             }
@@ -199,6 +242,13 @@ fn collect_host(hosts: &mut BTreeSet<String>, raw: &str) {
             hosts.insert(raw.to_string());
         }
     }
+}
+
+fn has_scheme(raw: &str, expected: &str) -> bool {
+    let Some((scheme, _rest)) = raw.split_once("://") else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case(expected)
 }
 
 #[cfg(test)]
@@ -576,5 +626,74 @@ tables:
 ",
         );
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn includes_s3_service_host_with_default_region() {
+        let found = hosts(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: jsonl
+    source:
+      location: s3://example-bucket/events/
+      object_store:
+        type: s3
+        auth:
+          type: instance_profile
+    columns:
+      - name: kind
+        type: Utf8
+",
+        );
+        assert_eq!(found, vec!["s3.us-east-1.amazonaws.com".to_string()]);
+    }
+
+    #[test]
+    fn includes_s3_service_host_with_templated_region() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+inputs:
+  S3_BUCKET:
+    kind: variable
+  AWS_REGION:
+    kind: variable
+tables:
+  - name: events
+    description: Demo events
+    format: jsonl
+    source:
+      location: s3://{{input.S3_BUCKET}}/events/
+      object_store:
+        type: s3
+        region: "{{input.AWS_REGION}}"
+        auth:
+          type: instance_profile
+    columns:
+      - name: kind
+        type: Utf8
+"#,
+        )
+        .expect("manifest should parse");
+
+        assert_eq!(
+            manifest.outbound_hosts(),
+            vec!["s3.{{input.AWS_REGION}}.amazonaws.com".to_string()]
+        );
+
+        let source_inputs = BTreeMap::from([("AWS_REGION".to_string(), "eu-west-1".to_string())]);
+        assert_eq!(
+            manifest.outbound_hosts_with_input_values(&source_inputs),
+            vec!["s3.eu-west-1.amazonaws.com".to_string()]
+        );
     }
 }

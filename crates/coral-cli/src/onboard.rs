@@ -169,15 +169,12 @@ async fn run_installed_source_menu(
             .await?;
         }
         Some(InstalledSourceAction::Reconfigure) => {
-            let inputs = source
-                .inputs
-                .iter()
-                .map(manifest_input_from_proto)
-                .collect::<Result<Vec<_>, _>>()?;
-            let inputs = source_ops::prompt_for_inputs_with_credential_methods_in_mode(
-                &inputs,
-                source_ops::CredentialPromptMode::CredentialMethodFirst,
-            )?;
+            let Some(inputs) =
+                prompt_bundled_source_inputs_after_host_confirmation(app, source).await?
+            else {
+                println!("Cancelled. Source '{}' was not reconfigured.", source.name);
+                return Ok(());
+            };
             let result =
                 source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
             println!("Reconfigured source {}", result.name);
@@ -195,6 +192,20 @@ async fn run_installed_source_menu(
 }
 
 async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<(), anyhow::Error> {
+    let Some(inputs) = prompt_bundled_source_inputs_after_host_confirmation(app, source).await?
+    else {
+        println!("Cancelled. Source '{}' was not connected.", source.name);
+        return Ok(());
+    };
+    let result = source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
+    println!("Added source {}", result.name);
+    source_ops::validate_and_warn(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
+}
+
+async fn prompt_bundled_source_inputs_after_host_confirmation(
+    app: &AppClient,
+    source: &SourceInfo,
+) -> Result<Option<source_ops::CollectedSourceInputs>, anyhow::Error> {
     let inputs = source
         .inputs
         .iter()
@@ -205,17 +216,14 @@ async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<
     let hosts =
         source_ops::resolve_bundled_source_hosts(app, &source.name, host_variables.clone()).await?;
     if !source_ops::confirm_source_hosts(&hosts, true)? {
-        println!("Cancelled. Source '{}' was not connected.", source.name);
-        return Ok(());
+        return Ok(None);
     }
-    let inputs = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
+    let collected = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
         &inputs,
         host_variables,
         source_ops::CredentialPromptMode::CredentialMethodFirst,
     )?;
-    let result = source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
-    println!("Added source {}", result.name);
-    source_ops::validate_and_warn(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
+    Ok(Some(collected))
 }
 
 async fn run_next_steps(

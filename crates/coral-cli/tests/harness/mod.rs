@@ -598,6 +598,7 @@ struct Captured {
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
+    source_operation_events: Mutex<Vec<&'static str>>,
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -880,6 +881,11 @@ impl SourceService for MockSourceService {
             .lock()
             .expect("resolve_bundled_source_hosts capture")
             .push(request.into_inner());
+        self.captured
+            .source_operation_events
+            .lock()
+            .expect("source operation event capture")
+            .push("resolve_bundled_source_hosts");
         Ok(Response::new(
             self.config
                 .resolve_bundled_source_hosts
@@ -940,6 +946,11 @@ impl SourceService for MockSourceService {
             .lock()
             .expect("create_bundled_source capture")
             .push(request.into_inner());
+        self.captured
+            .source_operation_events
+            .lock()
+            .expect("source operation event capture")
+            .push("create_bundled_source");
         Ok(Response::new(CreateBundledSourceResponse {
             source: Some(mock_source()),
         }))
@@ -954,6 +965,11 @@ impl SourceService for MockSourceService {
             .lock()
             .expect("create_bundled_source_with_oauth capture")
             .push(request.into_inner());
+        self.captured
+            .source_operation_events
+            .lock()
+            .expect("source operation event capture")
+            .push("create_bundled_source_with_oauth");
         Ok(Response::new(mock_bundled_source_stream()))
     }
 
@@ -1069,6 +1085,10 @@ impl MockServer {
         self.config_dir.path()
     }
 
+    pub(crate) fn endpoint_uri(&self) -> &str {
+        &self.endpoint_uri
+    }
+
     pub(crate) fn execute_sql_requests(&self) -> Vec<ExecuteSqlRequest> {
         self.captured
             .execute_sql
@@ -1100,6 +1120,14 @@ impl MockServer {
             .create_bundled_source
             .lock()
             .expect("create_bundled_source capture")
+            .clone()
+    }
+
+    pub(crate) fn source_operation_events(&self) -> Vec<&'static str> {
+        self.captured
+            .source_operation_events
+            .lock()
+            .expect("source operation event capture")
             .clone()
     }
 
@@ -1165,10 +1193,6 @@ impl MockServer {
             .lock()
             .expect("delete_source capture")
             .clone()
-    }
-
-    pub(crate) fn endpoint_uri(&self) -> &str {
-        &self.endpoint_uri
     }
 
     pub(crate) async fn shutdown(mut self) {

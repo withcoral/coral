@@ -241,7 +241,7 @@ async fn source_from_bundled_credential_stream(
             Ok(None) => {
                 redirect_prompt.cancel_and_join();
                 return Err(anyhow::anyhow!(
-                    "source credential retrieval stream ended before source installation completed"
+                    "source credential retrieval stream ended before source setup completed"
                 ));
             }
             Err(error) => {
@@ -489,17 +489,17 @@ pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), any
 
 pub(crate) fn require_interactive() -> Result<(), anyhow::Error> {
     if !stdin().is_terminal() || !stdout().is_terminal() {
-        return Err(anyhow::anyhow!("interactive source install requires a TTY"));
+        return Err(anyhow::anyhow!("interactive source setup requires a TTY"));
     }
     Ok(())
 }
 
 /// Shows the network hosts a source will contact and, in interactive mode,
-/// asks the user to confirm before installation proceeds.
+/// asks the user to confirm before installation or reconfiguration proceeds.
 ///
-/// Returns `true` when installation should continue. In non-interactive mode
-/// the hosts are printed for visibility and `true` is returned without
-/// prompting, since there is no user available to answer.
+/// Returns `true` when installation or reconfiguration should continue. In
+/// non-interactive mode the hosts are printed for visibility and `true` is
+/// returned without prompting, since there is no user available to answer.
 pub(crate) fn confirm_source_hosts(
     hosts: &[String],
     interactive: bool,
@@ -526,7 +526,7 @@ pub(crate) fn confirm_source_hosts(
 
     println!();
     let proceed = Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Continue connecting this source?")
+        .with_prompt("Continue with this source?")
         .default(true)
         .interact()?;
     Ok(proceed)
@@ -549,48 +549,6 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
         return Err(anyhow::anyhow!("source name must not be '.' or '..'"));
     }
     Ok(name.to_string())
-}
-
-pub(crate) fn prompt_for_inputs_with_credential_methods_in_mode(
-    inputs: &[ManifestInputSpec],
-    mode: CredentialPromptMode,
-) -> Result<CollectedSourceInputs, anyhow::Error> {
-    let mut collected = CollectedSourceInputs::new();
-
-    for input in inputs {
-        if mode.reads_env_before_prompt(input) {
-            let env_value =
-                normalize_input_value(&read_source_input_env(&input.key).unwrap_or_default());
-            if !env_value.is_empty() {
-                push_collected_input(&mut collected, input, &env_value);
-                continue;
-            }
-        }
-
-        match input.kind {
-            ManifestInputKind::Variable => {
-                if let Some(variable) = prompt_variable(input)? {
-                    collected.variables.push(variable);
-                }
-            }
-            ManifestInputKind::Secret => match prompt_secret_with_methods(
-                input,
-                !collected.secrets.is_empty() || !collected.oauth_credential_retrievals.is_empty(),
-            )? {
-                SecretInputOutcome::SourceConfig(secret) => {
-                    if let Some(secret) = secret {
-                        collected.secrets.push(secret);
-                    }
-                }
-                SecretInputOutcome::OAuth { credential, label } => {
-                    collected.oauth_labels.insert(input.key.clone(), label);
-                    collected.oauth_credential_retrievals.push(credential);
-                }
-            },
-        }
-    }
-
-    Ok(collected)
 }
 
 pub(crate) fn prompt_for_remaining_inputs_with_credential_methods_in_mode(
@@ -764,7 +722,7 @@ pub(crate) fn shell_quote_arg(value: &str) -> String {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "`coral source add` reads install-time source inputs from matching environment variables."
+    reason = "`coral source add` reads setup-time source inputs from matching environment variables."
 )]
 fn read_source_input_env(key: &str) -> Option<String> {
     std::env::var(key).ok()

@@ -34,7 +34,7 @@ message SourceVariable {
   string value = 2;
 }
 
-// A secret value supplied during source installation or import.
+// A secret value supplied during source setup or import.
 message SourceSecret {
   // Logical secret key expected by the source manifest.
   string key = 1;
@@ -257,9 +257,9 @@ message SourceInfo {
   // Where credential material is stored when this source is installed.
   SourceCredentialStorage credential_storage = 7;
   // Network hosts this source will contact, derived from the manifest's base
-  // URL, OAuth provider endpoints, and file or object-store locations.
+  // URL, OAuth provider endpoints, remote MCP URLs, and S3 service endpoints.
   // De-duplicated and sorted. Shown to the user as a confirmation step before
-  // installation.
+  // installation or credential updates.
   repeated string hosts = 8;
 }
 
@@ -275,7 +275,7 @@ message DiscoverSourcesResponse {
   repeated SourceInfo sources = 1;
 }
 
-// Resolves outbound hosts for a bundled source after applying install-time
+// Resolves outbound hosts for a bundled source after applying setup-time
 // variable values.
 message ResolveBundledSourceHostsRequest {
   // Owning workspace resource.
@@ -292,7 +292,7 @@ message ResolveBundledSourceHostsResponse {
   repeated string hosts = 1;
 }
 
-// Installs one bundled source by name.
+// Creates or replaces one bundled source by name.
 message CreateBundledSourceRequest {
   // Owning workspace resource.
   Workspace workspace = 1;
@@ -304,13 +304,14 @@ message CreateBundledSourceRequest {
   repeated SourceSecret secrets = 4;
 }
 
-// Returns the installed bundled source.
+// Returns the configured bundled source.
 message CreateBundledSourceResponse {
-  // The installed source resource.
+  // The configured source resource.
   Source source = 1;
 }
 
-// Installs one bundled source with app-owned OAuth credential retrieval.
+// Creates or replaces one bundled source with app-owned OAuth credential
+// retrieval.
 message CreateBundledSourceWithOAuthRequest {
   // Owning workspace resource.
   Workspace workspace = 1;
@@ -320,15 +321,16 @@ message CreateBundledSourceWithOAuthRequest {
   repeated SourceVariable variables = 3;
   // Source-config secret bindings.
   repeated SourceSecret secrets = 4;
-  // OAuth credential retrievals the app should run before validation and install.
+  // OAuth credential retrievals the app should run before validation and setup.
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
 }
 
-// Streaming event emitted while installing a bundled source with OAuth.
+// Streaming event emitted while creating or replacing a bundled source with
+// OAuth.
 message CreateBundledSourceWithOAuthResponse {
-  // Installation progress or completion event.
+  // Setup progress or completion event.
   oneof event {
-    // Bundled source installation completed.
+    // Bundled source setup completed.
     Source source = 1;
     // OAuth authorization URL is ready.
     OAuthCredentialAuthorization oauth_authorization = 2;
@@ -515,10 +517,10 @@ message ValidateSourceResponse {
 
 // Source registration and validation APIs.
 service SourceService {
-  // Lists bundled sources available for installation.
+  // Lists bundled source metadata for a workspace.
   rpc DiscoverSources(DiscoverSourcesRequest) returns (DiscoverSourcesResponse);
   // Resolves outbound network hosts for a bundled source candidate using the
-  // provided install-time variable values.
+  // provided setup-time variable values.
   rpc ResolveBundledSourceHosts(ResolveBundledSourceHostsRequest)
       returns (ResolveBundledSourceHostsResponse);
   // Lists all registered sources.
@@ -527,9 +529,10 @@ service SourceService {
   rpc GetSource(GetSourceRequest) returns (GetSourceResponse);
   // Fetches metadata for one installed or bundled source.
   rpc GetSourceInfo(GetSourceInfoRequest) returns (GetSourceInfoResponse);
-  // Installs one bundled source.
+  // Creates or replaces one bundled source.
   rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
-  // Installs one bundled source with app-owned OAuth credential retrieval.
+  // Creates or replaces one bundled source with app-owned OAuth credential
+  // retrieval.
   rpc CreateBundledSourceWithOAuth(CreateBundledSourceWithOAuthRequest)
       returns (stream CreateBundledSourceWithOAuthResponse);
   // Imports one user-provided source manifest, streaming credential retrieval
