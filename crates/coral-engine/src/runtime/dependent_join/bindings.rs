@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use arrow::array::{Array, BooleanArray, Int64Array, RecordBatch, StringArray};
+use arrow::array::{
+    Array, BooleanArray, Int64Array, LargeStringArray, RecordBatch, StringArray, StringViewArray,
+};
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result};
 
@@ -74,6 +76,20 @@ fn extract_binding_value(array: &dyn Array, row: usize) -> Result<BindingValue> 
             let array = array
                 .as_any()
                 .downcast_ref::<StringArray>()
+                .ok_or_else(|| coercion_error(array.data_type()))?;
+            Ok(BindingValue::String(array.value(row).to_string()))
+        }
+        DataType::Utf8View => {
+            let array = array
+                .as_any()
+                .downcast_ref::<StringViewArray>()
+                .ok_or_else(|| coercion_error(array.data_type()))?;
+            Ok(BindingValue::String(array.value(row).to_string()))
+        }
+        DataType::LargeUtf8 => {
+            let array = array
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
                 .ok_or_else(|| coercion_error(array.data_type()))?;
             Ok(BindingValue::String(array.value(row).to_string()))
         }

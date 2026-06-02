@@ -176,6 +176,72 @@ async fn duplicate_resolver_rows_for_one_binding_emit_distinct_join_batches() {
 }
 
 #[tokio::test]
+async fn dependent_join_accepts_safe_string_casts_on_join_keys() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sql = "
+        WITH input AS (
+          SELECT 'Null repo' AS issue_title,
+                 'withcoral' AS github_owner,
+                 CAST(NULL AS VARCHAR) AS github_repo,
+                 123 AS github_pr_number
+          UNION ALL
+          SELECT 'First', 'withcoral', 'coral', 123
+        )
+        SELECT input.issue_title AS issue_title, pr.state AS pr_state
+        FROM input
+        JOIN github.pull_requests AS pr
+          ON pr.owner = input.github_owner
+         AND pr.repo = input.github_repo
+         AND pr.number = input.github_pr_number
+        ORDER BY input.issue_title
+        ";
+
+    let explain_sql = format!("EXPLAIN {sql}");
+    let explain = CoralQuery::execute_sql(
+        &[build_source(github_required_manifest(&server.uri()))],
+        test_runtime(),
+        &explain_sql,
+    )
+    .await
+    .expect("explain should succeed");
+    let explain = execution_text(&explain);
+    assert!(explain.contains("DependentJoinExec"), "{explain}");
+    assert!(
+        explain.contains(
+            "binding_keys=[owner <- input.github_owner, repo <- input.github_repo, number <- input.github_pr_number]"
+        ),
+        "{explain}"
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[build_source(github_required_manifest(&server.uri()))],
+        test_runtime(),
+        sql,
+    )
+    .await
+    .expect("query should succeed");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "First", "pr_state": "open" })]
+    );
+}
+
+#[tokio::test]
 async fn sql_join_reads_all_resolver_partitions() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(

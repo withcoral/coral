@@ -263,10 +263,7 @@ fn analyze_dependent_bindings(
             return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonCoercible);
         };
 
-        if !matches!(
-            field.data_type(),
-            DataType::Utf8 | DataType::Int64 | DataType::Boolean
-        ) {
+        if !is_bindable_data_type(field.data_type()) {
             return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonCoercible);
         }
 
@@ -406,12 +403,11 @@ fn resolver_with_binding_columns(
         let (dependent_column, resolver_column) =
             split_dependent_resolver_columns(dependent, resolver_schema, left_expr, right_expr)?;
 
-        if !matches!(
+        if !is_bindable_data_type(
             resolver_schema
                 .field_from_column(resolver_column)
                 .ok()?
                 .data_type(),
-            DataType::Utf8 | DataType::Int64 | DataType::Boolean
         ) {
             return None;
         }
@@ -502,14 +498,13 @@ fn split_dependent_resolver_columns<'a>(
     left_expr: &'a Expr,
     right_expr: &'a Expr,
 ) -> Option<(&'a Column, &'a Column)> {
-    let (Expr::Column(left_column), Expr::Column(right_column)) = (left_expr, right_expr) else {
-        return None;
-    };
+    let left = join_column_operand(left_expr)?;
+    let right = join_column_operand(right_expr)?;
 
-    let left_is_dependent = dependent_has_column(dependent, left_column);
-    let right_is_dependent = dependent_has_column(dependent, right_column);
-    let left_is_resolver = resolver_schema.field_from_column(left_column).is_ok();
-    let right_is_resolver = resolver_schema.field_from_column(right_column).is_ok();
+    let left_is_dependent = schema_has_join_operand(&dependent.table_schema, &left);
+    let right_is_dependent = schema_has_join_operand(&dependent.table_schema, &right);
+    let left_is_resolver = schema_has_join_operand(resolver_schema, &left);
+    let right_is_resolver = schema_has_join_operand(resolver_schema, &right);
 
     match (
         left_is_dependent,
@@ -517,14 +512,69 @@ fn split_dependent_resolver_columns<'a>(
         left_is_resolver,
         right_is_resolver,
     ) {
-        (true, false, false, true) => Some((left_column, right_column)),
-        (false, true, true, false) => Some((right_column, left_column)),
+        (true, false, false, true) => Some((left.column, right.column)),
+        (false, true, true, false) => Some((right.column, left.column)),
         _ => None,
     }
 }
 
+struct JoinColumnOperand<'a> {
+    column: &'a Column,
+    casted: bool,
+}
+
+fn join_column_operand(expr: &Expr) -> Option<JoinColumnOperand<'_>> {
+    match expr {
+        Expr::Column(column) => Some(JoinColumnOperand {
+            column,
+            casted: false,
+        }),
+        Expr::Cast(cast) if is_string_data_type(&cast.data_type) => {
+            let inner = join_column_operand(cast.expr.as_ref())?;
+            Some(JoinColumnOperand {
+                column: inner.column,
+                casted: true,
+            })
+        }
+        Expr::TryCast(cast) if is_string_data_type(&cast.data_type) => {
+            let inner = join_column_operand(cast.expr.as_ref())?;
+            Some(JoinColumnOperand {
+                column: inner.column,
+                casted: true,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn schema_has_join_operand(schema: &DFSchemaRef, operand: &JoinColumnOperand<'_>) -> bool {
+    let Ok(field) = schema.field_from_column(operand.column) else {
+        return false;
+    };
+
+    !operand.casted || is_string_data_type(field.data_type())
+}
+
 fn dependent_has_column(dependent: &PeeledDependentScan, column: &Column) -> bool {
     dependent.table_schema.field_from_column(column).is_ok()
+}
+
+fn is_bindable_data_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Utf8
+            | DataType::Utf8View
+            | DataType::LargeUtf8
+            | DataType::Int64
+            | DataType::Boolean
+    )
+}
+
+fn is_string_data_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
+    )
 }
 
 fn peel_dependent_side(plan: &LogicalPlan) -> PeelOutcome {
