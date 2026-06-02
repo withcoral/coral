@@ -1036,6 +1036,7 @@ async fn stdio_env_resolves_source_inputs_for_each_tool_call() {
         source_name: mcp_manifest.common.name.clone(),
         server: mcp_manifest.server,
         source_inputs,
+        body_capture: super::trace::McpBodyCapture::default(),
     };
 
     let first = caller

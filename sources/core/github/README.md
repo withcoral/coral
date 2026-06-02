@@ -1,9 +1,9 @@
 # GitHub Connector
 
-**Version:** 1.1.5
+**Version:** 1.1.7
 **Source:** OpenAPI-generated from GitHub's v3 REST API spec
 **Backend:** HTTP
-**Tables:** 369
+**Tables:** 362
 **Base URL:** `https://api.github.com` (override with `GITHUB_API_BASE` env var)
 
 ## Authentication
@@ -252,7 +252,70 @@ Remaining ~104 org tables require the PAT to be scoped to the organization with 
 
 Note: `search_commits` requires actual search text.
 Qualifier-only queries such as `q => 'repo:owner/repo'` return 422.
-`search_issues` requires `is:issue` or `is:pull-request` in the query.
+`search_issues` requires `is:issue` or `is:pull-request` in the query. Use
+`search_issues` for cross-repository issue and pull request discovery, then
+use repo-scoped tables such as `pulls`, `issues`, `reviews`, and `files` for
+details that require `owner` and `repo`.
+
+Useful issue and pull request qualifiers:
+
+```sql
+SELECT number, title, repository_url, pull_request__html_url, updated_at
+FROM github.search_issues(q => 'org:myorg is:pull-request is:open review:approved')
+LIMIT 50;
+
+SELECT number, title, repository_url
+FROM github.search_issues(q => 'org:myorg is:pull-request is:open user-review-requested:@me')
+LIMIT 50;
+
+SELECT number, title, repository_url, label_names, assignee_logins, updated_at
+FROM github.search_issues(q => 'org:myorg is:issue is:open label:bug updated:<YYYY-MM-DD')
+LIMIT 50;
+```
+
+Swap in qualifiers such as `review-requested:USER`, `review:none`, or
+`user-review-requested:@me` for reviewer workflows.
+
+For workflow runs, `repo_action_runs` accepts natural aliases for the GitHub
+`branch` and `status` parameters:
+
+```sql
+SELECT name, head_branch, conclusion, created_at
+FROM github.repo_action_runs
+WHERE owner = 'myorg' AND repo = 'myrepo'
+  AND head_branch = 'main' AND conclusion = 'failure'
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+For Dependabot alerts, `repo_dependabot_alerts.severity` and
+`alerts.severity` are result values and can also be used as pushed-down
+filters. Use `github.alerts` for organization-wide Dependabot questions when
+the token has access to the organization's Dependabot alerts:
+
+```sql
+SELECT repository__full_name, number, severity, state
+FROM github.alerts
+WHERE org = 'myorg' AND state = 'open' AND severity = 'critical'
+LIMIT 50;
+```
+
+To sort severities manually in SQL, use a `CASE` expression:
+
+```sql
+ORDER BY CASE severity
+  WHEN 'critical' THEN 4
+  WHEN 'high' THEN 3
+  WHEN 'medium' THEN 2
+  WHEN 'low' THEN 1
+  ELSE 0
+END DESC
+```
+
+Secret scanning and code scanning endpoints are capability-gated by GitHub.
+For example, `repo_secret_scanning_alerts` can return 404 when secret scanning
+is disabled for the repository or inaccessible to the token, not only when the
+repository is missing.
 
 #### Requires GitHub App JWT (19 tables)
 

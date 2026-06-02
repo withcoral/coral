@@ -9,9 +9,10 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess,
-    SourceCredentialStorage, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    Workspace, catalog_item, import_source_response, query_test_result,
+    ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
+    QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
+    SourceVariable, ValidateSourceRequest, Workspace, catalog_item, import_source_response,
+    query_test_result, source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
@@ -832,6 +833,80 @@ async fn get_source_info_returns_available_bundled_metadata() {
         info.inputs.iter().any(|input| input.key == "GITHUB_TOKEN"),
         "expected bundled manifest inputs"
     );
+}
+
+#[tokio::test]
+async fn get_source_info_returns_sentry_oauth_credential_metadata() {
+    let harness = GrpcHarness::new().await;
+
+    let info = harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: "sentry".to_string(),
+        }))
+        .await
+        .expect("get source info")
+        .into_inner()
+        .source_info
+        .expect("get source info response");
+
+    let token = info
+        .inputs
+        .iter()
+        .find(|input| input.key == "SENTRY_TOKEN")
+        .expect("SENTRY_TOKEN input");
+    let secret = match token.input.as_ref().expect("input metadata") {
+        ProtoSourceInput::Secret(secret) => secret,
+        ProtoSourceInput::Variable(_) => panic!("expected secret input"),
+    };
+    let credential = secret.credential.as_ref().expect("credential metadata");
+    assert_eq!(credential.methods.len(), 2);
+
+    let oauth_method = &credential.methods[0];
+    let oauth = match oauth_method.method.as_ref().expect("oauth method") {
+        ProtoCredentialMethod::Oauth(oauth) => oauth,
+        ProtoCredentialMethod::SourceConfig(_) => panic!("expected oauth method"),
+    };
+    assert_eq!(oauth.flow(), OauthCredentialFlowType::DeviceCode);
+    assert!(oauth.redirect_uri.is_empty());
+    let endpoints = oauth.endpoints.as_ref().expect("oauth endpoints");
+    assert_eq!(
+        endpoints.device_authorization_url,
+        "https://sentry.io/oauth/device/code/"
+    );
+    assert!(endpoints.authorization_url.is_empty());
+    assert_eq!(endpoints.token_url, "https://sentry.io/oauth/token/");
+    let client = oauth.client.as_ref().expect("oauth client");
+    assert_eq!(
+        client.id.as_ref().expect("oauth client id").input,
+        "SENTRY_OAUTH_CLIENT_ID"
+    );
+    assert!(client.secret.is_none());
+    let scope = oauth
+        .scopes
+        .as_ref()
+        .expect("oauth scopes")
+        .scope
+        .as_ref()
+        .expect("oauth scope");
+    assert_eq!(scope.delimiter(), OauthCredentialScopeDelimiter::Space);
+    assert_eq!(
+        scope.values,
+        vec![
+            "org:read".to_string(),
+            "event:read".to_string(),
+            "member:read".to_string(),
+            "project:read".to_string(),
+            "project:releases".to_string(),
+            "team:read".to_string()
+        ]
+    );
+
+    assert!(matches!(
+        credential.methods[1].method.as_ref(),
+        Some(ProtoCredentialMethod::SourceConfig(_))
+    ));
 }
 
 #[tokio::test]

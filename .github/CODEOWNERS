@@ -11,7 +11,8 @@
 /Cargo.toml @withcoral/core-maintainers
 /Cargo.lock @withcoral/core-maintainers
 /scripts/ @withcoral/repo-ops
-/xtask/ @withcoral/repo-ops @withcoral/docs
+/xtask/ @withcoral/repo-ops
+/xtask/src/docs/ @withcoral/repo-ops @withcoral/docs
 
 # Project docs.
 AGENTS.md @withcoral/core-maintainers
