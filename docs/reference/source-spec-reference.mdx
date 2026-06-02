@@ -979,7 +979,11 @@ OAuth endpoint URLs may include `{{input.KEY}}` templates for declared
 `kind: variable` inputs, which Coral renders during OAuth credential setup. Use
 this for non-secret endpoint components such as a Microsoft tenant ID or site
 domain. OAuth endpoint templates do not support secret inputs, filters,
-function arguments, state, or inline defaults.
+function arguments, state, or inline defaults. Rendered OAuth provider endpoint
+URLs must use `https`; plain `http` is accepted only for loopback hosts such as
+`localhost`, `127.0.0.1`, or `::1` for local development and tests. Device-code
+verification URLs returned by the provider are checked with the same rule before
+the CLI opens them.
 
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
 `scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral stores OAuth
