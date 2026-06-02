@@ -255,7 +255,7 @@ tables:
 
         assert_eq!(
             error.to_string(),
-            "source 'demo' has duplicate table 'messages'"
+            "source 'demo' table 'messages' is declared more than once"
         );
     }
 

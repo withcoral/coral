@@ -10,19 +10,82 @@ use crate::common::{
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
-pub(crate) fn validate_table_names<'a>(
-    schema: &str,
-    table_names: impl IntoIterator<Item = &'a str>,
-) -> Result<()> {
-    let mut seen_tables = HashSet::new();
-    for table_name in table_names {
-        let key = table_name.to_ascii_lowercase();
-        if seen_tables.contains(&key) {
-            return Err(ManifestError::validation(format!(
-                "source '{schema}' has duplicate table '{key}'"
-            )));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclaredRelationKind {
+    Table,
+    Function,
+}
+
+impl DeclaredRelationKind {
+    fn validate_name(self, source_name: &str, name: &str) -> Result<()> {
+        match self {
+            Self::Table => {
+                if name.trim().is_empty() {
+                    return Err(ManifestError::validation(format!(
+                        "source '{source_name}' table name must not be empty"
+                    )));
+                }
+                Ok(())
+            }
+            Self::Function => {
+                validate_identifier(name, &format!("source '{source_name}' function name"))
+            }
         }
-        seen_tables.insert(key);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DeclaredRelation<'a> {
+    kind: DeclaredRelationKind,
+    name: &'a str,
+}
+
+impl<'a> DeclaredRelation<'a> {
+    pub(crate) fn table(name: &'a str) -> Self {
+        Self {
+            kind: DeclaredRelationKind::Table,
+            name,
+        }
+    }
+
+    pub(crate) fn function(name: &'a str) -> Self {
+        Self {
+            kind: DeclaredRelationKind::Function,
+            name,
+        }
+    }
+}
+
+pub(crate) fn validate_declared_relation_namespace<'a>(
+    source_name: &str,
+    relations: impl IntoIterator<Item = DeclaredRelation<'a>>,
+) -> Result<()> {
+    let mut namespace = HashMap::new();
+    for relation in relations {
+        relation.kind.validate_name(source_name, relation.name)?;
+
+        let key = relation.name.to_ascii_lowercase();
+        if let Some(previous_kind) = namespace.get(&key) {
+            return match (*previous_kind, relation.kind) {
+                (DeclaredRelationKind::Table, DeclaredRelationKind::Table) => {
+                    Err(ManifestError::validation(format!(
+                        "source '{source_name}' table '{}' is declared more than once",
+                        relation.name
+                    )))
+                }
+                (DeclaredRelationKind::Function, DeclaredRelationKind::Function) => {
+                    Err(ManifestError::validation(format!(
+                        "source '{source_name}' function '{}' is declared more than once",
+                        relation.name
+                    )))
+                }
+                _ => Err(ManifestError::validation(format!(
+                    "source '{source_name}' declares both a table and function named '{}'",
+                    relation.name
+                ))),
+            };
+        }
+        namespace.insert(key, relation.kind);
     }
 
     Ok(())
@@ -85,39 +148,6 @@ pub(crate) fn validate_http_table(
     }
 
     pagination.validate(schema, table_name)
-}
-
-pub(crate) fn validate_http_function_names(
-    source_name: &str,
-    table_names: impl IntoIterator<Item = impl AsRef<str>>,
-    functions: &[SourceTableFunctionSpec],
-) -> Result<()> {
-    let table_names = table_names
-        .into_iter()
-        .map(|name| name.as_ref().to_string())
-        .collect::<HashSet<_>>();
-    let mut function_names = HashSet::new();
-
-    for function in functions {
-        validate_identifier(
-            &function.name,
-            &format!("source '{source_name}' function name"),
-        )?;
-        if table_names.contains(&function.name) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' declares both a table and function named '{}'",
-                function.name
-            )));
-        }
-        if !function_names.insert(function.name.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' function '{}' is declared more than once",
-                function.name
-            )));
-        }
-    }
-
-    Ok(())
 }
 
 pub(crate) fn validate_http_function(
@@ -892,8 +922,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        validate_columns, validate_filters_and_column_exprs, validate_http_function,
-        validate_http_function_names, validate_http_table, validate_table_names,
+        DeclaredRelation, validate_columns, validate_declared_relation_namespace,
+        validate_filters_and_column_exprs, validate_http_function, validate_http_table,
     };
     use crate::common::{
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
@@ -1065,18 +1095,215 @@ mod tests {
     }
 
     #[test]
-    fn validate_table_names_rejects_duplicate_table_names() {
-        let schema = "github";
-        let table_names = ["issues", "prs", "Issues"];
+    fn validate_declared_relation_namespace_rejects_duplicate_tables_that_differ_only_by_case() {
+        let relations = [
+            DeclaredRelation::table("issues"),
+            DeclaredRelation::table("prs"),
+            DeclaredRelation::table("Issues"),
+        ];
 
-        let error = validate_table_names(schema, table_names)
+        let error = validate_declared_relation_namespace("github", relations)
             .expect_err("expected duplicate table to be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("source 'github' has duplicate table 'issues'")
+                .contains("source 'github' table 'Issues' is declared more than once")
         );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_rejects_duplicate_functions_that_differ_only_by_case() {
+        let relations = [
+            DeclaredRelation::function("search"),
+            DeclaredRelation::function("Search"),
+        ];
+
+        let error = validate_declared_relation_namespace("github", relations)
+            .expect_err("expected duplicate function to be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source 'github' function 'Search' is declared more than once")
+        );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_rejects_table_function_case_collisions() {
+        let relations = [
+            DeclaredRelation::table("Messages"),
+            DeclaredRelation::function("messages"),
+        ];
+
+        let error = validate_declared_relation_namespace("demo", relations)
+            .expect_err("expected table/function collision to be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source 'demo' declares both a table and function named 'messages'")
+        );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_reports_earlier_collisions_first() {
+        let relations = [
+            DeclaredRelation::table("issues"),
+            DeclaredRelation::function("issues"),
+            DeclaredRelation::function("bad-name"),
+        ];
+
+        let error = validate_declared_relation_namespace("demo", relations)
+            .expect_err("expected first namespace collision to be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' declares both a table and function named 'issues'"
+        );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_allows_quoted_sql_table_names() {
+        let relations = [
+            DeclaredRelation::table("player.stats"),
+            DeclaredRelation::table("message-events"),
+            DeclaredRelation::function("search"),
+        ];
+
+        validate_declared_relation_namespace("demo", relations)
+            .expect("table names that require SQL quoting should remain valid");
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_rejects_empty_table_names() {
+        let relations = [DeclaredRelation::table("  ")];
+
+        let error = validate_declared_relation_namespace("demo", relations)
+            .expect_err("expected empty table name to be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' table name must not be empty"
+        );
+    }
+
+    #[test]
+    fn validate_declared_relation_namespace_rejects_invalid_function_names() {
+        let relations = [DeclaredRelation::function("1search")];
+
+        let error = validate_declared_relation_namespace("demo", relations)
+            .expect_err("expected invalid function name to be rejected");
+
+        assert!(error.to_string().contains(
+            "source 'demo' function name '1search' must start with a letter or underscore"
+        ));
+    }
+
+    #[test]
+    fn http_manifest_rejects_table_function_names_that_differ_only_by_case() {
+        let error = parse_source_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "tables": [{
+                "name": "Messages",
+                "description": "Messages",
+                "request": { "path": "/messages" }
+            }],
+            "functions": [{
+                "name": "messages",
+                "request": { "path": "/messages/search" }
+            }]
+        }))
+        .expect_err("HTTP table/function case collision should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' declares both a table and function named 'messages'"
+        );
+    }
+
+    #[test]
+    fn http_manifest_rejects_duplicate_function_names_that_differ_only_by_case() {
+        let error = parse_source_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "functions": [
+                {
+                    "name": "Search",
+                    "request": { "path": "/search" }
+                },
+                {
+                    "name": "search",
+                    "request": { "path": "/search" }
+                }
+            ]
+        }))
+        .expect_err("HTTP function case duplicate should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo' function 'search' is declared more than once"
+        );
+    }
+
+    #[test]
+    fn http_backend_accepts_quoted_sql_table_names() {
+        crate::backends::http::HttpSourceManifest::parse_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": "https://example.com",
+            "tables": [{
+                "name": "message-events",
+                "description": "Events",
+                "request": { "path": "/events" },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("HTTP table names that require SQL quoting should remain valid");
+    }
+
+    #[test]
+    fn file_backend_accepts_quoted_sql_table_names() {
+        crate::backends::file::FileSourceManifest::parse_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "file",
+            "tables": [{
+                "name": "message-events",
+                "description": "Events",
+                "format": "jsonl",
+                "source": { "location": "file:///tmp/coral/events/" },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("file table names that require SQL quoting should remain valid");
+    }
+
+    #[test]
+    fn mcp_backend_accepts_quoted_sql_table_names() {
+        crate::backends::mcp::McpSourceManifest::parse_manifest_value(json!({
+            "name": "demo",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "mcp",
+            "server": { "transport": "stdio", "command": "demo-mcp-server" },
+            "tables": [{
+                "name": "message-events",
+                "tool": "list_events",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("MCP table names that require SQL quoting should remain valid");
     }
 
     #[test]
@@ -1484,32 +1711,6 @@ mod tests {
             error
                 .to_string()
                 .contains("references unknown request arg 'missing'")
-        );
-    }
-
-    #[test]
-    fn validate_http_function_names_rejects_table_name_collisions() {
-        let function = SourceTableFunctionSpec {
-            name: "messages".to_string(),
-            kind: SourceTableFunctionKind::Table,
-            description: String::new(),
-            fetch_limit_default: None,
-            search_limits: None,
-            detail_hints: Vec::new(),
-            args: vec![],
-            request: base_request(),
-            response: crate::ResponseSpec::default(),
-            pagination: PaginationSpec::default(),
-            columns: vec![],
-        };
-
-        let error = validate_http_function_names("demo", ["messages"], &[function])
-            .expect_err("function should not share a table name");
-
-        assert!(
-            error
-                .to_string()
-                .contains("declares both a table and function named 'messages'")
         );
     }
 

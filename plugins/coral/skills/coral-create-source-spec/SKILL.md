@@ -90,7 +90,10 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
 - For short-lived OAuth access tokens, make sure the OAuth method can obtain refresh tokens when the provider supports them, and document any scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire unless the source has another supported long-lived credential path.
-- Keep table names stable and SQL-friendly.
+- Keep table and table-function names stable, SQL-friendly, and unique within
+  the source's case-insensitive relation namespace. Prefer plain `snake_case`
+  table names. Table-function names must start with an ASCII letter or
+  underscore and then use only ASCII letters, numbers, or underscores.
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
 - Use `kind: search` table functions for provider endpoints that accept query text and return ranked candidates.

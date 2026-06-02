@@ -248,6 +248,18 @@ Column-expression templates do not support `secret`, `variable`, or `state` name
 | `template` | string | —       | Parsed Coral template string using `{{expr.*}}` and `{{filter.*}}` |
 | `values`   | object | —       | Named sub-expressions referenced from `{{expr.name}}` tokens       |
 
+## Relation names
+
+Tables and source-scoped table functions share one SQL relation namespace within
+a source. Name comparisons are case-insensitive, so `Issues`, `issues`, and a
+table function named `issues` conflict.
+
+Table names must be non-empty. Prefer plain `snake_case` table names, but names
+that require SQL quoting, such as `player.stats`, remain valid for compatibility
+and can be queried as quoted identifiers. Table-function names must be ASCII
+identifiers: start with a letter or underscore, then use only letters, numbers,
+or underscores.
+
 ## File-backed tables
 
 For `backend: file`, each table declares its own `format` and points at a

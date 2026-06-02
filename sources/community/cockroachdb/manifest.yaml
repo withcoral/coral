@@ -1,0 +1,278 @@
+name: cockroachdb
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Inspect a self-hosted CockroachDB cluster's node liveness, per-node status and
+  build information, known databases, and selected node metrics through the
+  documented, read-only Cluster API v2 (/api/v2).
+inputs:
+  COCKROACHDB_URL:
+    kind: variable
+    default: https://localhost:8080
+    hint: |
+      Base URL of a CockroachDB node's HTTP interface, including scheme and
+      port. Default is `https://localhost:8080`. Secure clusters serve the
+      HTTP API over TLS (the node's HTTP certificate must be trusted by the
+      host running Coral); insecure clusters use `http://`. Do not include a
+      trailing slash or the `/api/v2` path — Coral appends the API path.
+  COCKROACHDB_SESSION:
+    kind: secret
+    hint: |
+      Cluster API session token, sent in the `X-Cockroach-API-Session` header.
+      The Cluster API v2 only authenticates SQL users that are members of the
+      `admin` role and have a password and the LOGIN privilege. On a secure
+      cluster, create a session token with:
+
+        curl -k --data "username=<user>&password=<password>" \
+          https://localhost:8080/api/v2/login/
+
+      and copy the `session` value from the JSON response. Insecure clusters
+      serve the Cluster API without authentication and ignore this header, so
+      any non-empty placeholder value works there.
+base_url: "{{input.COCKROACHDB_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Cockroach-API-Session
+      from: input
+      key: COCKROACHDB_SESSION
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM cockroachdb.databases LIMIT 1
+  - SELECT * FROM cockroachdb.nodes LIMIT 1
+
+tables:
+  - name: health
+    description: Per-node liveness/readiness status.
+    guide: |
+      Returns one row per node from `GET /api/v2/nodes/`, projecting each
+      node's `liveness_status`. The status is CockroachDB's NodeLivenessStatus
+      enum code: `0` UNKNOWN, `1` DEAD, `2` UNAVAILABLE, `3` LIVE,
+      `4` DECOMMISSIONING, `5` DECOMMISSIONED. Anything other than `3` (LIVE)
+      on a node you expect to be up signals a readiness or membership problem.
+      This is the first query to run to confirm connectivity and cluster
+      membership. The endpoint returns all nodes in a single response.
+    request:
+      method: GET
+      path: /api/v2/nodes/
+    response:
+      rows_path:
+        - nodes
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: node_id
+        type: Int64
+        nullable: false
+        description: Node ID
+        expr: {kind: path, path: [node_id]}
+      - name: liveness_status
+        type: Int64
+        nullable: true
+        description: >-
+          NodeLivenessStatus code (0 UNKNOWN, 1 DEAD, 2 UNAVAILABLE, 3 LIVE,
+          4 DECOMMISSIONING, 5 DECOMMISSIONED)
+        expr: {kind: path, path: [liveness_status]}
+
+  - name: nodes
+    description: Per-node status, network addresses, and build information.
+    guide: |
+      Returns one row per node from `GET /api/v2/nodes/`. Use `node_id` to join
+      against the `health` and `metrics` tables. `started_at` and `updated_at`
+      are epoch **nanoseconds** (CockroachDB vends these as nanosecond counts),
+      exposed as Int64; divide by 1e9 for seconds. `address` and `sql_address`
+      are host:port strings. `server_version`, `locality`, and `attrs` are
+      returned as JSON for querying with `json_get_*`. The endpoint returns all
+      nodes in a single response.
+    request:
+      method: GET
+      path: /api/v2/nodes/
+    response:
+      rows_path:
+        - nodes
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: node_id
+        type: Int64
+        nullable: false
+        description: Unique node ID within the cluster
+        expr: {kind: path, path: [node_id]}
+      - name: address
+        type: Utf8
+        nullable: true
+        description: RPC address (host:port) advertised by the node
+        expr: {kind: path, path: [address, address_field]}
+      - name: sql_address
+        type: Utf8
+        nullable: true
+        description: SQL address (host:port) advertised by the node
+        expr: {kind: path, path: [sql_address, address_field]}
+      - name: build_tag
+        type: Utf8
+        nullable: true
+        description: CockroachDB version tag the node is running (e.g. v24.1.5)
+        expr: {kind: path, path: [build_tag]}
+      - name: liveness_status
+        type: Int64
+        nullable: true
+        description: >-
+          NodeLivenessStatus code (3 LIVE; see the health table for the full
+          mapping)
+        expr: {kind: path, path: [liveness_status]}
+      - name: started_at
+        type: Int64
+        nullable: true
+        description: Node process start time as epoch nanoseconds
+        expr: {kind: path, path: [started_at]}
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Time this node status was last updated, as epoch nanoseconds
+        expr: {kind: path, path: [updated_at]}
+      - name: num_cpus
+        type: Int64
+        nullable: true
+        description: Number of logical CPUs visible to the node
+        expr: {kind: path, path: [num_cpus]}
+      - name: total_system_memory
+        type: Int64
+        nullable: true
+        description: Total system memory available to the node, in bytes
+        expr: {kind: path, path: [total_system_memory]}
+      - name: cluster_name
+        type: Utf8
+        nullable: true
+        description: Configured cluster name, if any
+        expr: {kind: path, path: [cluster_name]}
+      - name: server_version
+        type: Json
+        nullable: true
+        description: Server version object (major, minor, patch, internal)
+        expr: {kind: path, path: [ServerVersion]}
+      - name: locality
+        type: Json
+        nullable: true
+        description: Locality tiers (region/zone) configured for the node
+        expr: {kind: path, path: [locality]}
+      - name: attrs
+        type: Json
+        nullable: true
+        description: Store/node attributes advertised by the node
+        expr: {kind: path, path: [attrs]}
+
+  - name: databases
+    description: Databases known to the cluster.
+    guide: |
+      Returns one row per database name from `GET /api/v2/databases/`. This is
+      the catalog of databases the cluster knows about, including system
+      databases such as `system`, `defaultdb`, and `postgres`. The endpoint is
+      paginated with `limit`/`offset`, which Coral drives automatically. The
+      Cluster API does not return per-database sizes here; use a SQL client and
+      `SHOW DATABASES` with size details if you need storage figures.
+    request:
+      method: GET
+      path: /api/v2/databases/
+    response:
+      rows_path:
+        - databases
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Database name
+        expr: {kind: path, path: []}
+
+  - name: metrics
+    description: Selected per-node operational metrics plus the full metrics maps.
+    guide: |
+      Returns one row per node with a curated set of node-level metrics pulled
+      from each node's `metrics` map on `GET /api/v2/nodes/`. The named columns
+      cover common health signals; the `metrics` JSON column contains the
+      complete node-level map, so you can read any other value with
+      `json_get_float(metrics, 'sql.conns')`. Metric values are doubles. Some
+      metric keys differ across major CockroachDB versions, so a named column
+      may be NULL while the value is still present under a slightly different
+      key in the map. `store_metrics` is a best-effort extra: it carries
+      per-store gauges (ranges, replicas, capacity, livebytes, ...) keyed by
+      store ID, but it is NOT part of the documented Cluster API v2 response
+      schema, so treat it as nullable and version-dependent. The endpoint
+      returns all nodes in a single response.
+    request:
+      method: GET
+      path: /api/v2/nodes/
+    response:
+      rows_path:
+        - nodes
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: node_id
+        type: Int64
+        nullable: false
+        description: Node ID these metrics belong to
+        expr: {kind: path, path: [node_id]}
+      - name: sql_conns
+        type: Float64
+        nullable: true
+        description: Number of open SQL connections to the node
+        expr: {kind: path, path: [metrics, "sql.conns"]}
+      - name: sql_query_count
+        type: Float64
+        nullable: true
+        description: Cumulative count of SQL queries executed on the node
+        expr: {kind: path, path: [metrics, "sql.query.count"]}
+      - name: sys_cpu_user_percent
+        type: Float64
+        nullable: true
+        description: Fraction of CPU time spent in user space (0.0-1.0 per core)
+        expr: {kind: path, path: [metrics, "sys.cpu.user.percent"]}
+      - name: sys_cpu_sys_percent
+        type: Float64
+        nullable: true
+        description: Fraction of CPU time spent in kernel space (0.0-1.0 per core)
+        expr: {kind: path, path: [metrics, "sys.cpu.sys.percent"]}
+      - name: sys_rss_bytes
+        type: Float64
+        nullable: true
+        description: Resident set size of the node process, in bytes
+        expr: {kind: path, path: [metrics, "sys.rss"]}
+      - name: sys_goroutines
+        type: Float64
+        nullable: true
+        description: Current number of goroutines in the node process
+        expr: {kind: path, path: [metrics, "sys.goroutines"]}
+      - name: sys_uptime_seconds
+        type: Float64
+        nullable: true
+        description: Node process uptime, in seconds
+        expr: {kind: path, path: [metrics, "sys.uptime"]}
+      - name: metrics
+        type: Json
+        nullable: true
+        description: Complete node-level metrics map (metric name to double value)
+        expr: {kind: path, path: [metrics]}
+      - name: store_metrics
+        type: Json
+        nullable: true
+        description: >-
+          Best-effort per-store metrics keyed by store ID (ranges, replicas,
+          capacity, livebytes, ...). Not part of the documented Cluster API v2
+          schema; may be NULL on some CockroachDB versions.
+        expr: {kind: path, path: [store_metrics]}

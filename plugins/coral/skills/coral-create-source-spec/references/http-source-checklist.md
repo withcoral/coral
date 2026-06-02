@@ -66,7 +66,10 @@ Additional hint guidance:
 
 - Prefer one table per collection endpoint.
 - Add detail routes only when item fetches are actually needed.
-- Keep table names stable and SQL-friendly.
+- Keep table and table-function names stable, SQL-friendly, and unique within
+  the source's case-insensitive relation namespace. Prefer plain `snake_case`
+  table names. Table-function names must start with an ASCII letter or
+  underscore and then use only ASCII letters, numbers, or underscores.
 - Preserve provider semantics when filter behavior matters.
 - Add `test_queries` once you know which simple query or queries should confirm the source basically works.
 

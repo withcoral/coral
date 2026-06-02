@@ -1,12 +1,14 @@
 # npm (npm)
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Backend:** HTTP
-**Tables:** 1
+**Tables:** 2
 **Base URL:** `https://registry.npmjs.org`
 
 Query the [public npm registry REST API](https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md)
-to search for packages and retrieve search-result summary data (such as latest version, publisher, downloads, and quality scores).
+to search for packages (`npm.search`) and retrieve full metadata for a single
+package by name (`npm.packages`) — latest version, repository, publish
+timestamps, maintainers, license, README and more.
 
 ```bash
 coral source add --file sources/community/npm/manifest.yaml
@@ -18,9 +20,17 @@ This source does not require any authentication or input configuration. The npm 
 
 ## Tables
 
-| Table        | Description                                            | Key filters               |
-| ------------ | ------------------------------------------------------ | ------------------------- |
-| `npm.search` | Search npm packages by keyword, ranked by popularity   | `text` (**required**)     |
+| Table          | Description                                            | Key filters                   |
+| -------------- | ------------------------------------------------------ | ----------------------------- |
+| `npm.search`   | Search npm packages by keyword, ranked by popularity   | `text` (**required**)         |
+| `npm.packages` | Full metadata for one package, fetched by name         | `package_name` (**required**) |
+
+The `packages` table returns one row per package via `GET /{package_name}`
+(scoped packages like `@types/node` supported): canonical name, `latest_version`
+(`dist-tags.latest`), `repository__url`, `time__created`/`time__modified` (real
+`Timestamp` columns), maintainers, keywords, dist-tags, license, bugs URL, README
+and a `raw` column with the full document. For download counts, use the separate
+`npm_downloads` source.
 
 ## Example queries
 
@@ -50,6 +60,16 @@ SELECT name, license, publisher_username, publisher_email
 FROM npm.search
 WHERE text = 'webpack'
 LIMIT 10;
+
+-- Full metadata for a single package by name
+SELECT name, latest_version, time__modified, repository__url, license
+FROM npm.packages
+WHERE package_name = 'react';
+
+-- Scoped package
+SELECT name, latest_version
+FROM npm.packages
+WHERE package_name = '@types/node';
 ```
 
 ## Pagination
