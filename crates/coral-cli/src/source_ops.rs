@@ -559,9 +559,10 @@ pub(crate) fn prompt_for_inputs_with_credential_methods_in_mode(
 
     for input in inputs {
         if mode.reads_env_before_prompt(input) {
-            let env_value = read_source_input_env(&input.key).unwrap_or_default();
+            let env_value =
+                normalize_input_value(&read_source_input_env(&input.key).unwrap_or_default());
             if !env_value.is_empty() {
-                push_collected_input(&mut collected, input, env_value);
+                push_collected_input(&mut collected, input, &env_value);
                 continue;
             }
         }
@@ -605,9 +606,10 @@ pub(crate) fn prompt_for_remaining_inputs_with_credential_methods_in_mode(
             continue;
         }
         if mode.reads_env_before_prompt(input) {
-            let env_value = read_source_input_env(&input.key).unwrap_or_default();
+            let env_value =
+                normalize_input_value(&read_source_input_env(&input.key).unwrap_or_default());
             if !env_value.is_empty() {
-                push_collected_input(&mut collected, input, env_value);
+                push_collected_input(&mut collected, input, &env_value);
                 continue;
             }
         }
@@ -634,8 +636,12 @@ pub(crate) fn prompt_for_remaining_inputs_with_credential_methods_in_mode(
 fn push_collected_input(
     collected: &mut CollectedSourceInputs,
     input: &ManifestInputSpec,
-    value: String,
+    value: &str,
 ) {
+    let value = normalize_input_value(value);
+    if value.is_empty() {
+        return;
+    }
     match input.kind {
         ManifestInputKind::Variable => collected.variables.push(SourceVariable {
             key: input.key.clone(),
@@ -678,7 +684,8 @@ fn prompt_variables_for_host_confirmation(
         .iter()
         .filter(|input| input.kind == ManifestInputKind::Variable)
     {
-        let env_value = read_source_input_env(&input.key).unwrap_or_default();
+        let env_value =
+            normalize_input_value(&read_source_input_env(&input.key).unwrap_or_default());
         if !env_value.is_empty() {
             variables.push(SourceVariable {
                 key: input.key.clone(),
@@ -705,6 +712,7 @@ fn collect_variables_from_env(
         .filter(|input| input.kind == ManifestInputKind::Variable)
     {
         let raw = read_source_input_env(&input.key).unwrap_or_default();
+        let raw = normalize_input_value(&raw);
         let value = if raw.is_empty() {
             input.default_value.clone()
         } else {
@@ -737,7 +745,10 @@ fn collect_variables_from_env(
 pub(crate) fn source_variables_map(variables: &[SourceVariable]) -> BTreeMap<String, String> {
     variables
         .iter()
-        .map(|variable| (variable.key.clone(), variable.value.clone()))
+        .filter_map(|variable| {
+            let value = normalize_input_value(&variable.value);
+            (!value.is_empty()).then(|| (variable.key.clone(), value))
+        })
         .collect()
 }
 
@@ -770,6 +781,7 @@ fn collect_inputs_with_hint(
 
     for input in inputs {
         let raw = lookup(&input.key);
+        let raw = normalize_input_value(&raw);
         let value = if raw.is_empty() {
             input.default_value.clone()
         } else {
@@ -1103,7 +1115,7 @@ fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, 
         .with_prompt(prompt)
         .allow_empty(true)
         .interact_text()?;
-    let Some(value) = finalize_input_value(input, value, "source variable")? else {
+    let Some(value) = finalize_input_value(input, &value, "source variable")? else {
         return Ok(None);
     };
     Ok(Some(SourceVariable {
@@ -1124,7 +1136,7 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
         .with_prompt(prompt)
         .allow_empty_password(true)
         .interact()?;
-    let Some(value) = finalize_input_value(input, value, "source secret")? else {
+    let Some(value) = finalize_input_value(input, &value, "source secret")? else {
         return Ok(None);
     };
     Ok(Some(SourceSecret {
@@ -1137,6 +1149,7 @@ fn prompt_source_config_secret(
     input: &ManifestInputSpec,
 ) -> Result<Option<SourceSecret>, anyhow::Error> {
     let env_value = read_source_input_env(&input.key).unwrap_or_default();
+    let env_value = normalize_input_value(&env_value);
     if !env_value.is_empty() {
         return Ok(Some(SourceSecret {
             key: input.key.clone(),
@@ -1655,9 +1668,10 @@ fn print_input_hint(input: &ManifestInputSpec) {
 
 pub(crate) fn finalize_input_value(
     input: &ManifestInputSpec,
-    value: String,
+    value: &str,
     kind_label: &str,
 ) -> Result<Option<String>, anyhow::Error> {
+    let value = normalize_input_value(value);
     if !value.is_empty() {
         return Ok(Some(value));
     }
@@ -1670,6 +1684,10 @@ pub(crate) fn finalize_input_value(
     Ok(None)
 }
 
+fn normalize_input_value(value: &str) -> String {
+    value.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -1677,7 +1695,7 @@ mod tests {
         reason = "collected input order assertions intentionally fail loudly in tests"
     )]
 
-    use coral_api::v1::ValidateSourceResponse;
+    use coral_api::v1::{SourceVariable, ValidateSourceResponse};
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestInputKind, ManifestInputSpec,
@@ -1694,7 +1712,8 @@ mod tests {
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
         finalize_input_value, render_redirect_prompt_key_echo, shell_quote_arg, source_name_arg,
-        submit_oauth_redirect_url, validate_oauth_redirect_url, validation_follow_up,
+        source_variables_map, submit_oauth_redirect_url, validate_oauth_redirect_url,
+        validation_follow_up,
     };
 
     #[test]
@@ -1795,6 +1814,81 @@ mod tests {
     }
 
     #[test]
+    fn collect_inputs_trims_env_values_before_collecting() {
+        let inputs = vec![
+            ManifestInputSpec {
+                key: "API_BASE".to_string(),
+                kind: ManifestInputKind::Variable,
+                required: false,
+                default_value: "https://example.com".to_string(),
+                hint: None,
+                credential: None,
+            },
+            ManifestInputSpec {
+                key: "API_TOKEN".to_string(),
+                kind: ManifestInputKind::Secret,
+                required: true,
+                default_value: String::new(),
+                hint: None,
+                credential: None,
+            },
+        ];
+        let env: HashMap<&str, &str> = [
+            ("API_BASE", "  https://override.test  "),
+            ("API_TOKEN", "\n token \t"),
+        ]
+        .into_iter()
+        .collect();
+        let (variables, secrets) = collect_inputs_with_hint(
+            &inputs,
+            |key| env.get(key).map(|v| (*v).to_string()).unwrap_or_default(),
+            None,
+        )
+        .expect("trimmed env values should collect");
+
+        assert_eq!(variables[0].value, "https://override.test");
+        assert_eq!(secrets[0].value, "token");
+    }
+
+    #[test]
+    fn collect_inputs_uses_default_when_env_whitespace_only() {
+        let inputs = vec![ManifestInputSpec {
+            key: "API_BASE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "https://example.com".to_string(),
+            hint: None,
+            credential: None,
+        }];
+        let (variables, secrets) = collect_inputs_with_hint(&inputs, |_| "   ".to_string(), None)
+            .expect("default should satisfy required");
+        assert_eq!(secrets.len(), 0);
+        assert_eq!(variables.len(), 1);
+        assert_eq!(variables[0].value, "https://example.com");
+    }
+
+    #[test]
+    fn source_variables_map_trims_and_skips_whitespace_only_values() {
+        let variables = vec![
+            SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "  https://override.test  ".to_string(),
+            },
+            SourceVariable {
+                key: "OPTIONAL_BASE".to_string(),
+                value: "   ".to_string(),
+            },
+        ];
+        let mapped = source_variables_map(&variables);
+
+        assert_eq!(
+            mapped.get("API_BASE").map(String::as_str),
+            Some("https://override.test")
+        );
+        assert!(!mapped.contains_key("OPTIONAL_BASE"));
+    }
+
+    #[test]
     fn collect_inputs_uses_default_when_env_empty() {
         let inputs = vec![ManifestInputSpec {
             key: "API_BASE".to_string(),
@@ -1875,7 +1969,7 @@ mod tests {
             credential: None,
         };
         assert_eq!(
-            finalize_input_value(&input, String::new(), "source variable")
+            finalize_input_value(&input, "", "source variable")
                 .expect("empty optional input should be omitted"),
             None
         );
@@ -1891,8 +1985,30 @@ mod tests {
             hint: None,
             credential: None,
         };
-        let error = finalize_input_value(&input, String::new(), "source secret")
+        let error = finalize_input_value(&input, "", "source secret")
             .expect_err("required empty input should fail");
+        assert!(error.to_string().contains("missing required source secret"));
+    }
+
+    #[test]
+    fn finalize_input_value_trims_values_and_rejects_whitespace_only_required_values() {
+        let input = ManifestInputSpec {
+            key: "API_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: None,
+            credential: None,
+        };
+
+        assert_eq!(
+            finalize_input_value(&input, "  token  ", "source secret")
+                .expect("trimmed value")
+                .as_deref(),
+            Some("token")
+        );
+        let error = finalize_input_value(&input, " \n\t ", "source secret")
+            .expect_err("whitespace-only required input should fail");
         assert!(error.to_string().contains("missing required source secret"));
     }
 

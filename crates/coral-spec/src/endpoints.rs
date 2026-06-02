@@ -128,8 +128,9 @@ fn render_with_input_values(
                 let resolved = if matches!(token.namespace(), TemplateNamespace::Input) {
                     source_inputs
                         .get(token.key())
+                        .map(|value| value.trim())
                         .filter(|value| !value.is_empty())
-                        .cloned()
+                        .map(str::to_string)
                 } else {
                     None
                 }
@@ -298,6 +299,48 @@ tables:
         assert_eq!(
             manifest.outbound_hosts_with_input_values(&source_inputs),
             vec!["gitlab.internal".to_string()]
+        );
+    }
+
+    #[test]
+    fn trims_resolved_input_values_and_falls_back_for_whitespace_only_overrides() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.github.com
+base_url: "{{input.API_BASE}}"
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("manifest should parse");
+        let source_inputs = BTreeMap::from([(
+            "API_BASE".to_string(),
+            "  https://gitlab.internal/api/v4  ".to_string(),
+        )]);
+        assert_eq!(
+            manifest.outbound_hosts_with_input_values(&source_inputs),
+            vec!["gitlab.internal".to_string()]
+        );
+
+        let source_inputs = BTreeMap::from([("API_BASE".to_string(), "   ".to_string())]);
+        assert_eq!(
+            manifest.outbound_hosts_with_input_values(&source_inputs),
+            vec!["api.github.com".to_string()]
         );
     }
 

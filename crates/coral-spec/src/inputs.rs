@@ -179,11 +179,53 @@ fn render_oauth_endpoint_url(
             }
         }
     }
-    let url = Url::parse(&rendered).map_err(|error| {
-        ManifestError::validation(format!("invalid OAuth {label} URL: {error}"))
-    })?;
-    validate_oauth_endpoint_url_scheme(&url, &format!("OAuth {label} URL"))?;
+    let context = format!("OAuth {label} URL");
+    validate_oauth_provider_endpoint_url(&context, &rendered)?;
     Ok(rendered)
+}
+
+fn validate_oauth_provider_endpoint_url(context: &str, raw: &str) -> Result<()> {
+    let url = Url::parse(raw)
+        .map_err(|error| ManifestError::validation(format!("{context} is invalid: {error}")))?;
+    validate_oauth_provider_endpoint_scheme(context, &url)
+}
+
+fn validate_oauth_provider_endpoint_scheme(context: &str, url: &Url) -> Result<()> {
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_oauth_provider_endpoint(url) => Ok(()),
+        "http" => Err(ManifestError::validation(format!(
+            "{context} must use https unless it targets localhost"
+        ))),
+        scheme => Err(ManifestError::validation(format!(
+            "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
+        ))),
+    }
+}
+
+fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &str) -> Result<()> {
+    let parse_prefix = raw_prefix.strip_suffix(':').unwrap_or(raw_prefix);
+    if let Ok(url) = Url::parse(parse_prefix) {
+        return validate_oauth_provider_endpoint_scheme(context, &url);
+    }
+    let Some((scheme, _rest)) = raw_prefix.split_once("://") else {
+        return Ok(());
+    };
+    match scheme {
+        "https" | "http" => Ok(()),
+        scheme => Err(ManifestError::validation(format!(
+            "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
+        ))),
+    }
+}
+
+fn is_loopback_oauth_provider_endpoint(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
+        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
+        None => false,
+    }
 }
 
 /// Supported loopback redirect URI port binding modes.
@@ -523,6 +565,7 @@ fn validate_oauth_endpoint_template(
     let template = ParsedTemplate::parse(raw_template)?;
     let mut rendered = String::with_capacity(template.raw().len());
     let mut has_required_variable = false;
+    let mut rendered_before_first_required_variable = None;
 
     for part in template.parts() {
         match part {
@@ -553,6 +596,7 @@ fn validate_oauth_endpoint_template(
                     )));
                 }
                 if input.required {
+                    rendered_before_first_required_variable.get_or_insert_with(|| rendered.clone());
                     has_required_variable = true;
                 } else {
                     rendered.push_str(&input.default_value);
@@ -562,7 +606,11 @@ fn validate_oauth_endpoint_template(
     }
 
     if !has_required_variable {
-        validate_url(input_key, field, &rendered)?;
+        let context = format!("manifest input '{input_key}' oauth.endpoints.{field}");
+        validate_oauth_provider_endpoint_url(&context, &rendered)?;
+    } else if let Some(prefix) = rendered_before_first_required_variable.as_deref() {
+        let context = format!("manifest input '{input_key}' oauth.endpoints.{field}");
+        validate_oauth_provider_endpoint_template_prefix(&context, prefix)?;
     }
 
     Ok(())
@@ -1107,28 +1155,6 @@ fn redirect_uri_has_explicit_port(raw: &str) -> bool {
         return false;
     };
     !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-fn validate_url(input_key: &str, field: &str, raw: &str) -> Result<()> {
-    let context = format!("manifest input '{input_key}' oauth.endpoints.{field}");
-    let url = Url::parse(raw)
-        .map_err(|error| ManifestError::validation(format!("{context} is invalid: {error}")))?;
-    validate_oauth_endpoint_url_scheme(&url, &context)
-}
-
-fn validate_oauth_endpoint_url_scheme(url: &Url, context: &str) -> Result<()> {
-    // OAuth provider endpoints carry the authorization code and exchange it for
-    // an access token, so they must not travel over plaintext HTTP where they
-    // can be intercepted. A loopback host is exempt: it cannot be observed off
-    // the machine and keeps local OAuth test servers usable.
-    let host = url.host_str().unwrap_or_default();
-    let is_loopback = host == "127.0.0.1" || host == "localhost";
-    if url.scheme() != "https" && !(url.scheme() == "http" && is_loopback) {
-        return Err(ManifestError::validation(format!(
-            "{context} must use https"
-        )));
-    }
-    Ok(())
 }
 
 fn validate_input_key(label: &str, value: &str) -> Result<()> {
@@ -1876,7 +1902,31 @@ tables: []
     }
 
     #[test]
-    fn rejects_plaintext_http_oauth_endpoint_urls() {
+    fn rejects_oauth_endpoint_urls_with_unsupported_schemes() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "https://provider.example.com/oauth/authorize",
+                "x-coral-unsafe://open",
+            ),
+        )
+        .expect_err("unsupported endpoint scheme should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported scheme 'x-coral-unsafe'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_plain_http_oauth_endpoint_urls_without_loopback_host() {
         let error = collect(
             &oauth_input(
                 r"
@@ -1889,13 +1939,19 @@ tables: []
                 "http://provider.example.com/oauth/token",
             ),
         )
-        .expect_err("plaintext oauth endpoint should fail");
-        assert!(error.to_string().contains("token_url must use https"));
+        .expect_err("plain http endpoint should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must use https unless it targets localhost"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
-    fn allows_loopback_http_oauth_endpoint_urls() {
-        collect(
+    fn rejects_plain_http_oauth_endpoint_urls_with_loopback_lookalike_host() {
+        let error = collect(
             &oauth_input(
                 r"
               id:
@@ -1904,10 +1960,42 @@ tables: []
             )
             .replace(
                 "https://provider.example.com/oauth/token",
-                "http://127.0.0.1:8080/oauth/token",
+                "http://127.example.com/oauth/token",
             ),
         )
-        .expect("loopback http oauth endpoint should be allowed");
+        .expect_err("loopback-lookalike endpoint should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must use https unless it targets localhost"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn allows_plain_http_oauth_endpoint_urls_for_loopback_hosts() {
+        for host in ["127.0.0.1", "localhost", "[::1]"] {
+            collect(
+                &oauth_input(
+                    r"
+              id:
+                default: default-client
+",
+                )
+                .replace(
+                    "https://provider.example.com/oauth/authorize",
+                    &format!("http://{host}:53682/oauth/authorize"),
+                )
+                .replace(
+                    "https://provider.example.com/oauth/token",
+                    &format!("http://{host}:53682/oauth/token"),
+                ),
+            )
+            .unwrap_or_else(|error| {
+                panic!("loopback OAuth endpoint host `{host}` should pass: {error}")
+            });
+        }
     }
 
     #[test]
@@ -1999,6 +2087,70 @@ tables: []
             ),
         )
         .expect("required variable endpoint parsing should be deferred");
+    }
+
+    #[test]
+    fn rejects_plain_http_oauth_endpoint_templates_with_required_variable_after_fixed_host() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "  API_TOKEN:\n",
+                "  OUTLOOK_TENANT_ID:\n    kind: variable\n  API_TOKEN:\n",
+            )
+            .replace(
+                "https://provider.example.com/oauth/token",
+                "http://provider.example.com/{{input.OUTLOOK_TENANT_ID}}/oauth/token",
+            ),
+        )
+        .expect_err("fixed remote HTTP endpoint prefix should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("oauth.endpoints.token_url must use https unless it targets localhost"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn endpoint_urls_reject_rendered_plain_http_non_loopback_endpoint() {
+        let oauth = ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                pkce: ManifestOAuthPkceMode::Disabled,
+            },
+            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: Some(
+                "{{input.OAUTH_SCHEME}}://provider.example.com/oauth/authorize".to_string(),
+            ),
+            device_authorization_url: None,
+            token_url: "{{input.OAUTH_SCHEME}}://provider.example.com/oauth/token".to_string(),
+            client: ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+            },
+            scopes: None,
+        };
+        let source_inputs = BTreeMap::from([("OAUTH_SCHEME".to_string(), "http".to_string())]);
+        let error = oauth
+            .endpoint_urls(&source_inputs)
+            .expect_err("rendered plain http endpoint should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("OAuth authorization URL must use https unless it targets localhost"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

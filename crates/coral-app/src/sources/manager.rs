@@ -243,7 +243,10 @@ impl SourceManager {
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let source_variables = variables
             .iter()
-            .map(|binding| (binding.key.clone(), binding.value.clone()))
+            .filter_map(|binding| {
+                let value = normalize_binding_value(&binding.value);
+                (!value.is_empty()).then(|| (binding.key.clone(), value))
+            })
             .collect::<BTreeMap<_, _>>();
         Ok(manifest.outbound_hosts_with_input_values(&source_variables))
     }
@@ -1151,7 +1154,11 @@ fn collect_unique_variables(
     let mut values = BTreeMap::new();
     for variable in variables {
         let key = normalize_binding_key("source variable key", &variable.key)?;
-        if values.insert(key.clone(), variable.value.clone()).is_some() {
+        let value = normalize_binding_value(&variable.value);
+        if value.is_empty() {
+            continue;
+        }
+        if values.insert(key.clone(), value).is_some() {
             return Err(AppError::InvalidInput(format!(
                 "source variable '{key}' is repeated"
             )));
@@ -1164,13 +1171,21 @@ fn collect_unique_secrets(secrets: &[SourceBinding]) -> Result<BTreeMap<String, 
     let mut values = BTreeMap::new();
     for secret in secrets {
         let key = normalize_binding_key("source secret key", &secret.key)?;
-        if values.insert(key.clone(), secret.value.clone()).is_some() {
+        let value = normalize_binding_value(&secret.value);
+        if value.is_empty() {
+            continue;
+        }
+        if values.insert(key.clone(), value).is_some() {
             return Err(AppError::InvalidInput(format!(
                 "source secret '{key}' is repeated"
             )));
         }
     }
     Ok(values)
+}
+
+fn normalize_binding_value(value: &str) -> String {
+    value.trim().to_string()
 }
 
 fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
@@ -1237,7 +1252,8 @@ mod tests {
     use super::{
         ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
-        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, normalize_binding_key,
+        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, collect_unique_secrets,
+        collect_unique_variables, normalize_binding_key,
     };
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
@@ -1454,6 +1470,45 @@ tables:
             normalize_binding_key("source variable key", "..").expect("key"),
             ".."
         );
+    }
+
+    #[test]
+    fn collect_unique_variables_trims_values_and_skips_whitespace_only_values() {
+        let variables = collect_unique_variables(&[
+            SourceBinding {
+                key: "API_BASE".to_string(),
+                value: "  https://example.com  ".to_string(),
+            },
+            SourceBinding {
+                key: "OPTIONAL_BASE".to_string(),
+                value: "   ".to_string(),
+            },
+        ])
+        .expect("collect variables");
+
+        assert_eq!(
+            variables.get("API_BASE").map(String::as_str),
+            Some("https://example.com")
+        );
+        assert!(!variables.contains_key("OPTIONAL_BASE"));
+    }
+
+    #[test]
+    fn collect_unique_secrets_trims_values_and_skips_whitespace_only_values() {
+        let secrets = collect_unique_secrets(&[
+            SourceBinding {
+                key: "API_TOKEN".to_string(),
+                value: "  token  ".to_string(),
+            },
+            SourceBinding {
+                key: "OPTIONAL_TOKEN".to_string(),
+                value: "\n\t ".to_string(),
+            },
+        ])
+        .expect("collect secrets");
+
+        assert_eq!(secrets.get("API_TOKEN").map(String::as_str), Some("token"));
+        assert!(!secrets.contains_key("OPTIONAL_TOKEN"));
     }
 
     #[test]
