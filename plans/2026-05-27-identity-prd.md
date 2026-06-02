@@ -62,10 +62,11 @@ ordinary setup and recovery.
   audience.
 - Keep authority changes explicit, especially sharing, reuse, broader
   capabilities, principal changes, and audience changes.
-- Support multi-user workspace sharing through workspace-owned identities,
-  per-workspace-source availability, and the three-permission model. The user
-  authentication layer that identifies which member is querying is a separate
-  dependency, not defined here.
+- Support multi-user workspace sharing through workspace-owned identities and
+  per-workspace-source availability, while treating workspace access control as
+  an external boundary. The layer that decides who may access or configure a
+  workspace, and identifies which member is querying, is a separate dependency,
+  not defined here.
 
 ## Non-Goals
 
@@ -80,6 +81,8 @@ ordinary setup and recovery.
 - Add a first-wave per-identity ACL model.
 - Normalize provider permissions into a universal Coral taxonomy.
 - Define every provider-specific identity spec in this PRD.
+- Define workspace access-control roles, permissions, or authorization policy.
+  This PRD assumes a workspace authorization layer exists and composes with it.
 - Define the user authentication / principal layer that identifies which member
   is querying. This PRD assumes that layer and composes with it, but a later
   effort builds it.
@@ -210,9 +213,10 @@ A workspace source is a workspace's use of a materialized source. It owns:
 ### Surface Binding: Shared Assignment or Per-Member Slot
 
 Each surface of a workspace source is bound one of two ways. The binding mode is
-a property of the surface in that workspace, set by whoever has Manage workspace
-source, and is often inferred from the issuer or archetype (human-tied issuers
-default to a slot; app/bot/service-account/trusted-role/OIDC default to shared).
+a property of the surface in that workspace, configured through the workspace
+source setup path, and is often inferred from the issuer or archetype
+(human-tied issuers default to a slot; app/bot/service-account/trusted-role/OIDC
+default to shared).
 
 A **shared assignment** binds the surface to one workspace-owned identity:
 
@@ -425,7 +429,8 @@ Adding a source to a workspace composes the two:
 2. Create or select the workspace source.
 3. Read identity requirements for each required surface.
 4. Decide each surface's binding mode: shared assignment or per-member slot
-   (default inferred from issuer/archetype, overridable by a workspace manager).
+   (default inferred from issuer/archetype, overridable during workspace source
+   setup).
 5. For shared surfaces, find or materialize a compatible workspace-owned identity
    and assign it; suggest safe reuse only when allowed.
 6. For per-member surfaces, declare the slot. The acting member binds one of
@@ -546,7 +551,7 @@ Coral must ask before:
 - making a workspace source available to more users
 - switching from provider-managed auth to manual token entry
 
-## Sharing, Reuse, and Permissions
+## Sharing and Reuse Boundaries
 
 Safe defaults:
 
@@ -567,17 +572,12 @@ Safe defaults:
   prefer app, bot, service account, trusted-role, or OIDC identities for shared
   assignments, and per-member slots for human-tied access.
 
-The first-wave permission model has three permissions, not per-identity ACLs:
-
-- **Query workspace source:** run queries when availability includes the user.
-  Query users may see non-secret status, missing permissions, and fix guidance.
-- **Manage workspace source:** add or remove a workspace source, set each
-  surface's binding mode, create or assign workspace-owned identities for shared
-  surfaces, declare per-member slots, recover shared identities, and change
-  availability. Managers declare slots but cannot see or fill another member's
-  identities.
-- **Manage workspace:** add or remove members, share the workspace, delegate
-  source management, and delete or archive the workspace.
+This PRD does not define workspace roles, permissions, or authorization policy.
+It assumes a workspace access-control layer decides who may query a workspace
+source, configure a workspace source, or share a workspace. Identity binding
+only consumes those decisions: once the workspace layer says a member may query,
+the binding determines whose credential runs that query. This must not become a
+separate per-identity ACL model.
 
 Reuse follows ownership. A workspace-owned identity may be suggested for another
 compatible surface in the same workspace only when it satisfies the requirements,
@@ -626,7 +626,8 @@ choose concepts that break any of them.
 - DSL v4 surfaces declare `identity_requirements`; projections do not choose
   identities.
 - A surface can be bound as a shared assignment or a per-member slot, with the
-  default inferred from the issuer/archetype and overridable by a manager.
+  default inferred from the issuer/archetype and overridable during workspace
+  source setup.
 - `coral source add gmail` in a local default workspace can declare a per-member
   slot on `gmail.gmail-api`, let the local user bind their own member-owned Google
   identity, and keep availability private.
