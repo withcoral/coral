@@ -79,6 +79,10 @@ opentelemetry-otlp = "0.31.0"
 opentelemetry_sdk = "0.31.0"
 parquet = { version = "58.1.0", features = ["arrow"] }
 prost = "0.14.1"
+ratatui = "0.29.0"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-native-roots", "system-proxy"] }
+rmcp = { version = "1.6.0", features = ["client", "transport-child-process"] }
 reqwest = { version = "0.13", default-features = false, features = ["charset", "form", "http2", "json", "query", "rustls", "system-proxy"] }
 regex = "1"
 rmcp = { version = "1.6.0", features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest"] }
@@ -110,7 +114,8 @@ urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
 wiremock = "0.6"
-
+scopeguard = "1.2.0"
+unicode-width = "0.2"
 coral-api = { path = "crates/coral-api" }
 coral-app = { path = "crates/coral-app" }
 coral-cli = { path = "crates/coral-cli" }
