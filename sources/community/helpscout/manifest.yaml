@@ -292,10 +292,10 @@ tables:
   - name: customers
     description: Help Scout customers (end users who contact support).
     guide: |
-      Join `email` to `stripe.customers`, `intercom.contacts`, and
-      `linear.users`. When `email` is null on a list row, fetch the address
-      from `helpscout.conversations.customer_email` or filter with
-      `WHERE email IS NOT NULL`. Prefer mailbox scoping on large accounts.
+      Use `helpscout.conversations.customer_email` as the primary customer
+      email join key for cross-source queries. The `email` column is the first
+      `_embedded.emails[].value` address when Help Scout includes embedded
+      emails on the list row. Prefer mailbox scoping on large accounts.
     fetch_limit_default: 50
     filters:
       - name: mailbox
@@ -359,11 +359,14 @@ tables:
       - name: email
         type: Utf8
         nullable: true
-        description: Primary customer email when returned on the list row.
+        description: First customer email from _embedded.emails when returned on the list row.
         expr:
-          kind: path
+          kind: first_array_item_path
           path:
-            - email
+            - _embedded
+            - emails
+          item_path:
+            - value
       - name: organization
         type: Utf8
         nullable: true

@@ -103,7 +103,7 @@ Coral sources (Gmail, Stripe, Linear, Intercom) in one query.
 | Name | Kind | Description |
 | --- | --- | --- |
 | `mailboxes` | table | Shared inboxes (mailbox ID, name, email) |
-| `customers` | table | End customers; join on `email` when present |
+| `customers` | table | End customers; join via `conversations.customer_email`, or `email` when embedded |
 | `conversations` | table | Support conversations with `customer_email` |
 | `users` | table | Help Scout agents and admins |
 | `search_conversations` | function | Provider-native search via `query` argument |
@@ -164,6 +164,9 @@ coral sql "SELECT id, number, subject, status FROM helpscout.search_conversation
 
 The following output was captured against Help Scout Mailbox API v2 with Coral
 using interactive OAuth (`redirect_uri` `http://127.0.0.1:8765/oauth/callback`).
+This account's customer list response omitted embedded email values, so
+`customers.email` is blank in the sample; cross-source examples use
+`conversations.customer_email`.
 
 ```text
 $ coral source lint sources/community/helpscout/manifest.yaml
@@ -345,8 +348,9 @@ SELECT
   h.subject,
   h.status
 FROM intercom.contacts i
-JOIN helpscout.customers hc ON LOWER(hc.email) = LOWER(i.email)
-JOIN helpscout.conversations h ON h.customer_id = hc.id
+JOIN helpscout.conversations h
+  ON LOWER(h.customer_email) = LOWER(i.email)
+LEFT JOIN helpscout.customers hc ON hc.id = h.customer_id
 LIMIT 30;
 ```
 
@@ -383,5 +387,6 @@ LIMIT 25;
 ## Limitations (v0.1)
 
 - No `threads`, `folders`, or custom-field tables yet.
-- Customer list rows may omit `email`; prefer `conversations.customer_email`
-  or join through `customer_id` when needed.
+- Customer list rows may omit embedded emails; prefer
+  `conversations.customer_email` for cross-source joins and use
+  `customers.email` only when `_embedded.emails` is populated by the list API.
