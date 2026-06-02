@@ -922,7 +922,7 @@ fn query_test_counts(response: &ValidateSourceResponse) -> QueryTestCounts {
 
 fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    print_input_hint(input);
+    print_prompt_hint(resolve_prompt_hint(input, None));
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
@@ -941,9 +941,12 @@ fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, 
     }))
 }
 
-fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyhow::Error> {
+fn prompt_secret(
+    input: &ManifestInputSpec,
+    method: Option<&ManifestCredentialMethod>,
+) -> Result<Option<SourceSecret>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    print_input_hint(input);
+    print_prompt_hint(resolve_prompt_hint(input, method));
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
@@ -964,6 +967,7 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
 
 fn prompt_source_config_secret(
     input: &ManifestInputSpec,
+    method: Option<&ManifestCredentialMethod>,
 ) -> Result<Option<SourceSecret>, anyhow::Error> {
     let env_value = read_source_input_env(&input.key).unwrap_or_default();
     if !env_value.is_empty() {
@@ -972,7 +976,7 @@ fn prompt_source_config_secret(
             value: env_value,
         }));
     }
-    prompt_secret(input)
+    prompt_secret(input, method)
 }
 
 enum SecretInputOutcome {
@@ -989,7 +993,7 @@ fn prompt_secret_with_methods(
 ) -> Result<SecretInputOutcome, anyhow::Error> {
     let Some(credential) = input.credential.as_ref() else {
         return Ok(SecretInputOutcome::SourceConfig(
-            prompt_source_config_secret(input)?,
+            prompt_source_config_secret(input, None)?,
         ));
     };
     let Some(selected) = select_credential_method(input, credential, prefer_skip)? else {
@@ -999,14 +1003,20 @@ fn prompt_secret_with_methods(
         .methods
         .get(selected)
         .ok_or_else(|| anyhow::anyhow!("credential method index {selected} is out of range"))?;
+    // Inside a credential-method flow the selected method's hint is the
+    // guidance shown; the input-level hint is reserved for inspection
+    // surfaces and is not reprinted here.
     match method.kind {
         ManifestCredentialMethodKind::SourceConfig => Ok(SecretInputOutcome::SourceConfig(
-            prompt_source_config_secret(input)?,
+            prompt_source_config_secret(input, Some(method))?,
         )),
-        ManifestCredentialMethodKind::OAuth => Ok(SecretInputOutcome::OAuth {
-            credential: collect_oauth_credential_method(input, selected, method)?,
-            label: credential_method_label(method),
-        }),
+        ManifestCredentialMethodKind::OAuth => {
+            print_prompt_hint(resolve_prompt_hint(input, Some(method)));
+            Ok(SecretInputOutcome::OAuth {
+                credential: collect_oauth_credential_method(input, selected, method)?,
+                label: credential_method_label(method),
+            })
+        }
     }
 }
 
@@ -1474,10 +1484,28 @@ fn prompt_oauth_client_secret(input_key: &str) -> Result<String, anyhow::Error> 
     Ok(value)
 }
 
-fn print_input_hint(input: &ManifestInputSpec) {
-    if let Some(hint) = input.hint.as_deref()
-        && !hint.is_empty()
-    {
+/// Resolve the single hint to show while interactively collecting `input`.
+///
+/// Inside a credential-method flow (`method` is `Some`) the selected method's
+/// hint takes precedence, so the input-level hint — kept concise for
+/// inspection surfaces (`coral source info --verbose`, `coral.inputs`) and the
+/// generated docs — is not reprinted alongside it. When the selected method
+/// has no hint we fall back to the input-level hint rather than show nothing:
+/// a dormant safety net for multi-method secrets that have not authored
+/// per-method hints. For variables and plain secrets (`method` is `None`) the
+/// input-level hint is used directly. Returning a single value makes it
+/// impossible to print both the input-level and method-level hints together.
+fn resolve_prompt_hint<'a>(
+    input: &'a ManifestInputSpec,
+    method: Option<&'a ManifestCredentialMethod>,
+) -> Option<&'a str> {
+    let trimmed = |hint: Option<&'a str>| hint.map(str::trim).filter(|hint| !hint.is_empty());
+    trimmed(method.and_then(|method| method.hint.as_deref()))
+        .or_else(|| trimmed(input.hint.as_deref()))
+}
+
+fn print_prompt_hint(hint: Option<&str>) {
+    if let Some(hint) = hint {
         println!("  {}", style(hint).dim());
     }
 }
@@ -1522,8 +1550,9 @@ mod tests {
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, render_redirect_prompt_key_echo, shell_quote_arg, source_name_arg,
-        submit_oauth_redirect_url, validate_oauth_redirect_url, validation_follow_up,
+        finalize_input_value, render_redirect_prompt_key_echo, resolve_prompt_hint,
+        shell_quote_arg, source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
+        validation_follow_up,
     };
 
     #[test]
@@ -1574,6 +1603,7 @@ mod tests {
                     kind: ManifestCredentialMethodKind::SourceConfig,
                     label: Some("Paste token".to_string()),
                     description: None,
+                    hint: None,
                     oauth: None,
                 }],
             }),
@@ -1581,6 +1611,79 @@ mod tests {
 
         assert!(CredentialPromptMode::EnvFirst.reads_env_before_prompt(&input));
         assert!(!CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&input));
+    }
+
+    fn secret_with_method(
+        input_hint: Option<&str>,
+        method_hint: Option<&str>,
+    ) -> (ManifestInputSpec, ManifestCredentialMethod) {
+        let method = ManifestCredentialMethod {
+            kind: ManifestCredentialMethodKind::SourceConfig,
+            label: Some("Paste token".to_string()),
+            description: None,
+            hint: method_hint.map(ToString::to_string),
+            oauth: None,
+        };
+        let input = ManifestInputSpec {
+            key: "GITHUB_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: input_hint.map(ToString::to_string),
+            credential: Some(ManifestCredentialSpec {
+                methods: vec![method.clone()],
+            }),
+        };
+        (input, method)
+    }
+
+    #[test]
+    fn prompt_hint_uses_input_hint_outside_a_credential_method_flow() {
+        let (input, _) = secret_with_method(Some("Input-level summary."), Some("Method guidance."));
+        assert_eq!(
+            resolve_prompt_hint(&input, None),
+            Some("Input-level summary.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_uses_only_the_method_hint_inside_a_credential_method_flow() {
+        // Once a method is selected, the method hint is the guidance and the
+        // input-level hint is never reprinted (the source_config/"Paste token"
+        // path must not show both).
+        let (input, method) =
+            secret_with_method(Some("Input-level summary."), Some("Method guidance."));
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Method guidance.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_falls_back_to_input_hint_when_method_has_no_hint() {
+        // Dormant safety net: a multi-method secret whose selected method has
+        // no hint still shows the input-level hint rather than nothing.
+        let (input, method) = secret_with_method(Some("Input-level summary."), None);
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Input-level summary.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_shows_nothing_when_neither_method_nor_input_has_a_hint() {
+        let (input, method) = secret_with_method(None, None);
+        assert_eq!(resolve_prompt_hint(&input, Some(&method)), None);
+    }
+
+    #[test]
+    fn prompt_hint_trims_and_drops_blank_hints() {
+        let (input, method) = secret_with_method(Some("   "), Some("  Method guidance.  "));
+        assert_eq!(resolve_prompt_hint(&input, None), None);
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Method guidance.")
+        );
     }
 
     #[test]

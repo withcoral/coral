@@ -181,30 +181,15 @@ Cloud; for GitHub Enterprise Server, use
 
 `GITHUB_TOKEN` (required)
 
-For GitHub Cloud, choose "Connect with GitHub device code" for the
-simplest setup. It signs in through GitHub and does not require you
-to create an OAuth app or enter a client secret.
+Connect with GitHub OAuth or paste a personal access token. The
+OAuth methods request the `repo`, `read:org`, `read:user`, and
+`user:email` scopes.
 
-If you want to use your own GitHub OAuth app, set
-GITHUB_OAUTH_CLIENT_ID to the app's Client ID. To create an app,
-follow GitHub's guide:
-https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app.
-Enable device flow on the app before using the device-code option.
-For the browser "Connect with GitHub OAuth app" option, set the
-app's Authorization callback URL to
-`http://127.0.0.1:53682/oauth/callback` and set
-GITHUB_OAUTH_CLIENT_SECRET to the app's Client secret.
+Credential methods:
 
-The OAuth options request `repo`, `read:org`, `read:user`, and
-`user:email` scopes. Use the token method instead if you need a
-narrower or more elevated scope set, or if you are connecting
-to GitHub Enterprise Server.
-
-For token auth, if you're already authenticated in GitHub CLI, run
-`gh auth token`, or create a new personal access token (PAT).
-Grant read access to the repositories and organizations you plan
-to query; some admin tables require elevated scopes.
-See [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+- **Connect with GitHub device code** — Signs you in through GitHub, with no app setup or client secret needed. Requests the `repo`, `read:org`, `read:user`, and `user:email` scopes. To use your own GitHub app instead, set GITHUB_OAUTH_CLIENT_ID to its Client ID and enable device flow on the app.
+- **Connect with GitHub OAuth app** — Uses your own GitHub OAuth app. Register one with its Authorization callback URL set to `http://127.0.0.1:53682/oauth/callback`, then enter the app's Client ID and Client secret below. Requests the `repo`, `read:org`, `read:user`, and `user:email` scopes. See [GitHub's guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app).
+- **Paste token** — If you use GitHub CLI, run `gh auth token`. Otherwise create a personal access token with read access to the repositories and organizations you query; some admin tables need elevated scopes. Works with GitHub Enterprise Server. See [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 
 ### `gitlab`
 
@@ -217,9 +202,13 @@ Base URL of your GitLab instance. Keep the default for
 
 `GITLAB_TOKEN` (required)
 
-Use GitLab OAuth or create a personal access token (PAT) with
-the `read_api` scope; some admin tables require elevated scopes.
-See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
+Connect with GitLab OAuth or paste a personal access token. Both
+need the `read_api` scope; some admin tables require elevated scopes.
+
+Credential methods:
+
+- **Connect with GitLab.com OAuth** — Sign in to GitLab.com in your browser. Requests the `read_api` scope. To use your own GitLab OAuth application, set GITLAB_OAUTH_CLIENT_ID to its Application ID.
+- **Paste token** — Create a personal access token with the `read_api` scope; some admin tables need elevated scopes. See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
 
 ### `gmail`
 
@@ -231,15 +220,13 @@ account, or an email address when the token has delegated access.
 
 `GMAIL_TOKEN` (required)
 
-Use a read-only OAuth 2.0 access token for the Gmail API with the
-`https://www.googleapis.com/auth/gmail.readonly` scope.
-For the guided OAuth flow, enable the Gmail API in a Google Cloud
-project and create an OAuth 2.0 client of type "Desktop app". The
-guided OAuth credential method uses that client ID and client secret,
-then requests that read-only scope.
-See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
+Connect with Google OAuth or paste an access token. Either way the
+token needs the `https://www.googleapis.com/auth/gmail.readonly` scope.
 
-To paste a token manually, use a token issued with that same scope.
+Credential methods:
+
+- **Connect with Google** — Enable the Gmail API in a Google Cloud project and create an OAuth 2.0 client of type "Desktop app", then enter its Client ID and Client secret below. Requests read-only access with the `https://www.googleapis.com/auth/gmail.readonly` scope. See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
+- **Paste access token** — Paste a read-only OAuth 2.0 access token issued with the `https://www.googleapis.com/auth/gmail.readonly` scope.
 
 ### `google_calendar`
 
@@ -251,14 +238,14 @@ testing against a mock Calendar-compatible API.
 
 `GOOGLE_CALENDAR_ACCESS_TOKEN` (required)
 
-Use a read-only OAuth 2.0 access token for the Google Calendar API.
-For the guided OAuth flow, enable the Google Calendar API in a Google
-Cloud project and create an OAuth 2.0 client of type "Desktop app".
-The guided OAuth credential method uses that client ID and client secret,
-then requests the https://www.googleapis.com/auth/calendar.readonly scope.
-See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
+Connect with Google OAuth or paste an access token. Either way the
+token needs the read-only
+`https://www.googleapis.com/auth/calendar.readonly` scope.
 
-To paste a token manually, use a token issued with that same scope.
+Credential methods:
+
+- **Connect Google Calendar** — Enable the Google Calendar API in a Google Cloud project and create an OAuth 2.0 client of type "Desktop app", then enter its Client ID and Client secret below. Requests read-only access with the `https://www.googleapis.com/auth/calendar.readonly` scope. See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
+- **Paste access token** — Paste a read-only OAuth 2.0 access token issued with the `https://www.googleapis.com/auth/calendar.readonly` scope.
 
 ### `grafana`
 
@@ -398,38 +385,29 @@ Your Sentry organization slug (found in the Sentry URL after `/organizations/`)
 
 `SENTRY_TOKEN` (required)
 
-Use OAuth during interactive setup, or create an internal integration
-and generate a token with the following read scopes: org:read,
-event:read, member:read, project:read, project:releases, and
-team:read.
+Connect with Sentry OAuth or paste an internal-integration token.
+Both need the `org:read`, `event:read`, `member:read`, `project:read`,
+`project:releases`, and `team:read` scopes.
 
-OAuth setup requires a Sentry OAuth app; use that app's client ID
-when prompted.
-See [Sentry auth docs](https://docs.sentry.io/api/auth/).
+Credential methods:
+
+- **Connect with Sentry device flow** — Sign in to Sentry with a device code. Enter your Sentry OAuth app's Client ID when prompted. Requests the `org:read`, `event:read`, `member:read`, `project:read`, `project:releases`, and `team:read` scopes. See [Sentry auth docs](https://docs.sentry.io/api/auth/).
+- **Paste auth token** — Create an internal integration and paste its token, granting the `org:read`, `event:read`, `member:read`, `project:read`, `project:releases`, and `team:read` read scopes. See [Sentry auth docs](https://docs.sentry.io/api/auth/).
 
 ### `slack`
 
 `SLACK_TOKEN` (required)
 
-Slack doesn't provide a general-purpose API for reading messages.
-Instead, you need a Slack app with an OAuth token.
+Slack has no general-purpose API for reading messages, so you need
+a Slack app with an OAuth token. Both methods use these scopes:
+`channels:read`, `channels:history`, `groups:read`,
+`groups:history`, `users:read`, `users:read.email`. See the
+[Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
 
-If you already have a Slack app with the required scopes, you can
-find your OAuth token on its OAuth & Permissions page. The
-required scopes are: channels:read, channels:history, groups:read,
-groups:history, users:read, users:read.email.
+Credential methods:
 
-If you don't have a Slack app, create one with the required
-scopes pre-filled:
-
-- [User token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback%22%5D%2C%22scopes%22%3A%7B%22user%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Aread%22%2C%22channels%3Aread%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%2C%22pkce_enabled%22%3Atrue%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D)
-  — works with the "Connect with Slack" OAuth flow. Reads the
-  channels the authorizing user belongs to.
-- [Bot token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D)
-  — install it, then paste the bot token. Reads the channels the
-  bot has been added to.
-
-For more details, see the [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
+- **Connect with Slack** — Create a [user-token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback%22%5D%2C%22scopes%22%3A%7B%22user%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Aread%22%2C%22channels%3Aread%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%2C%22pkce_enabled%22%3Atrue%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D), which pre-fills the scopes and redirect URL, then enter its Client ID below and authorize in your browser. Reads the channels the authorizing user belongs to.
+- **Paste Slack OAuth Token** — Paste the OAuth token from your app's OAuth & Permissions page. If you don't have an app, create a [bot-token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D), install it, then paste its bot token. Reads the channels the bot has been added to.
 
 ### `statusgator`
 

@@ -8,6 +8,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
+use tracing::{Instrument as _, info_span};
 
 use crate::backends::compile_query_source;
 use crate::runtime::catalog;
@@ -21,7 +22,7 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, QueryExecution, QueryPlan, QueryResultObserver,
+    CatalogInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan, QueryResultObserver,
     QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
 };
 
@@ -34,6 +35,14 @@ pub(crate) struct QueryRuntimeAdapter {
 }
 
 pub(crate) async fn build_runtime(
+    sources: &[QuerySource],
+    runtime: QueryRuntimeConfig,
+) -> Result<QueryRuntimeAdapter, CoreError> {
+    let span = info_span!("coral.engine.runtime.build", source.count = sources.len());
+    build_runtime_inner(sources, runtime).instrument(span).await
+}
+
+async fn build_runtime_inner(
     sources: &[QuerySource],
     runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
@@ -167,6 +176,30 @@ impl QueryRuntimeAdapter {
         }
     }
 
+    pub(crate) fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
+        if let Some(table) = self
+            .tables
+            .iter()
+            .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+            .cloned()
+        {
+            return DescribeTableInfo {
+                table: Some(table),
+                missing_context_tables: Vec::new(),
+            };
+        }
+
+        let missing_context_tables = self
+            .tables
+            .iter()
+            .map(table_metadata_without_columns)
+            .collect();
+        DescribeTableInfo {
+            table: None,
+            missing_context_tables,
+        }
+    }
+
     pub(crate) fn registration_failure(
         &self,
         source_name: &str,
@@ -242,6 +275,17 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_statements(false)
 }
 
+fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
+    TableInfo {
+        schema_name: table.schema_name.clone(),
+        table_name: table.table_name.clone(),
+        description: table.description.clone(),
+        guide: table.guide.clone(),
+        columns: Vec::new(),
+        required_filters: table.required_filters.clone(),
+    }
+}
+
 fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> CoreError {
     let core = query_result_observer_error_to_core(error);
     match core {
@@ -252,5 +296,59 @@ fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> 
             CoreError::FailedPrecondition(format!("query result observer '{name}': {detail}"))
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ColumnInfo;
+
+    fn adapter_with_table() -> QueryRuntimeAdapter {
+        QueryRuntimeAdapter {
+            ctx: Arc::new(SessionContext::new()),
+            tables: vec![TableInfo {
+                schema_name: "demo".to_string(),
+                table_name: "events".to_string(),
+                description: "Event rows".to_string(),
+                guide: "Query event rows.".to_string(),
+                columns: vec![ColumnInfo {
+                    name: "event_id".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    is_virtual: false,
+                    is_required_filter: false,
+                    description: "Event ID".to_string(),
+                    ordinal_position: 0,
+                }],
+                required_filters: vec!["owner".to_string()],
+            }],
+            table_functions: Vec::new(),
+            failures: Vec::new(),
+            query_result_observers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn describe_table_hit_returns_full_table_without_missing_context() {
+        let result = adapter_with_table().describe_table("demo", "events");
+
+        let table = result.table.expect("exact table");
+        assert_eq!(table.columns.len(), 1);
+        assert!(result.missing_context_tables.is_empty());
+    }
+
+    #[test]
+    fn describe_table_miss_returns_columnless_context_tables() {
+        let result = adapter_with_table().describe_table("demo", "missing");
+
+        assert!(result.table.is_none());
+        assert_eq!(result.missing_context_tables.len(), 1);
+        let context_table = result
+            .missing_context_tables
+            .first()
+            .expect("missing context table");
+        assert!(context_table.columns.is_empty());
+        assert_eq!(context_table.required_filters, ["owner".to_string()]);
     }
 }

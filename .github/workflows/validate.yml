@@ -494,7 +494,10 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: coral-validate-${{ runner.os }}
+          # Keep this separate from Rust checks. GitHub caches are immutable on
+          # exact-key hits, so sharing the debug/test cache prevents this job's
+          # release artifacts from warming future performance runs.
+          shared-key: coral-perf-release-${{ runner.os }}
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 

@@ -11,15 +11,15 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    ColumnSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestError, ManifestInputKind,
-    ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend,
-    SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
-    TableFunctionArgSpec, ValueSourceSpec,
+    ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, FunctionArgBinding, ManifestError,
+    ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result,
+    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
+    TableCommon, TableFunctionArgSpec, ValueSourceSpec,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
-    validate_columns, validate_filters_and_column_exprs, validate_identifier,
-    validate_test_queries, validate_unique_values,
+    validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
+    validate_identifier, validate_test_queries, validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -399,7 +399,17 @@ impl McpSourceManifest {
         }
         validate_test_queries(&name, &test_queries)?;
         validate_server(&name, &server, &declared_inputs)?;
-        validate_table_and_function_names(&name, &tables, &functions)?;
+        validate_declared_relation_namespace(
+            &name,
+            tables
+                .iter()
+                .map(|table| DeclaredRelation::table(table.name.as_str()))
+                .chain(
+                    functions
+                        .iter()
+                        .map(|function| DeclaredRelation::function(function.name.as_str())),
+                ),
+        )?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let functions = functions
@@ -544,45 +554,6 @@ fn validate_server_env_value_source(source_name: &str, env: &McpEnvSpec) -> Resu
         &env.value,
         &format!("source '{source_name}' MCP server env '{}'", env.name),
     )
-}
-
-fn validate_table_and_function_names(
-    source_name: &str,
-    tables: &[RawMcpTableSpec],
-    functions: &[RawMcpTableFunctionSpec],
-) -> Result<()> {
-    let mut table_names = HashSet::new();
-    for table in tables {
-        validate_identifier(&table.name, &format!("source '{source_name}' table name"))?;
-        if !table_names.insert(table.name.to_ascii_lowercase()) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' table '{}' is declared more than once",
-                table.name
-            )));
-        }
-    }
-
-    let mut function_names = HashSet::new();
-    for function in functions {
-        validate_identifier(
-            &function.name,
-            &format!("source '{source_name}' function name"),
-        )?;
-        let normalized_name = function.name.to_ascii_lowercase();
-        if table_names.contains(&normalized_name) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' declares both a table and function named '{}'",
-                function.name
-            )));
-        }
-        if !function_names.insert(normalized_name) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' function '{}' is declared more than once",
-                function.name
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) -> Result<()> {
