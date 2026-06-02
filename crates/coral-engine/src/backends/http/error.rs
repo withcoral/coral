@@ -98,33 +98,6 @@ pub(super) fn provider_error(error: ProviderQueryError) -> DataFusionError {
     DataFusionError::External(Box::new(error))
 }
 
-pub(super) fn mark_decode_error_retryable(error: DataFusionError) -> DataFusionError {
-    match error {
-        DataFusionError::External(inner) => match inner.downcast::<ProviderQueryError>() {
-            Ok(boxed_error) => match *boxed_error {
-                ProviderQueryError::Decode {
-                    source_schema,
-                    table,
-                    method,
-                    url,
-                    detail,
-                    ..
-                } => provider_error(ProviderQueryError::Decode {
-                    source_schema,
-                    table,
-                    method,
-                    url,
-                    detail,
-                    retryable: true,
-                }),
-                other => provider_error(other),
-            },
-            Err(inner) => DataFusionError::External(inner),
-        },
-        other => other,
-    }
-}
-
 fn datafusion_detail(error: &DataFusionError) -> String {
     match error {
         DataFusionError::Execution(detail) => detail.clone(),

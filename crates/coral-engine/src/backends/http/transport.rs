@@ -14,7 +14,7 @@ use tracing::field;
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::resolve_auth_headers;
-use crate::backends::http::error::{mark_decode_error_retryable, pagination_error, provider_error};
+use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::extract_next_link_url;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
@@ -327,18 +327,25 @@ pub(super) async fn execute_request(
             .await
             {
                 Ok(payload) => ResponseOutcome::Done(Ok(Some((payload, next_url)))),
-                Err(error) => {
-                    let retryable_get_decode = error.retryable && matches!(method, HttpMethod::GET);
-                    if retryable_get_decode && decode_retries < 2 {
-                        record_http_processing_error(&request_span, "DECODE_RETRY", &error.error);
+                Err(mut error) => {
+                    // `Decode { retryable }` marks a transient (truncated/EOF) body. Only
+                    // idempotent GET requests may be retried or surfaced as retryable.
+                    let is_get = matches!(method, HttpMethod::GET);
+                    let retry =
+                        is_get && matches!(error, ProviderQueryError::Decode { retryable: true, .. });
+                    if retry && decode_retries < 2 {
+                        record_http_processing_error(
+                            &request_span,
+                            "DECODE_RETRY",
+                            provider_error(error),
+                        );
                         decode_retries += 1;
                         ResponseOutcome::Retry(Duration::from_secs(2))
                     } else {
-                        let error = if retryable_get_decode {
-                            mark_decode_error_retryable(error.error)
-                        } else {
-                            error.error
-                        };
+                        if let ProviderQueryError::Decode { retryable, .. } = &mut error {
+                            *retryable &= is_get;
+                        }
+                        let error = provider_error(error);
                         record_http_processing_error(&request_span, "DECODE", &error);
                         ResponseOutcome::Done(Err(error))
                     }
