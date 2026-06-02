@@ -5,12 +5,13 @@
 //! statically from the manifest — the base URL, OAuth provider endpoints, and
 //! file or object-store table locations.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use url::Url;
 
 use crate::{
-    ManifestInputSpec, ParsedTemplate, TemplateNamespace, TemplatePart, ValidatedSourceManifest,
+    ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace, TemplatePart,
+    ValidatedSourceManifest,
 };
 
 impl ValidatedSourceManifest {
@@ -24,11 +25,28 @@ impl ValidatedSourceManifest {
     /// is returned verbatim so callers can still show it to the user.
     #[must_use]
     pub fn outbound_hosts(&self) -> Vec<String> {
+        self.outbound_hosts_with_input_values(&BTreeMap::new())
+    }
+
+    /// Returns every network host this source will contact after substituting
+    /// resolved non-secret source input values, de-duplicated and sorted.
+    ///
+    /// Input values override manifest defaults. Any input-driven endpoint that
+    /// still cannot be resolved is returned as its unresolved `{{...}}`
+    /// template string so callers can show the pending endpoint to the user.
+    #[must_use]
+    pub fn outbound_hosts_with_input_values(
+        &self,
+        source_inputs: &BTreeMap<String, String>,
+    ) -> Vec<String> {
         let mut hosts = BTreeSet::new();
         let inputs = self.declared_inputs();
 
         if let Some(http) = self.as_http() {
-            collect_host(&mut hosts, &render_with_defaults(&http.base_url, inputs));
+            collect_host(
+                &mut hosts,
+                &render_with_input_values(&http.base_url, inputs, source_inputs),
+            );
         }
 
         // OAuth endpoints are declared on secret inputs regardless of backend.
@@ -41,7 +59,11 @@ impl ValidatedSourceManifest {
                     if let Some(authorization_url) = oauth.authorization_url.as_deref() {
                         collect_host(
                             &mut hosts,
-                            &render_string_template_with_defaults(authorization_url, inputs),
+                            &render_string_template_with_input_values(
+                                authorization_url,
+                                inputs,
+                                source_inputs,
+                            ),
                         );
                     }
                     if let Some(device_authorization_url) =
@@ -49,12 +71,20 @@ impl ValidatedSourceManifest {
                     {
                         collect_host(
                             &mut hosts,
-                            &render_string_template_with_defaults(device_authorization_url, inputs),
+                            &render_string_template_with_input_values(
+                                device_authorization_url,
+                                inputs,
+                                source_inputs,
+                            ),
                         );
                     }
                     collect_host(
                         &mut hosts,
-                        &render_string_template_with_defaults(&oauth.token_url, inputs),
+                        &render_string_template_with_input_values(
+                            &oauth.token_url,
+                            inputs,
+                            source_inputs,
+                        ),
                     );
                 }
             }
@@ -64,9 +94,18 @@ impl ValidatedSourceManifest {
             for table in &file.tables {
                 collect_host(
                     &mut hosts,
-                    &render_with_defaults(&table.source.location, inputs),
+                    &render_with_input_values(&table.source.location, inputs, source_inputs),
                 );
             }
+        }
+
+        if let Some(mcp) = self.as_mcp()
+            && let McpServerSpec::StreamableHttp { url, .. } = &mcp.server
+        {
+            collect_host(
+                &mut hosts,
+                &render_string_template_with_input_values(url, inputs, source_inputs),
+            );
         }
 
         hosts.into_iter().collect()
@@ -76,13 +115,26 @@ impl ValidatedSourceManifest {
 /// Renders a template, substituting input tokens with their manifest default
 /// value. Tokens with no usable default are left as their `{{...}}` literal so
 /// the resulting string still signals an unresolved, input-driven endpoint.
-fn render_with_defaults(template: &ParsedTemplate, inputs: &[ManifestInputSpec]) -> String {
+fn render_with_input_values(
+    template: &ParsedTemplate,
+    inputs: &[ManifestInputSpec],
+    source_inputs: &BTreeMap<String, String>,
+) -> String {
     let mut rendered = String::new();
     for part in template.parts() {
         match part {
             TemplatePart::Literal(text) => rendered.push_str(text),
             TemplatePart::Token(token) => {
-                let resolved = token.default_value().map(str::to_string).or_else(|| {
+                let resolved = if matches!(token.namespace(), TemplateNamespace::Input) {
+                    source_inputs
+                        .get(token.key())
+                        .filter(|value| !value.is_empty())
+                        .cloned()
+                } else {
+                    None
+                }
+                .or_else(|| token.default_value().map(str::to_string))
+                .or_else(|| {
                     if matches!(token.namespace(), TemplateNamespace::Input) {
                         inputs
                             .iter()
@@ -106,10 +158,14 @@ fn render_with_defaults(template: &ParsedTemplate, inputs: &[ManifestInputSpec])
     rendered
 }
 
-fn render_string_template_with_defaults(raw: &str, inputs: &[ManifestInputSpec]) -> String {
+fn render_string_template_with_input_values(
+    raw: &str,
+    inputs: &[ManifestInputSpec],
+    source_inputs: &BTreeMap<String, String>,
+) -> String {
     ParsedTemplate::parse(raw).map_or_else(
         |_| raw.to_string(),
-        |template| render_with_defaults(&template, inputs),
+        |template| render_with_input_values(&template, inputs, source_inputs),
     )
 }
 
@@ -146,6 +202,8 @@ fn collect_host(hosts: &mut BTreeSet<String>, raw: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::parse_source_manifest_yaml;
 
     fn hosts(manifest_yaml: &str) -> Vec<String> {
@@ -204,6 +262,43 @@ tables:
 "#,
         );
         assert_eq!(found, vec!["api.github.com".to_string()]);
+    }
+
+    #[test]
+    fn resolved_input_values_override_templated_base_url_defaults() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.github.com
+base_url: "{{input.API_BASE}}"
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("manifest should parse");
+        let source_inputs = BTreeMap::from([(
+            "API_BASE".to_string(),
+            "https://gitlab.internal/api/v4".to_string(),
+        )]);
+
+        assert_eq!(
+            manifest.outbound_hosts_with_input_values(&source_inputs),
+            vec!["gitlab.internal".to_string()]
+        );
     }
 
     #[test]
@@ -392,6 +487,30 @@ tables:
                 "tokens.example.com".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn includes_streamable_http_mcp_server_host() {
+        let found = hosts(
+            r"
+name: demo_mcp
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: streamable_http
+  url: https://mcp.internal.example:8443/mcp
+tables:
+  - name: issues
+    description: Demo issues
+    tool: list_issues
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+",
+        );
+        assert_eq!(found, vec!["mcp.internal.example:8443".to_string()]);
     }
 
     #[test]

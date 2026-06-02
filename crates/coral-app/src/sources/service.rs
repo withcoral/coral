@@ -15,7 +15,8 @@ use coral_api::v1::{
     OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
     OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
     OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
-    OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
+    OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter,
+    ResolveBundledSourceHostsRequest, ResolveBundledSourceHostsResponse, Source,
     SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
     SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
@@ -88,6 +89,29 @@ impl SourceServiceApi for SourceService {
                 .map(candidate_source_to_proto)
                 .collect();
             Ok(Response::new(DiscoverSourcesResponse { sources }))
+        })
+        .await
+    }
+
+    async fn resolve_bundled_source_hosts(
+        &self,
+        request: Request<ResolveBundledSourceHostsRequest>,
+    ) -> Result<Response<ResolveBundledSourceHostsResponse>, Status> {
+        let span = grpc_span(&request);
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let _workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let variables = request
+                .variables
+                .into_iter()
+                .map(source_variable_from_proto)
+                .collect::<Vec<_>>();
+            let hosts = run_blocking_source_operation(move || {
+                SourceManager::resolve_bundled_source_hosts(&bundled_name, &variables)
+            })
+            .await?;
+            Ok(Response::new(ResolveBundledSourceHostsResponse { hosts }))
         })
         .await
     }

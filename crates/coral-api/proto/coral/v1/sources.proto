@@ -273,6 +273,23 @@ message DiscoverSourcesResponse {
   repeated SourceInfo sources = 1;
 }
 
+// Resolves outbound hosts for a bundled source after applying install-time
+// variable values.
+message ResolveBundledSourceHostsRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Canonical bundled source name.
+  string name = 2;
+  // Visible configured non-secret variables.
+  repeated SourceVariable variables = 3;
+}
+
+// Returns resolved outbound hosts for a bundled source.
+message ResolveBundledSourceHostsResponse {
+  // Network hosts this source will contact after applying supplied variables.
+  repeated string hosts = 1;
+}
+
 // Installs one bundled source by name.
 message CreateBundledSourceRequest {
   // Owning workspace resource.
@@ -498,6 +515,10 @@ message ValidateSourceResponse {
 service SourceService {
   // Lists bundled sources available for installation.
   rpc DiscoverSources(DiscoverSourcesRequest) returns (DiscoverSourcesResponse);
+  // Resolves outbound network hosts for a bundled source candidate using the
+  // provided install-time variable values.
+  rpc ResolveBundledSourceHosts(ResolveBundledSourceHostsRequest)
+      returns (ResolveBundledSourceHostsResponse);
   // Lists all registered sources.
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   // Fetches one registered source.

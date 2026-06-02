@@ -195,17 +195,22 @@ async fn run_installed_source_menu(
 }
 
 async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<(), anyhow::Error> {
-    if !source_ops::confirm_source_hosts(&source.hosts, true)? {
-        println!("Cancelled. Source '{}' was not connected.", source.name);
-        return Ok(());
-    }
     let inputs = source
         .inputs
         .iter()
         .map(manifest_input_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let inputs = source_ops::prompt_for_inputs_with_credential_methods_in_mode(
+    let host_variables =
+        source_ops::collect_variables_for_host_confirmation(&inputs, true, "coral onboard")?;
+    let hosts =
+        source_ops::resolve_bundled_source_hosts(app, &source.name, host_variables.clone()).await?;
+    if !source_ops::confirm_source_hosts(&hosts, true)? {
+        println!("Cancelled. Source '{}' was not connected.", source.name);
+        return Ok(());
+    }
+    let inputs = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
         &inputs,
+        host_variables,
         source_ops::CredentialPromptMode::CredentialMethodFirst,
     )?;
     let result = source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;

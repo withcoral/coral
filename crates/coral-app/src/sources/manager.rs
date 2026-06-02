@@ -19,7 +19,10 @@ use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
-use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
+use coral_spec::{
+    ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec,
+    parse_source_manifest_yaml,
+};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
@@ -229,6 +232,20 @@ impl SourceManager {
             }
         }
         Ok(candidates)
+    }
+
+    pub(crate) fn resolve_bundled_source_hosts(
+        source_name: &SourceName,
+        variables: &[SourceBinding],
+    ) -> Result<Vec<String>, AppError> {
+        let bundled = load_bundled_source(source_name)?;
+        let manifest = parse_source_manifest_yaml(&bundled.manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let source_variables = variables
+            .iter()
+            .map(|binding| (binding.key.clone(), binding.value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        Ok(manifest.outbound_hosts_with_input_values(&source_variables))
     }
 
     pub(crate) fn create_bundled_source(

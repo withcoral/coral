@@ -25,9 +25,10 @@ use coral_api::v1::{
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    PaginationRequest, PaginationResponse, QueryPlan, ResolveBundledSourceHostsRequest,
+    ResolveBundledSourceHostsResponse, SearchCatalogRequest, SearchCatalogResponse, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -436,6 +437,7 @@ impl<T> MockResult<T> {
 pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
+    resolve_bundled_source_hosts: MockResult<ResolveBundledSourceHostsResponse>,
     list_sources: MockResult<ListSourcesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
     delete_source: MockResult<()>,
@@ -446,6 +448,9 @@ impl Default for MockServerConfig {
         Self {
             execute_sql_override: None,
             discover_sources: MockResult::ok(mock_discover_response()),
+            resolve_bundled_source_hosts: MockResult::ok(ResolveBundledSourceHostsResponse {
+                hosts: Vec::new(),
+            }),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![
                     Source {
@@ -477,6 +482,14 @@ impl Default for MockServerConfig {
 impl MockServerConfig {
     pub(crate) fn with_discover_sources(mut self, response: DiscoverSourcesResponse) -> Self {
         self.discover_sources = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_resolve_bundled_source_hosts(
+        mut self,
+        response: ResolveBundledSourceHostsResponse,
+    ) -> Self {
+        self.resolve_bundled_source_hosts = MockResult::ok(response);
         self
     }
 
@@ -568,6 +581,7 @@ struct Captured {
     describe_table: Mutex<Vec<DescribeTableRequest>>,
     list_columns: Mutex<Vec<ListColumnsRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
+    resolve_bundled_source_hosts: Mutex<Vec<ResolveBundledSourceHostsRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
     get_source: Mutex<Vec<GetSourceRequest>>,
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
@@ -849,6 +863,23 @@ impl SourceService for MockSourceService {
         ))
     }
 
+    async fn resolve_bundled_source_hosts(
+        &self,
+        request: Request<ResolveBundledSourceHostsRequest>,
+    ) -> Result<Response<ResolveBundledSourceHostsResponse>, Status> {
+        self.captured
+            .resolve_bundled_source_hosts
+            .lock()
+            .expect("resolve_bundled_source_hosts capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config
+                .resolve_bundled_source_hosts
+                .clone()
+                .into_tonic_result()?,
+        ))
+    }
+
     async fn list_sources(
         &self,
         request: Request<ListSourcesRequest>,
@@ -1043,6 +1074,24 @@ impl MockServer {
             .discover_sources
             .lock()
             .expect("discover_sources capture")
+            .clone()
+    }
+
+    pub(crate) fn resolve_bundled_source_hosts_requests(
+        &self,
+    ) -> Vec<ResolveBundledSourceHostsRequest> {
+        self.captured
+            .resolve_bundled_source_hosts
+            .lock()
+            .expect("resolve_bundled_source_hosts capture")
+            .clone()
+    }
+
+    pub(crate) fn create_bundled_source_requests(&self) -> Vec<CreateBundledSourceRequest> {
+        self.captured
+            .create_bundled_source
+            .lock()
+            .expect("create_bundled_source capture")
             .clone()
     }
 

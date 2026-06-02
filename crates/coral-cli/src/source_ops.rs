@@ -13,10 +13,11 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
-    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
+    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess,
+    ResolveBundledSourceHostsRequest, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
+    SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::{
@@ -76,6 +77,23 @@ pub(crate) async fn discover_sources(app: &AppClient) -> Result<Vec<SourceInfo>,
         .await?
         .into_inner()
         .sources)
+}
+
+pub(crate) async fn resolve_bundled_source_hosts(
+    app: &AppClient,
+    name: &str,
+    variables: Vec<SourceVariable>,
+) -> Result<Vec<String>, anyhow::Error> {
+    Ok(app
+        .source_client()
+        .resolve_bundled_source_hosts(Request::new(ResolveBundledSourceHostsRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+            variables,
+        }))
+        .await?
+        .into_inner()
+        .hosts)
 }
 
 pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow::Error> {
@@ -533,12 +551,6 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
     Ok(name.to_string())
 }
 
-pub(crate) fn prompt_for_inputs_with_credential_methods(
-    inputs: &[ManifestInputSpec],
-) -> Result<CollectedSourceInputs, anyhow::Error> {
-    prompt_for_inputs_with_credential_methods_in_mode(inputs, CredentialPromptMode::EnvFirst)
-}
-
 pub(crate) fn prompt_for_inputs_with_credential_methods_in_mode(
     inputs: &[ManifestInputSpec],
     mode: CredentialPromptMode,
@@ -580,6 +592,45 @@ pub(crate) fn prompt_for_inputs_with_credential_methods_in_mode(
     Ok(collected)
 }
 
+pub(crate) fn prompt_for_remaining_inputs_with_credential_methods_in_mode(
+    inputs: &[ManifestInputSpec],
+    variables: Vec<SourceVariable>,
+    mode: CredentialPromptMode,
+) -> Result<CollectedSourceInputs, anyhow::Error> {
+    let mut collected = CollectedSourceInputs::new();
+    collected.variables = variables;
+
+    for input in inputs {
+        if input.kind == ManifestInputKind::Variable {
+            continue;
+        }
+        if mode.reads_env_before_prompt(input) {
+            let env_value = read_source_input_env(&input.key).unwrap_or_default();
+            if !env_value.is_empty() {
+                push_collected_input(&mut collected, input, env_value);
+                continue;
+            }
+        }
+
+        match prompt_secret_with_methods(
+            input,
+            !collected.secrets.is_empty() || !collected.oauth_credential_retrievals.is_empty(),
+        )? {
+            SecretInputOutcome::SourceConfig(secret) => {
+                if let Some(secret) = secret {
+                    collected.secrets.push(secret);
+                }
+            }
+            SecretInputOutcome::OAuth { credential, label } => {
+                collected.oauth_labels.insert(input.key.clone(), label);
+                collected.oauth_credential_retrievals.push(credential);
+            }
+        }
+    }
+
+    Ok(collected)
+}
+
 fn push_collected_input(
     collected: &mut CollectedSourceInputs,
     input: &ManifestInputSpec,
@@ -606,6 +657,88 @@ pub(crate) fn collect_inputs_from_env(
         |key| read_source_input_env(key).unwrap_or_default(),
         Some(interactive_command),
     )
+}
+
+pub(crate) fn collect_variables_for_host_confirmation(
+    inputs: &[ManifestInputSpec],
+    interactive: bool,
+    interactive_command: &str,
+) -> Result<Vec<SourceVariable>, anyhow::Error> {
+    if interactive {
+        return prompt_variables_for_host_confirmation(inputs);
+    }
+    collect_variables_from_env(inputs, interactive_command)
+}
+
+fn prompt_variables_for_host_confirmation(
+    inputs: &[ManifestInputSpec],
+) -> Result<Vec<SourceVariable>, anyhow::Error> {
+    let mut variables = Vec::new();
+    for input in inputs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Variable)
+    {
+        let env_value = read_source_input_env(&input.key).unwrap_or_default();
+        if !env_value.is_empty() {
+            variables.push(SourceVariable {
+                key: input.key.clone(),
+                value: env_value,
+            });
+            continue;
+        }
+        if let Some(variable) = prompt_variable(input)? {
+            variables.push(variable);
+        }
+    }
+    Ok(variables)
+}
+
+fn collect_variables_from_env(
+    inputs: &[ManifestInputSpec],
+    interactive_command: &str,
+) -> Result<Vec<SourceVariable>, anyhow::Error> {
+    let mut variables = Vec::new();
+    let mut missing = Vec::new();
+
+    for input in inputs
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Variable)
+    {
+        let raw = read_source_input_env(&input.key).unwrap_or_default();
+        let value = if raw.is_empty() {
+            input.default_value.clone()
+        } else {
+            raw
+        };
+        if value.is_empty() {
+            if input.required {
+                missing.push(input.key.clone());
+            }
+            continue;
+        }
+        variables.push(SourceVariable {
+            key: input.key.clone(),
+            value,
+        });
+    }
+
+    if !missing.is_empty() {
+        return Err(anyhow::anyhow!(
+            "missing required environment variable{}: {}. Set the variable{} or run `{interactive_command}`.",
+            if missing.len() == 1 { "" } else { "s" },
+            missing.join(", "),
+            if missing.len() == 1 { "" } else { "s" },
+        ));
+    }
+
+    Ok(variables)
+}
+
+pub(crate) fn source_variables_map(variables: &[SourceVariable]) -> BTreeMap<String, String> {
+    variables
+        .iter()
+        .map(|variable| (variable.key.clone(), variable.value.clone()))
+        .collect()
 }
 
 pub(crate) fn shell_quote_arg(value: &str) -> String {

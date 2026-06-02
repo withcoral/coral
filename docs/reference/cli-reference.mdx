@@ -83,6 +83,12 @@ By default, Coral reads each declared input from an environment variable of the 
 GITHUB_TOKEN=ghp_... coral source add github
 ```
 
+Before installing, Coral prints the outbound network hosts declared by the
+source. Host values are resolved with the variables you provide, so a
+self-hosted base URL such as `GITHUB_API_BASE=https://github.example.com/api/v3`
+is shown before the source is connected. In interactive mode, Coral asks you to
+confirm those hosts before collecting secrets or starting OAuth.
+
 Pass `--interactive` to be prompted for variables and secrets instead. If a
 missing secret declares credential methods, Coral shows those choices in the
 source spec's authored order. `source_config` methods use the normal source
@@ -113,6 +119,7 @@ Coral stores the source secrets in plaintext file storage and shows
 ### `coral source add --file <PATH>`
 
 Add a custom source spec from a YAML file. Input values come from environment variables by default; add `--interactive` to be prompted.
+Coral resolves and prints the source's declared outbound hosts before installing it.
 
 ```shellscript
 coral source add --file ./local-messages.yaml
@@ -150,6 +157,9 @@ Run the guided source setup flow.
 ```shellscript
 coral onboard
 ```
+
+When onboarding connects a source, Coral resolves and shows the source's
+outbound hosts before asking for confirmation.
 
 When a secret input declares credential methods, onboarding asks which method
 to use before consuming a matching environment variable. Choosing a

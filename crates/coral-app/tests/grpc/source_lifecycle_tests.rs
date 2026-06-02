@@ -10,9 +10,10 @@ use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
     ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
-    QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, Workspace, catalog_item, import_source_response,
-    query_test_result, source_credential_method::Method as ProtoCredentialMethod,
+    QueryTestFailure, QueryTestSuccess, ResolveBundledSourceHostsRequest, SourceCredentialStorage,
+    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
+    import_source_response, query_test_result,
+    source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
@@ -832,6 +833,39 @@ async fn get_source_info_returns_available_bundled_metadata() {
     assert!(
         info.inputs.iter().any(|input| input.key == "GITHUB_TOKEN"),
         "expected bundled manifest inputs"
+    );
+    assert!(
+        info.hosts.iter().any(|host| host == "api.github.com"),
+        "expected bundled manifest hosts, got {:?}",
+        info.hosts
+    );
+}
+
+#[tokio::test]
+async fn resolve_bundled_source_hosts_applies_source_variables() {
+    let harness = GrpcHarness::new().await;
+
+    let response = harness
+        .source_client()
+        .resolve_bundled_source_hosts(Request::new(ResolveBundledSourceHostsRequest {
+            workspace: Some(default_workspace()),
+            name: "github".to_string(),
+            variables: vec![SourceVariable {
+                key: "GITHUB_API_BASE".to_string(),
+                value: "https://github.enterprise.example/api/v3".to_string(),
+            }],
+        }))
+        .await
+        .expect("resolve bundled source hosts")
+        .into_inner();
+
+    assert!(
+        response
+            .hosts
+            .iter()
+            .any(|host| host == "github.enterprise.example"),
+        "expected resolved GitHub Enterprise host, got {:?}",
+        response.hosts
     );
 }
 

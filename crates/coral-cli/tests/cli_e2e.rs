@@ -17,8 +17,9 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceCredentialStorage,
-    SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse,
+    ResolveBundledSourceHostsResponse, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceVariableInput, source_input_spec::Input as ProtoSourceInput,
 };
 use tonic::Code;
 
@@ -751,6 +752,74 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
     assert!(
         stderr.contains("coral source add --interactive github"),
         "expected exact interactive recovery command: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_confirms_hosts_resolved_from_env_variables() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default()
+            .with_discover_sources(DiscoverSourcesResponse {
+                sources: vec![SourceInfo {
+                    name: "gitlab".to_string(),
+                    description: "GitLab data".to_string(),
+                    version: "1.0.0".to_string(),
+                    inputs: vec![SourceInputSpec {
+                        key: "GITLAB_API_BASE".to_string(),
+                        required: false,
+                        hint: "GitLab API base URL".to_string(),
+                        input: Some(ProtoSourceInput::Variable(SourceVariableInput {
+                            default_value: "https://gitlab.com/api/v4".to_string(),
+                        })),
+                    }],
+                    hosts: vec!["gitlab.com".to_string()],
+                    installed: false,
+                    origin: SourceOrigin::Bundled as i32,
+                    credential_storage: SourceCredentialStorage::Unspecified as i32,
+                }],
+            })
+            .with_resolve_bundled_source_hosts(ResolveBundledSourceHostsResponse {
+                hosts: vec!["gitlab.internal".to_string()],
+            }),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "add", "gitlab"])
+        .env("GITLAB_API_BASE", "https://gitlab.internal/api/v4")
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("gitlab.internal"),
+        "expected resolved env host in stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("gitlab.com"),
+        "should not confirm default host when env overrides it: {stdout}"
+    );
+
+    let host_requests = server.resolve_bundled_source_hosts_requests();
+    assert_eq!(host_requests.len(), 1, "expected one host resolution call");
+    assert_eq!(host_requests[0].name, "gitlab");
+    assert_eq!(host_requests[0].variables.len(), 1);
+    assert_eq!(host_requests[0].variables[0].key, "GITLAB_API_BASE");
+    assert_eq!(
+        host_requests[0].variables[0].value,
+        "https://gitlab.internal/api/v4"
+    );
+
+    let create_requests = server.create_bundled_source_requests();
+    assert_eq!(create_requests.len(), 1, "expected one create call");
+    assert_eq!(create_requests[0].variables.len(), 1);
+    assert_eq!(create_requests[0].variables[0].key, "GITLAB_API_BASE");
+    assert_eq!(
+        create_requests[0].variables[0].value,
+        "https://gitlab.internal/api/v4"
     );
 
     server.shutdown().await;
