@@ -1,4 +1,4 @@
-//! Static schema provider used for the source metadata schema.
+//! Immutable schema provider for fully-built source and system schemas.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -9,15 +9,19 @@ use datafusion::catalog::SchemaProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 
-/// Immutable schema provider backed by a fixed set of in-memory tables.
+/// Fixed `DataFusion` schema provider backed by a complete table map.
+///
+/// Source registration may use mutable planning helpers while building derived
+/// relations, but published schemas stay immutable so runtime code cannot add
+/// tables after a source has been registered.
 #[derive(Debug)]
 pub(crate) struct StaticSchemaProvider {
     tables: HashMap<String, Arc<dyn TableProvider>>,
 }
 
 impl StaticSchemaProvider {
+    /// Builds a schema provider from a complete table map.
     #[must_use]
-    /// Builds a schema provider from the supplied table map.
     pub(crate) fn new(tables: HashMap<String, Arc<dyn TableProvider>>) -> Self {
         Self { tables }
     }

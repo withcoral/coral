@@ -24,7 +24,7 @@ use datafusion::prelude::SessionContext;
 
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, RegisteredTable, build_registered_inputs, build_registered_table,
+    RegisteredSourceTable, RegisteredTable, build_registered_inputs, build_registered_table,
     registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
@@ -81,8 +81,7 @@ impl CompiledBackendSource for FileCompiledSource {
         ctx: &SessionContext,
         _registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
-        let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
-        let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
+        let mut tables = Vec::with_capacity(self.manifest.tables.len());
         let resolved_inputs = coral_spec::resolve_inputs(
             &self.manifest.declared_inputs,
             &self.source_secrets,
@@ -117,10 +116,8 @@ impl CompiledBackendSource for FileCompiledSource {
                 }
             };
             let schema = provider.schema();
-            let table_name = table.name().to_string();
             let metadata = registered_table(table, &schema);
-            tables.insert(table_name, provider);
-            table_infos.push(metadata);
+            tables.push(RegisteredSourceTable::provider(metadata, provider));
         }
 
         let secret_keys = self.source_secrets.keys().cloned().collect();
@@ -130,16 +127,13 @@ impl CompiledBackendSource for FileCompiledSource {
             &secret_keys,
         );
 
-        Ok(BackendRegistration {
+        Ok(BackendRegistration::new(
+            self.manifest.common.name.clone(),
             tables,
-            table_functions: HashMap::default(),
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: vec![],
-                inputs,
-            },
-        })
+            HashMap::default(),
+            vec![],
+            inputs,
+        ))
     }
 }
 

@@ -53,6 +53,39 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) search_limits_json: Option<String>,
 }
 
+pub(crate) struct RegisteredSourceTable {
+    pub(crate) metadata: RegisteredTable,
+    pub(crate) implementation: RegisteredTableImplementation,
+}
+
+pub(crate) enum RegisteredTableImplementation {
+    Provider(Arc<dyn TableProvider>),
+    SqlView { sql: String },
+}
+
+impl RegisteredSourceTable {
+    pub(crate) fn provider(metadata: RegisteredTable, provider: Arc<dyn TableProvider>) -> Self {
+        Self {
+            metadata,
+            implementation: RegisteredTableImplementation::Provider(provider),
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "file-backed source views construct this in the next stacked PR"
+        )
+    )]
+    pub(crate) fn sql_view(metadata: RegisteredTable, sql: String) -> Self {
+        Self {
+            metadata,
+            implementation: RegisteredTableImplementation::SqlView { sql },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredFilter {
     pub(crate) name: String,
@@ -100,9 +133,44 @@ pub(crate) struct RegisteredSource {
 }
 
 pub(crate) struct BackendRegistration {
-    pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
-    pub(crate) table_functions: SourceTableFunctions,
-    pub(crate) source: RegisteredSource,
+    tables: Vec<RegisteredSourceTable>,
+    table_functions: SourceTableFunctions,
+    source: RegisteredSource,
+}
+
+impl BackendRegistration {
+    pub(crate) fn new(
+        schema_name: String,
+        tables: Vec<RegisteredSourceTable>,
+        table_functions: SourceTableFunctions,
+        table_function_metadata: Vec<RegisteredTableFunction>,
+        inputs: Vec<RegisteredInput>,
+    ) -> Self {
+        let source_tables = tables
+            .iter()
+            .map(|table| table.metadata.clone())
+            .collect::<Vec<_>>();
+        Self {
+            tables,
+            table_functions,
+            source: RegisteredSource {
+                schema_name,
+                tables: source_tables,
+                table_functions: table_function_metadata,
+                inputs,
+            },
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<RegisteredSourceTable>,
+        SourceTableFunctions,
+        RegisteredSource,
+    ) {
+        (self.tables, self.table_functions, self.source)
+    }
 }
 
 /// Build a collision-free `DataFusion` UDTF name for a source-scoped function.
@@ -393,6 +461,9 @@ pub(crate) fn schema_from_columns(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use datafusion::arrow::datatypes::{Field, Schema};
+    use datafusion::datasource::MemTable;
+
     use super::*;
 
     #[test]
@@ -430,5 +501,55 @@ mod tests {
         reqwest::Client::builder()
             .build()
             .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn backend_registration_derives_source_metadata_from_source_tables() {
+        let provider =
+            Arc::new(MemTable::try_new(Schema::empty().into(), vec![vec![]]).expect("mem table"));
+        let events = registered_table("events");
+        let messages = registered_table("messages");
+
+        let registration = BackendRegistration::new(
+            "codex".to_string(),
+            vec![
+                RegisteredSourceTable::provider(events, provider),
+                RegisteredSourceTable::sql_view(messages, "SELECT * FROM codex.events".to_string()),
+            ],
+            HashMap::default(),
+            vec![],
+            vec![],
+        );
+
+        let (_tables, _functions, source) = registration.into_parts();
+        let table_names = source
+            .tables
+            .iter()
+            .map(|table| table.table_name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(table_names, ["events", "messages"]);
+    }
+
+    fn registered_table(name: &str) -> RegisteredTable {
+        RegisteredTable {
+            table_name: name.to_string(),
+            description: String::new(),
+            guide: String::new(),
+            columns: vec![RegisteredColumn {
+                name: "id".to_string(),
+                data_type: Field::new("id", DataType::Int64, false)
+                    .data_type()
+                    .to_string(),
+                nullable: false,
+                is_virtual: false,
+                is_required_filter: false,
+                filter_mode: None,
+                description: String::new(),
+            }],
+            filters: vec![],
+            required_filters: vec![],
+            search_limits_json: None,
+        }
     }
 }

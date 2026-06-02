@@ -11,7 +11,7 @@ mod transport;
 
 pub(crate) use error::McpProviderQueryError;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -26,7 +26,7 @@ use self::provider::McpTableProvider;
 use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
+    RegisteredSourceTable, SourceTableFunctions, build_registered_inputs, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names,
 };
@@ -171,8 +171,7 @@ impl CompiledBackendSource for McpCompiledSource {
             ));
         }
 
-        let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
-        let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
+        let mut tables = Vec::with_capacity(self.manifest.tables.len());
         for table in &self.manifest.tables {
             let provider: Arc<dyn TableProvider> = Arc::new(McpTableProvider::new(
                 self.caller.clone(),
@@ -180,14 +179,10 @@ impl CompiledBackendSource for McpCompiledSource {
                 Arc::clone(&self.source_inputs),
                 table.clone(),
             )?);
-            tables.insert(table.name().to_string(), provider);
             let required_filters = required_filter_names(table.filters());
             let columns = registered_columns_from_specs(table.columns(), table.filters());
-            table_infos.push(build_registered_table(
-                &table.common,
-                columns,
-                required_filters,
-            ));
+            let metadata = build_registered_table(&table.common, columns, required_filters);
+            tables.push(RegisteredSourceTable::provider(metadata, provider));
         }
 
         let secret_keys = self
@@ -202,16 +197,13 @@ impl CompiledBackendSource for McpCompiledSource {
             &secret_keys,
         );
 
-        Ok(BackendRegistration {
+        Ok(BackendRegistration::new(
+            self.manifest.common.name.clone(),
             tables,
             table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
-        })
+            table_function_infos,
+            inputs,
+        ))
     }
 }
 

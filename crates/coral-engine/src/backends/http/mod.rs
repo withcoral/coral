@@ -11,7 +11,7 @@ use datafusion::prelude::SessionContext;
 
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, RegisteredTable, SourceTableFunctions, build_registered_inputs,
+    RegisteredSourceTable, RegisteredTable, SourceTableFunctions, build_registered_inputs,
     build_registered_table, build_registered_table_function, internal_table_function_name,
     registered_columns_from_specs, required_filter_names,
 };
@@ -106,8 +106,7 @@ impl CompiledBackendSource for HttpCompiledSource {
             &self.request_authenticators,
             runtime,
         )?;
-        let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
-        let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
+        let mut tables = Vec::with_capacity(self.manifest.tables.len());
 
         for table in &self.manifest.tables {
             let provider: Arc<dyn TableProvider> = Arc::new(HttpSourceTableProvider::new(
@@ -115,8 +114,10 @@ impl CompiledBackendSource for HttpCompiledSource {
                 self.manifest.common.name.clone(),
                 table.clone(),
             )?);
-            tables.insert(table.name().to_string(), provider);
-            table_infos.push(registered_table(table));
+            tables.push(RegisteredSourceTable::provider(
+                registered_table(table),
+                provider,
+            ));
         }
         let mut table_functions =
             SourceTableFunctions::with_capacity(self.manifest.functions.len());
@@ -150,16 +151,13 @@ impl CompiledBackendSource for HttpCompiledSource {
             &secret_keys,
         );
 
-        Ok(BackendRegistration {
+        Ok(BackendRegistration::new(
+            self.manifest.common.name.clone(),
             tables,
             table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
-        })
+            table_function_infos,
+            inputs,
+        ))
     }
 }
 
