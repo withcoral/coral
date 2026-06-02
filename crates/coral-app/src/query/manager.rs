@@ -22,7 +22,9 @@ use crate::query::extensions::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::{load_v4_materialization, stale_materialization_error};
+use crate::sources::materialization::{
+    incompatible_materialization_error, load_v4_materialization,
+};
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
 use crate::state::{AppStateLayout, ConfigStore};
@@ -228,16 +230,10 @@ impl QueryManager {
                 &source.name,
                 &installed.manifest_yaml,
                 v4,
-            )
-            .map_err(|error| {
-                stale_materialization_error(
-                    &source.name,
-                    format!("failed to load materialized artifacts: {error}"),
-                )
-            })?;
+            )?;
             Some(
                 runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                    stale_materialization_error(
+                    incompatible_materialization_error(
                         &source.name,
                         format!("failed to assemble runtime package: {error}"),
                     )
@@ -705,20 +701,21 @@ paths:
                 &workspace_name,
                 &ImportSourceCommand {
                     manifest_yaml: format!(
-                        r"
+                        r#"
 name: github_v4_query
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: {}
-",
+"#,
                         openapi_file.display()
                     ),
                     bindings: SourceBindings::default(),
                 },
             )
             .expect("import v4 source");
+        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
 
         let execution = fixture
             .manager

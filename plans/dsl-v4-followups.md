@@ -19,6 +19,12 @@ The desired shape is stricter: v4 YAML declares intent, source add/materialize
 records the observed snapshot, `coral-app` assembles runtime-ready source
 packages, and `coral-engine` only compiles generic runtime backend components.
 
+The lifecycle principle is: the user owns when a source is generated or
+regenerated. Coral owns producing a correct generated package for that chosen
+moment. Query, validation, and catalog loading must use only the installed
+materialized package; they must not silently re-fetch a newer OpenAPI document,
+recompute projections, mutate table names, or migrate artifacts.
+
 ## Current Context
 
 - `crates/coral-spec/src/schema/source_manifest.schema.json` is currently the
@@ -63,7 +69,7 @@ Remove `version` and `sha256` from the authored v4 surface.
   version.
 - Remove `source_version` from v4 artifact structs (`SemanticIr`,
   `ProjectionCatalog`, `Fingerprint`) unless there is a concrete runtime use.
-  Fingerprint freshness should come from `source_name`, `manifest_sha256`,
+  Package compatibility should be validated from `source_name`, `manifest_sha256`,
   descriptor locations, descriptor SHA, importer version, generator version,
   and input declaration hashes.
 - Update `sources/core-v4/github_v4/manifest.yaml` and all v4 test fixtures to
@@ -84,7 +90,10 @@ At materialization time:
 - `load_v4_materialization` verifies the installed manifest hash, surface
   descriptor identity, input declaration hash, artifact schema version,
   importer version, and generator version. It should not re-fetch remote
-  descriptors during query load.
+  descriptors during query load or regenerate artifacts.
+- If materialized artifacts are missing or incompatible, fail loudly and tell
+  the user to re-add the source. Do not add automatic refresh or migration
+  machinery in this PR.
 - Do not write computed SHA or generated version back into persisted
   `manifest.yaml`.
 
@@ -223,8 +232,8 @@ surface `id` pattern, HTTPS URL pattern, and exactly one of `url` or `file`.
 
 ### 4. Materialization validation matrix
 
-When loading v4 materialization, validate the artifact as a local snapshot
-without re-fetching remote descriptors:
+When loading v4 materialization, validate the artifact as a local generated
+package without re-fetching remote descriptors or recomputing projections:
 
 - fingerprint artifact schema version matches `V4_ARTIFACT_SCHEMA_VERSION`;
 - fingerprint source name matches the parsed v4 source name;
@@ -274,7 +283,8 @@ without re-fetching remote descriptors:
 - `.gitattributes`: mark generated v4 schema as generated.
 - `crates/coral-app/src/sources/materialization.rs`: compute descriptor SHA
   at materialization time without checking an authored SHA; stop mutating YAML
-  with generated metadata; expose enough metadata for app runtime packaging.
+  with generated metadata; validate only the installed generated package at
+  query time; expose enough metadata for app runtime packaging.
 - `crates/coral-app/src/sources/manager.rs`: persist intent YAML, still
   canonicalize local file descriptors for durability, and stop relying on v4
   authored version.
@@ -349,7 +359,7 @@ without re-fetching remote descriptors:
 - v4 source info without authored `description` has an empty description;
   OpenAPI descriptions are not silently persisted or displayed as source
   metadata in this PR.
-- v4 materialization load rejects missing, extra, stale, or locally corrupted
+- v4 materialization load rejects missing, extra, incompatible, or locally corrupted
   materialized surface artifacts according to the validation matrix above.
 - Querying an installed v4 source works through app-assembled runtime
   components.

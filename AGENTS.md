@@ -41,6 +41,11 @@
 - Keep app-owned runtime package assembly in `coral-app`. `coral-engine`
   should compile generic runtime components, not interpret DSL v4 authored
   manifests, materialized fingerprints, semantic IR, or projection catalogs.
+- For DSL v4 materialization, the user owns when a source is generated or
+  regenerated. Coral materializes at source add, queries only from the
+  installed materialized package, never silently refreshes descriptors or
+  projections, and should fail loudly on missing or incompatible artifacts with
+  guidance to re-add the source.
 - Keep shared Arrow IPC decoding and result rendering in `coral-client`.
 - Treat `coral-app` as an internal composition root even if sibling crates use
   its bootstrap seam today.

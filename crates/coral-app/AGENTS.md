@@ -44,8 +44,13 @@ root.
   them into `config.toml`.
 - Persist DSL v4 imported manifests as authored intent plus durability
   normalization only. Descriptor hashes, generated OpenAPI metadata, semantic
-  IR, projections, and freshness fingerprints belong in materialized artifacts
+  IR, projections, and package fingerprints belong in materialized artifacts
   or runtime package assembly, not in persisted `manifest.yaml`.
+- Treat DSL v4 materialization as a user-chosen lifecycle event: generate at
+  source add, never re-fetch descriptors or recompute projections implicitly
+  during query/list/validate, and fail with re-add guidance when artifacts are
+  missing or incompatible. Do not add migration machinery until the lifecycle is
+  explicitly designed.
 - User-facing runtime feature semantics belong in `coral_app::features`; raw
   config-file persistence, locking, and TOML extraction stay in `state/`.
 - Bundled installs persist source identity plus configured variables and

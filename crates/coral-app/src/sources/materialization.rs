@@ -144,23 +144,26 @@ pub(crate) fn load_v4_materialization(
     let projections_path = layout.v4_projections_file(workspace_name, source_name);
     let diagnostics_path = layout.v4_diagnostics_file(workspace_name, source_name);
     if !fingerprint_path.exists() || !projections_path.exists() || !diagnostics_path.exists() {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             "required artifact is missing",
         ));
     }
-    let fingerprint: Fingerprint = read_yaml(&fingerprint_path)?;
+    let fingerprint: Fingerprint =
+        read_artifact_yaml(source_name, "fingerprint", &fingerprint_path)?;
     validate_fingerprint_header(source_name, manifest, &fingerprint)?;
     if fingerprint.manifest_sha256 != sha256_hex(manifest_yaml.as_bytes()) {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             "manifest fingerprint does not match installed manifest",
         ));
     }
     let fingerprint_surfaces = validate_fingerprint_surfaces(source_name, manifest, &fingerprint)?;
-    let projections: ProjectionCatalog = read_yaml(&projections_path)?;
+    let projections: ProjectionCatalog =
+        read_artifact_yaml(source_name, "projection catalog", &projections_path)?;
     validate_projection_catalog_header(source_name, manifest, &projections)?;
-    let diagnostics: Vec<Diagnostic> = read_yaml(&diagnostics_path)?;
+    let diagnostics: Vec<Diagnostic> =
+        read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
     let mut surfaces = Vec::new();
     for surface in &manifest.surfaces {
         let surface_dir = layout.v4_surface_dir(workspace_name, source_name, &surface.id);
@@ -170,7 +173,8 @@ pub(crate) fn load_v4_materialization(
         require_file(source_name, &raw_source_document_path)?;
         require_file(source_name, &normalized_source_document_path)?;
         require_file(source_name, &semantic_ir_path)?;
-        let semantic_ir: SemanticIr = read_yaml(&semantic_ir_path)?;
+        let semantic_ir: SemanticIr =
+            read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path)?;
         let source_document_sha256 = fingerprint
             .surfaces
             .iter()
@@ -201,13 +205,13 @@ fn validate_fingerprint_header(
     fingerprint: &Fingerprint,
 ) -> Result<(), AppError> {
     if fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             "fingerprint artifact schema version mismatch",
         ));
     }
     if fingerprint.source_name != manifest.common.name {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             "fingerprint source name does not match installed manifest",
         ));
@@ -215,7 +219,7 @@ fn validate_fingerprint_header(
     if fingerprint.importer_version != OPENAPI_IMPORTER_VERSION
         || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             "fingerprint importer or generator version mismatch",
         ));
@@ -237,7 +241,7 @@ fn validate_fingerprint_surfaces(
     let mut by_id = BTreeMap::new();
     for surface in &fingerprint.surfaces {
         if !seen_ids.insert(surface.surface_id.as_str()) {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!("fingerprint repeats surface '{}'", surface.surface_id),
             ));
@@ -256,20 +260,20 @@ fn validate_fingerprint_surfaces(
             .copied()
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             format!("fingerprint surface set mismatch; missing [{missing}], extra [{extra}]"),
         ));
     }
     for surface in &manifest.surfaces {
         let fingerprint_surface = by_id.get(&surface.id).ok_or_else(|| {
-            stale_materialization_error(
+            incompatible_materialization_error(
                 source_name,
                 format!("fingerprint is missing surface '{}'", surface.id),
             )
         })?;
         if fingerprint_surface.surface_type != surface.surface_type {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!("surface '{}' type fingerprint does not match", surface.id),
             ));
@@ -277,7 +281,7 @@ fn validate_fingerprint_surfaces(
         if fingerprint_surface.descriptor_kind != surface.descriptor.kind()
             || fingerprint_surface.descriptor_location != surface.descriptor.location()
         {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!(
                     "surface '{}' descriptor fingerprint does not match",
@@ -287,7 +291,7 @@ fn validate_fingerprint_surfaces(
         }
         let expected = stable_input_declarations_sha256(&surface.inputs)?;
         if fingerprint_surface.input_declarations_sha256 != expected {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!(
                     "input declarations fingerprint does not match for surface '{}'",
@@ -305,19 +309,19 @@ fn validate_projection_catalog_header(
     projections: &ProjectionCatalog,
 ) -> Result<(), AppError> {
     if projections.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             "projection catalog artifact schema version mismatch",
         ));
     }
     if projections.source_name != manifest.common.name {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             "projection catalog source name does not match installed manifest",
         ));
     }
     if projections.generator_version != PROJECTION_GENERATOR_VERSION {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             "projection catalog generator version mismatch",
         ));
@@ -329,7 +333,7 @@ fn require_file(source_name: &SourceName, path: &Path) -> Result<(), AppError> {
     if path.is_file() {
         Ok(())
     } else {
-        Err(stale_materialization_error(
+        Err(incompatible_materialization_error(
             source_name,
             format!("required artifact '{}' is missing", path.display()),
         ))
@@ -343,7 +347,10 @@ fn validate_loaded_materialization(
     fingerprint_surfaces: &BTreeMap<String, FingerprintSurface>,
 ) -> Result<(), AppError> {
     validate_materialized_source(manifest, materialized).map_err(|error| {
-        stale_materialization_error(source_name, format!("artifact validation failed: {error}"))
+        incompatible_materialization_error(
+            source_name,
+            format!("artifact validation failed: {error}"),
+        )
     })?;
     let mut operations_by_surface: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for surface in &manifest.surfaces {
@@ -352,13 +359,13 @@ fn validate_loaded_materialization(
             .iter()
             .find(|candidate| candidate.surface_id == surface.id)
         else {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!("materialized surface '{}' is missing", surface.id),
             ));
         };
         let Some(fingerprint_surface) = fingerprint_surfaces.get(&surface.id) else {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!("fingerprint is missing surface '{}'", surface.id),
             ));
@@ -366,7 +373,7 @@ fn validate_loaded_materialization(
         let raw_bytes = std::fs::read(&materialized_surface.raw_source_document_path)?;
         let observed_raw_hash = sha256_hex(&raw_bytes);
         if observed_raw_hash != fingerprint_surface.descriptor_sha256 {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!(
                     "raw source document hash does not match for surface '{}'",
@@ -392,7 +399,7 @@ fn validate_loaded_materialization(
     }
     for projection in &materialized.projections.projections {
         let Some(operations) = operations_by_surface.get(projection.surface_id.as_str()) else {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!(
                     "projection '{}' references missing surface '{}'",
@@ -401,7 +408,7 @@ fn validate_loaded_materialization(
             ));
         };
         if !operations.contains(projection.operation_id.as_str()) {
-            return Err(stale_materialization_error(
+            return Err(incompatible_materialization_error(
                 source_name,
                 format!(
                     "projection '{}' references missing operation '{}'",
@@ -420,7 +427,7 @@ fn validate_semantic_ir(
     semantic_ir: &SemanticIr,
 ) -> Result<(), AppError> {
     if semantic_ir.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             format!(
                 "semantic IR schema version mismatch for surface '{}'",
@@ -432,13 +439,13 @@ fn validate_semantic_ir(
         || semantic_ir.surface_id != surface.id
         || semantic_ir.surface_type != surface.surface_type
     {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             format!("semantic IR identity mismatch for surface '{}'", surface.id),
         ));
     }
     if semantic_ir.importer_version != OPENAPI_IMPORTER_VERSION {
-        return Err(stale_materialization_error(
+        return Err(incompatible_materialization_error(
             source_name,
             format!(
                 "semantic IR importer version mismatch for surface '{}'",
@@ -449,12 +456,12 @@ fn validate_semantic_ir(
     Ok(())
 }
 
-pub(crate) fn stale_materialization_error(
+pub(crate) fn incompatible_materialization_error(
     source_name: &SourceName,
     detail: impl AsRef<str>,
 ) -> AppError {
     AppError::FailedPrecondition(format!(
-        "source '{source_name}' has stale or missing DSL v4 materialized artifacts: {}. Reinstall the source to regenerate them.",
+        "source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {}. Re-add the source to regenerate them.",
         detail.as_ref()
     ))
 }
@@ -755,6 +762,22 @@ fn read_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, AppError>
     serde_yaml::from_slice(&bytes).map_err(AppError::from)
 }
 
+fn read_artifact_yaml<T: serde::de::DeserializeOwned>(
+    source_name: &SourceName,
+    artifact: &str,
+    path: &Path,
+) -> Result<T, AppError> {
+    read_yaml(path).map_err(|error| {
+        incompatible_materialization_error(
+            source_name,
+            format!(
+                "failed to read {artifact} artifact '{}': {error}",
+                path.display()
+            ),
+        )
+    })
+}
+
 fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::ensure_private_dir(parent)?;
@@ -858,7 +881,7 @@ surfaces:
     }
 
     #[test]
-    fn load_v4_materialization_rejects_changed_manifest_hash() {
+    fn load_v4_materialization_rejects_mismatched_manifest_hash() {
         let (_state, _descriptor, layout, manifest_yaml, _manifest) = setup_materialization();
         let changed_manifest_yaml = format!("description: changed\n{manifest_yaml}");
         let changed_manifest = parse_source_manifest_yaml(&changed_manifest_yaml)
@@ -880,6 +903,32 @@ surfaces:
             error
                 .to_string()
                 .contains("manifest fingerprint does not match installed manifest"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_corrupted_artifact_yaml_with_readd_guidance() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
+        std::fs::write(&fingerprint_path, b": not yaml").expect("corrupt fingerprint");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("corrupted artifact should fail");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("missing or incompatible DSL v4 materialized artifacts"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            message.contains("Re-add the source"),
             "unexpected error: {error}"
         );
     }
