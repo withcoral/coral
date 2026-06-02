@@ -291,7 +291,7 @@ mod tests {
                         SourceCredentialMethod {
                             label: "Connect".to_string(),
                             description: String::new(),
-                            hint: String::new(),
+                            hint: "Authorize in your browser.".to_string(),
                             method: Some(ProtoCredentialMethod::Oauth(Box::new(
                                 OAuthCredentialMethod {
                                     flow: OauthCredentialFlowType::AuthorizationCode as i32,
@@ -340,6 +340,15 @@ mod tests {
             ManifestCredentialMethodKind::OAuth
         );
         assert_eq!(credential.methods[0].label.as_deref(), Some("Connect"));
+        assert_eq!(
+            credential.methods[0].hint.as_deref(),
+            Some("Authorize in your browser."),
+            "non-empty method hint should survive proto decoding"
+        );
+        assert_eq!(
+            credential.methods[1].hint, None,
+            "empty proto hint should decode to None"
+        );
         assert_eq!(
             credential.methods[0]
                 .oauth

@@ -728,7 +728,7 @@ mod tests {
                         kind: ManifestCredentialMethodKind::OAuth,
                         label: Some("Connect".to_string()),
                         description: None,
-                        hint: None,
+                        hint: Some("Authorize in your browser.".to_string()),
                         oauth: Some(ManifestOAuthCredentialSpec {
                             flow: ManifestOAuthFlowSpec {
                                 kind: ManifestOAuthFlowKind::AuthorizationCode,
@@ -770,6 +770,14 @@ mod tests {
         };
         let credential = secret.credential.expect("credential");
         assert_eq!(credential.methods.len(), 2);
+        assert_eq!(
+            credential.methods[0].hint, "Authorize in your browser.",
+            "authored method hint should map onto the proto"
+        );
+        assert_eq!(
+            credential.methods[1].hint, "",
+            "absent method hint should map to an empty proto string"
+        );
         match credential.methods[0].method.as_ref().expect("method") {
             ProtoCredentialMethod::Oauth(oauth) => {
                 assert_eq!(oauth.redirect_uri, "http://127.0.0.1:53682/oauth/callback");
