@@ -290,7 +290,7 @@ ansible-playbook \
   -i examples/inventory.ini \
   examples/gather-facts.yml
 
-python scripts/normalize-ansible-facts.py \
+python3 scripts/normalize-ansible-facts.py \
   --input raw-facts \
   --output normalized-facts
 
@@ -298,7 +298,7 @@ mkdir -p ~/.coral/ansible-facts
 cp normalized-facts/*.jsonl ~/.coral/ansible-facts/
 ```
 
-The normalizer accepts the de-prefixed `ansible_facts` shape produced by the example playbook and the `ansible_*`-prefixed keys commonly seen in raw setup-style fact payloads.
+The example playbook disables automatic full fact gathering, gathers explicit `setup` subsets, and writes a selected collection payload containing only the fields consumed by the allowlist normalizer plus `service_facts` and `package_facts` output. The normalizer accepts that de-prefixed `ansible_facts` shape and the `ansible_*`-prefixed keys commonly seen in setup-style fact payloads.
 
 Then test:
 
@@ -453,7 +453,7 @@ ORDER BY table_name, ordinal_position;
 From the Coral repo root:
 
 ```bash
-python sources/community/ansible/tests/validate-fixtures.py sources/community/ansible/fixtures
+python3 sources/community/ansible/tests/validate-fixtures.py sources/community/ansible/fixtures
 make lint-sources
 coral source lint sources/community/ansible/manifest.yaml
 ```

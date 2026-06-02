@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize selected Ansible fact JSON files into JSONL tables for Coral.
+"""Normalize selected Ansible collection JSON files into JSONL tables for Coral.
 
 This script is intentionally allowlist-based. It does not export raw facts.
 """

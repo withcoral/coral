@@ -168,8 +168,8 @@ Recommended flow:
 
 ```text
 1. Gather facts from hosts.
-2. Write raw JSON to raw-facts/.
-3. Normalize raw JSON into JSONL.
+2. Write selected collection JSON to raw-facts/.
+3. Normalize selected collection JSON into JSONL.
 4. Validate JSONL.
 5. Copy JSONL into the configured Coral data directory.
 6. Run coral source test ansible.
@@ -185,7 +185,7 @@ ansible-playbook \
   -i examples/inventory.ini \
   examples/gather-facts.yml
 
-python scripts/normalize-ansible-facts.py \
+python3 scripts/normalize-ansible-facts.py \
   --input raw-facts \
   --output normalized-facts
 
@@ -481,7 +481,7 @@ A good snapshot has:
 Validation:
 
 ```bash
-python tests/validate-fixtures.py /path/to/snapshot
+python3 tests/validate-fixtures.py /path/to/snapshot
 coral source test ansible
 ```
 

@@ -181,7 +181,7 @@ When gathering facts for this source:
 * use `no_log: true` on tasks that may touch secrets
 * keep Vault-encrypted files out of the export path
 * do not print secrets in debug tasks
-* write raw facts to a restricted directory
+* write selected collection payloads to a restricted directory
 * normalize into a separate output directory
 * review generated JSONL before publishing it to Coral
 * delete raw facts if they are no longer needed
@@ -190,17 +190,7 @@ When gathering facts for this source:
 
 ## Fact gathering scope
 
-In sensitive environments, prefer explicit fact subsets over full fact gathering.
-
-Example direction:
-
-```yaml
-gather_facts: true
-```
-
-is convenient, but may gather more than needed.
-
-A stricter future playbook can use explicit subsets and module calls to gather only:
+The example playbook disables automatic full fact gathering and uses explicit `setup` subsets plus module calls to gather a selected collection payload for:
 
 ```text
 distribution
@@ -353,7 +343,7 @@ Commands:
 ```bash
 git status
 git diff --check
-python sources/community/ansible/tests/validate-fixtures.py sources/community/ansible/fixtures
+python3 sources/community/ansible/tests/validate-fixtures.py sources/community/ansible/fixtures
 make lint-sources
 coral source lint sources/community/ansible/manifest.yaml
 ```
