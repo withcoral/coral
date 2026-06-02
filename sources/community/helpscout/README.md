@@ -51,6 +51,21 @@ docs.
 
 See [Help Scout authentication](https://developer.helpscout.com/mailbox-api/overview/authentication/).
 
+### Permissions
+
+Authorization-code tokens inherit the connecting user's Help Scout account
+permissions. Help Scout does not document per-resource OAuth scope names in
+My apps—configure the OAuth app and sign in as a user with read access to the
+Mailbox API resources below.
+
+| Mailbox API access | Coral surface |
+| --- | --- |
+| Read mailboxes | `helpscout.mailboxes` |
+| Read customers | `helpscout.customers` |
+| Read conversations | `helpscout.conversations` |
+| Read users | `helpscout.users` |
+| Conversation search | `helpscout.search_conversations` |
+
 ### 2. Add the source
 
 Interactive OAuth (recommended):

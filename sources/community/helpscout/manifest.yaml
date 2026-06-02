@@ -26,6 +26,12 @@ inputs:
       Help Scout user. Help Scout also supports client-credentials grants for
       internal use; this source uses authorization code for interactive setup.
 
+      Permissions: Help Scout does not expose granular OAuth scope names in
+      My apps. Authorization-code tokens inherit the signed-in user's Help Scout
+      account access. The connecting user must be active, invited, and able to
+      read mailboxes, conversations, customers, and users via Mailbox API v2,
+      including conversation search.
+
       Re-run `coral source add` and choose Connect Help Scout when queries
       fail with HTTP 401.
       See https://developer.helpscout.com/mailbox-api/overview/authentication/
@@ -33,7 +39,7 @@ inputs:
       methods:
         - type: oauth
           label: Connect Help Scout
-          description: Sign in to Help Scout and authorize read access.
+          description: Sign in with a Help Scout user who can read mailboxes, conversations, customers, and users.
           oauth:
             flow:
               type: authorization_code
