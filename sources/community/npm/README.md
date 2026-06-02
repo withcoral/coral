@@ -1,12 +1,14 @@
 # npm (npm)
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Backend:** HTTP
-**Tables:** 1
+**Tables:** 2
 **Base URL:** `https://registry.npmjs.org`
 
 Query the [public npm registry REST API](https://github.com/npm/registry/blob/master/docs/REGISTRY-API.md)
-to search for packages and retrieve search-result summary data (such as latest version, publisher, downloads, and quality scores).
+to search for packages (`npm.search`) and retrieve full metadata for a single
+package by name (`npm.packages`) — latest version, repository, publish
+timestamps, maintainers, license, README and more.
 
 ```bash
 coral source add --file sources/community/npm/manifest.yaml
