@@ -236,11 +236,12 @@ fn analyze_dependent_bindings(
     let mut binding_filters = Vec::with_capacity(join_on.len());
 
     for (left_expr, right_expr) in join_on {
-        let Some((dependent_column, resolver_column)) =
+        let Some(binding) =
             split_dependent_resolver_columns(dependent, resolver_schema, left_expr, right_expr)
         else {
             return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonEqui);
         };
+        let dependent_column = &binding.dependent_column;
 
         if !dependent_has_column(dependent, dependent_column) {
             return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonEqui);
@@ -259,11 +260,7 @@ fn analyze_dependent_bindings(
             return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedBindable);
         }
 
-        let Ok(field) = resolver_schema.field_from_column(resolver_column) else {
-            return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonCoercible);
-        };
-
-        if !is_bindable_data_type(field.data_type()) {
+        if !is_bindable_data_type(&binding.resolver.data_type) {
             return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonCoercible);
         }
 
@@ -400,15 +397,12 @@ fn resolver_with_binding_columns(
     let mut binding_filter_names = BTreeSet::new();
 
     for (binding_index, (left_expr, right_expr)) in join_on.iter().enumerate() {
-        let (dependent_column, resolver_column) =
+        let binding =
             split_dependent_resolver_columns(dependent, resolver_schema, left_expr, right_expr)?;
+        let dependent_column = &binding.dependent_column;
+        let resolver = binding.resolver;
 
-        if !is_bindable_data_type(
-            resolver_schema
-                .field_from_column(resolver_column)
-                .ok()?
-                .data_type(),
-        ) {
+        if !is_bindable_data_type(&resolver.data_type) {
             return None;
         }
 
@@ -426,15 +420,9 @@ fn resolver_with_binding_columns(
         }
 
         let resolver_binding_name = unique_binding_column_name(&mut used_names, binding_index);
-        expr.push(
-            Expr::Column(Column::new(
-                resolver_column.relation.clone(),
-                &resolver_column.name,
-            ))
-            .alias(&resolver_binding_name),
-        );
+        expr.push(resolver.expr.alias(&resolver_binding_name));
         binding_keys.push(BindingKey {
-            resolver_column: Column::new(resolver_column.relation.clone(), &resolver_column.name),
+            resolver_column: resolver.column,
             resolver_binding_name,
             dependent_filter: filter.name.clone(),
         });
@@ -492,67 +480,117 @@ fn rewrite_limit_page_hint(limit: &Limit) -> Result<Option<LogicalPlan>> {
     })))
 }
 
-fn split_dependent_resolver_columns<'a>(
+fn split_dependent_resolver_columns(
     dependent: &PeeledDependentScan,
     resolver_schema: &DFSchemaRef,
-    left_expr: &'a Expr,
-    right_expr: &'a Expr,
-) -> Option<(&'a Column, &'a Column)> {
+    left_expr: &Expr,
+    right_expr: &Expr,
+) -> Option<JoinBinding> {
     let left = join_column_operand(left_expr)?;
     let right = join_column_operand(right_expr)?;
 
-    let left_is_dependent = schema_has_join_operand(&dependent.table_schema, &left);
-    let right_is_dependent = schema_has_join_operand(&dependent.table_schema, &right);
-    let left_is_resolver = schema_has_join_operand(resolver_schema, &left);
-    let right_is_resolver = schema_has_join_operand(resolver_schema, &right);
+    let left_dependent =
+        resolve_join_operand(&dependent.table_schema, &left, JoinOperandSide::Dependent);
+    let right_dependent =
+        resolve_join_operand(&dependent.table_schema, &right, JoinOperandSide::Dependent);
+    let left_resolver = resolve_join_operand(resolver_schema, &left, JoinOperandSide::Resolver);
+    let right_resolver = resolve_join_operand(resolver_schema, &right, JoinOperandSide::Resolver);
 
     match (
-        left_is_dependent,
-        right_is_dependent,
-        left_is_resolver,
-        right_is_resolver,
+        left_dependent,
+        right_dependent,
+        left_resolver,
+        right_resolver,
     ) {
-        (true, false, false, true) => Some((left.column, right.column)),
-        (false, true, true, false) => Some((right.column, left.column)),
-        _ => None,
-    }
-}
-
-struct JoinColumnOperand<'a> {
-    column: &'a Column,
-    casted: bool,
-}
-
-fn join_column_operand(expr: &Expr) -> Option<JoinColumnOperand<'_>> {
-    match expr {
-        Expr::Column(column) => Some(JoinColumnOperand {
-            column,
-            casted: false,
+        (Some(dependent), None, None, Some(resolver))
+        | (None, Some(dependent), Some(resolver), None) => Some(JoinBinding {
+            dependent_column: dependent.column,
+            resolver,
         }),
-        Expr::Cast(cast) if is_string_data_type(&cast.data_type) => {
-            let inner = join_column_operand(cast.expr.as_ref())?;
-            Some(JoinColumnOperand {
-                column: inner.column,
-                casted: true,
-            })
-        }
-        Expr::TryCast(cast) if is_string_data_type(&cast.data_type) => {
-            let inner = join_column_operand(cast.expr.as_ref())?;
-            Some(JoinColumnOperand {
-                column: inner.column,
-                casted: true,
-            })
-        }
         _ => None,
     }
 }
 
-fn schema_has_join_operand(schema: &DFSchemaRef, operand: &JoinColumnOperand<'_>) -> bool {
-    let Ok(field) = schema.field_from_column(operand.column) else {
-        return false;
+struct JoinBinding {
+    dependent_column: Column,
+    resolver: ResolvedJoinOperand,
+}
+
+struct ParsedJoinOperand {
+    column: Column,
+    expr: Expr,
+    cast_type: Option<DataType>,
+}
+
+struct ResolvedJoinOperand {
+    column: Column,
+    expr: Expr,
+    data_type: DataType,
+}
+
+#[derive(Clone, Copy)]
+enum JoinOperandSide {
+    Dependent,
+    Resolver,
+}
+
+fn join_column_operand(expr: &Expr) -> Option<ParsedJoinOperand> {
+    match expr {
+        Expr::Column(column) => Some(ParsedJoinOperand {
+            column: column.clone(),
+            expr: Expr::Column(column.clone()),
+            cast_type: None,
+        }),
+        Expr::Cast(cast) => cast_join_column_operand(expr, cast.expr.as_ref(), &cast.data_type),
+        Expr::TryCast(cast) => cast_join_column_operand(expr, cast.expr.as_ref(), &cast.data_type),
+        _ => None,
+    }
+}
+
+fn cast_join_column_operand(
+    expr: &Expr,
+    inner: &Expr,
+    data_type: &DataType,
+) -> Option<ParsedJoinOperand> {
+    let Expr::Column(column) = inner else {
+        return None;
     };
 
-    !operand.casted || is_string_data_type(field.data_type())
+    Some(ParsedJoinOperand {
+        column: column.clone(),
+        expr: expr.clone(),
+        cast_type: Some(data_type.clone()),
+    })
+}
+
+fn resolve_join_operand(
+    schema: &DFSchemaRef,
+    operand: &ParsedJoinOperand,
+    side: JoinOperandSide,
+) -> Option<ResolvedJoinOperand> {
+    let Ok(field) = schema.field_from_column(&operand.column) else {
+        return None;
+    };
+    let source_type = field.data_type();
+    let data_type = match &operand.cast_type {
+        Some(target_type) => {
+            if !is_join_cast_supported(side, source_type, target_type) {
+                return None;
+            }
+            target_type.clone()
+        }
+        None => source_type.clone(),
+    };
+
+    if !is_bindable_data_type(&data_type) {
+        return None;
+    }
+
+    Some(ResolvedJoinOperand {
+        column: operand.column.clone(),
+        expr: operand.expr.clone(),
+        data_type,
+    })
 }
 
 fn dependent_has_column(dependent: &PeeledDependentScan, column: &Column) -> bool {
@@ -575,6 +613,34 @@ fn is_string_data_type(data_type: &DataType) -> bool {
         data_type,
         DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
     )
+}
+
+fn is_join_cast_supported(
+    side: JoinOperandSide,
+    source_type: &DataType,
+    target_type: &DataType,
+) -> bool {
+    if source_type == target_type && is_bindable_data_type(target_type) {
+        return true;
+    }
+
+    if is_string_data_type(source_type) && is_string_data_type(target_type) {
+        return true;
+    }
+
+    matches!(side, JoinOperandSide::Resolver)
+        && matches!(
+            (source_type, target_type),
+            (
+                DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32,
+                DataType::Int64
+            )
+        )
 }
 
 fn peel_dependent_side(plan: &LogicalPlan) -> PeelOutcome {

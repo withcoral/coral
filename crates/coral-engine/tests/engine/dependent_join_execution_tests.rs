@@ -176,7 +176,7 @@ async fn duplicate_resolver_rows_for_one_binding_emit_distinct_join_batches() {
 }
 
 #[tokio::test]
-async fn dependent_join_accepts_safe_string_casts_on_join_keys() {
+async fn dependent_join_accepts_safe_casts_on_join_keys() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/withcoral/coral/pulls/123"))
@@ -197,9 +197,9 @@ async fn dependent_join_accepts_safe_string_casts_on_join_keys() {
           SELECT 'Null repo' AS issue_title,
                  'withcoral' AS github_owner,
                  CAST(NULL AS VARCHAR) AS github_repo,
-                 123 AS github_pr_number
+                 CAST(123 AS INTEGER) AS github_pr_number
           UNION ALL
-          SELECT 'First', 'withcoral', 'coral', 123
+          SELECT 'First', 'withcoral', 'coral', CAST(123 AS INTEGER)
         )
         SELECT input.issue_title AS issue_title, pr.state AS pr_state
         FROM input
