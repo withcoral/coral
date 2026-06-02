@@ -3,8 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query Discord bot identity, guilds, channels, messages, members, and roles
-  from the Discord REST API.
+  Query Discord bot identity, guilds, channels, threads, messages, members, and
+  roles from the Discord REST API.
 inputs:
   DISCORD_BOT_TOKEN:
     kind: secret
@@ -273,8 +273,11 @@ tables:
     description: Channels in a Discord guild
     guide: |
       Requires guild_id from discord.guilds. Use returned id values as
-      channel_id filters for discord.messages. Channel types: 0 text,
-      2 voice, 4 category, 5 announcement, 13 stage, 15 forum, 16 media.
+      channel_id filters for discord.messages. This endpoint returns guild
+      channels, but not thread channels. Use active_threads and archived thread
+      tables to discover thread channels and forum/media posts. Channel types:
+      0 text, 2 voice, 4 category, 5 announcement, 13 stage, 15 forum,
+      16 media.
       SELECT id, name, type, position FROM discord.channels
       WHERE guild_id = '<id>'.
     filters:
@@ -382,6 +385,14 @@ tables:
           kind: path
           path:
             - user_limit
+      - name: rtc_region
+        type: Utf8
+        nullable: true
+        description: Voice or stage channel RTC region
+        expr:
+          kind: path
+          path:
+            - rtc_region
       - name: flags
         type: Int64
         nullable: true
@@ -438,6 +449,22 @@ tables:
           kind: path
           path:
             - default_thread_rate_limit_per_user
+      - name: available_tags
+        type: Json
+        nullable: true
+        description: Forum or media channel tags as JSON
+        expr:
+          kind: path
+          path:
+            - available_tags
+      - name: default_reaction_emoji
+        type: Json
+        nullable: true
+        description: Default reaction emoji for new forum or media posts
+        expr:
+          kind: path
+          path:
+            - default_reaction_emoji
       - name: video_quality_mode
         type: Int64
         nullable: true
@@ -447,20 +474,312 @@ tables:
           path:
             - video_quality_mode
 
+  # ----------------------------------------------------------------------
+  # active_threads
+  # ----------------------------------------------------------------------
+  - name: active_threads
+    description: Active Discord thread channels in a guild
+    guide: |
+      Requires guild_id from discord.guilds. This returns active thread
+      channels, including forum and media posts that have not archived yet.
+      Thread channel types are 10 announcement thread, 11 public thread, and
+      12 private thread. Use returned id values as channel_id filters for
+      discord.messages.
+      SELECT id, name, parent_id, last_message_id
+      FROM discord.active_threads WHERE guild_id = '<id>'.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/threads/active
+    response:
+      rows_path:
+        - threads
+    columns: &thread_columns
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Discord thread channel ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Int64
+        nullable: false
+        description: "Thread channel type integer: 10 announcement, 11 public, 12 private"
+        expr:
+          kind: path
+          path:
+            - type
+      - name: guild_id
+        type: Utf8
+        nullable: true
+        description: Guild ID from the thread channel object
+        expr:
+          kind: path
+          path:
+            - guild_id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Thread channel name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent channel ID, such as the forum or media channel
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: User ID that created the thread
+        expr:
+          kind: path
+          path:
+            - owner_id
+      - name: last_message_id
+        type: Utf8
+        nullable: true
+        description: Most recent message ID known to Discord
+        expr:
+          kind: path
+          path:
+            - last_message_id
+      - name: message_count
+        type: Int64
+        nullable: true
+        description: Approximate message count in the thread
+        expr:
+          kind: path
+          path:
+            - message_count
+      - name: member_count
+        type: Int64
+        nullable: true
+        description: Approximate member count in the thread
+        expr:
+          kind: path
+          path:
+            - member_count
+      - name: total_message_sent
+        type: Int64
+        nullable: true
+        description: Total number of messages ever sent in the thread
+        expr:
+          kind: path
+          path:
+            - total_message_sent
+      - name: rate_limit_per_user
+        type: Int64
+        nullable: true
+        description: Slowmode delay in seconds
+        expr:
+          kind: path
+          path:
+            - rate_limit_per_user
+      - name: flags
+        type: Int64
+        nullable: true
+        description: Thread channel flags as a bitfield
+        expr:
+          kind: path
+          path:
+            - flags
+      - name: thread_metadata
+        type: Json
+        nullable: true
+        description: Thread metadata as JSON
+        expr:
+          kind: path
+          path:
+            - thread_metadata
+      - name: thread_metadata__archived
+        type: Boolean
+        nullable: true
+        description: Whether the thread is archived
+        expr:
+          kind: path
+          path:
+            - thread_metadata
+            - archived
+      - name: thread_metadata__archive_timestamp
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the thread archive state last changed
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - thread_metadata
+              - archive_timestamp
+      - name: thread_metadata__auto_archive_duration
+        type: Int64
+        nullable: true
+        description: Auto-archive duration in minutes
+        expr:
+          kind: path
+          path:
+            - thread_metadata
+            - auto_archive_duration
+      - name: thread_metadata__locked
+        type: Boolean
+        nullable: true
+        description: Whether the thread is locked
+        expr:
+          kind: path
+          path:
+            - thread_metadata
+            - locked
+      - name: thread_metadata__invitable
+        type: Boolean
+        nullable: true
+        description: Whether non-moderators can add users to a private thread
+        expr:
+          kind: path
+          path:
+            - thread_metadata
+            - invitable
+      - name: applied_tags
+        type: Json
+        nullable: true
+        description: Forum or media tag IDs applied to the thread
+        expr:
+          kind: path
+          path:
+            - applied_tags
+      - name: member
+        type: Json
+        nullable: true
+        description: Current bot user's thread member object when returned
+        expr:
+          kind: path
+          path:
+            - member
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: Discord web URL for the thread channel
+        expr:
+          kind: template
+          template: "https://discord.com/channels/{{expr.guild_id|@me}}/{{expr.parent_id}}/{{expr.thread_id}}"
+          values:
+            guild_id:
+              kind: path
+              path:
+                - guild_id
+            parent_id:
+              kind: path
+              path:
+                - parent_id
+            thread_id:
+              kind: path
+              path:
+                - id
+
+  # ----------------------------------------------------------------------
+  # archived_threads
+  # ----------------------------------------------------------------------
+  - name: archived_threads
+    description: Public or private archived Discord thread channels in a parent channel
+    guide: |
+      Requires channel_id from discord.channels and visibility set to public or
+      private. Use this for archived forum/media posts and other archived
+      public or private threads under a specific parent channel. Private
+      archived threads may require MANAGE_THREADS unless the bot joined the
+      thread; use joined_private_archived_threads for the joined-only endpoint.
+      Use returned id values as channel_id filters for discord.messages.
+      SELECT id, name, parent_id, last_message_id
+      FROM discord.archived_threads
+      WHERE channel_id = '<parent-channel-id>' AND visibility = 'public'.
+    filters:
+      - name: channel_id
+        required: true
+        description: Parent channel ID, such as a text, announcement, forum, or media channel
+      - name: visibility
+        required: true
+        description: "Archived thread visibility: public or private"
+      - name: before
+        description: Archive timestamp cursor for threads before that ISO 8601 timestamp
+    request:
+      method: GET
+      path: /channels/{{filter.channel_id}}/threads/archived/{{filter.visibility}}
+      query:
+        - name: before
+          from: filter
+          key: before
+    response:
+      rows_path:
+        - threads
+    pagination:
+      mode: none
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns: *thread_columns
+
+  # ----------------------------------------------------------------------
+  # joined_private_archived_threads
+  # ----------------------------------------------------------------------
+  - name: joined_private_archived_threads
+    description: Private archived Discord thread channels the bot has joined
+    guide: |
+      Requires channel_id from discord.channels. This returns private archived
+      threads under a parent channel that the current bot user has joined.
+      Use returned id values as channel_id filters for discord.messages.
+      SELECT id, name, parent_id, last_message_id
+      FROM discord.joined_private_archived_threads
+      WHERE channel_id = '<parent-channel-id>'.
+    filters:
+      - name: channel_id
+        required: true
+        description: Parent channel ID, such as a text, announcement, forum, or media channel
+      - name: before
+        description: Thread ID cursor for joined private archived threads before that thread
+    request:
+      method: GET
+      path: /channels/{{filter.channel_id}}/users/@me/threads/archived/private
+      query:
+        - name: before
+          from: filter
+          key: before
+    response:
+      rows_path:
+        - threads
+    pagination:
+      mode: none
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns: *thread_columns
+
   # ──────────────────────────────────────────────────────────────────────
   # messages
   # ──────────────────────────────────────────────────────────────────────
   - name: messages
     description: Recent messages in a Discord channel
     guide: |
-      Requires channel_id from discord.channels. The bot must have
-      VIEW_CHANNEL and READ_MESSAGE_HISTORY permissions on the channel;
-      voice channels additionally require CONNECT. Messages are returned
-      newest-first. Use before, after, and around filters for cursor-based
-      pagination (pass message IDs as Snowflake strings). These filters are
-      mutually exclusive. Maximum 100 per request. Requires MESSAGE_CONTENT
-      privileged intent for content, embeds, and attachments (without it
-      those fields will be empty even with READ_MESSAGE_HISTORY).
+      Requires channel_id from discord.channels or a thread table. The bot must
+      have VIEW_CHANNEL and READ_MESSAGE_HISTORY permissions on the channel.
+      Forum and media posts are thread channels; query active_threads or an
+      archived thread table first, then pass the returned thread id as
+      channel_id. Messages are returned newest-first. Use before, after, and
+      around filters for cursor-based pagination (pass message IDs as Snowflake
+      strings). These filters are mutually exclusive. Maximum 100 per request.
+      Requires MESSAGE_CONTENT privileged intent for content, embeds, and
+      attachments (without it those fields will be empty even with
+      READ_MESSAGE_HISTORY).
       SELECT id, author__username, content, timestamp
       FROM discord.messages WHERE channel_id = '<id>' ORDER BY timestamp DESC
       LIMIT 20.

@@ -1,6 +1,6 @@
 # Discord
 
-Query Discord bot identity, guilds, channels, messages, members, and roles from the [Discord REST API v10](https://discord.com/developers/docs/intro).
+Query Discord bot identity, guilds, channels, threads, messages, members, and roles from the [Discord REST API v10](https://discord.com/developers/docs/intro).
 
 ## Prerequisites
 
@@ -17,6 +17,9 @@ Configure the following by table:
 | `current_user` | Token only | none | none |
 | `guilds` | Token only | none | none |
 | `channels` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`) |
+| `active_threads` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`) |
+| `archived_threads` | `channel_id`, `visibility` filters | none | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`); private archives may require `MANAGE_THREADS` |
+| `joined_private_archived_threads` | `channel_id` filter | none | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`) |
 | `messages` | `channel_id` filter | `MESSAGE_CONTENT` | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`) |
 | `members` | `guild_id` filter | `GUILD_MEMBERS` | none |
 | `roles` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`) |
@@ -43,11 +46,16 @@ After adding the source, discover IDs by querying:
 -- Find guilds the bot can see
 SELECT id, name FROM discord.guilds LIMIT 10;
 
--- Find channels in a guild
+-- Find top-level channels in a guild
 SELECT id, name, type FROM discord.channels WHERE guild_id = 'GUILD_ID';
+
+-- Find active thread channels and forum/media posts in a guild
+SELECT id, name, parent_id, type
+FROM discord.active_threads
+WHERE guild_id = 'GUILD_ID';
 ```
 
-Use the returned IDs as required filters for the `channels`, `messages`, `members`, and `roles` tables.
+Use guild IDs for `channels`, `active_threads`, `members`, and `roles`. Use top-level channel IDs for `archived_threads` and `joined_private_archived_threads`. Use thread IDs from `active_threads`, `archived_threads`, or `joined_private_archived_threads` as `channel_id` values for `messages`.
 
 ## Tables
 
@@ -56,6 +64,9 @@ Use the returned IDs as required filters for the `channels`, `messages`, `member
 | `current_user` | The Discord bot user associated with the configured token | none |
 | `guilds` | Discord guilds that the configured bot can see | none |
 | `channels` | Channels in a Discord guild | `guild_id` |
+| `active_threads` | Active thread channels in a Discord guild | `guild_id` |
+| `archived_threads` | Public or private archived thread channels in a parent channel | `channel_id`, `visibility` |
+| `joined_private_archived_threads` | Private archived thread channels the bot has joined | `channel_id` |
 | `messages` | Recent messages in a Discord channel | `channel_id` |
 | `members` | Members in a Discord guild | `guild_id` |
 | `roles` | Roles in a Discord guild | `guild_id` |
@@ -87,6 +98,32 @@ ORDER BY timestamp DESC
 LIMIT 20;
 ```
 
+For forum and media posts, first query the thread channel tables, then pass the returned thread ID to `messages`:
+
+```sql
+-- Active forum/media posts under a parent forum or media channel
+SELECT id, name, parent_id, last_message_id
+FROM discord.active_threads
+WHERE guild_id = 'GUILD_ID'
+  AND parent_id = 'FORUM_OR_MEDIA_CHANNEL_ID'
+ORDER BY id DESC
+LIMIT 20;
+
+-- Public archived forum/media posts under that same parent channel
+SELECT id, name, parent_id, last_message_id
+FROM discord.archived_threads
+WHERE channel_id = 'FORUM_OR_MEDIA_CHANNEL_ID'
+  AND visibility = 'public'
+LIMIT 20;
+
+-- Messages inside one forum/media post
+SELECT id, author__username, content, timestamp
+FROM discord.messages
+WHERE channel_id = 'THREAD_ID_FROM_ABOVE'
+ORDER BY timestamp DESC
+LIMIT 20;
+```
+
 ## Example queries
 
 ```sql
@@ -102,6 +139,13 @@ SELECT id, name, position, topic
 FROM discord.channels
 WHERE guild_id = '123456789012345678'
   AND type = 0;
+
+-- Active forum/media posts are thread channels
+SELECT id, name, parent_id, last_message_id
+FROM discord.active_threads
+WHERE guild_id = '123456789012345678'
+ORDER BY id DESC
+LIMIT 20;
 
 -- Recent messages in a channel
 SELECT id, author__username, content, timestamp
@@ -142,6 +186,8 @@ Discord uses Snowflake-based cursor pagination via `before`, `after`, and `aroun
 | Table | Pagination filters | Max per page |
 |---|---|---|
 | `guilds` | `before`, `after` (by guild ID), `with_counts` | 200 |
+| `archived_threads` | `before` (archive timestamp), `visibility` (`public` or `private`) | 100 |
+| `joined_private_archived_threads` | `before` (thread ID) | 100 |
 | `messages` | `before`, `after`, `around` (message ID, mutually exclusive) | 100 |
 | `members` | `after` (by user ID) | 1000 |
 
