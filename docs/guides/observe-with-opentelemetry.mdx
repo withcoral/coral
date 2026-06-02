@@ -55,8 +55,8 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | ------------------------------ | ------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `endpoint`                     | string  | unset                                                                  | OTLP/HTTP base URL. When unset, no signals are exported to an external collector. |
 | `headers`                      | string  | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
-| `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
-| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off,coral.mcp.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `log_filter`                   | string  | `coral_app=info,coral_engine=info,coral_telemetry.log_only=info`       | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
+| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_telemetry.trace_safe=trace,coral_engine::datafusion=off,coral.http.body=off,coral.mcp.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
 
 ### `[trace_history]`
@@ -97,6 +97,10 @@ trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=
 If the filter fails to parse, Coral logs a warning and falls back to the default. Changing `[otel].trace_filter` does not reduce local trace capture — the local trace UI uses a fixed filter so debugging evidence stays available regardless of export policy.
 
 For request/response body previews, see [Trace History](#trace-history) above.
+
+The `coral_telemetry.*` target names are reserved for Coral-owned internal events: `coral_telemetry.trace_safe` events may be attached to exported spans, while `coral_telemetry.log_only` events are never attached to exported spans, even if you configure a broader trace filter. Logs can still be exported to OTLP, so log-only events are not a place for secrets when external log export is enabled.
+
+When trace history is enabled, raw SQL text is kept in local trace history for the Coral UI, but the `sql` span attribute is removed from OTLP trace exports.
 
 #### CLI root span
 

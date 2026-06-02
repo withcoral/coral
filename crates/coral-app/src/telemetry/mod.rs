@@ -19,7 +19,7 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData, SpanExporter};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::Layer as _;
-use tracing_subscriber::filter::Targets;
+use tracing_subscriber::filter::{FilterExt as _, Targets};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
@@ -39,7 +39,15 @@ static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
 static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
-const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
+const TELEMETRY_TARGET_PREFIX: &str = "coral_telemetry";
+const TELEMETRY_LOG_ONLY_TARGET: &str = "coral_telemetry.log_only";
+const TELEMETRY_TRACE_SAFE_TARGET: &str = "coral_telemetry.trace_safe";
+const OTLP_TRACE_DENIED_TARGETS: &[&str] = &[
+    "coral.http.body",
+    "coral.mcp.body",
+    TELEMETRY_LOG_ONLY_TARGET,
+];
+const OTLP_TRACE_REDACTED_ATTRIBUTES: &[&str] = &["sql"];
 const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +73,7 @@ struct TargetFilteringSpanExporter<E> {
     targets: Targets,
     denied_targets: &'static [&'static str],
     excluded_rpc_services: &'static [&'static str],
+    redacted_attributes: &'static [&'static str],
 }
 
 impl<E> TargetFilteringSpanExporter<E> {
@@ -74,6 +83,7 @@ impl<E> TargetFilteringSpanExporter<E> {
             targets,
             denied_targets: &[],
             excluded_rpc_services: &[],
+            redacted_attributes: &[],
         }
     }
 
@@ -84,6 +94,11 @@ impl<E> TargetFilteringSpanExporter<E> {
 
     fn excluding_rpc_services(mut self, services: &'static [&'static str]) -> Self {
         self.excluded_rpc_services = services;
+        self
+    }
+
+    fn redacting_attributes(mut self, attributes: &'static [&'static str]) -> Self {
+        self.redacted_attributes = attributes;
         self
     }
 }
@@ -101,6 +116,7 @@ where
         if batch.is_empty() {
             return Ok(());
         }
+        redact_span_attributes(&mut batch, self.redacted_attributes);
         self.inner.export(batch).await
     }
 
@@ -120,6 +136,16 @@ where
     }
 }
 
+fn redact_span_attributes(spans: &mut [SpanData], redacted_attributes: &[&str]) {
+    if redacted_attributes.is_empty() {
+        return;
+    }
+    for span in spans {
+        span.attributes
+            .retain(|attribute| !redacted_attributes.contains(&attribute.key.as_str()));
+    }
+}
+
 fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
     let Some(target) = span_string_attribute(span, "target") else {
         return false;
@@ -136,7 +162,7 @@ fn span_matches_denied_target(span: &SpanData, denied_targets: &[&str]) -> bool 
     };
     denied_targets
         .iter()
-        .any(|denied_target| target == *denied_target)
+        .any(|denied_target| target_is_exact_or_child(&target, denied_target))
 }
 
 fn span_matches_excluded_rpc_service(span: &SpanData, excluded_services: &[&str]) -> bool {
@@ -212,6 +238,21 @@ fn trace_layer_filter(
         );
     }
     (otlp_targets, error)
+}
+
+fn telemetry_metadata_may_attach_to_trace(meta: &tracing::Metadata<'_>) -> bool {
+    let target = meta.target();
+    if !target_is_exact_or_child(target, TELEMETRY_TARGET_PREFIX) {
+        return true;
+    }
+    meta.is_event() && target_is_exact_or_child(target, TELEMETRY_TRACE_SAFE_TARGET)
+}
+
+fn target_is_exact_or_child(target: &str, base: &str) -> bool {
+    target == base
+        || target
+            .strip_prefix(base)
+            .is_some_and(|suffix| suffix.starts_with('.') || suffix.starts_with("::"))
 }
 
 fn initialize_metrics(meter_provider: Option<&SdkMeterProvider>) {
@@ -422,7 +463,8 @@ fn try_init_tracing(
                 .map_err(|e| AppError::InvalidInput(e.to_string()))?;
             let trace_exporter =
                 TargetFilteringSpanExporter::new(trace_exporter, otlp_trace_targets)
-                    .denying_targets(OTLP_TRACE_DENIED_TARGETS);
+                    .denying_targets(OTLP_TRACE_DENIED_TARGETS)
+                    .redacting_attributes(OTLP_TRACE_REDACTED_ATTRIBUTES);
             builder = builder.with_span_processor(
                 opentelemetry_sdk::trace::BatchSpanProcessor::builder(trace_exporter).build(),
             );
@@ -490,7 +532,9 @@ fn try_init_tracing(
         let layer = tracing_opentelemetry::layer()
             .with_tracer(tracer)
             .with_level(true)
-            .with_filter(trace_targets);
+            .with_filter(trace_targets.and(tracing_subscriber::filter::filter_fn(
+                telemetry_metadata_may_attach_to_trace,
+            )));
 
         if let Ok(mut guard) = PROVIDER.lock() {
             *guard = Some(provider);
@@ -572,13 +616,17 @@ mod tests {
 
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::filter::FilterExt as _;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
-        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, OTLP_TRACE_DENIED_TARGETS, TargetFilteringSpanExporter,
-        build_log_filter, build_trace_targets, normalize_otlp_endpoint, parse_headers,
-        trace_layer_filter,
+        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, OTLP_TRACE_DENIED_TARGETS,
+        OTLP_TRACE_REDACTED_ATTRIBUTES, TELEMETRY_LOG_ONLY_TARGET, TELEMETRY_TRACE_SAFE_TARGET,
+        TargetFilteringSpanExporter, build_log_filter, build_trace_targets,
+        normalize_otlp_endpoint, parse_headers, target_is_exact_or_child,
+        telemetry_metadata_may_attach_to_trace, trace_layer_filter,
     };
 
     #[test]
@@ -629,6 +677,8 @@ mod tests {
         assert!(targets.would_enable("coral_client::grpc", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
+        assert!(targets.would_enable(TELEMETRY_TRACE_SAFE_TARGET, &tracing::Level::TRACE));
+        assert!(!targets.would_enable(TELEMETRY_LOG_ONLY_TARGET, &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral.http.body", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
@@ -643,6 +693,7 @@ mod tests {
         assert!(targets.would_enable("coral_client::grpc", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
+        assert!(targets.would_enable(TELEMETRY_TRACE_SAFE_TARGET, &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
@@ -654,9 +705,94 @@ mod tests {
 
         assert!(error.is_none());
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
+        assert!(targets.would_enable(TELEMETRY_TRACE_SAFE_TARGET, &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
+    }
+
+    #[test]
+    fn trace_metadata_filter_rejects_log_only_events_under_broad_filter() {
+        let memory = InMemorySpanExporter::default();
+        let (targets, error) = build_trace_targets(
+            "coral_app=trace,coral_telemetry=trace",
+            DEFAULT_TRACE_FILTER,
+        );
+        assert!(error.is_none());
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(memory.clone())
+            .build();
+        let tracer = provider.tracer("filter-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true)
+            .with_filter(targets.and(tracing_subscriber::filter::filter_fn(
+                telemetry_metadata_may_attach_to_trace,
+            )));
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(target: "coral_app", "root");
+            let _guard = span.enter();
+            tracing::info!(
+                target: TELEMETRY_TRACE_SAFE_TARGET,
+                event_name = "coral.safe",
+                safe_count = 1_i64
+            );
+            let telemetry_span =
+                tracing::info_span!(target: TELEMETRY_TRACE_SAFE_TARGET, "telemetry_span");
+            let _telemetry_span = telemetry_span.enter();
+            tracing::info!(
+                target: "coral_telemetry.log_only.query",
+                event_name = "coral.log_only",
+                secret_value = "do-not-export"
+            );
+        });
+        provider.force_flush().expect("flush spans");
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let root = spans
+            .iter()
+            .find(|span| span.name == "root")
+            .expect("root span");
+        let event_names = root
+            .events
+            .events
+            .iter()
+            .flat_map(|event| event.attributes.iter())
+            .filter(|attribute| attribute.key.as_str() == "event_name")
+            .map(|attribute| attribute.value.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(event_names, vec!["coral.safe"]);
+        assert!(!spans.iter().any(|span| span.name == "telemetry_span"));
+        assert!(!root.events.events.iter().any(|event| {
+            event.attributes.iter().any(|attribute| {
+                attribute.key.as_str() == "secret_value"
+                    || attribute.value.to_string() == "do-not-export"
+            })
+        }));
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn target_child_matching_avoids_partial_prefix_matches() {
+        assert!(target_is_exact_or_child(
+            "coral_telemetry.log_only.query",
+            TELEMETRY_LOG_ONLY_TARGET
+        ));
+        assert!(target_is_exact_or_child(
+            "coral_telemetry.log_only::query",
+            TELEMETRY_LOG_ONLY_TARGET
+        ));
+        assert!(!target_is_exact_or_child(
+            "coral_telemetry.log_only:query",
+            TELEMETRY_LOG_ONLY_TARGET
+        ));
+        assert!(!target_is_exact_or_child(
+            "coral_telemetry.log_only_extra",
+            TELEMETRY_LOG_ONLY_TARGET
+        ));
     }
 
     #[test]
@@ -703,10 +839,57 @@ mod tests {
     }
 
     #[test]
+    fn target_filtering_exporter_redacts_configured_attributes() {
+        let memory = InMemorySpanExporter::default();
+        let (targets, error) = build_trace_targets("coral_app=trace", DEFAULT_TRACE_FILTER);
+        assert!(error.is_none());
+        let exporter = TargetFilteringSpanExporter::new(memory.clone(), targets)
+            .redacting_attributes(OTLP_TRACE_REDACTED_ATTRIBUTES);
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("filter-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                target: "coral_app",
+                "query",
+                sql = "SELECT 'secret'",
+                status = "ok"
+            );
+            let _guard = span.enter();
+        });
+        provider.force_flush().expect("flush spans");
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let query = spans
+            .iter()
+            .find(|span| span.name == "query")
+            .expect("query span");
+        assert!(
+            !query
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "sql")
+        );
+        assert!(
+            query
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "status")
+        );
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
     fn target_filtering_exporter_hard_denies_configured_targets() {
         let memory = InMemorySpanExporter::default();
         let (targets, error) = build_trace_targets(
-            "coral_app=trace,coral.http.body=trace,coral.mcp.body=trace",
+            "coral_app=trace,coral.http.body=trace,coral.mcp.body=trace,coral_telemetry.log_only=trace",
             DEFAULT_TRACE_FILTER,
         );
         assert!(error.is_none());
@@ -738,6 +921,10 @@ mod tests {
                 coral.mcp.request.body = "secret",
             );
             let _dropped_mcp = dropped_mcp.enter();
+
+            let dropped_child =
+                tracing::trace_span!(target: "coral_telemetry.log_only.query", "dropped_child");
+            let _dropped_child = dropped_child.enter();
         });
         provider.force_flush().expect("flush spans");
 
