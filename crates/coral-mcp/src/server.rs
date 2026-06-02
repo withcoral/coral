@@ -457,9 +457,10 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (visible_table_count, visible_function_count) =
-                tokio::try_join!(self.load_table_count(), self.load_table_function_count())
-                    .map_err(|status| status_to_error_data(&status))?;
+            let (visible_table_count, visible_function_count) = self
+                .load_catalog_counts()
+                .await
+                .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
                 sql_tool(visible_table_count),
                 list_catalog_tool(visible_table_count, visible_function_count),
