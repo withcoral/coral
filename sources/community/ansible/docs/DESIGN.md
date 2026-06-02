@@ -104,11 +104,11 @@ flowchart TD
   Ansible --> ServiceFacts["ansible.builtin.service_facts"]
   Ansible --> PackageFacts["ansible.builtin.package_facts"]
 
-  Setup --> RawFacts["raw-facts/*.json"]
-  ServiceFacts --> RawFacts
-  PackageFacts --> RawFacts
+  Setup --> CollectedFacts["collected-facts/*.json"]
+  ServiceFacts --> CollectedFacts
+  PackageFacts --> CollectedFacts
 
-  RawFacts --> Normalizer["scripts/normalize-ansible-facts.py"]
+  CollectedFacts --> Normalizer["scripts/normalize-ansible-facts.py"]
   Normalizer --> JSONL["~/.coral/ansible-facts/*.jsonl"]
 
   JSONL --> Manifest["manifest.yaml"]
@@ -127,8 +127,8 @@ sequenceDiagram
   participant Coral
 
   User->>Ansible: Run examples/gather-facts.yml
-  Ansible->>Filesystem: Write raw-facts/*.json
-  User->>Normalizer: Convert raw facts to safe JSONL
+  Ansible->>Filesystem: Write collected-facts/*.json
+  User->>Normalizer: Convert selected collection JSON to safe JSONL
   Normalizer->>Filesystem: Write hosts/services/packages/*.jsonl
   User->>Coral: coral source add --file manifest.yaml
   Coral->>Filesystem: Read configured JSONL files
@@ -168,7 +168,7 @@ Recommended flow:
 
 ```text
 1. Gather facts from hosts.
-2. Write selected collection JSON to raw-facts/.
+2. Write selected collection JSON to collected-facts/.
 3. Normalize selected collection JSON into JSONL.
 4. Validate JSONL.
 5. Copy JSONL into the configured Coral data directory.
@@ -179,14 +179,14 @@ Recommended flow:
 Example:
 
 ```bash
-mkdir -p raw-facts normalized-facts
+mkdir -p collected-facts normalized-facts
 
 ansible-playbook \
   -i examples/inventory.ini \
   examples/gather-facts.yml
 
 python3 scripts/normalize-ansible-facts.py \
-  --input raw-facts \
+  --input collected-facts \
   --output normalized-facts
 
 mkdir -p ~/.coral/ansible-facts

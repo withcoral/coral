@@ -1,0 +1,40 @@
+{% set coral_facts = {
+  'hostname': ansible_facts.get('hostname'),
+  'nodename': ansible_facts.get('nodename'),
+  'fqdn': ansible_facts.get('fqdn'),
+  'distribution': ansible_facts.get('distribution'),
+  'distribution_version': ansible_facts.get('distribution_version'),
+  'distribution_major_version': ansible_facts.get('distribution_major_version'),
+  'os_family': ansible_facts.get('os_family'),
+  'kernel': ansible_facts.get('kernel'),
+  'architecture': ansible_facts.get('architecture'),
+  'system': ansible_facts.get('system'),
+  'service_mgr': ansible_facts.get('service_mgr'),
+  'pkg_mgr': ansible_facts.get('pkg_mgr'),
+  'processor_vcpus': ansible_facts.get('processor_vcpus'),
+  'processor_cores': ansible_facts.get('processor_cores'),
+  'memtotal_mb': ansible_facts.get('memtotal_mb'),
+  'uptime_seconds': ansible_facts.get('uptime_seconds'),
+  'virtualization_type': ansible_facts.get('virtualization_type'),
+  'virtualization_role': ansible_facts.get('virtualization_role'),
+  'python': ansible_facts.get('python'),
+  'mounts': ansible_facts.get('mounts', []),
+  'interfaces': ansible_facts.get('interfaces', []),
+  'selinux': ansible_facts.get('selinux', {}),
+  'apparmor': ansible_facts.get('apparmor', {}),
+  'fips': ansible_facts.get('fips'),
+  'services': ansible_facts.get('services', {}),
+  'packages': ansible_facts.get('packages', {})
+} %}
+{% for interface in ansible_facts.get('interfaces', []) %}
+{% set interface_key = interface | ansible.builtin.regex_replace('-', '_') %}
+{% if ansible_facts.get(interface_key) is mapping %}
+{% set _ = coral_facts.update({interface_key: ansible_facts.get(interface_key)}) %}
+{% endif %}
+{% endfor %}
+{{ {
+  'inventory_hostname': inventory_hostname,
+  'ansible_facts': coral_facts,
+  'coral_roles': coral_roles | default([]),
+  'coral_expected_services': coral_expected_services | default([])
+} | to_nice_json }}

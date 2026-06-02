@@ -14,7 +14,7 @@ The `ansible` source exposes selected Ansible-derived infrastructure facts as SQ
 
 This source is intentionally **file-backed** and **read-only**. Coral does not SSH into hosts, run Ansible playbooks, call AWX/Ansible Automation Platform, or mutate infrastructure. Users gather facts with Ansible first, normalize those facts into JSONL files, and then Coral reads those files as SQL tables.
 
-The example playbook writes raw Ansible facts to a restricted local directory before normalization. Treat those raw files as sensitive temporary input; only the normalized JSONL output is the allowlisted Coral source data.
+The example playbook writes selected Ansible collection payloads to a restricted local directory before normalization. Treat those collected files as sensitive temporary input; only the normalized JSONL output is the allowlisted Coral source data.
 
 ## What this source provides
 
@@ -111,11 +111,11 @@ flowchart LR
   Ansible --> Services["service_facts"]
   Ansible --> Packages["package_facts"]
 
-  Setup --> Raw["raw-facts/*.json"]
-  Services --> Raw
-  Packages --> Raw
+  Setup --> Collected["collected-facts/*.json"]
+  Services --> Collected
+  Packages --> Collected
 
-  Raw --> Normalize["normalize-ansible-facts.py"]
+  Collected --> Normalize["normalize-ansible-facts.py"]
   Normalize --> JSONL["hosts/services/packages/mounts/interfaces/security/roles.jsonl"]
 
   JSONL --> Coral["Coral file source"]
@@ -125,7 +125,7 @@ flowchart LR
   SQL --> Agent["SQL-capable agent"]
 ```
 
-The important boundary is that Coral only sees normalized JSONL files. It does not receive raw Ansible output or credentials.
+The important boundary is that Coral only sees normalized JSONL files. It does not receive broad raw Ansible output or credentials.
 
 ## Data flow
 
@@ -138,7 +138,7 @@ sequenceDiagram
   participant Coral
 
   User->>Ansible: Run gather-facts.yml
-  Ansible->>Filesystem: Write raw-facts/*.json
+  Ansible->>Filesystem: Write collected-facts/*.json
   User->>Normalizer: Normalize selected facts
   Normalizer->>Filesystem: Write *.jsonl files
   User->>Coral: coral source add --file manifest.yaml
@@ -284,14 +284,14 @@ debian-db ansible_host=192.168.56.14
 Run the example gather and normalize flow:
 
 ```bash
-mkdir -p raw-facts normalized-facts
+mkdir -p collected-facts normalized-facts
 
 ansible-playbook \
   -i examples/inventory.ini \
   examples/gather-facts.yml
 
 python3 scripts/normalize-ansible-facts.py \
-  --input raw-facts \
+  --input collected-facts \
   --output normalized-facts
 
 mkdir -p ~/.coral/ansible-facts

@@ -31,12 +31,12 @@ This source follows a conservative model:
 ```mermaid
 flowchart LR
   Hosts[Managed hosts] --> Ansible[Ansible]
-  Ansible --> Raw[Raw facts JSON]
-  Raw --> Normalizer[Allowlist normalizer]
+  Ansible --> Collected[Selected collection JSON]
+  Collected --> Normalizer[Allowlist normalizer]
   Normalizer --> Safe[Sanitized JSONL]
   Safe --> Coral[Coral SQL source]
 
-  Raw -. sensitive .-> Blocked[Do not expose]
+  Collected -. sensitive .-> Blocked[Do not expose]
   Blocked -. no .-> Coral
 ```
 
@@ -184,7 +184,7 @@ When gathering facts for this source:
 * write selected collection payloads to a restricted directory
 * normalize into a separate output directory
 * review generated JSONL before publishing it to Coral
-* delete raw facts if they are no longer needed
+* delete selected collection payloads and any broader raw facts if they are no longer needed
 * do not commit generated facts from real systems
 * use synthetic fixtures in the repository
 
@@ -284,10 +284,10 @@ chmod 0750 /var/lib/coral/ansible
 chmod 0640 /var/lib/coral/ansible/current/*.jsonl
 ```
 
-Keep raw facts more restricted than normalized facts:
+Keep selected collection payloads at least as restricted as normalized facts:
 
 ```bash
-chmod 0700 raw-facts
+chmod 0700 collected-facts
 chmod 0750 normalized-facts
 ```
 
@@ -300,6 +300,7 @@ Never commit generated facts from real hosts.
 Recommended `.gitignore` entries for local testing:
 
 ```gitignore
+collected-facts/
 raw-facts/
 normalized-facts/
 *.retry
@@ -352,7 +353,7 @@ coral source lint sources/community/ansible/manifest.yaml
 
 1. Stop using the generated JSONL snapshot.
 2. Delete the affected normalized files.
-3. Delete or restrict raw fact files.
+3. Delete or restrict selected collection files and any broader raw fact files.
 4. Rotate exposed credentials if any secrets were present.
 5. Remove the data from Git history if it was committed.
 6. Add a normalizer rule to prevent the field from being exported again.

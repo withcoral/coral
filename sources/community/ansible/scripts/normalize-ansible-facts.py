@@ -232,7 +232,7 @@ def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="Directory containing raw Ansible fact JSON files")
+    parser.add_argument("--input", required=True, help="Directory containing selected Ansible collection JSON files")
     parser.add_argument("--output", required=True, help="Directory to write JSONL tables")
     args = parser.parse_args()
 
