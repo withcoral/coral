@@ -109,7 +109,7 @@ the API rather than evaluated locally:
 | `invitee_email` | `Utf8` | Filter events that include a specific invitee |
 | `min_start_time` | `Utf8` | ISO 8601 lower bound on event start time |
 | `max_start_time` | `Utf8` | ISO 8601 upper bound on event start time |
-| `sort` | `Utf8` | `'start_time:asc'` (default) or `'start_time:desc'` — controls API-side page ordering; add SQL `ORDER BY` after fetching for a different final order |
+| `sort_order` | `Utf8` | `'start_time:asc'` (default) or `'start_time:desc'` — controls API-side page ordering; add SQL `ORDER BY` after fetching for a different final order |
 
 Use `=` in SQL WHERE clauses for these filters. Always provide
 `min_start_time`/`max_start_time` for large orgs to avoid scanning all pages.
@@ -137,12 +137,12 @@ WHERE min_start_time = '2025-12-01T00:00:00Z'
   AND max_start_time = '2025-12-31T23:59:59Z'
 ORDER BY start_time;
 
--- Newest bookings first (push sort to the API, not SQL ORDER BY)
+-- Newest bookings first (push sort_order to the API, not SQL ORDER BY)
 SELECT name, start_time, status, invitees_counter__total
 FROM calendly.scheduled_events
 WHERE min_start_time = '2025-01-01T00:00:00Z'
   AND max_start_time = '2026-12-31T23:59:59Z'
-  AND sort = 'start_time:desc'
+  AND sort_order = 'start_time:desc'
 LIMIT 25;
 
 -- Canceled events with cancellation details
@@ -199,28 +199,19 @@ WHERE se.min_start_time = '2025-01-01T00:00:00Z'
   AND se.max_start_time = '2026-12-31T23:59:59Z';
 
 -- Routing forms (Professional, Teams, or Enterprise); status should be published, not draft
-SELECT name, status, heading, created_at
+SELECT name, status, created_at
 FROM calendly.routing_forms
 ORDER BY name;
 
 -- Submissions for one routing form (published form on a Routing Forms plan)
-SELECT uri, event,
+SELECT uri,
        tracking__utm_source,
        tracking__utm_campaign,
+       tracking__utm_content,
+       tracking__utm_term,
        created_at
 FROM calendly.routing_form_submissions(form_uuid => 'AAAAAAAAAAAAAAAA')
 ORDER BY created_at DESC;
-
--- Submissions that resulted in a booking (rs.event is non-null)
-SELECT rs.uri AS submission_uri,
-       rs.event AS booked_event_uri,
-       rs.tracking__utm_source,
-       se.name AS event_name,
-       se.start_time
-FROM calendly.routing_form_submissions(form_uuid => 'AAAAAAAAAAAAAAAA') rs
-JOIN calendly.scheduled_events se ON se.uri = rs.event
-WHERE se.min_start_time = '2025-01-01T00:00:00Z'
-  AND se.max_start_time = '2026-12-31T23:59:59Z';
 
 -- Webhook subscriptions (paid plan + owner/admin token; empty if none configured)
 SELECT callback_url, state, scope, events, created_at
@@ -234,11 +225,11 @@ WHERE status = 'pending'
 ORDER BY created_at DESC;
 
 -- Hosts for one event (from event_memberships on GET /scheduled_events/{uuid})
-SELECT user, user_email, role, buffered_start_time, buffered_end_time
+SELECT user, user_email, user_name, buffered_start_time, buffered_end_time
 FROM calendly.scheduled_event_hosts(event_uuid => 'AAAAAAAAAAAAAAAA');
 
 -- Hosts enriched with org membership (join user URI columns)
-SELECT h.user_email, h.role, m.user__name, m.user__timezone
+SELECT h.user_email, h.user_name, m.role, m.user__timezone
 FROM calendly.scheduled_event_hosts(event_uuid => 'AAAAAAAAAAAAAAAA') h
 JOIN calendly.organization_memberships m ON m.user__uri = h.user;
 ```
@@ -288,10 +279,15 @@ empty result set even on a paid plan with `webhooks:read` granted.
 `GET /routing_form_submissions` with the `form` query parameter set to the full
 routing form URI (Coral builds that URI from `form_uuid`). The form must be
 **published** (not `draft`), and submissions appear after someone completes the
-public form.
+public form. Tracking columns include `tracking__utm_source`, `tracking__utm_medium`,
+`tracking__utm_campaign`, `tracking__utm_content`, `tracking__utm_term`, and
+`tracking__salesforce_uuid`. The API also returns `submitter` and `submitter_type`
+when a submission results in a booking; those fields are not mapped in this source
+yet, so join to `scheduled_events` via invitee or webhook workflows instead.
 
 **`questions_and_answers` columns.** Both `event_invitees` and
 `routing_form_submissions` expose a `questions_and_answers` column of type
-`Json`. Use the built-in JSON functions to extract individual answers, for
-example `json_get_str(questions_and_answers, '0', 'answer')` for the first
-question's answer.
+`Json`. Invitee booking Q&A elements have `question`, `answer`, and `position`.
+Routing form submission Q&A elements also include `question_uuid`. Use the built-in
+JSON functions to extract individual answers, for example
+`json_get_str(questions_and_answers, '0', 'answer')` for the first question's answer.
