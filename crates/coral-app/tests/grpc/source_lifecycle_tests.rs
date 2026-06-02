@@ -9,9 +9,11 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceOrigin,
-    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
-    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
+    ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
+    QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
+    SourceVariable, ValidateSourceRequest, Workspace, catalog_item, import_source_response,
+    query_test_result, source_credential_method::Method as ProtoCredentialMethod,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
@@ -36,6 +38,10 @@ async fn import_source_persists_and_lists() {
     assert_eq!(added.name, "local_messages");
     assert_eq!(added.version, "0.1.0");
     assert_eq!(added.origin, SourceOrigin::Imported as i32);
+    assert_eq!(
+        added.credential_storage,
+        SourceCredentialStorage::Unspecified as i32
+    );
     assert!(added.variables.is_empty());
     assert!(added.secrets.is_empty());
 
@@ -43,6 +49,7 @@ async fn import_source_persists_and_lists() {
         fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(config_raw.contains("[workspaces.default.sources.local_messages]"));
     assert!(config_raw.contains("secrets = []"));
+    assert!(!config_raw.contains("credential_storage"));
     assert!(!config_raw.contains("credential_set_id"));
     assert!(!config_raw.contains("[workspaces.default.credentials"));
     assert!(!config_raw.contains("manifest_yaml = "));
@@ -58,6 +65,10 @@ async fn import_source_persists_and_lists() {
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "local_messages");
+    assert_eq!(
+        listed[0].credential_storage,
+        SourceCredentialStorage::Unspecified as i32
+    );
 }
 
 #[tokio::test]
@@ -98,6 +109,10 @@ async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     assert_eq!(fetched.name, "secured_messages");
     assert_eq!(fetched.version, "0.1.0");
     assert_eq!(fetched.origin, SourceOrigin::Imported as i32);
+    assert_eq!(
+        fetched.credential_storage,
+        SourceCredentialStorage::File as i32
+    );
     assert_eq!(fetched.variables, imported.variables);
     assert_eq!(fetched.secrets, imported.secrets);
 }
@@ -808,12 +823,90 @@ async fn get_source_info_returns_available_bundled_metadata() {
     assert_eq!(info.name, "github");
     assert_eq!(info.origin, SourceOrigin::Bundled as i32);
     assert!(!info.installed);
+    assert_eq!(
+        info.credential_storage,
+        SourceCredentialStorage::Unspecified as i32
+    );
     assert!(!info.description.is_empty());
     assert!(!info.version.is_empty());
     assert!(
         info.inputs.iter().any(|input| input.key == "GITHUB_TOKEN"),
         "expected bundled manifest inputs"
     );
+}
+
+#[tokio::test]
+async fn get_source_info_returns_sentry_oauth_credential_metadata() {
+    let harness = GrpcHarness::new().await;
+
+    let info = harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: "sentry".to_string(),
+        }))
+        .await
+        .expect("get source info")
+        .into_inner()
+        .source_info
+        .expect("get source info response");
+
+    let token = info
+        .inputs
+        .iter()
+        .find(|input| input.key == "SENTRY_TOKEN")
+        .expect("SENTRY_TOKEN input");
+    let secret = match token.input.as_ref().expect("input metadata") {
+        ProtoSourceInput::Secret(secret) => secret,
+        ProtoSourceInput::Variable(_) => panic!("expected secret input"),
+    };
+    let credential = secret.credential.as_ref().expect("credential metadata");
+    assert_eq!(credential.methods.len(), 2);
+
+    let oauth_method = &credential.methods[0];
+    let oauth = match oauth_method.method.as_ref().expect("oauth method") {
+        ProtoCredentialMethod::Oauth(oauth) => oauth,
+        ProtoCredentialMethod::SourceConfig(_) => panic!("expected oauth method"),
+    };
+    assert_eq!(oauth.flow(), OauthCredentialFlowType::DeviceCode);
+    assert!(oauth.redirect_uri.is_empty());
+    let endpoints = oauth.endpoints.as_ref().expect("oauth endpoints");
+    assert_eq!(
+        endpoints.device_authorization_url,
+        "https://sentry.io/oauth/device/code/"
+    );
+    assert!(endpoints.authorization_url.is_empty());
+    assert_eq!(endpoints.token_url, "https://sentry.io/oauth/token/");
+    let client = oauth.client.as_ref().expect("oauth client");
+    assert_eq!(
+        client.id.as_ref().expect("oauth client id").input,
+        "SENTRY_OAUTH_CLIENT_ID"
+    );
+    assert!(client.secret.is_none());
+    let scope = oauth
+        .scopes
+        .as_ref()
+        .expect("oauth scopes")
+        .scope
+        .as_ref()
+        .expect("oauth scope");
+    assert_eq!(scope.delimiter(), OauthCredentialScopeDelimiter::Space);
+    assert_eq!(
+        scope.values,
+        vec![
+            "org:read".to_string(),
+            "event:read".to_string(),
+            "member:read".to_string(),
+            "project:read".to_string(),
+            "project:releases".to_string(),
+            "team:read".to_string()
+        ]
+    );
+
+    assert!(matches!(
+        credential.methods[1].method.as_ref(),
+        Some(ProtoCredentialMethod::SourceConfig(_))
+    ));
 }
 
 #[tokio::test]
@@ -850,6 +943,10 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     assert_eq!(info.version, "0.1.0");
     assert_eq!(info.origin, SourceOrigin::Imported as i32);
     assert!(info.installed);
+    assert_eq!(
+        info.credential_storage,
+        SourceCredentialStorage::File as i32
+    );
     assert_eq!(info.inputs.len(), 2);
     assert_eq!(info.inputs[0].key, "API_BASE");
     match info.inputs[0].input.as_ref().expect("input metadata") {

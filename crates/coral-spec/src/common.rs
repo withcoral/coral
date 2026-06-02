@@ -426,6 +426,9 @@ pub enum ValueSourceSpec {
     Template {
         template: ParsedTemplate,
     },
+    OneOf {
+        values: Vec<ValueSourceSpec>,
+    },
     Literal {
         value: Value,
     },
@@ -480,6 +483,9 @@ pub enum ValueSourceSpec {
         part: usize,
     },
     Input {
+        key: String,
+    },
+    Bearer {
         key: String,
     },
     State {

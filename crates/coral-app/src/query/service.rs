@@ -35,7 +35,7 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
-        instrument_grpc(span, async move {
+        Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let execution = queries
@@ -52,7 +52,7 @@ impl QueryServiceApi for QueryService {
                 row_count: i64::try_from(execution.row_count()).unwrap_or(i64::MAX),
             };
             Ok(Response::new(response))
-        })
+        }))
         .await
     }
 
@@ -62,7 +62,7 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExplainSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
-        instrument_grpc(span, async move {
+        Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let plan = queries
@@ -72,7 +72,7 @@ impl QueryServiceApi for QueryService {
             Ok(Response::new(ExplainSqlResponse {
                 plan: Some(query_plan_to_proto(&plan)),
             }))
-        })
+        }))
         .await
     }
 }

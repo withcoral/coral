@@ -67,6 +67,37 @@ tables:
     }
 
     #[test]
+    fn validate_manifest_schema_accepts_one_of_bearer_auth_headers() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+        - from: input
+          key: API_KEY
+        - from: bearer
+          key: OAUTH_TOKEN
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("one_of bearer auth header should pass schema validation");
+    }
+
+    #[test]
     fn validate_manifest_schema_accepts_legacy_search_filter_mode() {
         let manifest = manifest_json(
             r"
@@ -329,6 +360,54 @@ tables:
         assert_eq!(
             error.to_string(),
             "source manifest failed schema validation:\n  /tables/0/request/path: \"\" is shorter than 1 character"
+        );
+    }
+
+    fn mcp_streamable_http_manifest(auth_yaml: &str) -> String {
+        format!(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+inputs:
+  MCP_TOKEN:
+    kind: secret
+server:
+  transport: streamable_http
+  url: https://mcp.example.com/mcp
+  auth:
+{auth_yaml}
+tables:
+  - name: hello
+    tool: hello
+    columns:
+      - name: id
+        type: Utf8
+"
+        )
+    }
+
+    #[test]
+    fn validate_manifest_schema_accepts_mcp_streamable_http_bearer_auth_from_input() {
+        let manifest = manifest_json(&mcp_streamable_http_manifest(
+            "    type: bearer\n    from: input\n    key: MCP_TOKEN\n",
+        ));
+        validate_manifest_schema(&manifest)
+            .expect("MCP bearer auth from a declared input must pass schema validation");
+    }
+
+    #[test]
+    fn validate_manifest_schema_rejects_mcp_streamable_http_bearer_auth_from_literal() {
+        let manifest = manifest_json(&mcp_streamable_http_manifest(
+            "    type: bearer\n    from: literal\n    value: Bearer hardcoded\n",
+        ));
+        let error = validate_manifest_schema(&manifest)
+            .expect_err("MCP bearer auth from a literal must fail schema validation");
+        let message = error.to_string();
+        assert!(
+            message.contains("/server"),
+            "expected error location to point at the server subtree, got: {message}"
         );
     }
 }

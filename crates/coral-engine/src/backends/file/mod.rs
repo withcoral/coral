@@ -21,8 +21,8 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
+    RegisteredSource, RegisteredTable, build_registered_inputs, build_registered_table,
     registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
@@ -74,7 +74,11 @@ impl CompiledBackendSource for FileCompiledSource {
         &self.manifest.common.name
     }
 
-    async fn register(&self, ctx: &SessionContext) -> Result<BackendRegistration> {
+    async fn register(
+        &self,
+        ctx: &SessionContext,
+        _registration: &BackendRegistrationContext,
+    ) -> Result<BackendRegistration> {
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
         let resolved_inputs = coral_spec::resolve_inputs(
