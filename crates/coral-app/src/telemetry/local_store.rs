@@ -575,6 +575,8 @@ impl TraceStore {
             &mut spans_by_id,
             &mut traces,
         )?;
+        // `page_trace_ids` already capped the page at `limit`, so the filtered
+        // set is bounded — no second `take(limit)` needed.
         let mut summaries = traces
             .into_values()
             .filter(|aggregate| page_trace_ids.contains(&aggregate.trace_id))
@@ -582,7 +584,7 @@ impl TraceStore {
             .collect::<Vec<_>>();
         sort_summaries(&mut summaries);
 
-        Ok(summaries.into_iter().take(limit).collect())
+        Ok(summaries)
     }
 
     fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
@@ -849,30 +851,55 @@ fn list_page_is_newer_than_unscanned_files(
         return false;
     }
 
+    // Only the element at the page boundary is needed, so partition around it
+    // in O(n) instead of fully sorting.
     let mut aggregates = traces.values().collect::<Vec<_>>();
-    sort_trace_aggregates(&mut aggregates);
-    aggregates
-        .get(required_trace_count - 1)
-        .is_some_and(|aggregate| {
-            aggregate.end_time_unix_nanos > newest_unscanned_span_end_upper_bound_unix_nanos
-        })
+    let boundary = required_trace_count - 1;
+    let (_, nth, _) = aggregates.select_nth_unstable_by(boundary, |left, right| {
+        trace_recency_ordering(
+            left.end_time_unix_nanos,
+            &left.trace_id,
+            right.end_time_unix_nanos,
+            &right.trace_id,
+        )
+    });
+    nth.end_time_unix_nanos > newest_unscanned_span_end_upper_bound_unix_nanos
+}
+
+/// Orders traces newest-first by end time, breaking ties by trace id ascending.
+/// The list-page aggregate ordering and the returned summary ordering must
+/// agree (and match the page-boundary check above), so all three go through
+/// this one comparator.
+fn trace_recency_ordering(
+    left_end: i64,
+    left_trace_id: &str,
+    right_end: i64,
+    right_trace_id: &str,
+) -> std::cmp::Ordering {
+    right_end
+        .cmp(&left_end)
+        .then_with(|| left_trace_id.cmp(right_trace_id))
 }
 
 fn sort_trace_aggregates(aggregates: &mut [&TraceListAggregate]) {
     aggregates.sort_by(|left, right| {
-        right
-            .end_time_unix_nanos
-            .cmp(&left.end_time_unix_nanos)
-            .then_with(|| left.trace_id.cmp(&right.trace_id))
+        trace_recency_ordering(
+            left.end_time_unix_nanos,
+            &left.trace_id,
+            right.end_time_unix_nanos,
+            &right.trace_id,
+        )
     });
 }
 
 fn sort_summaries(summaries: &mut [TraceSummaryRecord]) {
     summaries.sort_by(|left, right| {
-        right
-            .end_time_unix_nanos
-            .cmp(&left.end_time_unix_nanos)
-            .then_with(|| left.trace_id.cmp(&right.trace_id))
+        trace_recency_ordering(
+            left.end_time_unix_nanos,
+            &left.trace_id,
+            right.end_time_unix_nanos,
+            &right.trace_id,
+        )
     });
 }
 

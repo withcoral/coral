@@ -1495,15 +1495,10 @@ fn validate_loopback_http_redirect(url: &Url) -> Result<(), anyhow::Error> {
     if url.scheme() != "http" {
         return Err(anyhow::anyhow!("redirect URL must use http"));
     }
-    let Some(host) = url.host() else {
+    if url.host().is_none() {
         return Err(anyhow::anyhow!("redirect URL is missing host"));
-    };
-    let is_loopback = match host {
-        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
-        Host::Ipv4(addr) => addr.is_loopback(),
-        Host::Ipv6(addr) => addr.is_loopback(),
-    };
-    if !is_loopback {
+    }
+    if !coral_spec::is_loopback_url(url) {
         return Err(anyhow::anyhow!("redirect URL host must be loopback"));
     }
     if url.port_or_known_default().is_none() {

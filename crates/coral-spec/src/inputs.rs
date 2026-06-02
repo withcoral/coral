@@ -187,22 +187,11 @@ fn render_oauth_endpoint_url(
 }
 
 fn validate_oauth_provider_endpoint_url(context: &str, raw: &str) -> Result<()> {
-    let url = Url::parse(raw)
-        .map_err(|error| ManifestError::validation(format!("{context} is invalid: {error}")))?;
-    validate_oauth_provider_endpoint_scheme(context, &url)
+    crate::validate_https_or_loopback_url(context, raw).map_err(ManifestError::validation)
 }
 
 fn validate_oauth_provider_endpoint_scheme(context: &str, url: &Url) -> Result<()> {
-    match url.scheme() {
-        "https" => Ok(()),
-        "http" if is_loopback_oauth_provider_endpoint(url) => Ok(()),
-        "http" => Err(ManifestError::validation(format!(
-            "{context} must use https unless it targets localhost"
-        ))),
-        scheme => Err(ManifestError::validation(format!(
-            "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
-        ))),
-    }
+    crate::validate_https_or_loopback_scheme(context, url).map_err(ManifestError::validation)
 }
 
 fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &str) -> Result<()> {
@@ -218,15 +207,6 @@ fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &
         scheme => Err(ManifestError::validation(format!(
             "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
         ))),
-    }
-}
-
-fn is_loopback_oauth_provider_endpoint(url: &Url) -> bool {
-    match url.host() {
-        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
-        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
-        None => false,
     }
 }
 

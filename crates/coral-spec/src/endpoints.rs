@@ -57,36 +57,18 @@ impl ValidatedSourceManifest {
                 continue;
             };
             for method in &credential.methods {
-                if let Some(oauth) = method.oauth.as_ref() {
-                    if let Some(authorization_url) = oauth.authorization_url.as_deref() {
-                        collect_host(
-                            &mut hosts,
-                            &render_string_template_with_input_values(
-                                authorization_url,
-                                inputs,
-                                source_inputs,
-                            ),
-                        );
-                    }
-                    if let Some(device_authorization_url) =
-                        oauth.device_authorization_url.as_deref()
-                    {
-                        collect_host(
-                            &mut hosts,
-                            &render_string_template_with_input_values(
-                                device_authorization_url,
-                                inputs,
-                                source_inputs,
-                            ),
-                        );
-                    }
+                let Some(oauth) = method.oauth.as_ref() else {
+                    continue;
+                };
+                let endpoint_urls = [
+                    oauth.authorization_url.as_deref(),
+                    oauth.device_authorization_url.as_deref(),
+                    Some(oauth.token_url.as_str()),
+                ];
+                for url in endpoint_urls.into_iter().flatten() {
                     collect_host(
                         &mut hosts,
-                        &render_string_template_with_input_values(
-                            &oauth.token_url,
-                            inputs,
-                            source_inputs,
-                        ),
+                        &render_string_template_with_input_values(url, inputs, source_inputs),
                     );
                 }
             }

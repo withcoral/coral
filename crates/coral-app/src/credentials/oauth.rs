@@ -1151,27 +1151,7 @@ fn validate_device_verification_url(field: &str, raw: &str) -> Result<(), AppErr
 }
 
 fn validate_oauth_https_or_loopback_url(context: &str, raw: &str) -> Result<(), AppError> {
-    let url = Url::parse(raw)
-        .map_err(|error| AppError::FailedPrecondition(format!("{context} is invalid: {error}")))?;
-    match url.scheme() {
-        "https" => Ok(()),
-        "http" if is_loopback_url(&url) => Ok(()),
-        "http" => Err(AppError::FailedPrecondition(format!(
-            "{context} must use https unless it targets localhost"
-        ))),
-        scheme => Err(AppError::FailedPrecondition(format!(
-            "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
-        ))),
-    }
-}
-
-fn is_loopback_url(url: &Url) -> bool {
-    match url.host() {
-        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
-        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
-        None => false,
-    }
+    coral_spec::validate_https_or_loopback_url(context, raw).map_err(AppError::FailedPrecondition)
 }
 
 fn parse_token_response(body: &str) -> Result<TokenResponse, AppError> {

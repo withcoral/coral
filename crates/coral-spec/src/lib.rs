@@ -85,6 +85,7 @@ mod loader;
 mod parser;
 mod schema;
 mod template;
+mod url_policy;
 mod validate;
 
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
@@ -115,6 +116,9 @@ pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
+pub use url_policy::{
+    is_loopback_url, validate_https_or_loopback_scheme, validate_https_or_loopback_url,
+};
 pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, validate_columns,
     validate_declared_relation_namespace, validate_detail_hint_references,
