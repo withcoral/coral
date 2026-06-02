@@ -1,5 +1,5 @@
 ---
-source: xtask/src/render.rs
+source: xtask/src/docs/render.rs
 assertion_line: 492
 expression: changelog_page(raw)
 ---
