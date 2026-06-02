@@ -435,7 +435,7 @@ fn validate_detail_hints(
 fn validate_filter_capabilities(filter: &FilterSpec) -> Result<()> {
     if filter.bindable && filter.mode != FilterMode::Equality {
         return Err(ManifestError::validation(format!(
-            "filter '{}': bindable=true requires mode=equality in V1",
+            "filter '{}': bindable=true requires mode=equality",
             filter.name
         )));
     }
@@ -1854,7 +1854,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("filter 'q': bindable=true requires mode=equality in V1")
+                    .contains("filter 'q': bindable=true requires mode=equality")
             );
         }
     }
