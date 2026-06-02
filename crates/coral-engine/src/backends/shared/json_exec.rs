@@ -251,7 +251,7 @@ mod tests {
         Arc::new(move |items: &[Value]| {
             let values: Int32Array = items
                 .iter()
-                .map(|value| value.as_i64().map(|n| n as i32))
+                .map(|value| value.as_i64().and_then(|n| i32::try_from(n).ok()))
                 .collect();
             RecordBatch::try_new(schema.clone(), vec![Arc::new(values) as Arc<dyn Array>]).map_err(
                 |error| datafusion::error::DataFusionError::ArrowError(Box::new(error), None),
