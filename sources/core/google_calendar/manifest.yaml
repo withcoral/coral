@@ -1,5 +1,5 @@
 name: google_calendar
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
