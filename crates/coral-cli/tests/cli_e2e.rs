@@ -20,6 +20,7 @@ use coral_api::v1::{
     DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, Source,
     SourceCredentialStorage, SourceInfo, SourceOrigin,
 };
+use tempfile::tempdir;
 use tonic::Code;
 
 use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
@@ -733,6 +734,61 @@ async fn source_add_rejects_name_and_file_together() {
     assert!(
         stderr.contains("cannot be used with"),
         "expected clap conflict error: {stderr}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let openapi_file = source_dir.path().join("openapi.yaml");
+    std::fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+paths: {}
+",
+    )
+    .expect("write descriptor");
+    let manifest_file = source_dir.path().join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: openapi.yaml
+",
+    )
+    .expect("write manifest");
+
+    server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+        ])
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    let manifest_yaml = &requests[0].manifest_yaml;
+    let canonical = openapi_file.canonicalize().expect("canonical descriptor");
+    let canonical = canonical.to_string_lossy();
+    assert!(
+        manifest_yaml.contains(canonical.as_ref()),
+        "expected import manifest to contain canonical descriptor path '{canonical}', got: {manifest_yaml}"
+    );
+    assert!(
+        !manifest_yaml.contains("file: openapi.yaml"),
+        "expected relative descriptor to be replaced before import: {manifest_yaml}"
     );
 
     server.shutdown().await;

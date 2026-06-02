@@ -1122,6 +1122,14 @@ impl MockServer {
             .clone()
     }
 
+    pub(crate) fn import_source_requests(&self) -> Vec<ImportSourceRequest> {
+        self.captured
+            .import_source
+            .lock()
+            .expect("import_source capture")
+            .clone()
+    }
+
     pub(crate) fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
     }

@@ -564,21 +564,26 @@ fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
 }
 
 pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppError> {
-    if std::fs::symlink_metadata(file)?.file_type().is_symlink() {
+    if !file.is_absolute() {
+        return Err(AppError::InvalidInput(format!(
+            "OpenAPI descriptor '{}' is relative, but imported DSL v4 manifests must use absolute file descriptors. Use `coral source add --file <manifest>` so Coral can resolve relative descriptors from the manifest directory.",
+            file.display()
+        )));
+    }
+    let metadata = std::fs::symlink_metadata(file)?;
+    if metadata.file_type().is_symlink() {
         return Err(AppError::FailedPrecondition(format!(
             "OpenAPI descriptor '{}' must not be a symlink",
             file.display()
         )));
     }
-    let canonical = file.canonicalize()?;
-    let current_dir = std::env::current_dir()?.canonicalize()?;
-    if !canonical.starts_with(&current_dir) {
+    if !metadata.file_type().is_file() {
         return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor '{}' must be under the current working directory '{}'",
-            file.display(),
-            current_dir.display()
+            "OpenAPI descriptor '{}' must be a regular file",
+            file.display()
         )));
     }
+    let canonical = file.canonicalize()?;
     Ok(canonical)
 }
 
@@ -833,15 +838,7 @@ paths:
     }
 
     fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
-        let descriptor_root = std::env::current_dir()
-            .expect("cwd")
-            .join("target")
-            .join("v4-materialization-tests");
-        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
-        let descriptor_temp = tempfile::Builder::new()
-            .prefix("descriptor-")
-            .tempdir_in(descriptor_root)
-            .expect("descriptor temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("openapi.yaml");
         std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
 

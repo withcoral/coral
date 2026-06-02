@@ -657,15 +657,7 @@ tables:
             fixture.manager.layout.clone(),
         );
         let workspace_name = WorkspaceName::default();
-        let descriptor_root = std::env::current_dir()
-            .expect("cwd")
-            .join("target")
-            .join("v4-query-fixtures");
-        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
-        let descriptor_temp = tempfile::Builder::new()
-            .prefix("github-v4-query-")
-            .tempdir_in(descriptor_root)
-            .expect("descriptor temp dir");
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(
             &openapi_file,

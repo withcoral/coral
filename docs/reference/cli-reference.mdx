@@ -118,9 +118,21 @@ Add a custom source spec from a YAML file. Input values come from environment va
 coral source add --file ./local-messages.yaml
 ```
 
+For DSL v4 OpenAPI surfaces, `file:` descriptors may be absolute paths or
+paths relative to the manifest file's directory. Coral resolves relative
+descriptor paths during `source add --file` and stores the canonical absolute
+path in the imported manifest, so descriptor resolution does not depend on the
+directory from which the Coral app server was launched. Absolute descriptor
+paths are used directly after canonicalization. Local OpenAPI descriptors must
+be readable regular files and must not be symlinks.
+
 ### `coral source lint <FILE>`
 
-Validate a source spec YAML file without installing it. Checks YAML syntax, JSON schema conformance, and semantic rules such as duplicate columns or references to unknown filters.
+Validate a source spec YAML file without installing it. Checks YAML syntax, JSON
+schema conformance, and semantic rules such as duplicate columns or references
+to unknown filters. For DSL v4 manifests, it resolves local OpenAPI `file:`
+descriptors from the manifest directory using the same path policy as
+`source add --file`.
 
 ```shellscript
 coral source lint ./my-source.yaml

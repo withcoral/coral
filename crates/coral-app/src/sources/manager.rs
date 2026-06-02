@@ -1392,6 +1392,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
+    use std::path::Path;
     use std::sync::mpsc as std_mpsc;
     use std::thread;
     use std::time::Duration;
@@ -1671,15 +1672,7 @@ tables:
     #[test]
     fn import_v4_source_writes_materialized_artifacts() {
         let temp = TempDir::new().expect("temp dir");
-        let descriptor_root = std::env::current_dir()
-            .expect("cwd")
-            .join("target")
-            .join("v4-test-fixtures");
-        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
-        let descriptor_temp = tempfile::Builder::new()
-            .prefix("github-v4-")
-            .tempdir_in(descriptor_root)
-            .expect("descriptor temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
@@ -1720,68 +1713,39 @@ tables:
     }
 
     #[test]
-    fn import_v4_source_persists_relative_descriptor_as_absolute_path() {
+    fn import_v4_source_rejects_unresolved_relative_descriptor() {
         let temp = TempDir::new().expect("temp dir");
-        let cwd = std::env::current_dir().expect("cwd");
-        let descriptor_root = cwd.join("target").join("v4-test-fixtures");
-        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
-        let descriptor_temp = tempfile::Builder::new()
-            .prefix("github-v4-relative-")
-            .tempdir_in(descriptor_root)
-            .expect("descriptor temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
-        let relative_openapi_file = openapi_file
-            .strip_prefix(&cwd)
-            .expect("fixture under cwd")
-            .to_path_buf();
         let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
-            layout.clone(),
+            layout,
         );
 
-        manager
+        let error = manager
             .import_source(
                 &default_workspace(),
                 &ImportSourceCommand {
-                    manifest_yaml: manifest_v4_with_file_descriptor(&relative_openapi_file),
+                    manifest_yaml: manifest_v4_with_file_descriptor(Path::new("openapi.yaml")),
                     bindings: SourceBindings::default(),
                 },
             )
-            .expect("import v4 source");
+            .expect_err("raw relative descriptors should fail in app import");
 
-        let source_name = SourceName::parse("github_v4_test").expect("source");
-        let stored_manifest =
-            std::fs::read_to_string(layout.manifest_file(&default_workspace(), &source_name))
-                .expect("stored manifest");
         assert!(
-            stored_manifest.contains(
-                openapi_file
-                    .canonicalize()
-                    .expect("canonical openapi")
-                    .to_string_lossy()
-                    .as_ref()
-            ),
-            "expected stored manifest to contain canonical descriptor path: {stored_manifest}"
+            error
+                .to_string()
+                .contains("imported DSL v4 manifests must use absolute file descriptors"),
+            "unexpected error: {error}"
         );
     }
 
     #[test]
     fn import_v4_source_preserves_intent_yaml_without_openapi_metadata() {
         let temp = TempDir::new().expect("temp dir");
-        let descriptor_root = std::env::current_dir()
-            .expect("cwd")
-            .join("target")
-            .join("v4-test-fixtures");
-        std::fs::create_dir_all(&descriptor_root).expect("descriptor root");
-        let descriptor_temp = tempfile::Builder::new()
-            .prefix("github-v4-metadata-")
-            .tempdir_in(descriptor_root)
-            .expect("descriptor temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
