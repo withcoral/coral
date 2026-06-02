@@ -8,9 +8,11 @@ use coral_api::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
         DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, Source, Table, TableFunction, TableFunctionArgument,
-        TableFunctionResultColumn, TableSummary, ValidateSourceResponse, Workspace, catalog_item,
-        query_test_result,
+        QueryTestResult, QueryTestSuccess, Source, Table,
+        TableColumnPreview as ProtoTableColumnPreview,
+        TableColumnPreviewColumn as ProtoTableColumnPreviewColumn, TableFunction,
+        TableFunctionArgument, TableFunctionResultColumn, TableSummary, ValidateSourceResponse,
+        Workspace, catalog_item, query_test_result,
     },
 };
 use opentelemetry::propagation::Extractor;
@@ -24,7 +26,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::{AppError, app_status, core_status};
 use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
-    ColumnSearchResult, DescribeTableResult,
+    ColumnSearchResult, DescribeTableResult, TableColumnPreview, TableColumnPreviewColumn,
 };
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
@@ -312,6 +314,38 @@ pub(crate) fn catalog_search_result_to_proto(
             .matched_fields
             .into_iter()
             .map(CatalogMetadataField::as_proto_name)
+            .map(str::to_string)
+            .collect(),
+        table_column_preview: result
+            .table_column_preview
+            .map(table_column_preview_to_proto),
+    }
+}
+
+fn table_column_preview_to_proto(preview: TableColumnPreview) -> ProtoTableColumnPreview {
+    ProtoTableColumnPreview {
+        column_count: preview.column_count,
+        columns: preview
+            .columns
+            .into_iter()
+            .map(table_column_preview_column_to_proto)
+            .collect(),
+        omitted_column_count: preview.omitted_column_count,
+    }
+}
+
+fn table_column_preview_column_to_proto(
+    preview: TableColumnPreviewColumn,
+) -> ProtoTableColumnPreviewColumn {
+    ProtoTableColumnPreviewColumn {
+        name: preview.column.name,
+        data_type: preview.column.data_type,
+        is_required_filter: preview.column.is_required_filter,
+        description: preview.column.description,
+        matched_fields: preview
+            .matched_fields
+            .into_iter()
+            .map(ColumnMetadataField::as_proto_name)
             .map(str::to_string)
             .collect(),
     }

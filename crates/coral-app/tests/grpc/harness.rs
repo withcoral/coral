@@ -322,6 +322,46 @@ pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
     }))
 }
 
+pub(crate) fn fixture_manifest_with_column_preview_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "preview_source",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "records",
+            "description": "Preview records",
+            "request": {
+                "method": "GET",
+                "path": "/records",
+                "query": [
+                    { "name": "owner", "from": "filter", "key": "owner" },
+                    { "name": "repo", "from": "filter", "key": "repo" },
+                ],
+            },
+            "response": {},
+            "columns": [
+                { "name": "owner", "type": "Utf8", "description": "Owner filter" },
+                { "name": "repo", "type": "Utf8", "description": "Repository filter" },
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "status", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" },
+                { "name": "html_url", "type": "Utf8" },
+                { "name": "user_login", "type": "Utf8" },
+                { "name": "created_at", "type": "Timestamp" },
+                { "name": "body", "type": "Utf8", "description": "Needle text body" },
+                { "name": "updated_at", "type": "Timestamp" },
+            ],
+            "filters": [
+                { "name": "owner", "required": true },
+                { "name": "repo", "required": true },
+            ],
+        }],
+    }))
+}
+
 pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
     manifest_yaml(&json!({
         "name": "searchy",

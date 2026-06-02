@@ -11,8 +11,9 @@ use coral_client::default_workspace;
 use tonic::Request;
 
 use super::harness::{
-    GrpcHarness, fixture_manifest_with_functions_yaml, fixture_manifest_with_multiple_tables_yaml,
-    fixture_manifest_with_required_filter_yaml, fixture_manifest_with_search_ranking_yaml,
+    GrpcHarness, fixture_manifest_with_column_preview_yaml, fixture_manifest_with_functions_yaml,
+    fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_filter_yaml,
+    fixture_manifest_with_search_ranking_yaml,
 };
 
 fn search_result_item_name(result: &coral_api::v1::CatalogSearchResult) -> &str {
@@ -295,6 +296,90 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
             catalog_item::Item::TableFunction(_)
         )
     }));
+}
+
+#[tokio::test]
+async fn search_catalog_includes_compact_table_column_preview() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_column_preview_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "preview|needle".to_string(),
+            ignore_case: true,
+            schema_name: "preview_source".to_string(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("search catalog with preview")
+        .into_inner();
+
+    assert_eq!(response.items.len(), 1);
+    let result = &response.items[0];
+    assert!(
+        result
+            .matched_fields
+            .iter()
+            .any(|field| field == "description")
+    );
+    assert!(
+        result.matched_fields.iter().any(|field| field == "columns"),
+        "ordinary table column matches should be reported as catalog matches"
+    );
+    let table = match result
+        .item
+        .as_ref()
+        .expect("search result")
+        .item
+        .as_ref()
+        .expect("catalog item")
+    {
+        catalog_item::Item::Table(table) => table,
+        catalog_item::Item::TableFunction(_) => panic!("expected table"),
+    };
+    assert_eq!(table.name, "records");
+
+    let preview = result
+        .table_column_preview
+        .as_ref()
+        .expect("table search result should include a compact preview");
+    assert_eq!(preview.column_count, 11);
+    assert_eq!(preview.columns.len(), 8);
+    assert_eq!(preview.omitted_column_count, 3);
+    assert_eq!(
+        preview
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "owner", "repo", "id", "title", "status", "state", "html_url", "body"
+        ]
+    );
+    assert!(preview.columns[0].is_required_filter);
+    assert!(preview.columns[1].is_required_filter);
+    let body = preview
+        .columns
+        .iter()
+        .find(|column| column.name == "body")
+        .expect("matched body column should survive the cap");
+    assert!(
+        body.matched_fields
+            .iter()
+            .any(|field| field == "description")
+    );
 }
 
 #[tokio::test]

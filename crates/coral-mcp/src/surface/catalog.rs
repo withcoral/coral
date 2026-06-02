@@ -1,6 +1,7 @@
 use coral_api::v1::{
     ColumnSearchResult, DescribeTableResponse, ListCatalogResponse, ListColumnsResponse,
-    SearchCatalogResponse, Table as ProtoTable, TableFunction as ProtoTableFunction,
+    SearchCatalogResponse, Table as ProtoTable,
+    TableColumnPreviewColumn as ProtoTableColumnPreviewColumn, TableFunction as ProtoTableFunction,
     TableFunctionArgument as ProtoTableFunctionArgument,
     TableFunctionResultColumn as ProtoTableFunctionResultColumn, TableSummary as ProtoTableSummary,
     catalog_item,
@@ -136,6 +137,28 @@ fn minimal_table_function_call_example(function: &ProtoTableFunction) -> String 
 
 fn catalog_search_result_value(result: &coral_api::v1::CatalogSearchResult) -> Option<Value> {
     let mut value = catalog_item_value(result.item.as_ref()?)?;
+    if let Some(preview) = &result.table_column_preview {
+        let table = value.get_mut("table")?.as_object_mut()?;
+        table.insert(
+            "column_count".to_string(),
+            Value::from(preview.column_count),
+        );
+        table.insert(
+            "column_preview".to_string(),
+            serde_json::to_value(
+                preview
+                    .columns
+                    .iter()
+                    .map(TableColumnPreviewColumnValue::from)
+                    .collect::<Vec<_>>(),
+            )
+            .ok()?,
+        );
+        table.insert(
+            "omitted_column_count".to_string(),
+            Value::from(preview.omitted_column_count),
+        );
+    }
     value.as_object_mut()?.insert(
         "matched_fields".to_string(),
         serde_json::to_value(&result.matched_fields).ok()?,
@@ -272,6 +295,27 @@ struct CatalogTableValue<'a> {
     table_name: &'a str,
     guide: &'a str,
     required_filters: &'a [String],
+}
+
+#[derive(Serialize)]
+struct TableColumnPreviewColumnValue<'a> {
+    column_name: &'a str,
+    data_type: &'a str,
+    is_required_filter: bool,
+    description: &'a str,
+    matched_fields: &'a [String],
+}
+
+impl<'a> From<&'a ProtoTableColumnPreviewColumn> for TableColumnPreviewColumnValue<'a> {
+    fn from(column: &'a ProtoTableColumnPreviewColumn) -> Self {
+        Self {
+            column_name: &column.name,
+            data_type: &column.data_type,
+            is_required_filter: column.is_required_filter,
+            description: &column.description,
+            matched_fields: &column.matched_fields,
+        }
+    }
 }
 
 #[derive(Serialize)]

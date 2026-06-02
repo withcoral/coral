@@ -434,6 +434,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         "local_messages.events"
     );
     assert_eq!(catalog["items"][0]["table"]["table_name"], "events");
+    assert!(catalog["items"][0]["table"]["column_preview"].is_null());
     assert_matches_output_schema(list_catalog_tool, &catalog);
 
     let catalog_page = client
@@ -518,6 +519,12 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         search["items"][0]["table"]["guide"].is_string(),
         "search results should always expose guide text, even when empty"
     );
+    assert_eq!(search["items"][0]["table"]["column_count"], 3);
+    assert_eq!(
+        search["items"][0]["table"]["column_preview"][0]["column_name"],
+        "sessionId"
+    );
+    assert_eq!(search["items"][0]["table"]["omitted_column_count"], 2);
     assert!(
         search["items"][0]["matched_fields"]
             .as_array()
@@ -831,6 +838,7 @@ async fn list_catalog_surfaces_table_functions() {
     );
     assert_eq!(catalog["items"][1]["kind"], "table");
     assert_eq!(catalog["items"][1]["name"], "searchy.placeholder");
+    assert!(catalog["items"][1]["table"]["column_preview"].is_null());
     assert_matches_output_schema(catalog_tool, &catalog);
 
     let functions = client

@@ -612,6 +612,7 @@ async fn assert_list_catalog_tool(
         "local_messages.events"
     );
     assert_eq!(structured_catalog["items"][0]["kind"], "table");
+    assert!(structured_catalog["items"][0]["table"]["column_preview"].is_null());
     let requests = server.list_catalog_requests();
     let request = requests.last().expect("list catalog request");
     assert_eq!(request.schema_name, "");
@@ -694,6 +695,12 @@ async fn assert_search_catalog_tool(
             .iter()
             .any(|field| field == "description")
     );
+    assert_eq!(search["items"][0]["table"]["column_count"], 3);
+    assert_eq!(
+        search["items"][0]["table"]["column_preview"][0]["column_name"],
+        "owner"
+    );
+    assert_eq!(search["items"][0]["table"]["omitted_column_count"], 0);
     let search_requests = server.search_catalog_requests();
     let search_request = search_requests.last().expect("search catalog request");
     assert_eq!(search_request.pattern, "fixture.*messages");

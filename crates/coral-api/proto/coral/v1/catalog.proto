@@ -79,6 +79,30 @@ message TableSummary {
   string guide = 6;
 }
 
+// One compact column hint returned with a table catalog search match.
+message TableColumnPreviewColumn {
+  // Column name as exposed by the query engine.
+  string name = 1;
+  // The DataFusion/Arrow data type rendered as text.
+  string data_type = 2;
+  // Whether the column must be constrained before querying the table.
+  bool is_required_filter = 3;
+  // Human-readable column description.
+  string description = 4;
+  // Column metadata fields matched by the catalog search pattern.
+  repeated string matched_fields = 5;
+}
+
+// Compact column hints for a table catalog search match.
+message TableColumnPreview {
+  // Total column count for the table before preview capping.
+  uint32 column_count = 1;
+  // Capped column hints selected for query-writing orientation.
+  repeated TableColumnPreviewColumn columns = 2;
+  // Number of table columns not included in the capped preview.
+  uint32 omitted_column_count = 3;
+}
+
 // An argument accepted by a source-scoped table function.
 message TableFunctionArgument {
   // Argument name as used in a named SQL function call.
@@ -191,6 +215,9 @@ message CatalogSearchResult {
   CatalogItem item = 1;
   // Metadata fields matched by the pattern.
   repeated string matched_fields = 2;
+  // Compact table column hints for ordinary table matches. Full columns remain
+  // available through ListColumns and DescribeTable.
+  TableColumnPreview table_column_preview = 3;
 }
 
 // Returns catalog metadata matches.
