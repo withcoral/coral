@@ -8,19 +8,6 @@ description: >-
   email, and with community Gmail on sender email.
 base_url: https://api.helpscout.net/v2
 inputs:
-  HELPSCOUT_OAUTH_CLIENT_ID:
-    kind: variable
-    hint: |
-      Help Scout OAuth application ID from Your Profile → My apps →
-      Create My App. Register a loopback redirect URI such as
-      http://127.0.0.1/oauth/callback (Coral may use a random port on
-      127.0.0.1 during interactive setup).
-      See https://developer.helpscout.com/mailbox-api/overview/authentication/
-  HELPSCOUT_OAUTH_CLIENT_SECRET:
-    kind: secret
-    hint: |
-      Help Scout OAuth application secret from the same My apps entry.
-      Required for the authorization-code and token exchange flows.
   HELPSCOUT_ACCESS_TOKEN:
     kind: secret
     hint: |
@@ -28,12 +15,15 @@ inputs:
       itself, without a `Bearer ` prefix.
 
       For interactive setup, choose "Connect Help Scout" and provide your
-      OAuth application ID and secret. The flow uses Help Scout's
-      authorization-code grant and returns access and refresh tokens.
-      Access tokens expire in about 48 hours (`expires_in: 172800`).
+      Help Scout OAuth application ID and secret from Your Profile → My apps.
+      Register a loopback redirect URI such as http://127.0.0.1/oauth/callback.
+      The flow uses Help Scout's authorization-code grant and returns access
+      and refresh tokens. Access tokens expire in about 48 hours
+      (`expires_in: 172800`).
 
       Re-run `coral source add` and choose Connect Help Scout when queries
       fail with HTTP 401.
+      See https://developer.helpscout.com/mailbox-api/overview/authentication/
     credential:
       methods:
         - type: oauth
@@ -72,7 +62,6 @@ test_queries:
   - SELECT id, first_name, last_name, email FROM helpscout.customers LIMIT 5
   - SELECT id, number, subject, status, customer_email FROM helpscout.conversations LIMIT 5
   - SELECT id, email, first_name, last_name FROM helpscout.users LIMIT 5
-  - SELECT function_name FROM coral.table_functions WHERE schema_name = 'helpscout' ORDER BY function_name LIMIT 1
 
 functions:
   - name: search_conversations
