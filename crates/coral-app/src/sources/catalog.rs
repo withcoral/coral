@@ -107,7 +107,7 @@ fn candidate_from_manifest(
     Ok(CandidateSource {
         name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),
-        version: manifest.source_version().to_string(),
+        version: manifest.source_version().map(ToString::to_string),
         inputs: manifest.declared_inputs().to_vec(),
         installed,
         origin,
@@ -144,7 +144,7 @@ mod tests {
                 .iter()
                 .any(|source| source.name == SourceName::parse("stripe").expect("source"))
         );
-        assert!(sources.iter().all(|source| !source.version.is_empty()));
+        assert!(sources.iter().all(|source| source.version.is_some()));
     }
 
     #[test]

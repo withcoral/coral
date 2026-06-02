@@ -351,6 +351,15 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
         }),
+        "versionless" => Ok(SourceInfo {
+            name: "versionless".to_string(),
+            description: String::new(),
+            version: String::new(),
+            inputs: Vec::new(),
+            installed: true,
+            origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
+        }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
 }

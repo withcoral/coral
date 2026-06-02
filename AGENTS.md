@@ -19,6 +19,9 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
+- Run `make schema-check` before submitting PRs that touch generated source
+  manifest schemas or the Rust helpers that generate them. Use
+  `make schema-generate` to refresh generated schema files.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
@@ -35,6 +38,9 @@
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime
   concerns in `coral-engine`.
+- Keep app-owned runtime package assembly in `coral-app`. `coral-engine`
+  should compile generic runtime components, not interpret DSL v4 authored
+  manifests, materialized fingerprints, semantic IR, or projection catalogs.
 - Keep shared Arrow IPC decoding and result rendering in `coral-client`.
 - Treat `coral-app` as an internal composition root even if sibling crates use
   its bootstrap seam today.

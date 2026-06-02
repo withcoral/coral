@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::backends::file::FileSourceManifest;
 use crate::backends::http::HttpSourceManifest;
 use crate::backends::mcp::McpSourceManifest;
-use crate::schema::validate_manifest_schema;
+use crate::schema::validate_manifest_schema_for_dsl_version;
 use crate::v4::V4SourceManifest;
 use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
 
@@ -71,13 +71,13 @@ impl ValidatedSourceManifest {
     }
 
     #[must_use]
-    /// Returns the source-spec version string for the source.
-    pub fn source_version(&self) -> &str {
+    /// Returns the authored source-spec version string when the DSL declares one.
+    pub fn source_version(&self) -> Option<&str> {
         match &self.inner {
-            ValidatedManifestKind::Http(manifest) => &manifest.common.version,
-            ValidatedManifestKind::File(manifest) => &manifest.common.version,
-            ValidatedManifestKind::Mcp(manifest) => &manifest.common.version,
-            ValidatedManifestKind::V4(manifest) => &manifest.common.version,
+            ValidatedManifestKind::Http(manifest) => Some(&manifest.common.version),
+            ValidatedManifestKind::File(manifest) => Some(&manifest.common.version),
+            ValidatedManifestKind::Mcp(manifest) => Some(&manifest.common.version),
+            ValidatedManifestKind::V4(_) => None,
         }
     }
 
@@ -214,8 +214,8 @@ pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> 
 /// Returns a [`ManifestError`] if the source spec violates any validation
 /// rules.
 pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManifest> {
-    validate_manifest_schema(&value)?;
     let dsl_version = parse_dsl_version(&value)?;
+    validate_manifest_schema_for_dsl_version(&value, dsl_version)?;
     if dsl_version == 4 {
         return Ok(ValidatedSourceManifest {
             inner: ValidatedManifestKind::V4(Box::new(V4SourceManifest::parse_manifest_value(

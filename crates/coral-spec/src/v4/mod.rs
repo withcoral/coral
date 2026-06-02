@@ -9,24 +9,36 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+mod schema;
+
 use crate::backends::http::{AuthSpec, RateLimitSpec};
 use crate::inputs::{collect_declared_inputs, validate_input_references};
 use crate::{
     ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec,
     ManifestDataType, ManifestError, ManifestInputSpec, PageSizeSpec, PaginationMode,
     PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, Result, SearchLimitsSpec,
-    SourceManifestCommon, SourceTableFunctionKind, TableFunctionArgSpec, validate_test_queries,
+    SourceTableFunctionKind, TableFunctionArgSpec, validate_test_queries,
 };
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 1;
 pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v2";
 pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v2";
 
+pub use schema::generated_v4_source_manifest_schema;
+
 #[derive(Debug, Clone)]
 pub struct V4SourceManifest {
-    pub common: SourceManifestCommon,
+    pub common: V4SourceCommon,
     pub surfaces: Vec<V4Surface>,
     pub declared_inputs: Vec<ManifestInputSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub struct V4SourceCommon {
+    pub dsl_version: u32,
+    pub name: String,
+    pub description: String,
+    pub test_queries: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,17 +58,11 @@ pub enum SurfaceType {
 
 #[derive(Debug, Clone)]
 pub enum SurfaceDescriptor {
-    Url { url: String, sha256: String },
-    File { file: PathBuf, sha256: String },
+    Url { url: String },
+    File { file: PathBuf },
 }
 
 impl SurfaceDescriptor {
-    pub fn sha256(&self) -> &str {
-        match self {
-            Self::Url { sha256, .. } | Self::File { sha256, .. } => sha256,
-        }
-    }
-
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Url { .. } => "url",
@@ -85,14 +91,11 @@ pub struct OpenApiRuntimeConfig {
 struct RawV4SourceManifest {
     dsl_version: u32,
     name: String,
-    version: String,
     #[serde(default)]
     description: String,
     #[serde(default)]
     test_queries: Vec<String>,
     surfaces: Vec<RawV4Surface>,
-    #[serde(default)]
-    onboarding: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,7 +108,6 @@ struct RawV4Surface {
     url: Option<String>,
     #[serde(default)]
     file: Option<PathBuf>,
-    sha256: String,
     #[serde(default, rename = "inputs")]
     _inputs: Option<Value>,
     #[serde(default)]
@@ -132,11 +134,9 @@ impl V4SourceManifest {
         let RawV4SourceManifest {
             dsl_version,
             name,
-            version,
             description,
             test_queries,
             surfaces,
-            onboarding: _onboarding,
         } = raw;
         if dsl_version != 4 {
             return Err(ManifestError::validation(format!(
@@ -149,13 +149,12 @@ impl V4SourceManifest {
             )));
         }
         validate_test_queries(&name, &test_queries)?;
-        let common = SourceManifestCommon::new(
+        let common = V4SourceCommon {
             dsl_version,
-            name.clone(),
-            version,
+            name: name.clone(),
             description,
             test_queries,
-        );
+        };
         let surface_values = raw_value
             .get("surfaces")
             .and_then(Value::as_array)
@@ -238,37 +237,13 @@ fn parse_descriptor(source_name: &str, surface: &RawV4Surface) -> Result<Surface
                     surface.id
                 )));
             }
-            validate_sha256(source_name, &surface.id, &surface.sha256)?;
-            Ok(SurfaceDescriptor::Url {
-                url: url.clone(),
-                sha256: surface.sha256.clone(),
-            })
+            Ok(SurfaceDescriptor::Url { url: url.clone() })
         }
-        (None, Some(file)) => {
-            validate_sha256(source_name, &surface.id, &surface.sha256)?;
-            Ok(SurfaceDescriptor::File {
-                file: file.clone(),
-                sha256: surface.sha256.clone(),
-            })
-        }
+        (None, Some(file)) => Ok(SurfaceDescriptor::File { file: file.clone() }),
         (Some(_), Some(_)) | (None, None) => Err(ManifestError::validation(format!(
             "source '{source_name}' surface '{}' must declare exactly one of url or file",
             surface.id
         ))),
-    }
-}
-
-fn validate_sha256(source_name: &str, surface_id: &str, sha256: &str) -> Result<()> {
-    let valid = sha256.len() == 64
-        && sha256
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
-    if valid {
-        Ok(())
-    } else {
-        Err(ManifestError::validation(format!(
-            "source '{source_name}' surface '{surface_id}' sha256 must be lowercase hex SHA-256"
-        )))
     }
 }
 
@@ -299,7 +274,6 @@ fn merge_surface_inputs(
 pub struct SemanticIr {
     pub artifact_schema_version: u32,
     pub source_name: String,
-    pub source_version: String,
     pub surface_id: String,
     pub surface_type: SurfaceType,
     pub importer_version: String,
@@ -462,7 +436,6 @@ pub struct RestResponseAttachment {
 pub struct ProjectionCatalog {
     pub artifact_schema_version: u32,
     pub source_name: String,
-    pub source_version: String,
     pub generator_version: String,
     pub projections: Vec<Projection>,
     pub diagnostics: Vec<Diagnostic>,
@@ -587,7 +560,6 @@ pub struct MaterializedSurface {
 pub struct Fingerprint {
     pub artifact_schema_version: u32,
     pub source_name: String,
-    pub source_version: String,
     pub manifest_sha256: String,
     pub surfaces: Vec<FingerprintSurface>,
     pub importer_version: String,
@@ -747,7 +719,6 @@ impl<'a> OpenApiImporter<'a> {
         Ok(SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: self.manifest.common.name.clone(),
-            source_version: self.manifest.common.version.clone(),
             surface_id: self.surface.id.clone(),
             surface_type: self.surface.surface_type,
             importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
@@ -1480,7 +1451,6 @@ pub fn generate_projection_catalog(
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),
-        source_version: manifest.common.version.clone(),
         generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
         projections,
         diagnostics,
@@ -2085,9 +2055,7 @@ pub fn validate_materialized_source(
             "DSL v4 materialized artifact schema version mismatch",
         ));
     }
-    if materialized.fingerprint.source_name != manifest.common.name
-        || materialized.fingerprint.source_version != manifest.common.version
-    {
+    if materialized.fingerprint.source_name != manifest.common.name {
         return Err(ManifestError::validation(format!(
             "DSL v4 materialized source identity mismatch for '{}'",
             manifest.common.name
@@ -2223,13 +2191,11 @@ mod tests {
         let manifest = parse_source_manifest_yaml(
             r#"
 name: demo
-version: 1.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     inputs:
       ZZZ_TOKEN:
         kind: secret
@@ -2262,13 +2228,11 @@ surfaces:
         let manifest = parse_source_manifest_yaml(
             r"
 name: demo
-version: 1.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
 ",
         )
         .expect("v4 manifest");
@@ -2335,13 +2299,11 @@ paths: {}
         let manifest = parse_source_manifest_yaml(
             r#"
 name: github
-version: 2.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     inputs:
       GITHUB_API_BASE:
         kind: variable
@@ -2370,13 +2332,11 @@ surfaces:
         let manifest = parse_source_manifest_yaml(
             r"
 name: statusgator
-version: 1.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.example.com
 ",
         )
@@ -2437,13 +2397,11 @@ components:
         let manifest = parse_source_manifest_yaml(
             r"
 name: github
-version: 1.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.github.com
 ",
         )
@@ -2502,13 +2460,11 @@ components:
         let manifest = parse_source_manifest_yaml(
             r"
 name: github
-version: 1.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.github.com
 ",
         )
@@ -2646,13 +2602,11 @@ components:
         let manifest = parse_source_manifest_yaml(
             r"
 name: trees
-version: 1.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.example.com
 ",
         )
@@ -2696,13 +2650,11 @@ components:
         let manifest = parse_source_manifest_yaml(
             r"
 name: defaults
-version: 1.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.example.com
 ",
         )
@@ -2750,13 +2702,11 @@ paths:
         let manifest = parse_source_manifest_yaml(
             r"
 name: broken
-version: 1.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
-    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.example.com
 ",
         )

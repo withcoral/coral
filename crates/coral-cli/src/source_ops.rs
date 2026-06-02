@@ -421,7 +421,9 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             source_credential_storage_label(source.credential_storage)
         );
     }
-    println!("  Version:     {}", source.version);
+    if !source.version.is_empty() {
+        println!("  Version:     {}", source.version);
+    }
     if !source.description.is_empty() {
         println!("  Description: {}", source.description);
     }
@@ -456,6 +458,14 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());
         }
+    }
+}
+
+pub(crate) fn display_version(version: &str) -> String {
+    if version.is_empty() {
+        "-".to_string()
+    } else {
+        version.to_string()
     }
 }
 

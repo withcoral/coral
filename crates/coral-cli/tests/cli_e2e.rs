@@ -17,8 +17,8 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, SourceCredentialStorage,
-    SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, Source,
+    SourceCredentialStorage, SourceInfo, SourceOrigin,
 };
 use tonic::Code;
 
@@ -107,6 +107,39 @@ async fn source_list_renders_configured_sources() {
     let requests = server.list_sources_requests();
     assert_eq!(requests.len(), 1, "expected one list_sources call");
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_list_renders_dash_for_missing_authored_version() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
+        ListSourcesResponse {
+            sources: vec![Source {
+                workspace: None,
+                name: "versionless".to_string(),
+                version: String::new(),
+                secrets: Vec::new(),
+                variables: Vec::new(),
+                origin: SourceOrigin::Imported as i32,
+                credential_storage: SourceCredentialStorage::File as i32,
+            }],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["source", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        nonempty_lines(&stdout),
+        vec![
+            "Source       Version  Origin    Secrets",
+            "-----------  -------  --------  ----------------",
+            "versionless  -        imported  file (plaintext)",
+        ],
+        "expected versionless source list"
+    );
 
     server.shutdown().await;
 }
@@ -294,6 +327,29 @@ async fn source_info_renders_installed_imported_source() {
     assert_eq!(requests.len(), 1, "expected one get_source_info call");
     assert_eq!(requests[0].name, "jira");
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_info_omits_missing_authored_version() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "info", "versionless"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("versionless"),
+        "expected source name: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Version:"),
+        "expected version line to be omitted: {stdout}"
+    );
 
     server.shutdown().await;
 }

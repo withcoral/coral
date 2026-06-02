@@ -1,11 +1,9 @@
 name: github_v4
-version: 0.1.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml
-    sha256: a7ad0985d8ae06726c499bee10fc69e5e99dbd237ff25cfcdf3a75547373da90
     inputs:
       GITHUB_TOKEN:
         kind: secret

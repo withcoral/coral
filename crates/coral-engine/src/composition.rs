@@ -158,7 +158,7 @@ impl SourceInputResolutionContext {
     pub fn from_query_source(source: &QuerySource) -> Self {
         Self {
             source_name: Arc::from(source.source_name()),
-            declared_inputs: Arc::from(source.source_spec().declared_inputs().to_vec()),
+            declared_inputs: Arc::from(source.declared_inputs().to_vec()),
             variables: Arc::new(source.variables().clone()),
             secrets: Arc::new(source.secrets().clone()),
         }

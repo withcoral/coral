@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Coral DSL v4 Source Manifest",
+  "type": "object",
+  "properties": {
+    "dsl_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "const": 4
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "test_queries": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/V4SurfaceSchema"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "dsl_version",
+    "name",
+    "surfaces"
+  ],
+  "$defs": {
+    "V4SurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "type": {
+          "$ref": "#/$defs/V4SurfaceTypeSchema"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/V4InputSpecSchema"
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        },
+        "base_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auth": true,
+        "request_headers": {
+          "type": "array",
+          "items": true
+        },
+        "rate_limit": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "url"
+          ]
+        },
+        {
+          "required": [
+            "file"
+          ]
+        }
+      ]
+    },
+    "V4SurfaceTypeSchema": {
+      "type": "string",
+      "enum": [
+        "openapi"
+      ]
+    },
+    "V4InputSpecSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "default": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "hint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "variable"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "hint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "credential": true,
+            "kind": {
+              "type": "string",
+              "const": "secret"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    }
+  },
+  "$id": "https://coral.local/source_manifest_v4.schema.json"
+}

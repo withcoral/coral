@@ -21,8 +21,8 @@ use crate::sources::catalog::{
 };
 use crate::sources::materialization::{
     MaterializationBuild, build_v4_materialization_tmp, canonicalize_file_descriptor,
-    cleanup_materialization_backup, cleanup_materialization_tmp, enrich_v4_openapi_manifest_yaml,
-    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
+    cleanup_materialization_backup, cleanup_materialization_tmp, new_materialization_suffix,
+    replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -249,14 +249,7 @@ impl SourceManager {
         command: &CreateBundledSourceCommand,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
-        let manifest = parse_source_manifest_yaml(&bundled.manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml = Self::enrich_v4_manifest_yaml(
-            &bundled.manifest_yaml,
-            &manifest,
-            SourceOrigin::Bundled,
-        )?;
-        let candidate = self.describe_bundled_source(workspace_name, &manifest_yaml)?;
+        let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_validated_source(
             workspace_name,
             &candidate,
@@ -274,14 +267,7 @@ impl SourceManager {
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
-        let manifest = parse_source_manifest_yaml(&bundled.manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml = Self::enrich_v4_manifest_yaml(
-            &bundled.manifest_yaml,
-            &manifest,
-            SourceOrigin::Bundled,
-        )?;
-        let candidate = self.describe_bundled_source(workspace_name, &manifest_yaml)?;
+        let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_source_with_oauth(
             workspace_name,
             &candidate,
@@ -303,10 +289,6 @@ impl SourceManager {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
-        let manifest = parse_source_manifest_yaml(&manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml =
-            Self::enrich_v4_manifest_yaml(&manifest_yaml, &manifest, SourceOrigin::Imported)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_validated_source(
@@ -328,10 +310,6 @@ impl SourceManager {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
-        let manifest = parse_source_manifest_yaml(&manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml =
-            Self::enrich_v4_manifest_yaml(&manifest_yaml, &manifest, SourceOrigin::Imported)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_source_with_oauth(
@@ -556,30 +534,6 @@ impl SourceManager {
         Ok(candidate)
     }
 
-    fn enrich_v4_manifest_yaml(
-        manifest_yaml: &str,
-        manifest: &ValidatedSourceManifest,
-        origin: SourceOrigin,
-    ) -> Result<String, AppError> {
-        let Some(v4) = manifest.as_v4() else {
-            return Ok(manifest_yaml.to_string());
-        };
-        if matches!(origin, SourceOrigin::Bundled)
-            && v4.surfaces.iter().any(|surface| {
-                matches!(
-                    surface.descriptor,
-                    coral_spec::v4::SurfaceDescriptor::File { .. }
-                )
-            })
-        {
-            return Err(AppError::FailedPrecondition(format!(
-                "bundled source '{}' uses local DSL v4 file descriptors, which are development-only",
-                v4.common.name
-            )));
-        }
-        enrich_v4_openapi_manifest_yaml(manifest_yaml, v4)
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "Source persistence keeps rollback steps together so failure ordering is visible."
@@ -688,7 +642,7 @@ impl SourceManager {
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
-            SourceOrigin::Imported => Some(request.candidate.version.clone()),
+            SourceOrigin::Imported => request.candidate.version.clone(),
         };
         let stored = InstalledSource {
             name: source_name.clone(),
@@ -724,7 +678,7 @@ impl SourceManager {
         }
         cleanup_materialization_backup(materialization_backup);
         let mut resolved = stored;
-        resolved.version = Some(request.candidate.version.clone());
+        resolved.version.clone_from(&request.candidate.version);
         Ok(resolved)
     }
 
@@ -1115,11 +1069,9 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         mut source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
-        source.version = Some(
-            resolve_installed_manifest(workspace_name, &source, &self.layout)?
-                .candidate
-                .version,
-        );
+        source.version = resolve_installed_manifest(workspace_name, &source, &self.layout)?
+            .candidate
+            .version;
         Ok(source)
     }
 
@@ -1377,7 +1329,7 @@ fn durable_import_manifest_yaml(
     };
     let mut replacement_files = BTreeMap::new();
     for surface in &v4.surfaces {
-        let SurfaceDescriptor::File { file, .. } = &surface.descriptor else {
+        let SurfaceDescriptor::File { file } = &surface.descriptor else {
             continue;
         };
         let canonical = canonicalize_file_descriptor(file)?;
@@ -1558,52 +1510,36 @@ components:
 "
     }
 
-    fn sha256_hex(bytes: &[u8]) -> String {
-        use sha2::{Digest as _, Sha256};
-
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        format!("{:x}", hasher.finalize())
-    }
-
     fn manifest_v4_with_file_descriptor(openapi_file: &std::path::Path) -> String {
-        let bytes = v4_openapi_fixture().as_bytes();
         format!(
             r#"
 name: github_v4_test
-version: 2.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: {}
-    sha256: {}
     inputs:
       API_BASE:
         kind: variable
         default: http://127.0.0.1:1
     base_url: "{{{{input.API_BASE}}}}"
 "#,
-            openapi_file.display(),
-            sha256_hex(bytes)
+            openapi_file.display()
         )
     }
 
     fn manifest_v4_without_description_or_base_url(openapi_file: &std::path::Path) -> String {
-        let bytes = v4_openapi_fixture_with_metadata().as_bytes();
         format!(
             r"
 name: github_v4_test
-version: 2.0.0
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: {}
-    sha256: {}
 ",
-            openapi_file.display(),
-            sha256_hex(bytes)
+            openapi_file.display()
         )
     }
 
@@ -1835,7 +1771,7 @@ tables:
     }
 
     #[test]
-    fn import_v4_source_enriches_missing_openapi_metadata() {
+    fn import_v4_source_preserves_intent_yaml_without_openapi_metadata() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_root = std::env::current_dir()
             .expect("cwd")
@@ -1872,12 +1808,12 @@ tables:
             std::fs::read_to_string(layout.manifest_file(&default_workspace(), &source_name))
                 .expect("stored manifest");
         assert!(
-            stored_manifest.contains("description: Query GitHub issues."),
-            "expected stored manifest to contain OpenAPI description: {stored_manifest}"
+            !stored_manifest.contains("description: Query GitHub issues."),
+            "expected stored manifest not to contain OpenAPI description: {stored_manifest}"
         );
         assert!(
-            stored_manifest.contains("base_url: https://api.github.test"),
-            "expected stored manifest to contain OpenAPI server URL: {stored_manifest}"
+            !stored_manifest.contains("base_url: https://api.github.test"),
+            "expected stored manifest not to contain OpenAPI server URL: {stored_manifest}"
         );
     }
 

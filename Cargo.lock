@@ -1260,6 +1260,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-native-keyring-store",
+ "wiremock",
  "zbus-secret-service-keyring-store",
 ]
 
@@ -1391,6 +1392,7 @@ name = "coral-spec"
 version = "0.4.1"
 dependencies = [
  "jsonschema",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",

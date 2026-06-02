@@ -7,6 +7,8 @@
 
 #[path = "engine/catalog_tests.rs"]
 mod catalog_tests;
+#[path = "engine/composite_tests.rs"]
+mod composite_tests;
 #[path = "engine/file_format_tests.rs"]
 mod file_format_tests;
 #[path = "engine/harness.rs"]
@@ -27,5 +29,3 @@ mod query_result_observer_tests;
 mod structured_error_tests;
 #[path = "engine/test_source_tests.rs"]
 mod test_source_tests;
-#[path = "engine/v4_tests.rs"]
-mod v4_tests;

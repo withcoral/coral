@@ -46,7 +46,7 @@ List the [bundled sources](/reference/bundled-sources) available in your current
 coral source discover
 ```
 
-The output includes each source name, the bundled version currently shipped in the binary, and whether it is already `installed` or still `available`.
+The output includes each source name, the bundled version currently shipped in the binary, and whether it is already `installed` or still `available`. Sources without an authored manifest version render `-` in the version column.
 
 ### `coral source list`
 
@@ -57,11 +57,11 @@ coral source list
 ```
 
 The output includes the source's secret storage route: `keychain` or
-`file (plaintext)`.
+`file (plaintext)`. Sources without an authored manifest version render `-` in the version column.
 
 ### `coral source info <NAME>`
 
-Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`.
+Show metadata for a source: whether it is installed, its origin, authored version when present, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`. Sources without an authored manifest version omit the `Version:` line.
 
 ```shellscript
 coral source info datadog
