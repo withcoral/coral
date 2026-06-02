@@ -458,18 +458,13 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
         }
     }
     for requirement in &source.one_of_input_requirements {
-        let keys = requirement
-            .keys
-            .iter()
-            .map(String::as_str)
-            .filter(|key| !key.is_empty())
-            .collect::<Vec<_>>();
-        if !keys.is_empty() {
-            println!(
-                "    {}",
-                style(format!("At least one required: {}", keys.join(", "))).dim()
-            );
+        if requirement.keys.is_empty() {
+            continue;
         }
+        println!(
+            "    {}",
+            style(format!("At least one required: {}", requirement.keys.join(", "))).dim()
+        );
     }
 }
 
