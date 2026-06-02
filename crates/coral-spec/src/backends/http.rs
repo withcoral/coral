@@ -12,7 +12,8 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
@@ -29,7 +30,7 @@ use crate::{
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum AuthSpec {
     /// HTTP Basic authentication; runtime base64-encodes `username:password`.
@@ -50,7 +51,7 @@ impl Default for AuthSpec {
 }
 
 /// HTTP Basic authenticator with separate username and password templates.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BasicAuthSpec {
     pub username: ParsedTemplate,
@@ -58,7 +59,7 @@ pub struct BasicAuthSpec {
 }
 
 /// Declarative authenticator that injects one or more headers.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HeaderAuthSpec {
     #[serde(default)]
@@ -66,7 +67,7 @@ pub struct HeaderAuthSpec {
 }
 
 /// Dispatches to a runtime-registered request authenticator by name.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CustomAuthSpec {
     pub authenticator: String,
     #[serde(flatten)]
@@ -74,7 +75,7 @@ pub struct CustomAuthSpec {
 }
 
 /// Provider-specific response hints for classifying and delaying rate-limit retries.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitSpec {
     #[serde(default)]

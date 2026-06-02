@@ -701,14 +701,14 @@ paths:
                 &workspace_name,
                 &ImportSourceCommand {
                     manifest_yaml: format!(
-                        r#"
+                        r"
 name: github_v4_query
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: {}
-"#,
+",
                         openapi_file.display()
                     ),
                     bindings: SourceBindings::default(),

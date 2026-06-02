@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::de::Error as _;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -85,7 +86,7 @@ pub enum ManifestDataType {
 }
 
 /// One request or auth header declared in the source spec.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct HeaderSpec {
     pub name: String,
     #[serde(flatten)]
@@ -421,7 +422,7 @@ impl Serialize for BodySpec {
 }
 
 /// How a source-spec request value is populated at runtime.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "from", rename_all = "snake_case")]
 pub enum ValueSourceSpec {
     Template {

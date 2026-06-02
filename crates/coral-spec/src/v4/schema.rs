@@ -6,6 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::{AuthSpec, HeaderSpec, backends::http::RateLimitSpec};
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4SourceManifestSchema {
@@ -32,12 +34,12 @@ struct V4SurfaceSchema {
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    auth: Option<Value>,
+    #[serde(default)]
+    auth: AuthSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    request_headers: Vec<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rate_limit: Option<Value>,
+    request_headers: Vec<HeaderSpec>,
+    #[serde(default)]
+    rate_limit: RateLimitSpec,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -215,5 +217,25 @@ mod tests {
             validator().validate(&manifest_json(raw)).is_err(),
             "surface sha256 should be rejected"
         );
+    }
+
+    #[test]
+    fn generated_schema_rejects_explicit_null_surface_fields() {
+        let invalid_surfaces = [
+            "    url: null\n",
+            "    file: null\n",
+            "    url: https://example.com/openapi.yaml\n    base_url: null\n",
+            "    url: https://example.com/openapi.yaml\n    auth: null\n",
+            "    url: https://example.com/openapi.yaml\n    rate_limit: null\n",
+        ];
+        for surface_fields in invalid_surfaces {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n{surface_fields}"
+            );
+            assert!(
+                validator().validate(&manifest_json(&raw)).is_err(),
+                "explicit null should be rejected: {surface_fields}"
+            );
+        }
     }
 }
