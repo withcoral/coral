@@ -3,6 +3,21 @@ title: "CLI reference"
 description: "Reference for Coral CLI commands and options."
 ---
 
+## Global feature flags
+
+Experimental runtime features can be overridden for a single process with
+top-level flags:
+
+```shellscript
+coral --enable-<FEATURE> <COMMAND>
+coral --disable-<FEATURE> <COMMAND>
+coral --enable-feedback mcp-stdio
+coral --disable-feedback mcp-stdio
+```
+
+These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
+`coral features disable <FEATURE>` to persist a preference.
+
 ## `coral sql`
 
 Run one SQL query and exit.
@@ -72,8 +87,14 @@ Pass `--interactive` to be prompted for variables and secrets instead. If a
 missing secret declares credential methods, Coral shows those choices in the
 source spec's authored order. `source_config` methods use the normal source
 input path and prompt for the secret value here; OAuth methods open or print an
-authorization URL, wait for the loopback callback, and store the
-resulting secret without printing token material.
+authorization URL or device verification URL, wait for provider completion, and
+store the resulting access token without printing token material. If the
+provider returns refresh metadata, Coral keeps it internally so short-lived
+OAuth access tokens can be refreshed without re-running `coral source add`.
+If the browser runs somewhere that cannot reach Coral's loopback listener, such
+as a host browser authorizing a Coral process in a VM or SSH session, paste the
+final localhost redirect URL into the terminal prompt and Coral submits it to
+the local callback listener.
 Environment variables still win, so a secret value already present in the
 environment bypasses the retrieval choice.
 
@@ -128,6 +149,41 @@ Run the guided source setup flow.
 
 ```shellscript
 coral onboard
+```
+
+When a secret input declares credential methods, onboarding asks which method
+to use before consuming a matching environment variable. Choosing a
+`source_config` method still uses the normal environment-variable or prompt
+path.
+
+## `coral features`
+
+Coral ships with experimental runtime features that can be enabled on demand.
+These features are defined in [`config.toml`](/reference/configuration).
+
+### `coral features list`
+
+List all runtime features recognized by the current Coral binary, including their configured and effective status.
+
+```shellscript
+coral features list
+```
+
+### `coral features enable <FEATURE>`
+
+Persistently enables an experimental runtime feature. The default for each
+feature is listed in [Configuration](/reference/configuration#runtime-features).
+
+```shellscript
+coral features enable feedback
+```
+
+### `coral features disable <FEATURE>`
+
+Persistently disables an experimental runtime feature.
+
+```shellscript
+coral features disable feedback
 ```
 
 ## `coral ui`

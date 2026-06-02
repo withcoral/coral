@@ -1,0 +1,1154 @@
+name: discord
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Discord bot identity, guilds, channels, messages, members, and roles
+  from the Discord REST API.
+inputs:
+  DISCORD_BOT_TOKEN:
+    kind: secret
+    hint: |
+      Discord bot token. Create a bot application at
+      https://discord.com/developers/applications, go to Bot settings, and
+      copy the token. The bot must be invited to target servers with the
+      `bot` scope. Required privileged intents depend on which tables you
+      query: GUILD_MEMBERS (privileged) for the members table, and
+      MESSAGE_CONTENT (privileged) for message content fields.
+
+      See https://discord.com/developers/applications.
+base_url: https://discord.com/api/v10
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bot {{input.DISCORD_BOT_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+rate_limit:
+  retry_after_header: Retry-After
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+test_queries:
+  - SELECT * FROM discord.current_user LIMIT 1
+  - SELECT id, name FROM discord.guilds LIMIT 10
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # current_user
+  # ──────────────────────────────────────────────────────────────────────
+  - name: current_user
+    description: The Discord bot user associated with the configured token
+    guide: |
+      Use this table first to confirm the token works and identify the bot
+      account Coral is querying as. This endpoint returns one row.
+    request:
+      method: GET
+      path: /users/@me
+    response:
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Discord user ID for the bot
+        expr:
+          kind: path
+          path:
+            - id
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Bot username
+        expr:
+          kind: path
+          path:
+            - username
+      - name: discriminator
+        type: Utf8
+        nullable: true
+        description: Legacy Discord discriminator
+        expr:
+          kind: path
+          path:
+            - discriminator
+      - name: global_name
+        type: Utf8
+        nullable: true
+        description: Bot global display name
+        expr:
+          kind: path
+          path:
+            - global_name
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Bot avatar hash
+        expr:
+          kind: path
+          path:
+            - avatar
+      - name: bot
+        type: Boolean
+        nullable: true
+        description: Whether the user is a bot account
+        expr:
+          kind: path
+          path:
+            - bot
+      - name: mfa_enabled
+        type: Boolean
+        nullable: true
+        description: Whether multi-factor authentication is enabled
+        expr:
+          kind: path
+          path:
+            - mfa_enabled
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the account email is verified
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: locale
+        type: Utf8
+        nullable: true
+        description: User locale
+        expr:
+          kind: path
+          path:
+            - locale
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address when available
+        expr:
+          kind: path
+          path:
+            - email
+
+  # ──────────────────────────────────────────────────────────────────────
+  # guilds
+  # ──────────────────────────────────────────────────────────────────────
+  - name: guilds
+    description: Discord guilds that the configured bot can see
+    guide: |
+      Start here to discover guild_id values for guild-scoped tables such
+      as channels, members, and roles. Use optional before and after filters
+      to page manually by guild ID when a bot belongs to many guilds. Set
+      with_counts to true to request approximate member and presence counts.
+      SELECT id, name, approximate_member_count FROM discord.guilds
+      WHERE with_counts = true.
+    filters:
+      - name: before
+      - name: after
+      - name: with_counts
+    request:
+      method: GET
+      path: /users/@me/guilds
+      query:
+        - name: before
+          from: filter
+          key: before
+        - name: after
+          from: filter
+          key: after
+        - name: with_counts
+          from: filter_bool
+          key: with_counts
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Discord guild ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Guild name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: icon
+        type: Utf8
+        nullable: true
+        description: Guild icon hash
+        expr:
+          kind: path
+          path:
+            - icon
+      - name: owner
+        type: Boolean
+        nullable: false
+        description: Whether the current bot user owns the guild
+        expr:
+          kind: path
+          path:
+            - owner
+      - name: permissions
+        type: Utf8
+        nullable: true
+        description: Permission bitset for the current bot user in the guild
+        expr:
+          kind: path
+          path:
+            - permissions
+      - name: features
+        type: Json
+        nullable: true
+        description: Guild feature flags as a JSON array (e.g. COMMUNITY, ANIMATED_ICON, BANNER)
+        expr:
+          kind: path
+          path:
+            - features
+      - name: approximate_member_count
+        type: Int64
+        nullable: true
+        description: Approximate member count when requested with with_counts
+        expr:
+          kind: path
+          path:
+            - approximate_member_count
+      - name: approximate_presence_count
+        type: Int64
+        nullable: true
+        description: Approximate presence count when requested with with_counts
+        expr:
+          kind: path
+          path:
+            - approximate_presence_count
+      - name: member_count
+        type: Int64
+        nullable: true
+        description: Alias for approximate_member_count
+        expr:
+          kind: path
+          path:
+            - approximate_member_count
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Guild ID cursor for guilds before that guild
+        expr:
+          kind: from_filter
+          key: before
+      - name: after
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Guild ID cursor for guilds after that guild
+        expr:
+          kind: from_filter
+          key: after
+      - name: with_counts
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether approximate member and presence counts were requested
+        expr:
+          kind: from_filter
+          key: with_counts
+
+  # ──────────────────────────────────────────────────────────────────────
+  # channels
+  # ──────────────────────────────────────────────────────────────────────
+  - name: channels
+    description: Channels in a Discord guild
+    guide: |
+      Requires guild_id from discord.guilds. Use returned id values as
+      channel_id filters for discord.messages. Channel types: 0 text,
+      2 voice, 4 category, 5 announcement, 13 stage, 15 forum, 16 media.
+      SELECT id, name, type, position FROM discord.channels
+      WHERE guild_id = '<id>'.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/channels
+    response:
+      row_strategy: direct
+    columns:
+      - name: guild_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Guild ID from required filter
+        expr:
+          kind: from_filter
+          key: guild_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Discord channel ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Int64
+        nullable: false
+        description: Discord channel type integer
+        expr:
+          kind: path
+          path:
+            - type
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Channel name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: topic
+        type: Utf8
+        nullable: true
+        description: Channel topic
+        expr:
+          kind: path
+          path:
+            - topic
+      - name: position
+        type: Int64
+        nullable: true
+        description: Channel sorting position
+        expr:
+          kind: path
+          path:
+            - position
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Parent category or channel ID
+        expr:
+          kind: path
+          path:
+            - parent_id
+      - name: nsfw
+        type: Boolean
+        nullable: true
+        description: Whether the channel is age-restricted
+        expr:
+          kind: path
+          path:
+            - nsfw
+      - name: last_message_id
+        type: Utf8
+        nullable: true
+        description: Most recent message ID known to Discord
+        expr:
+          kind: path
+          path:
+            - last_message_id
+      - name: rate_limit_per_user
+        type: Int64
+        nullable: true
+        description: Slowmode delay in seconds
+        expr:
+          kind: path
+          path:
+            - rate_limit_per_user
+      - name: bitrate
+        type: Int64
+        nullable: true
+        description: Voice bitrate in bits per second
+        expr:
+          kind: path
+          path:
+            - bitrate
+      - name: user_limit
+        type: Int64
+        nullable: true
+        description: Voice channel user limit
+        expr:
+          kind: path
+          path:
+            - user_limit
+      - name: flags
+        type: Int64
+        nullable: true
+        description: Channel flags as a bitfield
+        expr:
+          kind: path
+          path:
+            - flags
+      - name: permission_overwrites
+        type: Json
+        nullable: true
+        description: Channel permission overwrites as JSON
+        expr:
+          kind: path
+          path:
+            - permission_overwrites
+      - name: thread_metadata
+        type: Json
+        nullable: true
+        description: Thread metadata for thread channels as JSON
+        expr:
+          kind: path
+          path:
+            - thread_metadata
+      - name: default_auto_archive_duration
+        type: Int64
+        nullable: true
+        description: Default auto-archive duration for threads in minutes (60, 1440, 4320, 10080)
+        expr:
+          kind: path
+          path:
+            - default_auto_archive_duration
+      - name: default_forum_layout
+        type: Int64
+        nullable: true
+        description: Default forum layout (0 not set, 1 list view, 2 gallery view)
+        expr:
+          kind: path
+          path:
+            - default_forum_layout
+      - name: default_sort_order
+        type: Int64
+        nullable: true
+        description: Default sort order for forum channels (0 latest activity, 1 creation date)
+        expr:
+          kind: path
+          path:
+            - default_sort_order
+      - name: default_thread_rate_limit_per_user
+        type: Int64
+        nullable: true
+        description: Default slow mode for threads in forum and media channels
+        expr:
+          kind: path
+          path:
+            - default_thread_rate_limit_per_user
+      - name: video_quality_mode
+        type: Int64
+        nullable: true
+        description: Video quality mode for voice channels (1 auto, 2 720p)
+        expr:
+          kind: path
+          path:
+            - video_quality_mode
+
+  # ──────────────────────────────────────────────────────────────────────
+  # messages
+  # ──────────────────────────────────────────────────────────────────────
+  - name: messages
+    description: Recent messages in a Discord channel
+    guide: |
+      Requires channel_id from discord.channels. The bot must have
+      VIEW_CHANNEL and READ_MESSAGE_HISTORY permissions on the channel;
+      voice channels additionally require CONNECT. Messages are returned
+      newest-first. Use before, after, and around filters for cursor-based
+      pagination (pass message IDs as Snowflake strings). These filters are
+      mutually exclusive. Maximum 100 per request. Requires MESSAGE_CONTENT
+      privileged intent for content, embeds, and attachments (without it
+      those fields will be empty even with READ_MESSAGE_HISTORY).
+      SELECT id, author__username, content, timestamp
+      FROM discord.messages WHERE channel_id = '<id>' ORDER BY timestamp DESC
+      LIMIT 20.
+    filters:
+      - name: channel_id
+        required: true
+      - name: before
+      - name: after
+      - name: around
+    request:
+      method: GET
+      path: /channels/{{filter.channel_id}}/messages
+      query:
+        - name: before
+          from: filter
+          key: before
+        - name: after
+          from: filter
+          key: after
+        - name: around
+          from: filter
+          key: around
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: channel_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Channel ID from required filter
+        expr:
+          kind: from_filter
+          key: channel_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Discord message ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: guild_id
+        type: Utf8
+        nullable: true
+        description: Guild ID from the message, used for guild-scoped permalinks
+        expr:
+          kind: path
+          path:
+            - guild_id
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Message content visible to the bot
+        expr:
+          kind: path
+          path:
+            - content
+      - name: type
+        type: Int64
+        nullable: false
+        description: Discord message type integer
+        expr:
+          kind: path
+          path:
+            - type
+      - name: timestamp
+        type: Timestamp
+        nullable: false
+        description: Message creation timestamp (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - timestamp
+      - name: edited_timestamp
+        type: Timestamp
+        nullable: true
+        description: Message edit timestamp (ISO 8601), null if never edited
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - edited_timestamp
+      - name: tts
+        type: Boolean
+        nullable: false
+        description: Whether the message is a text-to-speech message
+        expr:
+          kind: path
+          path:
+            - tts
+      - name: mention_everyone
+        type: Boolean
+        nullable: false
+        description: Whether the message mentions @everyone or @here
+        expr:
+          kind: path
+          path:
+            - mention_everyone
+      - name: pinned
+        type: Boolean
+        nullable: false
+        description: Whether the message is pinned
+        expr:
+          kind: path
+          path:
+            - pinned
+      - name: flags
+        type: Int64
+        nullable: true
+        description: Message flags bitset
+        expr:
+          kind: path
+          path:
+            - flags
+      - name: author__id
+        type: Utf8
+        nullable: true
+        description: Author user ID
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author__username
+        type: Utf8
+        nullable: true
+        description: Author username
+        expr:
+          kind: path
+          path:
+            - author
+            - username
+      - name: author__global_name
+        type: Utf8
+        nullable: true
+        description: Author global display name
+        expr:
+          kind: path
+          path:
+            - author
+            - global_name
+      - name: author__discriminator
+        type: Utf8
+        nullable: true
+        description: Author discriminator (deprecated, may be "0")
+        expr:
+          kind: path
+          path:
+            - author
+            - discriminator
+      - name: author__avatar
+        type: Utf8
+        nullable: true
+        description: Author avatar hash
+        expr:
+          kind: path
+          path:
+            - author
+            - avatar
+      - name: author__bot
+        type: Boolean
+        nullable: true
+        description: Whether the author is a bot
+        expr:
+          kind: path
+          path:
+            - author
+            - bot
+      - name: author__system
+        type: Boolean
+        nullable: true
+        description: Whether the author is a Discord system user
+        expr:
+          kind: path
+          path:
+            - author
+            - system
+      - name: mentions
+        type: Json
+        nullable: true
+        description: Mentioned users as JSON
+        expr:
+          kind: path
+          path:
+            - mentions
+      - name: mention_roles
+        type: Json
+        nullable: true
+        description: Mentioned role IDs as JSON
+        expr:
+          kind: path
+          path:
+            - mention_roles
+      - name: attachments
+        type: Json
+        nullable: true
+        description: Message attachments as JSON
+        expr:
+          kind: path
+          path:
+            - attachments
+      - name: embeds
+        type: Json
+        nullable: true
+        description: Message embeds as JSON
+        expr:
+          kind: path
+          path:
+            - embeds
+      - name: reactions
+        type: Json
+        nullable: true
+        description: Array of reaction objects (emoji, count, me)
+        expr:
+          kind: path
+          path:
+            - reactions
+      - name: nonce
+        type: Utf8
+        nullable: true
+        description: Nonce for optimistic message sending (may be Int64 or string)
+        expr:
+          kind: path
+          path:
+            - nonce
+      - name: webhook_id
+        type: Utf8
+        nullable: true
+        description: Webhook ID if sent by a webhook
+        expr:
+          kind: path
+          path:
+            - webhook_id
+      - name: message_reference
+        type: Json
+        nullable: true
+        description: Message reference object for replies (message_id, channel_id, guild_id)
+        expr:
+          kind: path
+          path:
+            - message_reference
+      - name: message_reference__message_id
+        type: Utf8
+        nullable: true
+        description: Message reference target message ID
+        expr:
+          kind: path
+          path:
+            - message_reference
+            - message_id
+      - name: referenced_message__id
+        type: Utf8
+        nullable: true
+        description: Referenced message ID when this message is a reply
+        expr:
+          kind: path
+          path:
+            - referenced_message
+            - id
+      - name: message_snapshots
+        type: Json
+        nullable: true
+        description: Array of forwarded message snapshots
+        expr:
+          kind: path
+          path:
+            - message_snapshots
+      - name: interaction_metadata
+        type: Json
+        nullable: true
+        description: Interaction metadata for application command messages
+        expr:
+          kind: path
+          path:
+            - interaction_metadata
+      - name: sticker_items
+        type: Json
+        nullable: true
+        description: Array of sticker objects (id, name, format_type)
+        expr:
+          kind: path
+          path:
+            - sticker_items
+      - name: position
+        type: Int64
+        nullable: true
+        description: Position in a thread starter message or forum post
+        expr:
+          kind: path
+          path:
+            - position
+      - name: role_subscription_data
+        type: Json
+        nullable: true
+        description: Role subscription data for role purchase messages
+        expr:
+          kind: path
+          path:
+            - role_subscription_data
+      - name: resolved
+        type: Json
+        nullable: true
+        description: Resolved data for application command interactions
+        expr:
+          kind: path
+          path:
+            - resolved
+      - name: thread
+        type: Json
+        nullable: true
+        description: Thread channel object if the message starts a thread
+        expr:
+          kind: path
+          path:
+            - thread
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: Discord web URL for the message
+        expr:
+          kind: template
+          template: "https://discord.com/channels/{{expr.guild_id|@me}}/{{filter.channel_id}}/{{expr.message_id}}"
+          values:
+            guild_id:
+              kind: path
+              path:
+                - guild_id
+            message_id:
+              kind: path
+              path:
+                - id
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Message ID cursor for messages before that message
+        expr:
+          kind: from_filter
+          key: before
+      - name: after
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Message ID cursor for messages after that message
+        expr:
+          kind: from_filter
+          key: after
+      - name: around
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Message ID cursor for messages around that message
+        expr:
+          kind: from_filter
+          key: around
+
+  # ──────────────────────────────────────────────────────────────────────
+  # members
+  # ──────────────────────────────────────────────────────────────────────
+  - name: members
+    description: Members in a Discord guild
+    guide: |
+      Requires guild_id from discord.guilds. This endpoint requires the
+      GUILD_MEMBERS privileged intent. Use optional after filter to page
+      manually by the highest returned user ID. Maximum 1000 per request.
+      SELECT user__id, user__username, nick, joined_at
+      FROM discord.members WHERE guild_id = '<id>' LIMIT 100.
+    filters:
+      - name: guild_id
+        required: true
+      - name: after
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/members
+      query:
+        - name: after
+          from: filter
+          key: after
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+      page_size:
+        default: 1000
+        max: 1000
+        query_param: limit
+    columns:
+      - name: guild_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Guild ID from required filter
+        expr:
+          kind: from_filter
+          key: guild_id
+      - name: user__id
+        type: Utf8
+        nullable: true
+        description: Member user ID
+        expr:
+          kind: path
+          path:
+            - user
+            - id
+      - name: user__username
+        type: Utf8
+        nullable: true
+        description: Member username
+        expr:
+          kind: path
+          path:
+            - user
+            - username
+      - name: user__global_name
+        type: Utf8
+        nullable: true
+        description: Member global display name
+        expr:
+          kind: path
+          path:
+            - user
+            - global_name
+      - name: user__discriminator
+        type: Utf8
+        nullable: true
+        description: Member discriminator (deprecated, may be "0")
+        expr:
+          kind: path
+          path:
+            - user
+            - discriminator
+      - name: user__avatar
+        type: Utf8
+        nullable: true
+        description: Member user avatar hash
+        expr:
+          kind: path
+          path:
+            - user
+            - avatar
+      - name: user__bot
+        type: Boolean
+        nullable: true
+        description: Whether the member user is a bot
+        expr:
+          kind: path
+          path:
+            - user
+            - bot
+      - name: user__system
+        type: Boolean
+        nullable: true
+        description: Whether the member user is a Discord system user
+        expr:
+          kind: path
+          path:
+            - user
+            - system
+      - name: nick
+        type: Utf8
+        nullable: true
+        description: Guild-specific nickname (null if none set)
+        expr:
+          kind: path
+          path:
+            - nick
+      - name: avatar
+        type: Utf8
+        nullable: true
+        description: Guild-specific avatar hash
+        expr:
+          kind: path
+          path:
+            - avatar
+      - name: roles
+        type: Json
+        nullable: true
+        description: Role IDs assigned to the member as JSON array
+        expr:
+          kind: path
+          path:
+            - roles
+      - name: joined_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the member joined the guild (ISO 8601)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - joined_at
+      - name: premium_since
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the member started boosting (ISO 8601), null if not boosting
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - premium_since
+      - name: deaf
+        type: Boolean
+        nullable: true
+        description: Whether the member is deafened in voice channels
+        expr:
+          kind: path
+          path:
+            - deaf
+      - name: mute
+        type: Boolean
+        nullable: true
+        description: Whether the member is muted in voice channels
+        expr:
+          kind: path
+          path:
+            - mute
+      - name: flags
+        type: Int64
+        nullable: true
+        description: Member flags as a bitfield
+        expr:
+          kind: path
+          path:
+            - flags
+      - name: pending
+        type: Boolean
+        nullable: true
+        description: Whether the member has not passed guild membership screening
+        expr:
+          kind: path
+          path:
+            - pending
+      - name: communication_disabled_until
+        type: Timestamp
+        nullable: true
+        description: Timestamp when a timeout expires (ISO 8601), null if not timed out
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - communication_disabled_until
+      - name: after
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: User ID cursor for guild member pagination
+        expr:
+          kind: from_filter
+          key: after
+
+  # ──────────────────────────────────────────────────────────────────────
+  # roles
+  # ──────────────────────────────────────────────────────────────────────
+  - name: roles
+    description: Roles in a Discord guild
+    guide: |
+      Requires guild_id from discord.guilds. Role position is 0-based where
+      higher positions are higher in the hierarchy. The @everyone role has
+      the same ID as the guild.
+      SELECT id, name, color, position, permissions FROM discord.roles
+      WHERE guild_id = '<id>' ORDER BY position DESC.
+    filters:
+      - name: guild_id
+        required: true
+    request:
+      method: GET
+      path: /guilds/{{filter.guild_id}}/roles
+    response:
+      row_strategy: direct
+    columns:
+      - name: guild_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Guild ID from required filter
+        expr:
+          kind: from_filter
+          key: guild_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Discord role ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Role name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: color
+        type: Int64
+        nullable: true
+        description: Integer representation of the role color
+        expr:
+          kind: path
+          path:
+            - color
+      - name: hoist
+        type: Boolean
+        nullable: true
+        description: Whether the role is displayed separately in the member list
+        expr:
+          kind: path
+          path:
+            - hoist
+      - name: icon
+        type: Utf8
+        nullable: true
+        description: Role icon hash
+        expr:
+          kind: path
+          path:
+            - icon
+      - name: unicode_emoji
+        type: Utf8
+        nullable: true
+        description: Role unicode emoji
+        expr:
+          kind: path
+          path:
+            - unicode_emoji
+      - name: position
+        type: Int64
+        nullable: false
+        description: Role sorting position (higher = more permissions)
+        expr:
+          kind: path
+          path:
+            - position
+      - name: permissions
+        type: Utf8
+        nullable: false
+        description: Role permission bitset
+        expr:
+          kind: path
+          path:
+            - permissions
+      - name: managed
+        type: Boolean
+        nullable: true
+        description: Whether the role is managed by an integration
+        expr:
+          kind: path
+          path:
+            - managed
+      - name: mentionable
+        type: Boolean
+        nullable: true
+        description: Whether the role can be @mentioned by anyone
+        expr:
+          kind: path
+          path:
+            - mentionable
+      - name: tags
+        type: Json
+        nullable: true
+        description: Role tags as JSON (bot_id, premium_subscriber, integration_id, etc.)
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: flags
+        type: Int64
+        nullable: true
+        description: Role flags as a bitfield
+        expr:
+          kind: path
+          path:
+            - flags

@@ -38,8 +38,24 @@ impl ValidatedSourceManifest {
             };
             for method in &credential.methods {
                 if let Some(oauth) = method.oauth.as_ref() {
-                    collect_host(&mut hosts, &oauth.authorization_url);
-                    collect_host(&mut hosts, &oauth.token_url);
+                    if let Some(authorization_url) = oauth.authorization_url.as_deref() {
+                        collect_host(
+                            &mut hosts,
+                            &render_string_template_with_defaults(authorization_url, inputs),
+                        );
+                    }
+                    if let Some(device_authorization_url) =
+                        oauth.device_authorization_url.as_deref()
+                    {
+                        collect_host(
+                            &mut hosts,
+                            &render_string_template_with_defaults(device_authorization_url, inputs),
+                        );
+                    }
+                    collect_host(
+                        &mut hosts,
+                        &render_string_template_with_defaults(&oauth.token_url, inputs),
+                    );
                 }
             }
         }
@@ -88,6 +104,13 @@ fn render_with_defaults(template: &ParsedTemplate, inputs: &[ManifestInputSpec])
         }
     }
     rendered
+}
+
+fn render_string_template_with_defaults(raw: &str, inputs: &[ManifestInputSpec]) -> String {
+    ParsedTemplate::parse(raw).map_or_else(
+        |_| raw.to_string(),
+        |template| render_with_defaults(&template, inputs),
+    )
 }
 
 /// Extracts a displayable host from a (possibly templated) URL string and adds
@@ -257,6 +280,115 @@ tables:
             vec![
                 "api.example.com".to_string(),
                 "auth.example.com".to_string(),
+                "tokens.example.com".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolves_templated_oauth_endpoint_hosts_against_input_defaults() {
+        let found = hosts(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.example.com
+  AUTH_BASE:
+    kind: variable
+    default: https://auth.example.com
+  EXCHANGE_BASE:
+    kind: variable
+    default: https://tokens.example.com
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: "{{input.AUTH_BASE}}/oauth/authorize"
+              token_url: "{{input.EXCHANGE_BASE}}/oauth/token"
+            client:
+              id:
+                default: default-client
+base_url: "{{input.API_BASE}}"
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        );
+        assert_eq!(
+            found,
+            vec![
+                "api.example.com".to_string(),
+                "auth.example.com".to_string(),
+                "tokens.example.com".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn includes_device_oauth_endpoint_hosts() {
+        let found = hosts(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.example.com
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          oauth:
+            flow:
+              type: device_code
+              pkce: disabled
+            endpoints:
+              device_authorization_url: https://device.example.com/oauth/device/code
+              token_url: https://tokens.example.com/oauth/token
+            client:
+              id:
+                default: default-client
+base_url: "{{input.API_BASE}}"
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        );
+        assert_eq!(
+            found,
+            vec![
+                "api.example.com".to_string(),
+                "device.example.com".to_string(),
                 "tokens.example.com".to_string(),
             ]
         );

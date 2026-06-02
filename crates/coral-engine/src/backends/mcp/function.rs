@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -156,6 +156,8 @@ impl TableProvider for McpFunctionCallTableProvider {
             relation: self.state.function_name.clone(),
             tool_name: self.state.tool_name.clone(),
             arguments,
+            source_inputs: None,
+            source_tool_args: Arc::new(BTreeMap::default()),
             response: self.state.response.clone(),
             pagination: self.state.pagination.clone(),
             limit: limit.or(self.state.fetch_limit_default),
