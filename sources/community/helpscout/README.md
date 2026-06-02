@@ -38,6 +38,11 @@ Requires a Help Scout OAuth application and access token.
 4. Register a loopback redirect URI, for example `http://127.0.0.1/oauth/callback`
    (Coral may bind a random port on `127.0.0.1` during interactive setup).
 5. Copy the **Application ID** and **Application Secret**.
+6. Grant these OAuth scopes to the app:
+   - `mailboxes:read`
+   - `conversations:read`
+   - `customers:read`
+   - `users:read`
 
 See [Help Scout authentication](https://developer.helpscout.com/mailbox-api/overview/authentication/).
 

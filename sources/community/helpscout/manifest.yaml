@@ -19,7 +19,8 @@ inputs:
       Register a loopback redirect URI such as http://127.0.0.1/oauth/callback.
       The flow uses Help Scout's authorization-code grant and returns access
       and refresh tokens. Access tokens expire in about 48 hours
-      (`expires_in: 172800`).
+      (`expires_in: 172800`). Required scopes: `mailboxes:read`,
+      `conversations:read`, `customers:read`, and `users:read`.
 
       Re-run `coral source add` and choose Connect Help Scout when queries
       fail with HTTP 401.
