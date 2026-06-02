@@ -198,9 +198,7 @@ impl QueryManager {
                 Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
                     return Err(error);
                 }
-                Err(error @ AppError::FailedPrecondition(_))
-                    if error.to_string().contains("DSL v4 materialized artifacts") =>
-                {
+                Err(error @ AppError::MissingOrIncompatibleV4Materialization { .. }) => {
                     return Err(error);
                 }
                 Err(error) => {
@@ -420,6 +418,9 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingOrIncompatibleV4Materialization { .. } => {
+            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
+        }
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::Io(_) => "IO",
@@ -721,6 +722,60 @@ surfaces:
         assert_eq!(
             execution_to_rows(&execution),
             vec![json!({"id": 1, "title": "Generated runtime package"})]
+        );
+    }
+
+    #[test]
+    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: github_v4_missing_artifacts
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+        )
+        .expect("write manifest");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
+
+        let error = fixture
+            .manager
+            .load_query_sources(&workspace_name)
+            .expect_err("missing materialization should fail closed");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
         );
     }
 

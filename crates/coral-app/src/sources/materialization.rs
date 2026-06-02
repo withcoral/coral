@@ -460,10 +460,10 @@ pub(crate) fn incompatible_materialization_error(
     source_name: &SourceName,
     detail: impl AsRef<str>,
 ) -> AppError {
-    AppError::FailedPrecondition(format!(
-        "source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {}. Re-add the source to regenerate them.",
-        detail.as_ref()
-    ))
+    AppError::MissingOrIncompatibleV4Materialization {
+        source_name: source_name.to_string(),
+        detail: detail.as_ref().to_string(),
+    }
 }
 
 fn write_materialization(
@@ -653,7 +653,9 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError
 
 fn ensure_https_descriptor_url(url: &str) -> Result<(), AppError> {
     let parsed = reqwest::Url::parse(url).map_err(|error| {
-        AppError::InvalidInput(format!("OpenAPI descriptor URL '{url}' is invalid: {error}"))
+        AppError::InvalidInput(format!(
+            "OpenAPI descriptor URL '{url}' is invalid: {error}"
+        ))
     })?;
     if parsed.scheme() != "https" {
         return Err(AppError::FailedPrecondition(format!(
