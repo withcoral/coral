@@ -68,7 +68,14 @@ pub(super) async fn decode_response_body(
             let trace_body = String::from_utf8_lossy(&bytes);
             body_capture.record_response(response_span, request_id, trace_body.as_ref());
             serde_json::from_slice(&bytes).map_err(|error| {
-                json_decode_failure(source_schema, table_name, method_label, logged_url, &error)
+                json_decode_failure(
+                    source_schema,
+                    table_name,
+                    method_label,
+                    logged_url,
+                    &error,
+                    &bytes,
+                )
             })
         }
         ResponseBodyFormat::JsonEachRow => {
@@ -102,7 +109,7 @@ pub(super) async fn decode_response_body(
                         detail,
                         retryable: false,
                     });
-                    if is_retryable_json_decode_error(&error) {
+                    if is_retryable_partial_json_decode_error(&error, trimmed.as_bytes()) {
                         ResponseDecodeFailure::retryable(provider_error)
                     } else {
                         ResponseDecodeFailure::terminal(provider_error)
@@ -155,16 +162,18 @@ fn json_decode_failure(
     method_label: &str,
     logged_url: &str,
     error: &serde_json::Error,
+    body: &[u8],
 ) -> ResponseDecodeFailure {
     let provider_error =
         json_decode_error(source_schema, table_name, method_label, logged_url, error);
-    if is_retryable_json_decode_error(error) {
+    if is_retryable_partial_json_decode_error(error, body) {
         ResponseDecodeFailure::retryable(provider_error)
     } else {
         ResponseDecodeFailure::terminal(provider_error)
     }
 }
 
-fn is_retryable_json_decode_error(error: &serde_json::Error) -> bool {
+fn is_retryable_partial_json_decode_error(error: &serde_json::Error, body: &[u8]) -> bool {
     matches!(error.classify(), serde_json::error::Category::Eof)
+        && body.iter().any(|byte| !byte.is_ascii_whitespace())
 }

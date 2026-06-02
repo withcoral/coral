@@ -430,6 +430,12 @@ fn provider_decode_failure<'a>(
     detail: &'a str,
     retryable: bool,
 ) -> ProviderStageFailure<'a> {
+    let hint = if retryable {
+        "The upstream API returned an incomplete response. Retry the query; if this persists, inspect the upstream API response."
+    } else {
+        "The upstream API returned a response that does not match the source manifest."
+    };
+
     ProviderStageFailure {
         source,
         table,
@@ -438,10 +444,7 @@ fn provider_decode_failure<'a>(
         detail,
         method,
         url,
-        hint: Some(
-            "The upstream API returned a response that does not match the source manifest."
-                .to_string(),
-        ),
+        hint: Some(hint.to_string()),
         retryable,
         status: if retryable {
             StatusCode::Unavailable
@@ -692,6 +695,32 @@ mod tests {
             error.metadata().get("provider_failure_stage").unwrap(),
             "decode"
         );
+    }
+
+    #[test]
+    fn retryable_decode_failure_maps_to_unavailable_provider_failure() {
+        let error = ProviderQueryError::Decode {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/issues".to_string()),
+            detail: "EOF while parsing a string".to_string(),
+            retryable: true,
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source response decode failed");
+        assert_eq!(error.status(), StatusCode::Unavailable);
+        assert!(error.retryable());
+        assert_eq!(
+            error.metadata().get("provider_failure_stage").unwrap(),
+            "decode"
+        );
+        let hint = error
+            .hint()
+            .expect("retryable decode failures should include a hint");
+        assert!(hint.contains("incomplete response"));
+        assert!(!hint.contains("source manifest"));
     }
 
     #[test]

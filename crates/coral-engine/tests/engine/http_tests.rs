@@ -1658,6 +1658,52 @@ async fn api_returns_malformed_json() {
 }
 
 #[tokio::test]
+async fn api_does_not_retry_empty_or_whitespace_json_response() {
+    for (schema, body) in [("http_empty_json", ""), ("http_whitespace_json", " \n\t")] {
+        let server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let responder_attempts = Arc::clone(&attempts);
+        let body = body.to_string();
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .respond_with(move |_request: &Request| {
+                responder_attempts.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_string(body.clone())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let source = build_source(base_http_manifest(schema, &server.uri()));
+        let query = format!("SELECT id, name, email FROM {schema}.users ORDER BY id");
+
+        let error = CoralQuery::execute_sql(&[source], test_runtime(), &query)
+            .await
+            .expect_err("stable empty JSON response should be a permanent decode failure");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+        match error {
+            CoreError::QueryFailure(sqe) => {
+                assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+                assert_eq!(sqe.summary(), "Source response decode failed");
+                assert!(!sqe.retryable());
+                assert_eq!(
+                    sqe.metadata().get("provider_failure_stage").unwrap(),
+                    "decode"
+                );
+                assert!(
+                    sqe.hint()
+                        .expect("empty decode failures should include guidance")
+                        .contains("source manifest")
+                );
+            }
+            other => panic!("unexpected stable-empty-json error variant: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
 async fn api_retries_truncated_json_response() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -1731,6 +1777,11 @@ async fn api_reports_exhausted_truncated_get_json_as_retryable() {
             assert_eq!(
                 sqe.metadata().get("provider_failure_stage").unwrap(),
                 "decode"
+            );
+            assert!(
+                sqe.hint()
+                    .expect("retryable decode failures should include guidance")
+                    .contains("incomplete response")
             );
         }
         other => panic!("unexpected exhausted truncated-json error variant: {other:?}"),
