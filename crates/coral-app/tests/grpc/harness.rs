@@ -395,6 +395,101 @@ pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
     }))
 }
 
+pub(crate) fn fixture_manifest_with_search_ranking_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "ranked_source",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [
+            {
+                "name": "aaa_generic",
+                "description": "Generic records",
+                "request": {
+                    "method": "GET",
+                    "path": "/generic",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "bbb_report",
+                "description": "Ticket history report",
+                "request": {
+                    "method": "GET",
+                    "path": "/reports",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "ccc_records",
+                "description": "Filtered records",
+                "request": {
+                    "method": "GET",
+                    "path": "/records",
+                    "query": [
+                        { "name": "owner", "from": "filter", "key": "owner" },
+                    ],
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "owner", "type": "Utf8" },
+                ],
+                "filters": [
+                    { "name": "owner", "required": true },
+                ],
+            },
+        ],
+        "functions": [
+            {
+                "name": "audit_lookup",
+                "description": "Lookup records",
+                "args": [
+                    {
+                        "name": "q",
+                        "required": true,
+                        "bind": { "arg": "q" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/audit/{{arg.q}}",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "zzz_generic",
+                "description": "Generic lookup",
+                "args": [
+                    {
+                        "name": "q",
+                        "required": true,
+                        "bind": { "arg": "q" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/generic/{{arg.q}}",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                ],
+            },
+        ],
+    }))
+}
+
 pub(crate) fn fixture_function_only_manifest_yaml() -> String {
     manifest_yaml(&json!({
         "name": "searchy",

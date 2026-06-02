@@ -12,8 +12,22 @@ use tonic::Request;
 
 use super::harness::{
     GrpcHarness, fixture_manifest_with_functions_yaml, fixture_manifest_with_multiple_tables_yaml,
-    fixture_manifest_with_required_filter_yaml,
+    fixture_manifest_with_required_filter_yaml, fixture_manifest_with_search_ranking_yaml,
 };
+
+fn search_result_item_name(result: &coral_api::v1::CatalogSearchResult) -> &str {
+    match result
+        .item
+        .as_ref()
+        .expect("search result")
+        .item
+        .as_ref()
+        .expect("catalog item")
+    {
+        catalog_item::Item::Table(table) => table.name.as_str(),
+        catalog_item::Item::TableFunction(function) => function.name.as_str(),
+    }
+}
 
 #[tokio::test]
 async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
@@ -72,6 +86,131 @@ async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
             .matched_fields
             .iter()
             .any(|field| field == "result_columns")
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_ranks_name_and_description_matches_above_schema_only_matches() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_search_ranking_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "ranked|ticket|owner|audit".to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 0,
+            pagination: Some(PaginationRequest {
+                limit: 3,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("search catalog")
+        .into_inner();
+
+    let pagination = response.pagination.expect("pagination");
+    assert_eq!(pagination.total_count, 5);
+    assert_eq!(pagination.limit, 3);
+    assert_eq!(pagination.offset, 0);
+    assert!(pagination.has_more);
+    assert_eq!(pagination.next_offset, 3);
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(search_result_item_name)
+            .collect::<Vec<_>>(),
+        vec!["audit_lookup", "ccc_records", "bbb_report"]
+    );
+
+    let second_page = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "ranked|ticket|owner|audit".to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 0,
+            pagination: Some(PaginationRequest {
+                limit: 2,
+                offset: 3,
+            }),
+        }))
+        .await
+        .expect("search catalog second page")
+        .into_inner();
+
+    let pagination = second_page.pagination.expect("second page pagination");
+    assert_eq!(pagination.total_count, 5);
+    assert_eq!(pagination.limit, 2);
+    assert_eq!(pagination.offset, 3);
+    assert!(!pagination.has_more);
+    assert_eq!(
+        second_page
+            .items
+            .iter()
+            .map(search_result_item_name)
+            .collect::<Vec<_>>(),
+        vec!["aaa_generic", "zzz_generic"]
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_preserves_stable_order_for_schema_only_matches() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_search_ranking_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "^ranked_source$".to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 0,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("schema-only search catalog")
+        .into_inner();
+
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(search_result_item_name)
+            .collect::<Vec<_>>(),
+        vec![
+            "aaa_generic",
+            "audit_lookup",
+            "bbb_report",
+            "ccc_records",
+            "zzz_generic"
+        ]
+    );
+    assert!(
+        response
+            .items
+            .iter()
+            .all(|item| item.matched_fields == ["schema_name"])
     );
 }
 
