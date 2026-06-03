@@ -282,6 +282,7 @@ fn resolve_fetch_limits(
     };
 
     let requested_top_k = page_hint.unwrap_or(search_limits.default_top_k);
+    let requested_top_k = row_limit.map_or(requested_top_k, |limit| requested_top_k.min(limit));
     let max_candidates = search_limits
         .max_top_k
         .saturating_mul(search_limits.max_calls_per_query);
