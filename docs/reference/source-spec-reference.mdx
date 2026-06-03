@@ -1094,6 +1094,18 @@ device-code or browser-based OAuth setup instead of asking the user to paste a
 token. If you want to support both flows, list the OAuth method first and add a
 `source_config` fallback for users who already have a token.
 
+Each method accepts three optional display fields used during interactive
+install (`coral source add --interactive`) and in the generated source docs:
+
+- `label` (string): the choice shown in the method picker.
+- `description` (string): a short one-line blurb for the method.
+- `hint` (string): markdown guidance shown next to the fields that method
+  collects — for example how to register the OAuth app, what the callback URL
+  is, or where to find an existing token. Keep each hint focused on the inputs
+  that method needs rather than restating the other methods. Prefer a per-method
+  `hint` over a single long input-level `hint` when the input offers several
+  methods, since the fields below the hint change with the selected method.
+
 ```yaml
 inputs:
   GITHUB_TOKEN:
@@ -1103,6 +1115,9 @@ inputs:
         - type: oauth
           label: Connect with GitHub
           description: Use OAuth instead of pasting a token.
+          hint: |
+            Signs you in through GitHub with no client secret. To use your
+            own app, set GITHUB_OAUTH_CLIENT_ID to its Client ID.
           oauth:
             flow:
               type: device_code

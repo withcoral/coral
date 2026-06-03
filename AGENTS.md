@@ -19,6 +19,11 @@
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
+- Run `make schema-check` before submitting PRs that touch generated source
+  manifest schemas or the Rust helpers that generate them. Use
+  `make schema-generate` to refresh generated schema files. The Validate
+  workflow enforces this through its `schema-freshness` job when schema inputs
+  change.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
@@ -35,6 +40,14 @@
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime
   concerns in `coral-engine`.
+- Keep app-owned runtime package assembly in `coral-app`. `coral-engine`
+  should compile generic runtime components, not interpret DSL v4 authored
+  manifests, materialized fingerprints, semantic IR, or projection catalogs.
+- For DSL v4 materialization, the user owns when a source is generated or
+  regenerated. Coral materializes at source add, queries only from the
+  installed materialized package, never silently refreshes descriptors or
+  projections, and should fail loudly on missing or incompatible artifacts with
+  guidance to re-add the source.
 - Keep shared Arrow IPC decoding and result rendering in `coral-client`.
 - Treat `coral-app` as an internal composition root even if sibling crates use
   its bootstrap seam today.
@@ -46,6 +59,11 @@
   ambient process environment directly.
 - Changes to CLI or MCP surfaces must include corresponding documentation
   updates under `docs/` in the same change.
+- Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
+  specs under `sources/core-v4/**` with distinct manifest names such as
+  `<name>_v4`. Do not bundle `sources/core-v4` into the binary; install preview
+  v4 sources with `coral source add --file`. Do not replace or migrate an
+  existing v3 source merely because a preview v4 spec exists.
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.

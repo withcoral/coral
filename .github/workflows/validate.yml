@@ -32,6 +32,7 @@ jobs:
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
+      schema-freshness: ${{ steps.filter.outputs.schema-freshness }}
       license-check: ${{ steps.filter.outputs.license-check }}
       performance-regression: ${{ steps.filter.outputs.performance-regression }}
 
@@ -93,6 +94,15 @@ jobs:
               - 'sources/core/**'
               - 'docs/**'
               - 'CHANGELOG.md'
+            schema-freshness:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/schemas.rs'
+              - 'crates/coral-spec/**'
             license-check:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -450,6 +460,29 @@ jobs:
       - name: Run make docs-check
         run: make docs-check
 
+  schema-freshness:
+    name: Schema freshness check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.schema-freshness == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-schema-freshness-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run make schema-check
+        run: make schema-check
+
   license-check:
     name: Dependency license scan
     runs-on: ubuntu-latest
@@ -531,6 +564,7 @@ jobs:
         gha-security-audit-sarif,
         source-lint,
         docs-freshness,
+        schema-freshness,
         license-check,
         performance-regression,
       ]
@@ -551,6 +585,7 @@ jobs:
           GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
           DOCS_FRESHNESS_RESULT: ${{ needs.docs-freshness.result }}
+          SCHEMA_FRESHNESS_RESULT: ${{ needs.schema-freshness.result }}
           LICENSE_CHECK_RESULT: ${{ needs.license-check.result }}
           PERFORMANCE_REGRESSION_RESULT: ${{ needs.performance-regression.result }}
         run: |
@@ -566,6 +601,7 @@ jobs:
             "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"
             "source-lint:$SOURCE_LINT_RESULT"
             "docs-freshness:$DOCS_FRESHNESS_RESULT"
+            "schema-freshness:$SCHEMA_FRESHNESS_RESULT"
             "license-check:$LICENSE_CHECK_RESULT"
             "performance-regression:$PERFORMANCE_REGRESSION_RESULT"
           )
