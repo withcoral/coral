@@ -770,6 +770,22 @@ fn extract_dependent_literal_filter(
                 })
                 .map(|(filter, value)| BTreeMap::from([(filter, value)]))
         }
+        Expr::Column(column) => literal_bool_filter(column, true, allowed_filters)
+            .map(|(filter, value)| BTreeMap::from([(filter, value)])),
+        Expr::Not(inner) | Expr::IsFalse(inner) => {
+            let Expr::Column(column) = inner.as_ref() else {
+                return None;
+            };
+            literal_bool_filter(column, false, allowed_filters)
+                .map(|(filter, value)| BTreeMap::from([(filter, value)]))
+        }
+        Expr::IsTrue(inner) => {
+            let Expr::Column(column) = inner.as_ref() else {
+                return None;
+            };
+            literal_bool_filter(column, true, allowed_filters)
+                .map(|(filter, value)| BTreeMap::from([(filter, value)]))
+        }
         _ => None,
     }
 }
@@ -788,6 +804,18 @@ fn literal_equality_filter(
     }
 
     Some((column.name.clone(), literal_to_string(literal_expr)?))
+}
+
+fn literal_bool_filter(
+    column: &Column,
+    value: bool,
+    allowed_filters: &[&str],
+) -> Option<(String, String)> {
+    if !allowed_filters.contains(&column.name.as_str()) {
+        return None;
+    }
+
+    Some((column.name.clone(), value.to_string()))
 }
 
 fn merge_literal_filters(
