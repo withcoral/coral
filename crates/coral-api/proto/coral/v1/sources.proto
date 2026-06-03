@@ -107,6 +107,8 @@ message SourceCredentialMethod {
   string label = 1;
   // Optional display description.
   string description = 2;
+  // Optional hint describing how to obtain the values this method needs.
+  string hint = 5;
   // Method-specific metadata.
   oneof method {
     // Secret value is supplied through the source configuration path.

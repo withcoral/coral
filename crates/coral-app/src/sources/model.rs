@@ -14,7 +14,7 @@ use crate::sources::SourceName;
 pub(crate) struct CandidateSource {
     pub(crate) name: SourceName,
     pub(crate) description: String,
-    pub(crate) version: String,
+    pub(crate) version: Option<String>,
     pub(crate) inputs: Vec<ManifestInputSpec>,
     pub(crate) auth_one_of_secret_requirements: Vec<AuthOneOfSecretRequirement>,
     pub(crate) installed: bool,

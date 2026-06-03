@@ -21,9 +21,9 @@ use crate::inputs::{
     collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
 };
 use crate::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec, ParsedTemplate,
-    Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace, TemplatePart,
-    validate_columns, validate_table_names, validate_test_queries,
+    ColumnSpec, DeclaredRelation, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec,
+    ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
+    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -624,7 +624,12 @@ impl FileSourceManifest {
             tables,
         } = raw;
         validate_test_queries(&name, &test_queries)?;
-        validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
+        validate_declared_relation_namespace(
+            &name,
+            tables
+                .iter()
+                .map(|table| DeclaredRelation::table(table.name.as_str())),
+        )?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables

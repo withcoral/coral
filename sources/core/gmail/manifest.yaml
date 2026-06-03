@@ -1,5 +1,5 @@
 name: gmail
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
@@ -16,20 +16,19 @@ inputs:
   GMAIL_TOKEN:
     kind: secret
     hint: |
-      Use a read-only OAuth 2.0 access token for the Gmail API with the
-      `https://www.googleapis.com/auth/gmail.readonly` scope.
-      For the guided OAuth flow, enable the Gmail API in a Google Cloud
-      project and create an OAuth 2.0 client of type "Desktop app". The
-      guided OAuth credential method uses that client ID and client secret,
-      then requests that read-only scope.
-      See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
-
-      To paste a token manually, use a token issued with that same scope.
+      Connect with Google OAuth or paste an access token. Either way the
+      token needs the `https://www.googleapis.com/auth/gmail.readonly` scope.
     credential:
       methods:
         - type: oauth
           label: Connect with Google
           description: Use a Google OAuth client ID and client secret.
+          hint: |
+            Enable the Gmail API in a Google Cloud project and create an
+            OAuth 2.0 client of type "Desktop app", then enter its Client ID
+            and Client secret below. Requests read-only access with the
+            `https://www.googleapis.com/auth/gmail.readonly` scope. See
+            [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
           oauth:
             flow:
               type: authorization_code
@@ -52,6 +51,9 @@ inputs:
                   - https://www.googleapis.com/auth/gmail.readonly
         - type: source_config
           label: Paste access token
+          hint: |
+            Paste a read-only OAuth 2.0 access token issued with the
+            `https://www.googleapis.com/auth/gmail.readonly` scope.
 auth:
   type: HeaderAuth
   headers:
