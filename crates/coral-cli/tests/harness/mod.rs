@@ -362,6 +362,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             description: String::new(),
             version: String::new(),
             inputs: Vec::new(),
+            hosts: Vec::new(),
             installed: true,
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
@@ -1210,10 +1211,6 @@ impl MockServer {
             .lock()
             .expect("import_source capture")
             .clone()
-    }
-
-    pub(crate) fn endpoint_uri(&self) -> &str {
-        &self.endpoint_uri
     }
 
     pub(crate) async fn shutdown(mut self) {
