@@ -7,7 +7,6 @@ description: >
   Supports both test-mode and live-mode API keys; the two modes access completely
   separate datasets.
 backend: http
-
 inputs:
   LEMON_SQUEEZY_API_KEY:
     kind: secret
@@ -28,6 +27,9 @@ auth:
 
 request_headers:
   - name: Accept
+    from: literal
+    value: application/vnd.api+json
+  - name: Content-Type
     from: literal
     value: application/vnd.api+json
 
@@ -331,10 +333,9 @@ tables:
   # ---------------------------------------------------------------------------
   - name: variants
     description: >
-      Variants of Lemon Squeezy products. Each product has at least one variant
-      that controls price, licensing, subscription billing interval, trial
-      options, and pay-what-you-want settings. Filter by product_id to scope
-      to a specific product.
+      Legacy variant metadata for Lemon Squeezy products. Variants still carry
+      back-compat pricing and billing defaults, but current price records live
+      in the prices table. Filter by product_id to scope to a specific product.
     request:
       method: GET
       path: /v1/variants
@@ -363,7 +364,7 @@ tables:
         description: Filter variants to a specific product.
       - name: status
         type: Utf8
-        description: "Filter variants by status: draft or published."
+        description: "Filter variants by status: pending, draft, or published."
     columns:
       - name: id
         type: Utf8
@@ -528,6 +529,176 @@ tables:
       - name: updated_at
         type: Timestamp
         description: When the variant was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # prices
+  # ---------------------------------------------------------------------------
+  - name: prices
+    description: >
+      Current Lemon Squeezy price records for variants. Use this table for
+      authoritative price, setup fee, package, tier, usage aggregation,
+      subscription interval, trial, and price history data. Filter by
+      variant_id to scope to a specific variant.
+    request:
+      method: GET
+      path: /v1/prices
+      query:
+        - name: "filter[variant_id]"
+          from: filter_int
+          key: variant_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: variant_id
+        type: Int64
+        description: Filter prices to a specific variant.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique price ID.
+      - name: variant_id
+        type: Int64
+        description: ID of the variant this price belongs to.
+        expr:
+          kind: path
+          path: [attributes, variant_id]
+      - name: category
+        type: Utf8
+        description: "Price category: one_time, subscription, lead_magnet, or pwyw."
+        expr:
+          kind: path
+          path: [attributes, category]
+      - name: scheme
+        type: Utf8
+        description: "Pricing scheme: standard, package, graduated, or volume."
+        expr:
+          kind: path
+          path: [attributes, scheme]
+      - name: usage_aggregation
+        type: Utf8
+        nullable: true
+        description: "Usage aggregation mode when usage-based billing is enabled: sum, last_during_period, last_ever, or max."
+        expr:
+          kind: path
+          path: [attributes, usage_aggregation]
+      - name: unit_price
+        type: Int64
+        nullable: true
+        description: Price in store-currency cents.
+        expr:
+          kind: path
+          path: [attributes, unit_price]
+      - name: unit_price_decimal
+        type: Utf8
+        nullable: true
+        description: Price in cents as a decimal string.
+        expr:
+          kind: path
+          path: [attributes, unit_price_decimal]
+      - name: setup_fee_enabled
+        type: Boolean
+        nullable: true
+        description: Whether this price has a setup fee.
+        expr:
+          kind: path
+          path: [attributes, setup_fee_enabled]
+      - name: setup_fee
+        type: Int64
+        nullable: true
+        description: Setup fee in store-currency cents.
+        expr:
+          kind: path
+          path: [attributes, setup_fee]
+      - name: package_size
+        type: Int64
+        description: Number of units per package for package pricing.
+        expr:
+          kind: path
+          path: [attributes, package_size]
+      - name: tiers
+        type: Utf8
+        nullable: true
+        description: Tier definitions for graduated and volume pricing.
+        expr:
+          kind: path
+          path: [attributes, tiers]
+      - name: renewal_interval_unit
+        type: Utf8
+        nullable: true
+        description: "Subscription billing interval unit: day, week, month, or year."
+        expr:
+          kind: path
+          path: [attributes, renewal_interval_unit]
+      - name: renewal_interval_quantity
+        type: Int64
+        nullable: true
+        description: Number of interval units between subscription billings.
+        expr:
+          kind: path
+          path: [attributes, renewal_interval_quantity]
+      - name: trial_interval_unit
+        type: Utf8
+        nullable: true
+        description: "Free-trial interval unit: day, week, month, or year."
+        expr:
+          kind: path
+          path: [attributes, trial_interval_unit]
+      - name: trial_interval_quantity
+        type: Int64
+        nullable: true
+        description: Number of interval units in the free trial.
+        expr:
+          kind: path
+          path: [attributes, trial_interval_quantity]
+      - name: min_price
+        type: Int64
+        nullable: true
+        description: Minimum price in cents for pay-what-you-want pricing.
+        expr:
+          kind: path
+          path: [attributes, min_price]
+      - name: suggested_price
+        type: Int64
+        nullable: true
+        description: Suggested price in cents for pay-what-you-want pricing.
+        expr:
+          kind: path
+          path: [attributes, suggested_price]
+      - name: tax_code
+        type: Utf8
+        nullable: true
+        description: Tax category for the underlying product.
+        expr:
+          kind: path
+          path: [attributes, tax_code]
+      - name: created_at
+        type: Timestamp
+        description: When the price was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the price was last updated.
         expr:
           kind: format_timestamp
           input: iso8601
@@ -1560,8 +1731,9 @@ tables:
   - name: discounts
     description: >
       Discount codes configured in Lemon Squeezy stores. Covers both
-      percentage and fixed-amount codes, redemption counts, validity windows,
-      and subscription discount duration settings. Filter by store_id.
+      percentage and fixed-amount codes, redemption limits, validity windows,
+      and subscription discount duration settings. Use discount_redemptions to
+      count actual redemptions. Filter by store_id.
     request:
       method: GET
       path: /v1/discounts

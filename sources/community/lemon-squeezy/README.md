@@ -1,7 +1,7 @@
 # Lemon Squeezy
 
 Query your [Lemon Squeezy](https://www.lemonsqueezy.com/) store data — orders,
-subscriptions, customers, products, license keys, discounts, and more.
+subscriptions, customers, products, prices, license keys, discounts, and more.
 
 ## Prerequisites
 
@@ -38,7 +38,8 @@ coral source test lemon_squeezy
 | ----------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `stores`                | Stores owned by the authenticated account, with revenue totals and 30-day summaries                             |
 | `products`              | Products listed in your stores                                                                                  |
-| `variants`              | Variants of each product, controlling price, billing interval, licensing, and trial settings                    |
+| `variants`              | Legacy variant metadata and back-compat pricing/billing defaults for each product                              |
+| `prices`                 | Current price records for variants, including billing scheme, tiers, trials, and price history                 |
 | `customers`             | Customers who have made purchases, with MRR and cumulative revenue                                              |
 | `orders`                | Individual purchase transactions with full price and tax breakdowns in store currency and USD                   |
 | `order_items`           | Line items within each order, with price and quantity per variant purchased                                     |
@@ -77,6 +78,7 @@ parameters, reducing data transfer.
 | Table                   | Filterable columns                                                                          |
 | ----------------------- | ------------------------------------------------------------------------------------------- |
 | `products`              | `store_id`                                                                                  |
+| `prices`                | `variant_id`                                                                                |
 | `variants`              | `product_id`, `status`                                                                      |
 | `customers`             | `store_id`, `email`                                                                         |
 | `orders`                | `store_id`, `user_email`, `order_number`                                                    |
