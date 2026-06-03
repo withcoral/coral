@@ -2,10 +2,10 @@
 - name: Gather selected facts for Coral normalization
   hosts: all
   gather_facts: false
-  become: true
 
   vars:
     collected_facts_dir: "{{ playbook_dir }}/../collected-facts"
+    coral_ansible_become: false
 
   tasks:
     - name: Ensure selected facts directory exists on control node
@@ -38,14 +38,17 @@
           - service_mgr
           - system
           - virtual
+      become: "{{ coral_ansible_become | bool }}"
 
     - name: Gather service facts
       ansible.builtin.service_facts:
+      become: "{{ coral_ansible_become | bool }}"
 
     - name: Gather package facts
       ansible.builtin.package_facts:
         manager: auto
       ignore_errors: true
+      become: "{{ coral_ansible_become | bool }}"
 
     - name: Export selected facts to local JSON
       ansible.builtin.template:

@@ -177,6 +177,7 @@ Those defeat the purpose of the security model.
 When gathering facts for this source:
 
 * use least-privilege Ansible credentials
+* leave privilege escalation disabled unless a target requires it for selected fact modules
 * avoid gathering unnecessary fact subsets in sensitive environments
 * use `no_log: true` on tasks that may touch secrets
 * keep Vault-encrypted files out of the export path
@@ -187,6 +188,8 @@ When gathering facts for this source:
 * delete selected collection payloads and any broader raw facts if they are no longer needed
 * do not commit generated facts from real systems
 * use synthetic fixtures in the repository
+* keep selected service, package, and interface payloads limited to fields normalized into Coral tables
+* keep role metadata limited to role, environment, source file, and expected service fields
 
 ## Fact gathering scope
 
@@ -205,6 +208,8 @@ python
 service_facts
 package_facts
 ```
+
+Privilege escalation is opt-in through `coral_ansible_become=true` and applies only to remote fact-gathering tasks. Local writes on the control node remain unprivileged.
 
 Do not gather or export high-risk data unless there is a clear documented need.
 

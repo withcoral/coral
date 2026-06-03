@@ -195,6 +195,8 @@ cp normalized-facts/*.jsonl ~/.coral/ansible-facts/
 coral source test ansible
 ```
 
+The example gather playbook does not enable `become` by default. Users can opt in for the remote setup, service, and package fact tasks with `coral_ansible_become=true` when their targets require elevated fact collection. Control-node file writes remain unprivileged.
+
 ## Table design principles
 
 1. **Use one entity per row.**

@@ -298,7 +298,19 @@ mkdir -p ~/.coral/ansible-facts
 cp normalized-facts/*.jsonl ~/.coral/ansible-facts/
 ```
 
-The example playbook disables automatic full fact gathering, gathers explicit `setup` subsets, and writes a selected collection payload containing only the fields consumed by the allowlist normalizer plus `service_facts` and `package_facts` output. The normalizer accepts that de-prefixed `ansible_facts` shape and the `ansible_*`-prefixed keys commonly seen in setup-style fact payloads.
+The example playbook disables automatic full fact gathering, gathers explicit `setup` subsets, and writes a selected collection payload containing only the fields consumed by the allowlist normalizer. Service, package, interface, and role/service metadata are narrowed before the temporary JSON file is written. The normalizer accepts that de-prefixed `ansible_facts` shape and the `ansible_*`-prefixed keys commonly seen in setup-style fact payloads.
+
+The example does not use privilege escalation by default. If a target requires elevated privileges for selected setup, service, or package facts, opt in explicitly:
+
+```bash
+ansible-playbook \
+  -i examples/inventory.ini \
+  examples/gather-facts.yml \
+  -e coral_ansible_become=true \
+  --ask-become-pass
+```
+
+Only the remote fact-gathering tasks use `coral_ansible_become`; local file and template tasks on the control node stay unprivileged.
 
 Then test:
 
