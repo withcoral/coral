@@ -223,10 +223,15 @@ LIMIT 25;
 ### Cross-source: join orders with Linear issues to track refund investigations
 
 ```sql
+-- Covers both fully refunded orders (refunded = true) and partial refunds
+-- (status = 'partial_refund'). refunded_at is only populated for full refunds,
+-- so COALESCE falls back to updated_at for ordering partial-refund rows.
 SELECT
   o.order_number,
   o.user_email,
   o.total_formatted,
+  o.status,
+  o.refunded_amount_formatted,
   o.refunded_at,
   i.identifier                  AS linear_issue,
   i.title                       AS issue_title
@@ -234,7 +239,8 @@ FROM lemon_squeezy.orders o
 JOIN linear.issues i
   ON i.title ILIKE '%refund%' || CAST(o.order_number AS VARCHAR) || '%'
 WHERE o.refunded = true
-ORDER BY o.refunded_at DESC
+   OR o.status = 'partial_refund'
+ORDER BY COALESCE(o.refunded_at, o.updated_at) DESC
 LIMIT 10;
 ```
 
@@ -247,9 +253,13 @@ LIMIT 10;
 - Monetary values are almost always integers (cents). The only exceptions are
   `prices.unit_price_decimal` and the `unit_price_decimal` field nested inside
   `prices.tiers` objects — both are string representations of the cent amount
-  as a decimal (e.g. `"9.99"`). Use `prices.unit_price` for `SUM`, `AVG`, and
-  other arithmetic; `unit_price_decimal` is provided for display or when
-  sub-cent precision is required.
+  as a decimal (e.g. `"9.99"`). When usage-based billing is enabled
+  (`usage_aggregation` is non-null), `prices.unit_price` is null and
+  `unit_price_decimal` is the authoritative price; cast it to a numeric type
+  for arithmetic (e.g. `CAST(unit_price_decimal AS DECIMAL) / 100`). The same
+  applies to `unit_price_decimal` inside tier objects. For standard pricing
+  where `unit_price` is non-null, prefer that integer column for `SUM`, `AVG`,
+  and other aggregations.
 - Most price columns have a `_formatted` counterpart returning a
   human-readable string (e.g. `total_formatted`, `setup_fee_formatted`,
   `mrr_formatted`). These are for display only — always use the raw integer
@@ -262,6 +272,12 @@ LIMIT 10;
 - `tax_inclusive` on both `orders` and `subscription_invoices` indicates
   whether the total was calculated with tax already included in the displayed
   price.
+- `orders.refunded` and `subscription_invoices.refunded` are true **only for
+  full refunds**. Partial refunds set `status = 'partial_refund'` and populate
+  `refunded_amount` / `refunded_amount_usd` with the partial amount; `refunded`
+  remains false and `refunded_at` remains null in that case. Always combine
+  both signals when investigating any kind of refund activity:
+  `WHERE refunded = true OR status = 'partial_refund'`.
 - The `license_keys.instances_count` column is the live activation count
   returned by the API. It may briefly lag behind actual activation events.
 - Test-mode and live-mode stores are completely separate. You must re-add the

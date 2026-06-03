@@ -607,14 +607,23 @@ tables:
       - name: unit_price
         type: Int64
         nullable: true
-        description: Price in store-currency cents.
+        description: >
+          Price in store-currency cents. Null when usage-based billing is active
+          (usage_aggregation is non-null); use unit_price_decimal for arithmetic
+          in that case.
         expr:
           kind: path
           path: [attributes, unit_price]
       - name: unit_price_decimal
         type: Utf8
         nullable: true
-        description: Price in cents as a decimal string.
+        description: >
+          Price in cents as a decimal string (e.g. "9.99"). When usage-based
+          billing is active (usage_aggregation is non-null), unit_price is null
+          and this field is the authoritative price; cast it to DECIMAL for
+          arithmetic (e.g. CAST(unit_price_decimal AS DECIMAL) / 100). For
+          standard pricing where unit_price is non-null, prefer that integer
+          column for SUM, AVG, and other aggregations.
         expr:
           kind: path
           path: [attributes, unit_price_decimal]
@@ -640,7 +649,11 @@ tables:
       - name: tiers
         type: Json
         nullable: true
-        description: Tier definitions for graduated and volume pricing.
+        description: >
+          Tier definitions for graduated and volume pricing. Each tier object
+          contains a unit_price integer and a unit_price_decimal string; when
+          unit_price is null within a tier, use unit_price_decimal (cast to
+          DECIMAL) as the authoritative tier price.
         expr:
           kind: path
           path: [attributes, tiers]
@@ -1059,14 +1072,17 @@ tables:
           path: [attributes, status_formatted]
       - name: refunded
         type: Boolean
-        description: Whether this order has been refunded.
+        description: >
+          Whether this order has been fully refunded. True only for complete
+          refunds; partial refunds are represented by status = 'partial_refund'
+          with the refunded amount recorded in refunded_amount.
         expr:
           kind: path
           path: [attributes, refunded]
       - name: refunded_at
         type: Timestamp
         nullable: true
-        description: When the order was refunded, if applicable.
+        description: When the order was fully refunded, if applicable. Null for partial refunds.
         expr:
           kind: format_timestamp
           input: iso8601
@@ -1513,7 +1529,11 @@ tables:
         description: "Filter by invoice status: pending, paid, void, refunded, partial_refund."
       - name: refunded
         type: Boolean
-        description: "Filter by refund state: true to return only refunded invoices, false for non-refunded."
+        description: >
+          Filter by full-refund state: true returns only fully refunded invoices,
+          false excludes them. Partially refunded invoices carry
+          status = 'partial_refund' and are not captured by this filter; query
+          by status to include them.
     columns:
       - name: id
         type: Utf8
@@ -1690,14 +1710,17 @@ tables:
           path: [attributes, status_formatted]
       - name: refunded
         type: Boolean
-        description: Whether this invoice has been refunded.
+        description: >
+          Whether this invoice has been fully refunded. True only for complete
+          refunds; partial refunds are represented by status = 'partial_refund'
+          with the refunded amount recorded in refunded_amount.
         expr:
           kind: path
           path: [attributes, refunded]
       - name: refunded_at
         type: Timestamp
         nullable: true
-        description: When this invoice was refunded, if applicable.
+        description: When this invoice was fully refunded, if applicable. Null for partial refunds.
         expr:
           kind: format_timestamp
           input: iso8601
