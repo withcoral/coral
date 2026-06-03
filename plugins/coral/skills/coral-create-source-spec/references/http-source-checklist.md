@@ -28,9 +28,9 @@ Use:
 ## Authentication Setup
 
 - Keep credential collection separate from runtime auth. `inputs` stores values; `auth`, request headers, query params, or body fields decide where values are sent.
-- Use `from: bearer` for raw access tokens that must be sent as `Authorization: Bearer <token>`. Use `from: one_of` when Coral should try several configured credentials in order; put the credential users should prefer first.
 - Use OAuth `access_token_scheme: bearer` plus runtime `from: input` when one secret must accept pasted raw API-key headers and OAuth tokens that need the `Bearer` scheme.
-- When `from: one_of` models alternate stored credentials, mark each branch's secret input `required: false` so either credential can satisfy auth. Coral requires at least one referenced secret before the source can be added unless another choice always supplies a value on its own, such as a non-empty literal.
+- Use `from: bearer` for raw access tokens that must be sent as `Authorization: Bearer <token>`.
+- Use `from: one_of` only when a provider really has separate stored credential slots or different runtime auth locations. Mark each branch's secret input `required: false` so either credential can satisfy auth. Coral requires at least one referenced secret before the source can be added unless another choice always supplies a value on its own, such as a non-empty literal.
 - Use `type: source_config` when the user should provide a stored secret directly through an environment variable or prompt.
 - Use `type: oauth` when the provider should issue the source secret through OAuth device-code or authorization-code flow during `coral source add --interactive`.
 - OAuth methods require `flow.type: device_code` or `flow.type: authorization_code`. Authorization-code methods require an explicit `flow.pkce` of `required` or `disabled`; device-code methods require `endpoints.device_authorization_url`, `endpoints.token_url`, and a public client ID, and omit redirect URI fields and client secrets.
