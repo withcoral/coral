@@ -969,9 +969,11 @@ impl<'a> OpenApiImporter<'a> {
         RestResponseAttachment,
         Option<IrEntityCandidate>,
     ) {
-        let Some((status_code, media_type, schema)) =
-            select_json_response(operation.get("responses").and_then(Value::as_object))
-        else {
+        let Some((status_code, media_type, schema)) = self.select_json_response(
+            operation.get("responses").and_then(Value::as_object),
+            operation_id,
+            diagnostics,
+        ) else {
             let response = ResponseSpec::default();
             return (
                 IrOperationOutput {
@@ -988,7 +990,7 @@ impl<'a> OpenApiImporter<'a> {
             );
         };
 
-        let Some(resolved) = self.resolve_ref(schema, operation_id, diagnostics) else {
+        let Some(resolved) = self.resolve_ref(&schema, operation_id, diagnostics) else {
             diagnostics.push(Diagnostic::warning(
                 "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
                 format!("operation '{operation_id}' response schema could not be resolved"),
@@ -1043,6 +1045,58 @@ impl<'a> OpenApiImporter<'a> {
             },
             entity,
         )
+    }
+
+    fn select_json_response(
+        &self,
+        responses: Option<&Map<String, Value>>,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<(u16, String, Value)> {
+        let responses = responses?;
+        let mut candidates = Vec::new();
+        for (status, response) in responses {
+            let Some((status_code, wildcard)) = success_response_status_code(status) else {
+                continue;
+            };
+            let Some(response) = self.resolve_ref(response, operation_id, diagnostics) else {
+                continue;
+            };
+            let Some(content) = response.get("content").and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(json) = content.get("application/json") else {
+                continue;
+            };
+            let schema = json.get("schema").cloned().unwrap_or(Value::Null);
+            candidates.push(JsonResponseCandidate {
+                status_code,
+                wildcard,
+                media_type: "application/json".to_string(),
+                schema,
+            });
+        }
+        let candidate = candidates
+            .iter()
+            .position(|candidate| candidate.status_code == 200 && !candidate.wildcard)
+            .and_then(|index| candidates.get(index).cloned())
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .filter(|candidate| !candidate.wildcard)
+                    .min_by_key(|candidate| candidate.status_code)
+                    .cloned()
+            })
+            .or_else(|| {
+                candidates
+                    .into_iter()
+                    .min_by_key(|candidate| candidate.status_code)
+            })?;
+        Some((
+            candidate.status_code,
+            candidate.media_type,
+            candidate.schema,
+        ))
     }
 
     #[expect(
@@ -1287,30 +1341,22 @@ fn openapi_default_to_string(value: &Value) -> String {
     }
 }
 
-fn select_json_response(responses: Option<&Map<String, Value>>) -> Option<(u16, String, &Value)> {
-    let responses = responses?;
-    let mut candidates = Vec::new();
-    for (status, response) in responses {
-        let Ok(status_code) = status.parse::<u16>() else {
-            continue;
-        };
-        if !(200..300).contains(&status_code) {
-            continue;
-        }
-        let Some(content) = response.get("content").and_then(Value::as_object) else {
-            continue;
-        };
-        let Some(json) = content.get("application/json") else {
-            continue;
-        };
-        let schema = json.get("schema").unwrap_or(&Value::Null);
-        candidates.push((status_code, "application/json".to_string(), schema));
+#[derive(Clone)]
+struct JsonResponseCandidate {
+    status_code: u16,
+    wildcard: bool,
+    media_type: String,
+    schema: Value,
+}
+
+fn success_response_status_code(status: &str) -> Option<(u16, bool)> {
+    if status.eq_ignore_ascii_case("2XX") {
+        return Some((200, true));
     }
-    candidates
-        .iter()
-        .position(|(status, _, _)| *status == 200)
-        .and_then(|index| candidates.get(index).cloned())
-        .or_else(|| candidates.into_iter().min_by_key(|(status, _, _)| *status))
+    let status_code = status.parse::<u16>().ok()?;
+    (200..300)
+        .contains(&status_code)
+        .then_some((status_code, false))
 }
 
 fn classify_response_schema(
@@ -2553,6 +2599,125 @@ components:
             .find(|projection| projection.operation_id == "listincidents")
             .expect("projection");
         assert_eq!(projection.name, "incidents");
+        assert!(matches!(projection.kind, ProjectionKind::Table));
+    }
+
+    #[test]
+    fn importer_resolves_referenced_response_objects() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /repos/{owner}/{repo}/issues:
+    get:
+      operationId: issues/list-for-repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          $ref: '#/components/responses/IssueList'
+components:
+  responses:
+    IssueList:
+      content:
+        application/json:
+          schema:
+            type: array
+            items: {$ref: '#/components/schemas/Issue'}
+  schemas:
+    Issue:
+      type: object
+      properties:
+        id: {type: integer}
+        title: {type: string}
+"
+            .as_bytes(),
+        )
+        .expect("import");
+        let operation = ir.operations.first().expect("operation");
+        assert_eq!(operation.output.cardinality, OutputCardinality::List);
+        assert_eq!(operation.output.type_ref, "issue");
+
+        let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+        let projection = catalog.projections.first().expect("projection");
+        assert_eq!(projection.name, "issues");
+        assert!(matches!(projection.kind, ProjectionKind::Table));
+    }
+
+    #[test]
+    fn importer_accepts_wildcard_success_responses() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("one surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /repos/{owner}/{repo}/issues:
+    get:
+      operationId: issues/list-for-repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses:
+        '2XX':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Issue'}
+components:
+  schemas:
+    Issue:
+      type: object
+      properties:
+        id: {type: integer}
+        title: {type: string}
+"
+            .as_bytes(),
+        )
+        .expect("import");
+        let operation = ir.operations.first().expect("operation");
+        assert_eq!(operation.output.cardinality, OutputCardinality::List);
+        match &operation.execution {
+            IrExecutionAttachment::Rest(rest) => {
+                assert_eq!(rest.response.status_code, 200);
+            }
+        }
+
+        let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+        let projection = catalog.projections.first().expect("projection");
+        assert_eq!(projection.name, "issues");
         assert!(matches!(projection.kind, ProjectionKind::Table));
     }
 
