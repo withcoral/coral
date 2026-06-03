@@ -147,15 +147,6 @@ pub enum FilterMode {
     Contains,
 }
 
-/// Wire serialization used when a runtime binding supplies a filter value.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum WireType {
-    /// Serialize the binding as a string before rendering the backend request.
-    #[default]
-    String,
-}
-
 /// One declared filter that can be bound from SQL into a backend request.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterSpec {
@@ -170,10 +161,6 @@ pub struct FilterSpec {
     pub description: String,
     #[serde(default)]
     pub bindable: bool,
-    #[serde(default)]
-    pub wire_type: WireType,
-    #[serde(default)]
-    pub max_bindings: Option<usize>,
 }
 
 impl FilterSpec {
@@ -1005,8 +992,6 @@ mod tests {
                 mode: FilterMode::default(),
                 description: String::new(),
                 bindable: false,
-                wire_type: WireType::default(),
-                max_bindings: None,
             }],
             RequestSpec {
                 method: HttpMethod::GET,
@@ -1045,8 +1030,6 @@ mod tests {
                     mode: FilterMode::default(),
                     description: String::new(),
                     bindable: false,
-                    wire_type: WireType::default(),
-                    max_bindings: None,
                 },
                 FilterSpec {
                     name: "org".into(),
@@ -1055,8 +1038,6 @@ mod tests {
                     mode: FilterMode::default(),
                     description: String::new(),
                     bindable: false,
-                    wire_type: WireType::default(),
-                    max_bindings: None,
                 },
             ],
             RequestSpec {
@@ -1161,8 +1142,6 @@ mod tests {
         .unwrap();
         assert_eq!(spec.mode, FilterMode::Equality);
         assert!(!spec.bindable);
-        assert_eq!(spec.wire_type, WireType::String);
-        assert_eq!(spec.max_bindings, None);
     }
 
     #[test]
@@ -1233,18 +1212,14 @@ mod tests {
     }
 
     #[test]
-    fn filter_bindable_fields_deserialize() {
+    fn filter_bindable_field_deserializes() {
         let spec: FilterSpec = serde_json::from_value(serde_json::json!({
             "name": "repo",
-            "bindable": true,
-            "wire_type": "string",
-            "max_bindings": 50
+            "bindable": true
         }))
         .unwrap();
 
         assert!(spec.bindable);
-        assert_eq!(spec.wire_type, WireType::String);
-        assert_eq!(spec.max_bindings, Some(50));
     }
 
     #[test]

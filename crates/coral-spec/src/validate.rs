@@ -2,12 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::backends::http::DependentJoinTableConfig;
 use crate::common::{
     BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
     MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
     RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
-    SourceTableFunctionSpec, ValueSourceSpec, WireType,
+    SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
@@ -40,8 +39,6 @@ pub(crate) struct HttpTableValidation<'a> {
     pub(crate) pagination: &'a PaginationSpec,
     pub(crate) search_limits: Option<&'a SearchLimitsSpec>,
     pub(crate) detail_hints: &'a [DetailHintSpec],
-    pub(crate) search_index: bool,
-    pub(crate) dependent_join: &'a DependentJoinTableConfig,
 }
 
 pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> {
@@ -55,8 +52,6 @@ pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> 
         pagination,
         search_limits,
         detail_hints,
-        search_index,
-        dependent_join,
     } = input;
 
     if request.path.raw().trim().is_empty() {
@@ -77,7 +72,6 @@ pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> 
         detail_hints,
         columns,
     )?;
-    validate_http_dependent_join_config(schema, table_name, filters, search_index, dependent_join)?;
 
     validate_request_bindings(schema, table_name, request, &known_filters)?;
 
@@ -102,34 +96,6 @@ pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> 
     }
 
     pagination.validate(schema, table_name)
-}
-
-fn validate_http_dependent_join_config(
-    schema: &str,
-    table_name: &str,
-    filters: &[FilterSpec],
-    search_index: bool,
-    dependent_join: &DependentJoinTableConfig,
-) -> Result<()> {
-    if search_index && let Some(filter) = filters.iter().find(|filter| filter.bindable) {
-        return Err(ManifestError::validation(format!(
-            "filter '{}': cannot be bindable because table '{}.{}' is declared as search_index. Search-index-backed endpoints do not return complete result sets under filtered queries and are unsafe for dependent joins.",
-            filter.name, schema, table_name
-        )));
-    }
-
-    validate_non_zero_cap(
-        dependent_join.max_bindings,
-        &format!("{schema}.{table_name} dependent_join.max_bindings"),
-    )?;
-    validate_non_zero_cap(
-        dependent_join.max_resolver_rows,
-        &format!("{schema}.{table_name} dependent_join.max_resolver_rows"),
-    )?;
-    validate_non_zero_cap(
-        dependent_join.max_rows_per_binding,
-        &format!("{schema}.{table_name} dependent_join.max_rows_per_binding"),
-    )
 }
 
 pub(crate) fn validate_http_function_names(
@@ -469,25 +435,9 @@ fn validate_detail_hints(
 fn validate_filter_capabilities(filter: &FilterSpec) -> Result<()> {
     if filter.bindable && filter.mode != FilterMode::Equality {
         return Err(ManifestError::validation(format!(
-            "filter '{}': bindable=true requires mode=equality in V1",
+            "filter '{}': bindable=true requires mode=equality",
             filter.name
         )));
-    }
-    if filter.bindable && filter.wire_type != WireType::String {
-        return Err(ManifestError::validation(format!(
-            "filter '{}': only wire_type=string is supported in V1",
-            filter.name
-        )));
-    }
-    validate_non_zero_cap(
-        filter.max_bindings,
-        &format!("filter '{}'.max_bindings", filter.name),
-    )
-}
-
-fn validate_non_zero_cap(cap: Option<usize>, name: &str) -> Result<()> {
-    if cap == Some(0) {
-        return Err(ManifestError::validation(format!("{name} = 0")));
     }
     Ok(())
 }
@@ -997,8 +947,6 @@ mod tests {
             mode: FilterMode::Equality,
             description: String::new(),
             bindable: false,
-            wire_type: crate::WireType::String,
-            max_bindings: None,
         }]
     }
 
@@ -1010,8 +958,6 @@ mod tests {
             mode: FilterMode::Equality,
             description: String::new(),
             bindable: true,
-            wire_type: crate::WireType::String,
-            max_bindings: None,
         }
     }
 
@@ -1139,8 +1085,6 @@ mod tests {
             pagination: &PaginationSpec::default(),
             search_limits: None,
             detail_hints: &[],
-            search_index: false,
-            dependent_join: &crate::DependentJoinTableConfig::default(),
         })
     }
 
@@ -1552,8 +1496,6 @@ mod tests {
             mode: FilterMode::Contains,
             description: String::new(),
             bindable: false,
-            wire_type: crate::WireType::String,
-            max_bindings: None,
         }];
 
         let columns = [test_column()];
@@ -1568,8 +1510,6 @@ mod tests {
             pagination: &PaginationSpec::default(),
             search_limits: None,
             detail_hints: &[],
-            search_index: false,
-            dependent_join: &crate::DependentJoinTableConfig::default(),
         })
         .expect("contains filters should not force search metadata");
     }
@@ -1612,8 +1552,6 @@ mod tests {
             mode: FilterMode::Contains,
             description: String::new(),
             bindable: false,
-            wire_type: crate::WireType::String,
-            max_bindings: None,
         }];
 
         let columns = [test_column()];
@@ -1628,8 +1566,6 @@ mod tests {
             pagination: &PaginationSpec::default(),
             search_limits: Some(&search_limits),
             detail_hints: &detail_hints,
-            search_index: false,
-            dependent_join: &crate::DependentJoinTableConfig::default(),
         })
         .expect("search metadata should validate");
     }
@@ -1731,8 +1667,6 @@ mod tests {
             pagination: &PaginationSpec::default(),
             search_limits: None,
             detail_hints: &detail_hints,
-            search_index: false,
-            dependent_join: &crate::DependentJoinTableConfig::default(),
         })
         .expect_err("unknown detail hint result column should fail");
 
@@ -1800,8 +1734,6 @@ mod tests {
                 pagination: &PaginationSpec::default(),
                 search_limits: None,
                 detail_hints: &detail_hints,
-                search_index: false,
-                dependent_join: &crate::DependentJoinTableConfig::default(),
             })
             .expect_err("empty detail hint fields should fail");
 
@@ -1911,31 +1843,6 @@ mod tests {
     }
 
     #[test]
-    fn bindable_on_search_index_rejects() {
-        let filters = [bindable_filter("id")];
-        let columns = [test_column()];
-        let request = base_request();
-        let error = validate_http_table(HttpTableValidation {
-            schema: "demo",
-            table_name: "messages",
-            filters: &filters,
-            columns: &columns,
-            request: &request,
-            requests: &[],
-            pagination: &PaginationSpec::default(),
-            search_limits: None,
-            detail_hints: &[],
-            search_index: true,
-            dependent_join: &crate::DependentJoinTableConfig::default(),
-        })
-        .expect_err("search-index table should reject bindable filters");
-
-        assert!(error.to_string().contains(
-            "cannot be bindable because table 'demo.messages' is declared as search_index"
-        ));
-    }
-
-    #[test]
     fn bindable_non_equality_modes_reject() {
         for mode in [FilterMode::Search, FilterMode::Contains] {
             let mut filter = bindable_filter("q");
@@ -1947,65 +1854,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("filter 'q': bindable=true requires mode=equality in V1")
-            );
-        }
-    }
-
-    #[test]
-    fn zero_dependent_join_caps_reject() {
-        let mut filter = bindable_filter("id");
-        filter.max_bindings = Some(0);
-        let error = validate_test_http_table(&[filter], &base_request(), &[])
-            .expect_err("zero filter cap should fail");
-        assert!(error.to_string().contains("filter 'id'.max_bindings = 0"));
-
-        let cases = [
-            (
-                crate::DependentJoinTableConfig {
-                    max_bindings: Some(0),
-                    ..crate::DependentJoinTableConfig::default()
-                },
-                "demo.messages dependent_join.max_bindings = 0",
-            ),
-            (
-                crate::DependentJoinTableConfig {
-                    max_resolver_rows: Some(0),
-                    ..crate::DependentJoinTableConfig::default()
-                },
-                "demo.messages dependent_join.max_resolver_rows = 0",
-            ),
-            (
-                crate::DependentJoinTableConfig {
-                    max_rows_per_binding: Some(0),
-                    ..crate::DependentJoinTableConfig::default()
-                },
-                "demo.messages dependent_join.max_rows_per_binding = 0",
-            ),
-        ];
-
-        for (config, expected) in cases {
-            let filters = test_filters();
-            let columns = [test_column()];
-            let request = base_request();
-            let error = validate_http_table(HttpTableValidation {
-                schema: "demo",
-                table_name: "messages",
-                filters: &filters,
-                columns: &columns,
-                request: &request,
-                requests: &[],
-                pagination: &PaginationSpec::default(),
-                search_limits: None,
-                detail_hints: &[],
-                search_index: false,
-                dependent_join: &config,
-            })
-            .expect_err("zero table cap should fail");
-
-            assert!(
-                error.to_string().contains(expected),
-                "unexpected error: {error}"
+                    .contains("filter 'q': bindable=true requires mode=equality")
             );
         }
     }

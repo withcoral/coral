@@ -1,0 +1,60 @@
+---
+title: "Engine configuration"
+description: "Configure query-engine runtime policy in Coral's local config.toml."
+---
+
+Coral reads engine settings from `config.toml` in the local state directory. See [Local state](/getting-started/installation#local-state) for the default location and the `CORAL_CONFIG_DIR` override.
+
+## Dependent joins
+
+Dependent joins let Coral rewrite eligible SQL joins into dependent predicate pushdown, so join-key values from one side can be sent as filters to an HTTP-backed source. The default settings live under `[engine.dependent_join]`.
+
+```toml
+[engine.dependent_join]
+enabled = true
+max_bindings = 500
+max_resolver_rows = 10000
+max_rows_per_binding = 1000
+max_resolver_rows_per_binding = 1000
+max_concurrency = 8
+```
+
+| Key                             | Type    | Default | Description                                                                 |
+| ------------------------------- | ------- | ------- | --------------------------------------------------------------------------- |
+| `enabled`                       | boolean | `true`  | Enables the dependent-join optimizer rule globally.                         |
+| `max_bindings`                  | integer | `500`   | Maximum distinct join-key combinations Coral will push to an upstream API.  |
+| `max_resolver_rows`             | integer | `10000` | Maximum rows read from the key-supplying side before Coral falls back.      |
+| `max_rows_per_binding`          | integer | `1000`  | Maximum rows accepted from one dependent upstream request.                  |
+| `max_resolver_rows_per_binding` | integer | `1000`  | Maximum key-supplying rows allowed for one join-key combination.            |
+| `max_concurrency`               | integer | `8`     | Concurrent upstream requests issued by one dependent join.                  |
+
+All numeric limits must be greater than zero.
+
+### Per-source overrides
+
+Use `[engine.dependent_join.per_source.<source>]` to override any dependent-join setting for one source. Unspecified keys inherit the global value.
+
+```toml
+[engine.dependent_join]
+enabled = false
+max_concurrency = 8
+max_bindings = 500
+
+[engine.dependent_join.per_source.github]
+enabled = true
+max_concurrency = 4
+max_bindings = 200
+
+[engine.dependent_join.per_source.linear]
+enabled = false
+```
+
+Per-source overrides use the installed source name, which is the SQL schema name before the table. In the example above, `github` applies to joins that read from tables such as `github.pull_requests`.
+
+Precedence is:
+
+1. per-source override
+2. global `[engine.dependent_join]` value
+3. Coral's built-in default
+
+Table-level overrides are not supported.

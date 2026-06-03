@@ -421,6 +421,446 @@ async fn select_with_where_filter_pushdown() {
 }
 
 #[tokio::test]
+async fn contradictory_exact_filters_return_empty_without_fetching() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 1, "name": "Ada", "email": "ada@example.com"})] }),
+        ))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_filter", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "id" }]);
+    table["request"]["query"] = json!([
+        { "name": "id", "from": "filter", "key": "id" }
+    ]);
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_filter.users WHERE id = 1 AND id = 2",
+        )
+        .await
+        .expect("contradictory filters should produce an empty result"),
+    );
+
+    assert_eq!(rows, Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn route_filter_not_consumed_by_selected_request_is_filtered_locally() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 1,
+            "name": "Ada",
+            "state": "closed"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "state" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "state", "from": "filter", "key": "state" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_route_filter.users WHERE id = 1 AND state = 'open'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn local_route_filter_is_applied_before_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "id": 1, "name": "Ada", "state": "closed" },
+                { "id": 1, "name": "Grace", "state": "open" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_filter_limit",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "state" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "state", "from": "filter", "key": "state" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_route_filter_limit.users \
+             WHERE id = 1 AND state = 'open' LIMIT 1",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Grace" })]);
+}
+
+#[tokio::test]
+async fn local_route_filter_can_use_request_filter_values_in_template_column() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "name": "Ada" },
+                { "name": "Grace" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_local_template_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "lookup_key" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                {
+                    "name": "id",
+                    "type": "Utf8",
+                    "expr": { "kind": "from_filter", "key": "id" }
+                },
+                {
+                    "name": "name",
+                    "type": "Utf8",
+                    "expr": { "kind": "path", "path": ["name"] }
+                },
+                {
+                    "name": "lookup_key",
+                    "type": "Utf8",
+                    "expr": {
+                        "kind": "template",
+                        "template": "{{filter.id}}:{{expr.name}}",
+                        "values": {
+                            "name": { "kind": "path", "path": ["name"] }
+                        }
+                    }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT name FROM http_local_template_filter.users \
+             WHERE id = '1' AND lookup_key = '1:Grace'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "name": "Grace" })]);
+}
+
+#[tokio::test]
+async fn unconsumed_search_filter_does_not_populate_from_filter_column() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("q"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 1, "name": "Ada" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_search_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "q", "mode": "search" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "q",
+                    "type": "Utf8",
+                    "nullable": true,
+                    "expr": { "kind": "from_filter", "key": "q" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, q FROM http_route_search_filter.users \
+             WHERE id = 1 AND q LIKE '%open%'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn source_request_header_filter_is_sent_to_http_client() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("X-Tenant", "acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 1, "name": "Ada" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_source_header_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "request_headers": [{
+            "name": "X-Tenant",
+            "from": "filter",
+            "key": "tenant"
+        }],
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "tenant", "required": true }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "tenant",
+                    "type": "Utf8",
+                    "expr": { "kind": "from_filter", "key": "tenant" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_source_header_filter.users WHERE tenant = 'acme'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Ada" })]);
+}
+
+#[tokio::test]
+async fn unconsumed_like_filter_is_applied_before_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("q"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "id": 1, "name": "Ada", "q": "closed item" },
+                { "id": 1, "name": "Grace", "q": "open item" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_like_limit",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "q", "mode": "search" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "q", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_route_like_limit.users \
+             WHERE id = 1 AND q LIKE '%open%' LIMIT 1",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Grace" })]);
+}
+
+#[tokio::test]
 async fn internal_table_function_builds_http_search_request() {
     let function_name = internal_table_function_name("search", "search_issues");
     assert_search_function_query(&format!(

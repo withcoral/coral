@@ -86,9 +86,7 @@ mod schema;
 mod template;
 mod validate;
 
-pub use backends::http::{
-    AuthSpec, BasicAuthSpec, CustomAuthSpec, DependentJoinTableConfig, HeaderAuthSpec,
-};
+pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 pub use backends::mcp::{
     McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
     McpTableFilterBinding, McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
@@ -100,7 +98,7 @@ pub use common::{
     PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat,
     ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
     SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
-    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec, WireType,
+    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
 pub use inputs::{
