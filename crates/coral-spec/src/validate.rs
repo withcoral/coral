@@ -953,7 +953,9 @@ pub(crate) fn validate_host_template_inputs(
                 if after_authority || !matches!(token.namespace(), TemplateNamespace::Input) {
                     continue;
                 }
-                let Some(input) = declared_inputs.iter().find(|input| input.key == token.key())
+                let Some(input) = declared_inputs
+                    .iter()
+                    .find(|input| input.key == token.key())
                 else {
                     continue;
                 };
