@@ -39,9 +39,16 @@ rate_limit:
 test_queries:
   - SELECT * FROM lemon_squeezy.stores LIMIT 1
   - SELECT * FROM lemon_squeezy.products LIMIT 1
+  - SELECT * FROM lemon_squeezy.prices LIMIT 1
   - SELECT * FROM lemon_squeezy.orders LIMIT 1
+  - SELECT * FROM lemon_squeezy.order_items LIMIT 1
   - SELECT * FROM lemon_squeezy.subscriptions LIMIT 1
+  - SELECT * FROM lemon_squeezy.subscription_invoices LIMIT 1
   - SELECT * FROM lemon_squeezy.customers LIMIT 1
+  - SELECT * FROM lemon_squeezy.discounts LIMIT 1
+  - SELECT * FROM lemon_squeezy.discount_redemptions LIMIT 1
+  - SELECT * FROM lemon_squeezy.license_keys LIMIT 1
+  - SELECT * FROM lemon_squeezy.variants LIMIT 1
 
 tables:
   # ---------------------------------------------------------------------------
@@ -632,7 +639,7 @@ tables:
           kind: path
           path: [attributes, package_size]
       - name: tiers
-        type: Utf8
+        type: Json
         nullable: true
         description: Tier definitions for graduated and volume pricing.
         expr:
