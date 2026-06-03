@@ -1781,7 +1781,7 @@ async fn api_reports_exhausted_truncated_get_json_as_retryable() {
             assert!(
                 sqe.hint()
                     .expect("retryable decode failures should include guidance")
-                    .contains("incomplete response")
+                    .contains("could not be fully decoded")
             );
         }
         other => panic!("unexpected exhausted truncated-json error variant: {other:?}"),

@@ -404,7 +404,7 @@ fn provider_decode_failure<'a>(
     retryable: bool,
 ) -> ProviderStageFailure<'a> {
     let hint = if retryable {
-        "The upstream API returned an incomplete response. Retry the query; if this persists, inspect the upstream API response."
+        "The upstream API response could not be fully decoded. Retry the query; if this persists, inspect the upstream API response."
     } else {
         "The upstream API returned a response that does not match the source manifest."
     };
@@ -692,7 +692,7 @@ mod tests {
         let hint = error
             .hint()
             .expect("retryable decode failures should include a hint");
-        assert!(hint.contains("incomplete response"));
+        assert!(hint.contains("could not be fully decoded"));
         assert!(!hint.contains("source manifest"));
     }
 
