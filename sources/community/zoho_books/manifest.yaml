@@ -881,6 +881,7 @@ tables:
     fetch_limit_default: 100
     filters:
       - name: filter_by
+      - name: search_text
     request:
       method: GET
       path: /items
@@ -891,6 +892,9 @@ tables:
         - name: filter_by
           from: filter
           key: filter_by
+        - name: search_text
+          from: filter
+          key: search_text
     response:
       rows_path: [items]
       row_strategy: direct
