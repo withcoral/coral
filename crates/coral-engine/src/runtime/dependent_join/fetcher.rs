@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use coral_spec::backends::http::HttpTableSpec;
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::Result;
 use serde_json::Value;
 
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::target::HttpFetchTarget;
-use crate::runtime::dependent_join::bindings::Tuple;
+use crate::runtime::dependent_join::bindings::{Tuple, filter_values_for_tuple};
 use crate::runtime::dependent_join::error::DependentJoinError;
 
 #[derive(Clone)]
@@ -54,15 +54,11 @@ impl BindingFetcher {
     }
 
     pub(crate) async fn fetch_one(&self, tuple: Tuple) -> Result<(Tuple, Vec<Value>)> {
-        let filters = build_filters(
+        let filter_values = filter_values_for_tuple(
             self.literal_filters.as_ref(),
             self.binding_filters.as_ref(),
             &tuple,
         )?;
-        let filter_values = filters
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
         let target = http_target_for_filters(&self.table, &filter_values);
         let row_limit = dependent_row_limit(self.max_rows_per_binding, self.page_hint);
         let rows = self
@@ -97,34 +93,6 @@ fn dependent_row_limit(max_rows_per_binding: usize, page_hint: Option<usize>) ->
         (None, Some(page_hint)) => Some(page_hint),
         (None, None) => None,
     }
-}
-
-fn build_filters(
-    literal_filters: &BTreeMap<String, String>,
-    binding_filters: &[String],
-    tuple: &Tuple,
-) -> Result<BTreeMap<String, String>> {
-    if binding_filters.len() != tuple.values().len() {
-        return Err(DataFusionError::Internal(format!(
-            "dependent join binding arity mismatch: {} filters for {} values",
-            binding_filters.len(),
-            tuple.values().len()
-        )));
-    }
-
-    let mut filters = literal_filters.clone();
-
-    for (filter_name, value) in binding_filters.iter().zip(tuple.values()) {
-        if filters.contains_key(filter_name) {
-            return Err(DataFusionError::Internal(format!(
-                "dependent join over-constrained filter '{filter_name}'"
-            )));
-        }
-
-        filters.insert(filter_name.clone(), value.to_wire_string());
-    }
-
-    Ok(filters)
 }
 
 fn http_target_for_filters(

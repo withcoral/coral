@@ -9,7 +9,7 @@ use datafusion::common::{DataFusionError, Result};
 
 use crate::backends::schema_from_columns;
 use crate::backends::shared::mapping::convert_items;
-use crate::runtime::dependent_join::bindings::Tuple;
+use crate::runtime::dependent_join::bindings::filter_values_for_tuple;
 use crate::runtime::dependent_join::state::DependentJoinRuntimeState;
 
 #[derive(Clone, Copy)]
@@ -121,7 +121,7 @@ fn join_for_resolver_rows(
                 "dependent join resolver row index cannot fit Arrow take index: {error}"
             ))
         })?;
-        resolver_indices.extend(std::iter::repeat(row_idx).take(dependent_rows as usize));
+        resolver_indices.extend(std::iter::repeat_n(row_idx, dependent_rows as usize));
         dependent_indices.extend(0..dependent_rows);
     }
 
@@ -183,38 +183,6 @@ fn project_dependent_batch(batch: &RecordBatch, projection: &[usize]) -> Result<
             Some("projecting dependent join output".into()),
         )
     })
-}
-
-fn filter_values_for_tuple(
-    literal_filters: &BTreeMap<String, String>,
-    binding_filters: &[String],
-    tuple: &Tuple,
-) -> Result<HashMap<String, String>> {
-    if binding_filters.len() != tuple.values().len() {
-        return Err(DataFusionError::Internal(format!(
-            "dependent join binding arity mismatch: {} filters for {} values",
-            binding_filters.len(),
-            tuple.values().len()
-        )));
-    }
-
-    let mut filters = literal_filters
-        .iter()
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect::<HashMap<_, _>>();
-
-    for (filter, value) in binding_filters.iter().zip(tuple.values()) {
-        if filters
-            .insert(filter.clone(), value.to_wire_string())
-            .is_some()
-        {
-            return Err(DataFusionError::Internal(format!(
-                "dependent join over-constrained filter '{filter}'"
-            )));
-        }
-    }
-
-    Ok(filters)
 }
 
 fn arrow_error(error: arrow::error::ArrowError) -> DataFusionError {

@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arrow::array::{
@@ -21,6 +22,38 @@ impl Tuple {
     pub(crate) fn values(&self) -> &[BindingValue] {
         &self.values
     }
+}
+
+pub(crate) fn filter_values_for_tuple(
+    literal_filters: &BTreeMap<String, String>,
+    binding_filters: &[String],
+    tuple: &Tuple,
+) -> Result<HashMap<String, String>> {
+    if binding_filters.len() != tuple.values().len() {
+        return Err(DataFusionError::Internal(format!(
+            "dependent join binding arity mismatch: {} filters for {} values",
+            binding_filters.len(),
+            tuple.values().len()
+        )));
+    }
+
+    let mut filters = literal_filters
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<HashMap<_, _>>();
+
+    for (filter, value) in binding_filters.iter().zip(tuple.values()) {
+        if filters
+            .insert(filter.clone(), value.to_wire_string())
+            .is_some()
+        {
+            return Err(DataFusionError::Internal(format!(
+                "dependent join over-constrained filter '{filter}'"
+            )));
+        }
+    }
+
+    Ok(filters)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
