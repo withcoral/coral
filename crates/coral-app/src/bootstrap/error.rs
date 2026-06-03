@@ -22,9 +22,22 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// A DSL v4 source has missing or stale generated runtime artifacts.
+    #[error(
+        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
+    )]
+    MissingOrIncompatibleV4Materialization {
+        /// Source name whose installed artifacts failed validation.
+        source_name: String,
+        /// Specific materialization mismatch or missing-artifact detail.
+        detail: String,
+    },
     /// Provider-managed credential refresh failed during active source use.
     #[error("credential refresh failed: {0}")]
     CredentialRefresh(String),
+    /// A required remote dependency was unavailable.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
     /// Filesystem access failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -184,11 +197,13 @@ fn app_code(error: &AppError) -> Code {
         AppError::SourceNotFound(_) => Code::NotFound,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
             Code::FailedPrecondition
         }
+        AppError::Unavailable(_) => Code::Unavailable,
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Io(_)
         | AppError::Yaml(_)
@@ -256,6 +271,14 @@ mod tests {
             status.get_error_details_vec().is_empty(),
             "io::NotFound must not carry SOURCE_NOT_FOUND details"
         );
+    }
+
+    #[test]
+    fn app_status_maps_unavailable() {
+        let status = app_status(AppError::Unavailable(
+            "remote descriptor timed out".to_string(),
+        ));
+        assert_eq!(status.code(), Code::Unavailable);
     }
 
     #[test]

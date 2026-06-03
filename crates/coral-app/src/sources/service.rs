@@ -563,7 +563,7 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
     SourceInfo {
         name: source.name.as_str().to_string(),
         description: source.description,
-        version: source.version,
+        version: source.version.unwrap_or_default(),
         inputs: source
             .inputs
             .into_iter()

@@ -123,6 +123,65 @@ impl AppStateLayout {
             .join(workspace_name.as_str())
             .join(format!("{}.refresh.lock", source_name.as_str()))
     }
+
+    pub(crate) fn v4_materialized_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.source_dir(workspace_name, source_name)
+            .join("materialized")
+            .join("v4")
+    }
+
+    pub(crate) fn v4_materialized_tmp_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        suffix: &str,
+    ) -> PathBuf {
+        self.source_dir(workspace_name, source_name)
+            .join("materialized")
+            .join(format!("v4.{suffix}"))
+    }
+
+    pub(crate) fn v4_fingerprint_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.v4_materialized_dir(workspace_name, source_name)
+            .join("fingerprint.yaml")
+    }
+
+    pub(crate) fn v4_projections_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.v4_materialized_dir(workspace_name, source_name)
+            .join("projections.yaml")
+    }
+
+    pub(crate) fn v4_diagnostics_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.v4_materialized_dir(workspace_name, source_name)
+            .join("diagnostics.yaml")
+    }
+
+    pub(crate) fn v4_surface_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+    ) -> PathBuf {
+        self.v4_materialized_dir(workspace_name, source_name)
+            .join("surfaces")
+            .join(surface_id)
+    }
 }
 
 #[cfg(test)]

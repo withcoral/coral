@@ -84,6 +84,7 @@ mod loader;
 mod parser;
 mod schema;
 mod template;
+pub mod v4;
 mod validate;
 
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};

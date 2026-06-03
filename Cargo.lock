@@ -1260,6 +1260,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-native-keyring-store",
+ "wiremock",
  "zbus-secret-service-keyring-store",
 ]
 
@@ -1297,6 +1298,7 @@ dependencies = [
  "rmcp",
  "rust-embed",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1391,6 +1393,7 @@ name = "coral-spec"
 version = "0.4.1"
 dependencies = [
  "jsonschema",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -4623,6 +4626,7 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -4830,7 +4834,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

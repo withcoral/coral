@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, SourceValidationReport, StatusCode,
-    TableInfo,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
+    SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
@@ -22,7 +22,11 @@ use crate::query::extensions::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::materialization::{
+    incompatible_materialization_error, load_v4_materialization,
+};
 use crate::sources::model::InstalledSource;
+use crate::sources::runtime_package::runtime_components_for_v4_source;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
@@ -166,15 +170,12 @@ impl QueryManager {
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
         let runtime = self.runtime_config(workspace_name, std::slice::from_ref(&query_source));
-        let report = CoralQuery::validate_source(
-            &query_source,
-            runtime,
-            query_source.source_spec().test_queries(),
-        )
-        .await
-        .map_err(QueryManagerError::Core)?;
+        let report =
+            CoralQuery::validate_source(&query_source, runtime, query_source.test_queries())
+                .await
+                .map_err(QueryManagerError::Core)?;
         let mut source = source;
-        source.version = Some(version);
+        source.version = version;
 
         Ok(ValidatedSource { source, report })
     }
@@ -194,7 +195,10 @@ impl QueryManager {
         for source in catalog.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
-                Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
+                Err(
+                    error @ (AppError::Credentials(CredentialsError::Unavailable(_))
+                    | AppError::MissingOrIncompatibleV4Materialization { .. }),
+                ) => {
                     return Err(error);
                 }
                 Err(error) => {
@@ -214,9 +218,28 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
-    ) -> Result<(QuerySource, String), AppError> {
+    ) -> Result<(QuerySource, Option<String>), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
+        let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
+            let materialized = load_v4_materialization(
+                &self.layout,
+                workspace_name,
+                &source.name,
+                &installed.manifest_yaml,
+                v4,
+            )?;
+            Some(
+                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
+                    incompatible_materialization_error(
+                        &source.name,
+                        format!("failed to assemble runtime package: {error}"),
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
@@ -251,10 +274,24 @@ impl QueryManager {
                 resolved_secrets.insert(secret_name, value.clone());
             }
         }
-        Ok((
-            QuerySource::new(source_spec, source.variables.clone(), resolved_secrets),
-            installed.candidate.version,
-        ))
+        let query_source = if let Some(components) = v4_runtime_components {
+            QuerySource::from_runtime_components(
+                RuntimeSourcePackage {
+                    source_name: source_spec.schema_name().to_string(),
+                    authored_version: source_spec.source_version().map(ToString::to_string),
+                    description: source_spec.description().to_string(),
+                    declared_inputs: source_spec.declared_inputs().to_vec(),
+                    test_queries: source_spec.test_queries().to_vec(),
+                    components,
+                },
+                source.variables.clone(),
+                resolved_secrets,
+            )
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
+        } else {
+            QuerySource::from_manifest(&source_spec, source.variables.clone(), resolved_secrets)
+        };
+        Ok((query_source, installed.candidate.version))
     }
 
     fn runtime_config(
@@ -381,7 +418,11 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingOrIncompatibleV4Materialization { .. } => {
+            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
+        }
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
+        AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
         AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
@@ -446,14 +487,18 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, SourceInputResolutionContext, SourceInputResolver,
+        EngineExtensions, QueryExecution, SourceInputResolutionContext, SourceInputResolver,
         SourceInputResolverError,
     };
     use coral_spec::parse_source_manifest_yaml;
+    use serde_json::{Value, json};
     use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
 
     struct QueryManagerFixture {
@@ -479,6 +524,18 @@ mod tests {
             _temp: temp,
             manager,
         }
+    }
+
+    fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
+        let mut bytes = Vec::new();
+        {
+            let mut writer = arrow::json::ArrayWriter::new(&mut bytes);
+            for batch in execution.batches() {
+                writer.write(batch).expect("batch should encode to json");
+            }
+            writer.finish().expect("json writer should finish");
+        }
+        serde_json::from_slice(&bytes).expect("json rows should decode")
     }
 
     #[test]
@@ -579,6 +636,146 @@ tables:
         assert_eq!(
             query_source.secrets(),
             &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())])
+        );
+    }
+
+    #[tokio::test]
+    async fn installed_v4_source_queries_through_app_assembled_runtime_component() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/issues"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": 1, "title": "Generated runtime package"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let source_manager = SourceManager::new(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace_name = WorkspaceName::default();
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            format!(
+                r"
+openapi: 3.0.3
+info:
+  title: GitHub
+servers:
+  - url: {}
+paths:
+  /issues:
+    get:
+      operationId: issues/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {{type: integer}}
+                    title: {{type: string}}
+",
+                server.uri()
+            ),
+        )
+        .expect("write OpenAPI fixture");
+        source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: github_v4_query
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import v4 source");
+        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+
+        let execution = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "SELECT id, title FROM github_v4_query.issues",
+            )
+            .await
+            .expect("query executes");
+
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"id": 1, "title": "Generated runtime package"})]
+        );
+    }
+
+    #[test]
+    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: github_v4_missing_artifacts
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+        )
+        .expect("write manifest");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
+
+        let error = fixture
+            .manager
+            .load_query_sources(&workspace_name)
+            .expect_err("missing materialization should fail closed");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
         );
     }
 
