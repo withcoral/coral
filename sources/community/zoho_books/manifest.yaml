@@ -189,21 +189,9 @@ tables:
       - name: mobile
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # invoices
@@ -292,21 +280,9 @@ tables:
       - name: last_payment_date
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # estimates
@@ -379,21 +355,9 @@ tables:
       - name: project_name
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # sales_orders
@@ -464,21 +428,9 @@ tables:
       - name: reference_number
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # bills
@@ -551,21 +503,9 @@ tables:
       - name: reference_number
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # purchase_orders
@@ -636,21 +576,9 @@ tables:
       - name: reference_number
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # expenses
@@ -734,21 +662,9 @@ tables:
       - name: is_billable
         type: Boolean
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # credit_notes
@@ -819,21 +735,9 @@ tables:
       - name: reference_number
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # customer_payments
@@ -898,21 +802,9 @@ tables:
       - name: reference_number
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # vendor_payments
@@ -977,21 +869,9 @@ tables:
       - name: reference_number
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # items — products and services
@@ -1000,8 +880,6 @@ tables:
     description: Products and services in Zoho Books.
     fetch_limit_default: 100
     filters:
-      - name: status
-      - name: search_text
       - name: filter_by
     request:
       method: GET
@@ -1010,12 +888,6 @@ tables:
         - name: organization_id
           from: template
           template: "{{input.ZOHO_ORGANIZATION_ID}}"
-        - name: status
-          from: filter
-          key: status
-        - name: search_text
-          from: filter
-          key: search_text
         - name: filter_by
           from: filter
           key: filter_by
@@ -1056,27 +928,15 @@ tables:
       - name: tax_name
         type: Utf8
       - name: tax_percentage
-        type: Float64
+        type: Utf8
       - name: product_type
         type: Utf8
       - name: is_taxable
         type: Boolean
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # chart_of_accounts
@@ -1206,21 +1066,9 @@ tables:
       - name: currency_code
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
       - name: last_modified_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [last_modified_time]
+        type: Utf8
 
   # -------------------------------------------------------------------------
   # projects
@@ -1230,8 +1078,7 @@ tables:
     fetch_limit_default: 100
     filters:
       - name: customer_id
-      - name: status
-      - name: search_text
+      - name: filter_by
     request:
       method: GET
       path: /projects
@@ -1242,12 +1089,9 @@ tables:
         - name: customer_id
           from: filter
           key: customer_id
-        - name: status
+        - name: filter_by
           from: filter
-          key: status
-        - name: search_text
-          from: filter
-          key: search_text
+          key: filter_by
     response:
       rows_path: [projects]
       row_strategy: direct
@@ -1291,13 +1135,7 @@ tables:
       - name: currency_code
         type: Utf8
       - name: created_time
-        type: Timestamp
-        expr:
-          kind: format_timestamp
-          input: iso8601
-          expr:
-            kind: path
-            path: [created_time]
+        type: Utf8
 
 # ---------------------------------------------------------------------------
 # Smoke checks. Read-only. `coral source test zoho_books` runs these.
@@ -1307,3 +1145,5 @@ test_queries:
   - SELECT * FROM zoho_books.contacts LIMIT 1
   - SELECT * FROM zoho_books.invoices LIMIT 1
   - SELECT * FROM zoho_books.items LIMIT 1
+
+

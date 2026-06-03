@@ -28,7 +28,7 @@ Zoho Books is widely used by small and medium-sized businesses for accounting an
 * Regional API endpoint support
 * Pagination support for list endpoints
 * Typed schemas for major business entities
-* Configurable API and Accounts domains
+* Configurable API domain support
 
 ---
 ## Source Inputs
@@ -205,11 +205,14 @@ You need:
 2. `ZOHO_ORGANIZATION_ID`
 3. `ZOHO_API_DOMAIN` (region-specific API domain)
 
+If you do not know the organization ID yet, use the `organizations` table or the Zoho Books UI Profile tab to discover it, then supply it for the transactional tables that require it.
+
 How to get `organization_id`:
 
 - Call `GET {ZOHO_API_DOMAIN}/books/v3/organizations` with a valid token, or
 - Copy it from the Zoho Books app URL after signing in, or
 - Open Zoho Books UI -> Profile tab and copy the organization ID shown there.
+- The `organizations` table is the discovery path for this ID and does not require `organization_id` itself.
 
 How to get tokens:
 
