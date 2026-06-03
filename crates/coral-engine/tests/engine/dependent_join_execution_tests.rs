@@ -121,7 +121,7 @@ async fn dpp_and_naive_paths_agree_on_join_aggregation() {
 }
 
 #[tokio::test]
-async fn duplicate_resolver_rows_for_one_binding_emit_distinct_join_batches() {
+async fn duplicate_resolver_rows_for_one_binding_share_join_batch() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
         temp.path(),
@@ -165,7 +165,7 @@ async fn duplicate_resolver_rows_for_one_binding_emit_distinct_join_batches() {
     .await
     .expect("query should succeed");
 
-    assert_eq!(execution.batches().len(), 2);
+    assert_eq!(execution.batches().len(), 1);
     assert_eq!(
         execution_to_rows(&execution),
         vec![
