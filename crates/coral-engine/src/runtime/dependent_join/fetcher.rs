@@ -64,7 +64,7 @@ impl BindingFetcher {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let target = http_target_for_filters(&self.table, &filter_values);
-        let row_limit = self.max_rows_per_binding.checked_add(1);
+        let row_limit = dependent_row_limit(self.max_rows_per_binding, self.page_hint);
         let rows = self
             .client
             .fetch_complete(
@@ -87,6 +87,15 @@ impl BindingFetcher {
         }
 
         Ok((tuple, rows))
+    }
+}
+
+fn dependent_row_limit(max_rows_per_binding: usize, page_hint: Option<usize>) -> Option<usize> {
+    match (max_rows_per_binding.checked_add(1), page_hint) {
+        (Some(cap_probe_limit), Some(page_hint)) => Some(cap_probe_limit.min(page_hint)),
+        (Some(cap_probe_limit), None) => Some(cap_probe_limit),
+        (None, Some(page_hint)) => Some(page_hint),
+        (None, None) => None,
     }
 }
 

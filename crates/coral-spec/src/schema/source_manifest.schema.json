@@ -341,8 +341,7 @@
         },
         "retry_after_header": { "type": "string", "minLength": 1 },
         "remaining_header": { "type": "string", "minLength": 1 },
-        "reset_header": { "type": "string", "minLength": 1 },
-        "max_concurrency": { "type": "integer", "minimum": 1 }
+        "reset_header": { "type": "string", "minLength": 1 }
       }
     },
     "http_table": {
@@ -363,7 +362,6 @@
           "type": "array",
           "items": { "$ref": "#/$defs/detail_hint" }
         },
-        "search_index": { "type": "boolean" },
         "request": { "$ref": "#/$defs/request" },
         "requests": {
           "type": "array",
@@ -542,8 +540,7 @@
           ]
         },
         "description": { "type": "string" },
-        "bindable": { "type": "boolean" },
-        "wire_type": { "type": "string", "enum": ["string"] }
+        "bindable": { "type": "boolean" }
       }
     },
     "search_limits": {

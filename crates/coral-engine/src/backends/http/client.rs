@@ -119,10 +119,6 @@ impl HttpSourceClient {
         HttpRequestFilterUsage::new(self.base_url.clone(), self.request_headers.clone())
     }
 
-    pub(crate) fn max_concurrency(&self) -> Option<usize> {
-        self.rate_limit.max_concurrency
-    }
-
     /// Build a backend client from a validated source spec.
     ///
     /// # Errors

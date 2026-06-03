@@ -849,7 +849,6 @@ Coral always treats `429 Too Many Requests` as a rate-limit signal. Use `extra_s
 | `retry_after_header` | string          | `Retry-After`   | Header that carries a retry delay in seconds or HTTP-date form              |
 | `remaining_header`   | string          | —               | Header whose value `0` means the current quota is exhausted                 |
 | `reset_header`       | string          | —               | Header with the quota reset time as Unix epoch seconds                      |
-| `max_concurrency`    | integer         | —               | Maximum concurrent dependent-join HTTP calls for this source                |
 
 Example for a GitHub-style API:
 
@@ -858,30 +857,27 @@ rate_limit:
   extra_statuses: [403]
   remaining_header: X-RateLimit-Remaining
   reset_header: X-RateLimit-Reset
-  max_concurrency: 8
 ```
 
 ### HTTP dependent-join capability metadata
 
-Coral can mark HTTP table filters as safe for future dependent predicate
-pushdown. This metadata is table-local: it says a filter may be supplied from a
-runtime join key, not that the table depends on a specific source pair.
+HTTP table filters can opt in to dependent predicate pushdown. This metadata is
+table-local: it says a filter may be supplied from a runtime join key, not that
+the table depends on a specific source pair.
 
-V1 capability metadata is deliberately narrow:
+The manifest contract is deliberately narrow:
 
 | Field | Scope | Type | Default | Description |
 | ----- | ----- | ---- | ------- | ----------- |
 | `filters[].bindable` | filter | boolean | `false` | Allows the filter to be supplied from a runtime join key |
-| `filters[].wire_type` | filter | string | `string` | Runtime binding serialization; V1 supports only `string` |
-| `search_index` | table | boolean | `false` | Marks filtered results as ranked, capped, fuzzy, or otherwise incomplete |
 
-Bindable filters must use `mode: equality`. Search-index-backed tables cannot
-declare bindable filters because their filtered result sets are not complete
-enough to preserve SQL join correctness.
+Bindable filters must use `mode: equality`. Do not mark ranked, capped, fuzzy,
+or otherwise incomplete search-result filters as bindable; dependent joins rely
+on complete filtered result sets to preserve SQL join correctness.
 
-In V1, dependent join execution buffers resolver rows and dependent fetch
-results before producing joined output. Row, binding, and fanout limits are
-engine runtime policy, not manifest metadata.
+Dependent join execution buffers resolver rows and dependent fetch results
+before producing joined output. Row, binding, and fanout limits are engine
+runtime policy, not manifest metadata.
 
 Example:
 
@@ -890,26 +886,17 @@ tables:
   - name: pull_requests
     description: Pull requests
     request:
-      path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
+      path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}
     filters:
       - name: owner
         bindable: true
       - name: repo
         bindable: true
-      - name: number
+      - name: pull_number
         bindable: true
     columns:
       - name: number
         type: Int64
-
-  - name: search_issues
-    description: Search issues
-    search_index: true
-    request:
-      path: /search/issues
-    filters:
-      - name: q
-        mode: search
 ```
 
 ### HTTP value sources

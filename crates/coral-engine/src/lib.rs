@@ -66,7 +66,8 @@ pub use composition::{
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
+    CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
+    EffectiveDependentJoinConfig, QueryExecution, QueryPlan, QueryRuntimeConfig,
     QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
     SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
     TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,

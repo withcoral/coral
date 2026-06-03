@@ -98,7 +98,7 @@ pub use common::{
     PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat,
     ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
     SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
-    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec, WireType,
+    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub use error::{ManifestError, Result};
 pub use inputs::{

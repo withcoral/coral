@@ -191,7 +191,6 @@ mod tests {
 
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
-    use coral_spec::WireType;
     use datafusion::common::Column;
 
     use crate::runtime::dependent_join::logical::BindingKey;
@@ -218,7 +217,6 @@ mod tests {
             resolver_column: Column::from_name("id"),
             resolver_binding_name: "id".to_string(),
             dependent_filter: "id".to_string(),
-            wire_type: WireType::String,
         }]))
     }
 
