@@ -1,0 +1,1006 @@
+name: calendly
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Calendly event types, scheduled meetings, organization members,
+  routing forms, webhook subscriptions, and invitees.
+
+# Inputs are collected at install time.
+# Retrieve your organization values by running:
+#   curl -H "Authorization: Bearer $CALENDLY_API_TOKEN" https://api.calendly.com/users/me
+inputs:
+  CALENDLY_API_TOKEN:
+    kind: secret
+    hint: >
+      Personal access token from Calendly. Generate one at
+      https://calendly.com/integrations/api_webhooks under API & Webhooks.
+      Minimum read scopes: event_types:read, scheduled_events:read,
+      organizations:read; add routing_forms:read and webhooks:read when
+      querying those tables. See README for the full scope table.
+  CALENDLY_ORG_URI:
+    kind: variable
+    hint: >
+      Your Calendly organization URI, e.g.
+      https://api.calendly.com/organizations/AAAAAAAAAAAAAAAA.
+      Found in the current_organization field of GET /users/me.
+  CALENDLY_ORG_UUID:
+    kind: variable
+    default: ""
+    hint: >
+      The UUID portion of your organization URI — the trailing segment after
+      /organizations/. For example, if your org URI is
+      https://api.calendly.com/organizations/AAAAAAAAAAAAAAAA, enter
+      AAAAAAAAAAAAAAAA. Required only for the organization_invitations table.
+
+base_url: https://api.calendly.com
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.CALENDLY_API_TOKEN}}"
+
+# Calendly returns X-RateLimit-Remaining and X-RateLimit-Reset headers.
+# HTTP 429 is the standard rate-limit response; honor Retry-After.
+rate_limit:
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+
+test_queries:
+  - SELECT * FROM calendly.event_types LIMIT 1
+  - SELECT * FROM calendly.scheduled_events WHERE min_start_time = '2025-01-01T00:00:00Z' LIMIT 1
+  - SELECT * FROM calendly.organization_memberships LIMIT 1
+
+tables:
+  - name: event_types
+    description: >
+      Calendly event type templates for the configured organization. Each row
+      is one scheduling page with its duration, URL, and active status.
+    request:
+      method: GET
+      path: /event_types
+      query:
+        - name: organization
+          from: template
+          template: "{{input.CALENDLY_ORG_URI}}"
+    response:
+      rows_path:
+        - collection
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - pagination
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: uri
+        type: Utf8
+        description: Unique Calendly URI for this event type.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: >
+          Display name of the event type. Null for some AdhocEventType rows.
+      - name: description_plain
+        type: Utf8
+        nullable: true
+        description: Plain-text description of the event type.
+      - name: type
+        type: Utf8
+        description: "Event type kind, e.g. StandardEventType or AdhocEventType."
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: >
+          URL slug used in the scheduling link. Null when the event type has no slug.
+      - name: scheduling_url
+        type: Utf8
+        description: Full scheduling URL invitees use to book this event type.
+      - name: duration
+        type: Int64
+        description: Duration of the meeting in minutes.
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Color label assigned to this event type in the Calendly UI.
+      - name: active
+        type: Boolean
+        description: Whether this event type is currently accepting bookings.
+      - name: secret
+        type: Boolean
+        description: Whether this event type is hidden from the public profile page.
+      - name: pooling_type
+        type: Utf8
+        nullable: true
+        description: >
+          Pooling strategy for round-robin or collective event types,
+          e.g. round_robin or collective. Null for standard single-host types.
+      - name: profile__name
+        type: Utf8
+        nullable: true
+        description: Display name of the owning profile (user or team).
+        expr:
+          kind: path
+          path:
+            - profile
+            - name
+      - name: profile__type
+        type: Utf8
+        nullable: true
+        description: "Owner type: User or Team."
+        expr:
+          kind: path
+          path:
+            - profile
+            - type
+      - name: created_at
+        type: Timestamp
+        description: When the event type was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: When the event type was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  - name: scheduled_events
+    description: >
+      Booked meetings for the configured Calendly organization, both active
+      and canceled. Filter by status, invitee email, or time range with SQL
+      WHERE clauses. Use min_start_time and max_start_time with ISO 8601
+      strings to narrow results to a date window and avoid large full-org
+      scans. Use the sort_order filter to control ordering.
+    guide: >
+      Default cap: 500 total rows. Coral stops paging there by default so
+      SELECT * does not walk the full org history. Calendly's count parameter
+      controls page size (1-100 rows per request; this table uses up to 100).
+      Narrow with min_start_time/max_start_time or other API filters, or add
+      an explicit LIMIT greater than 500 when you need more rows.
+    fetch_limit_default: 500
+    request:
+      method: GET
+      path: /scheduled_events
+      query:
+        - name: organization
+          from: template
+          template: "{{input.CALENDLY_ORG_URI}}"
+        - name: status
+          from: filter
+          key: status
+        - name: invitee_email
+          from: filter
+          key: invitee_email
+        - name: min_start_time
+          from: filter
+          key: min_start_time
+        - name: max_start_time
+          from: filter
+          key: max_start_time
+        - name: sort
+          from: filter
+          key: sort_order
+    response:
+      rows_path:
+        - collection
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - pagination
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    filters:
+      - name: status
+      - name: invitee_email
+      - name: min_start_time
+      - name: max_start_time
+      - name: sort_order
+    columns:
+      - name: uri
+        type: Utf8
+        description: Unique Calendly URI for this scheduled event.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: >
+          Event name at booking time. Null for some events (e.g. AdhocEventType).
+      - name: meeting_notes_plain
+        type: Utf8
+        nullable: true
+        description: Plain-text meeting notes added by the host.
+      - name: status
+        type: Utf8
+        description: "Booking status: 'active' or 'canceled'."
+      - name: start_time
+        type: Timestamp
+        description: When the event starts (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_time
+      - name: end_time
+        type: Timestamp
+        description: When the event ends (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end_time
+      - name: event_type
+        type: Utf8
+        description: >
+          URI of the event type template used for this booking. Joinable
+          with calendly.event_types.uri.
+      - name: location__type
+        type: Utf8
+        nullable: true
+        description: >
+          Meeting location kind, e.g. physical, outbound_call, inbound_call,
+          or video_conference.
+        expr:
+          kind: path
+          path:
+            - location
+            - type
+      - name: location__location
+        type: Utf8
+        nullable: true
+        description: Location string, phone number, or video meeting URL.
+        expr:
+          kind: path
+          path:
+            - location
+            - location
+      - name: location__join_url
+        type: Utf8
+        nullable: true
+        description: Direct join URL for integrated video conferencing services.
+        expr:
+          kind: path
+          path:
+            - location
+            - join_url
+      - name: invitees_counter__total
+        type: Int64
+        nullable: true
+        description: Total number of invitees added to this event.
+        expr:
+          kind: path
+          path:
+            - invitees_counter
+            - total
+      - name: invitees_counter__active
+        type: Int64
+        nullable: true
+        description: Number of invitees who have not canceled.
+        expr:
+          kind: path
+          path:
+            - invitees_counter
+            - active
+      - name: invitees_counter__limit
+        type: Int64
+        nullable: true
+        description: Maximum invitee capacity for this event.
+        expr:
+          kind: path
+          path:
+            - invitees_counter
+            - limit
+      - name: cancellation__reason
+        type: Utf8
+        nullable: true
+        description: Cancellation reason provided when the event was canceled.
+        expr:
+          kind: path
+          path:
+            - cancellation
+            - reason
+      - name: cancellation__canceled_by
+        type: Utf8
+        nullable: true
+        description: Name of the person who canceled the event.
+        expr:
+          kind: path
+          path:
+            - cancellation
+            - canceled_by
+      - name: cancellation__canceler_type
+        type: Utf8
+        nullable: true
+        description: "Who initiated the cancellation: 'host' or 'invitee'."
+        expr:
+          kind: path
+          path:
+            - cancellation
+            - canceler_type
+      - name: created_at
+        type: Timestamp
+        description: When the booking was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: When the booking record was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: invitee_email
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the invitee_email filter pushed to the Calendly API.
+        expr:
+          kind: from_filter
+          key: invitee_email
+      - name: min_start_time
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the min_start_time filter pushed to the Calendly API.
+        expr:
+          kind: from_filter
+          key: min_start_time
+      - name: max_start_time
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the max_start_time filter pushed to the Calendly API.
+        expr:
+          kind: from_filter
+          key: max_start_time
+      - name: sort_order
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >
+          Echoes the sort_order filter pushed to the Calendly API
+          (sent as the 'sort' query parameter). Accepted values:
+          'start_time:asc' (default) or 'start_time:desc'.
+        expr:
+          kind: from_filter
+          key: sort_order
+
+  - name: organization_memberships
+    description: >
+      Members of the configured Calendly organization, including their role,
+      email, and scheduling URL. Join with scheduled_event_hosts on
+      user__uri = user to correlate event hosts with team members.
+    request:
+      method: GET
+      path: /organization_memberships
+      query:
+        - name: organization
+          from: template
+          template: "{{input.CALENDLY_ORG_URI}}"
+    response:
+      rows_path:
+        - collection
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - pagination
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: uri
+        type: Utf8
+        description: Unique URI for this membership record.
+      - name: role
+        type: Utf8
+        description: "Member's role in the organization: 'owner', 'admin', or 'user'."
+      - name: user__uri
+        type: Utf8
+        description: Calendly URI for the member's user account.
+        expr:
+          kind: path
+          path:
+            - user
+            - uri
+      - name: user__name
+        type: Utf8
+        description: Display name of the member.
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: user__email
+        type: Utf8
+        description: Email address of the member.
+        expr:
+          kind: path
+          path:
+            - user
+            - email
+      - name: user__slug
+        type: Utf8
+        nullable: true
+        description: Calendly slug used in the member's personal scheduling URL.
+        expr:
+          kind: path
+          path:
+            - user
+            - slug
+      - name: user__scheduling_url
+        type: Utf8
+        nullable: true
+        description: The member's Calendly scheduling page URL.
+        expr:
+          kind: path
+          path:
+            - user
+            - scheduling_url
+      - name: user__timezone
+        type: Utf8
+        nullable: true
+        description: Member's configured timezone, e.g. America/New_York.
+        expr:
+          kind: path
+          path:
+            - user
+            - timezone
+      - name: user__avatar_url
+        type: Utf8
+        nullable: true
+        description: URL of the member's avatar image.
+        expr:
+          kind: path
+          path:
+            - user
+            - avatar_url
+      - name: created_at
+        type: Timestamp
+        description: When this membership was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: When this membership record was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  - name: routing_forms
+    description: >
+      Routing forms for the configured Calendly organization. Routing forms
+      collect invitee information and direct them to the right event type or
+      URL. Join with routing_form_submissions(form_uuid) to inspect responses.
+      Requires a Calendly plan with Routing Forms enabled (Professional, Teams,
+      or Enterprise; owner/admin). See
+      https://calendly.com/help/how-to-create-a-routing-form
+    request:
+      method: GET
+      path: /routing_forms
+      query:
+        - name: organization
+          from: template
+          template: "{{input.CALENDLY_ORG_URI}}"
+    response:
+      rows_path:
+        - collection
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - pagination
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: uri
+        type: Utf8
+        description: Unique Calendly URI for this routing form.
+      - name: name
+        type: Utf8
+        description: Display name of the routing form.
+      - name: status
+        type: Utf8
+        description: "Form status: 'draft' or 'published'."
+      - name: organization
+        type: Utf8
+        description: URI of the organization this routing form belongs to.
+      - name: created_at
+        type: Timestamp
+        description: When this routing form was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: When this routing form was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  - name: webhook_subscriptions
+    description: >
+      Webhook subscriptions configured for the organization. Each row shows the
+      callback URL, delivery state, scope, and subscribed event types in the
+      events column. Useful for auditing integrations. Requires a paid plan
+      with webhook/API access (Professional, Standard, Teams, or Enterprise).
+      Lists organization-scoped subscriptions only (scope=organization); requires
+      an owner or admin token with webhooks:read. See
+      https://developer.calendly.com/receive-data-from-scheduled-events-in-real-time-with-webhook-subscriptions
+    request:
+      method: GET
+      path: /webhook_subscriptions
+      query:
+        - name: scope
+          from: literal
+          value: organization
+        - name: organization
+          from: template
+          template: "{{input.CALENDLY_ORG_URI}}"
+    response:
+      rows_path:
+        - collection
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - pagination
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: uri
+        type: Utf8
+        description: Unique URI for this webhook subscription.
+      - name: callback_url
+        type: Utf8
+        description: Endpoint URL Calendly delivers payloads to.
+      - name: state
+        type: Utf8
+        description: "Subscription state: 'active' or 'disabled'."
+      - name: scope
+        type: Utf8
+        description: "Subscription scope: 'organization', 'user', or 'group'."
+      - name: organization
+        type: Utf8
+        nullable: true
+        description: URI of the organization this subscription is scoped to.
+      - name: user
+        type: Utf8
+        nullable: true
+        description: >
+          URI of the user this subscription is scoped to. Always null here because
+          this table lists organization-scoped subscriptions only.
+      - name: creator
+        type: Utf8
+        nullable: true
+        description: URI of the user who created this subscription.
+      - name: events
+        type: Json
+        description: >
+          JSON array of Calendly webhook event names this subscription listens
+          for, e.g. invitee.created and invitee.canceled.
+      - name: created_at
+        type: Timestamp
+        description: When this webhook subscription was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: When this webhook subscription was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  - name: organization_invitations
+    description: >
+      Pending and accepted invitations to join the configured organization.
+      Useful for auditing who has not yet accepted their invitation. Requires
+      CALENDLY_ORG_UUID to be set (the UUID at the end of CALENDLY_ORG_URI).
+      Querying without it produces a request error.
+    request:
+      method: GET
+      path: "/organizations/{{input.CALENDLY_ORG_UUID}}/invitations"
+    response:
+      rows_path:
+        - collection
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - pagination
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: uri
+        type: Utf8
+        description: Unique URI for this invitation record.
+      - name: email
+        type: Utf8
+        description: Email address the invitation was sent to.
+      - name: status
+        type: Utf8
+        description: "Invitation status: 'pending', 'accepted', or 'declined'."
+      - name: last_sent_at
+        type: Timestamp
+        nullable: true
+        description: When the invitation email was most recently sent (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_sent_at
+      - name: created_at
+        type: Timestamp
+        description: When this invitation was first created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: When this invitation record was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+functions:
+  - name: event_invitees
+    description: >
+      Returns all invitees for a specific scheduled event. Pass the event UUID
+      (the trailing path segment of the event URI) as the required argument.
+      For example, from https://api.calendly.com/scheduled_events/AAAAAAAAAAAAAAAA
+      use AAAAAAAAAAAAAAAA as event_uuid. Join with scheduled_events on
+      event = uri to enrich invitee rows with event start times and locations.
+    args:
+      - name: event_uuid
+        required: true
+        bind:
+          arg: event_uuid
+    request:
+      method: GET
+      path: "/scheduled_events/{{arg.event_uuid}}/invitees"
+    response:
+      rows_path:
+        - collection
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - pagination
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: uri
+        type: Utf8
+        description: Unique URI for this invitee record.
+      - name: event
+        type: Utf8
+        description: URI of the scheduled event. Joinable with scheduled_events.uri.
+      - name: email
+        type: Utf8
+        description: Invitee's email address.
+      - name: name
+        type: Utf8
+        description: Invitee's full name.
+      - name: status
+        type: Utf8
+        description: "Invitee status: 'active' or 'canceled'."
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Timezone the invitee selected when booking.
+      - name: text_reminder_number
+        type: Utf8
+        nullable: true
+        description: Phone number opted in for SMS reminders, if provided.
+      - name: rescheduled
+        type: Boolean
+        nullable: true
+        description: Whether this invitee has rescheduled the original booking.
+      - name: old_invitee
+        type: Utf8
+        nullable: true
+        description: URI of the original invitee record before rescheduling.
+      - name: new_invitee
+        type: Utf8
+        nullable: true
+        description: URI of the replacement invitee record after rescheduling.
+      - name: cancel_url
+        type: Utf8
+        nullable: true
+        description: URL the invitee can use to cancel this booking.
+      - name: reschedule_url
+        type: Utf8
+        nullable: true
+        description: URL the invitee can use to reschedule this booking.
+      - name: questions_and_answers
+        type: Json
+        nullable: true
+        description: >
+          JSON array of question/answer pairs collected during booking.
+          Each element has question, answer, and position.
+          Query individual answers with json_get_str(questions_and_answers, '0', 'answer').
+      - name: created_at
+        type: Timestamp
+        description: When the invitee completed the booking (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: When the invitee record was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  - name: routing_form_submissions
+    description: >
+      Returns all submissions for a specific routing form. Pass the routing
+      form UUID (the trailing path segment of the form URI) as the required
+      argument. For example, from
+      https://api.calendly.com/routing_forms/AAAAAAAAAAAAAAAA use
+      AAAAAAAAAAAAAAAA as form_uuid. Requires a Calendly plan with Routing Forms enabled (Professional, Teams,
+      or Enterprise) and a published routing form; draft forms may return no
+      rows. See https://calendly.com/help/how-to-manage-routing-forms
+    args:
+      - name: form_uuid
+        required: true
+        bind:
+          arg: form_uuid
+    request:
+      method: GET
+      path: /routing_form_submissions
+      query:
+        - name: form
+          from: template
+          template: "https://api.calendly.com/routing_forms/{{arg.form_uuid}}"
+    response:
+      rows_path:
+        - collection
+      allow_404_empty: true
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - pagination
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: count
+    columns:
+      - name: uri
+        type: Utf8
+        description: Unique URI for this routing form submission.
+      - name: routing_form_uri
+        type: Utf8
+        nullable: true
+        description: URI of the routing form this submission belongs to.
+        expr:
+          kind: path
+          path:
+            - routing_form
+      - name: questions_and_answers
+        type: Json
+        nullable: true
+        description: >
+          JSON array of question/answer pairs submitted by the invitee.
+          Each element has question_uuid, question, answer, and position.
+          Query individual answers with json_get_str(questions_and_answers, '0', 'answer').
+      - name: tracking__utm_campaign
+        type: Utf8
+        nullable: true
+        description: UTM campaign parameter captured at form submission time.
+        expr:
+          kind: path
+          path:
+            - tracking
+            - utm_campaign
+      - name: tracking__utm_source
+        type: Utf8
+        nullable: true
+        description: UTM source parameter captured at form submission time.
+        expr:
+          kind: path
+          path:
+            - tracking
+            - utm_source
+      - name: tracking__utm_medium
+        type: Utf8
+        nullable: true
+        description: UTM medium parameter captured at form submission time.
+        expr:
+          kind: path
+          path:
+            - tracking
+            - utm_medium
+      - name: tracking__salesforce_uuid
+        type: Utf8
+        nullable: true
+        description: Salesforce UUID captured at form submission time, if present.
+        expr:
+          kind: path
+          path:
+            - tracking
+            - salesforce_uuid
+      - name: tracking__utm_content
+        type: Utf8
+        nullable: true
+        description: UTM content parameter captured at form submission time.
+        expr:
+          kind: path
+          path:
+            - tracking
+            - utm_content
+      - name: tracking__utm_term
+        type: Utf8
+        nullable: true
+        description: UTM term parameter captured at form submission time.
+        expr:
+          kind: path
+          path:
+            - tracking
+            - utm_term
+      - name: created_at
+        type: Timestamp
+        description: When this routing form submission was created (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        description: When this routing form submission was last updated (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  - name: scheduled_event_hosts
+    description: >
+      Returns the host memberships for a specific scheduled event. Each row is
+      one host assigned to the event, with their email, display name, and buffered
+      schedule window. Pass the event UUID as the required argument. Join with
+      organization_memberships on user__uri = user to enrich host rows with
+      team member details.
+    args:
+      - name: event_uuid
+        required: true
+        bind:
+          arg: event_uuid
+    request:
+      method: GET
+      path: "/scheduled_events/{{arg.event_uuid}}"
+    response:
+      rows_path:
+        - resource
+        - event_memberships
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user
+        type: Utf8
+        description: URI of the host user. Joinable with organization_memberships.user__uri.
+      - name: user_email
+        type: Utf8
+        description: Email address of the host.
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: Display name of the host.
+      - name: buffered_start_time
+        type: Timestamp
+        nullable: true
+        description: Start time including any configured buffer period before the event (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - buffered_start_time
+      - name: buffered_end_time
+        type: Timestamp
+        nullable: true
+        description: End time including any configured buffer period after the event (UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - buffered_end_time

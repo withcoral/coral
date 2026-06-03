@@ -6,7 +6,9 @@ on:
     paths:
       - ".github/workflows/sync-skills.yml"
       - "plugins/coral/skills/**"
-      - "xtask/**"
+      - "xtask/Cargo.toml"
+      - "xtask/src/main.rs"
+      - "xtask/src/skills.rs"
   workflow_dispatch:
 
 permissions:

@@ -1,9 +1,9 @@
 # GitHub Connector
 
-**Version:** 1.1.5
+**Version:** 1.1.8
 **Source:** OpenAPI-generated from GitHub's v3 REST API spec
 **Backend:** HTTP
-**Tables:** 369
+**Tables:** 364
 **Base URL:** `https://api.github.com` (override with `GITHUB_API_BASE` env var)
 
 ## Authentication
@@ -39,12 +39,12 @@ which avoids retrying ordinary permission failures.
 
 | Filter pattern | Tables | Example |
 |---|---|---|
-| No filter | 55 | `SELECT * FROM github.user_repos` |
+| No filter | 56 | `SELECT * FROM github.user_repos` |
 | `owner` + `repo` | 79 | `WHERE owner = 'org' AND repo = 'name'` |
 | `org` | 80 | `WHERE org = 'myorg'` |
 | `username` | 14 | `WHERE username = 'user'` |
 | `enterprise` | 8 | `WHERE enterprise = 'slug'` |
-| Compound (IDs) | 126 | `WHERE owner = '...' AND repo = '...' AND run_id = 123` |
+| Compound (IDs) | 127 | `WHERE owner = '...' AND repo = '...' AND run_id = 123` |
 
 Search is exposed through source-scoped table functions rather than tables.
 
@@ -60,10 +60,11 @@ Search is exposed through source-scoped table functions rather than tables.
 | Enterprise | ~12 | Enterprise Cloud account |
 | GitHub App JWT | ~19 | GitHub App installation, not a PAT |
 
-#### No filter required (26 tables)
+#### No filter required (27 tables)
 
 | Table | Description |
 |---|---|
+| `authenticated_user` | Authenticated user profile alias |
 | `user` | Authenticated user profile |
 | `user_repos` | Repositories for the authenticated user |
 | `user_starred` | Starred repositories |
@@ -212,7 +213,7 @@ Statistics:
 | `participation` | 1 | Owner vs non-owner commits |
 | `repo_stat_contributors` | 1 | Contributor statistics |
 
-#### Organization tables (4 tables confirmed)
+#### Organization tables (5 tables confirmed)
 
 | Table | Notes |
 |---|---|
@@ -220,6 +221,7 @@ Statistics:
 | `org_repos` | Organization repositories |
 | `members` | Org members (empty with limited PAT) |
 | `public_members` | Public org members |
+| `org_team_memberships` | Team membership by `org`, `team_slug`, and `username` |
 
 Remaining ~104 org tables require the PAT to be scoped to the organization with admin permissions.
 
@@ -252,7 +254,114 @@ Remaining ~104 org tables require the PAT to be scoped to the organization with 
 
 Note: `search_commits` requires actual search text.
 Qualifier-only queries such as `q => 'repo:owner/repo'` return 422.
-`search_issues` requires `is:issue` or `is:pull-request` in the query.
+`search_issues` requires `is:issue` or `is:pull-request` in the query. Use
+`search_issues` for cross-repository issue and pull request discovery, then
+use repo-scoped tables such as `pulls`, `issues`, `reviews`, and `files` for
+details that require `owner` and `repo`.
+
+Useful issue and pull request qualifiers:
+
+```sql
+SELECT number, title, repository_url, pull_request__html_url, updated_at
+FROM github.search_issues(q => 'org:myorg is:pull-request is:open review:approved')
+LIMIT 50;
+
+SELECT number, title, repository_url
+FROM github.search_issues(q => 'org:myorg is:pull-request is:open user-review-requested:@me')
+LIMIT 50;
+
+SELECT number, title, repository_url, label_names, assignee_logins, updated_at
+FROM github.search_issues(q => 'org:myorg is:issue is:open label:bug updated:<YYYY-MM-DD')
+LIMIT 50;
+```
+
+Swap in qualifiers such as `review-requested:USER`, `review:none`, or
+`user-review-requested:@me` for reviewer workflows.
+
+For repo-scoped pull request lists, use the compact alias columns when you want
+the PR number, branch refs, head SHA, and author login without double-underscore
+field names:
+
+```sql
+SELECT pull_number, title, head_ref, head_sha, base_ref, user_login
+FROM github.pulls
+WHERE owner = 'myorg' AND repo = 'myrepo' AND state = 'open'
+ORDER BY updated_at DESC
+LIMIT 20;
+```
+
+`github.pulls.merged` is only populated by GitHub's per-PR lookup. For list
+workflows, identify merged pull requests with `merged_at IS NOT NULL` or start
+from `github.search_issues(q => 'repo:myorg/myrepo is:pull-request is:merged')`.
+
+```sql
+SELECT pull_number, title, merged_at
+FROM github.pulls
+WHERE owner = 'myorg' AND repo = 'myrepo' AND state = 'closed'
+  AND merged_at IS NOT NULL
+LIMIT 20;
+```
+
+`github.requested_reviewers` returns raw `users` and `teams` JSON plus compact
+`requested_reviewer_logins`, `requested_team_names`, `user_logins`,
+`team_names`, and `team_slugs` columns:
+
+```sql
+SELECT pull_number, requested_reviewer_logins, requested_team_names
+FROM github.requested_reviewers
+WHERE owner = 'myorg' AND repo = 'myrepo' AND pull_number = 123;
+```
+
+Use `github.authenticated_user` for the current token's user profile:
+
+```sql
+SELECT login, html_url
+FROM github.authenticated_user;
+```
+
+Use `github.org_team_memberships` when you know `org` and `team_slug`; the
+legacy `github.memberships` table is for numeric `team_id` lookups.
+
+For workflow runs, `repo_action_runs` accepts natural aliases for the GitHub
+`branch` and `status` parameters:
+
+```sql
+SELECT name, head_branch, conclusion, created_at
+FROM github.repo_action_runs
+WHERE owner = 'myorg' AND repo = 'myrepo'
+  AND head_branch = 'main' AND conclusion = 'failure'
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+For Dependabot alerts, `repo_dependabot_alerts.severity` and
+`alerts.severity` are result values and can also be used as pushed-down
+filters. Use `github.alerts` for organization-wide Dependabot questions when
+the token has access to the organization's Dependabot alerts:
+
+```sql
+SELECT repository__full_name, number, severity, state
+FROM github.alerts
+WHERE org = 'myorg' AND state = 'open' AND severity = 'critical'
+LIMIT 50;
+```
+
+To sort severities manually in SQL, use a `CASE` expression:
+
+```sql
+ORDER BY CASE severity
+  WHEN 'critical' THEN 4
+  WHEN 'high' THEN 3
+  WHEN 'medium' THEN 2
+  WHEN 'low' THEN 1
+  ELSE 0
+END DESC
+```
+
+Secret scanning and code scanning endpoints are capability-gated by GitHub.
+For example, `repo_secret_scanning_alerts` can return 404 when secret scanning
+is disabled for the repository or inaccessible to the token, not only when the
+repository is missing.
 
 #### Requires GitHub App JWT (19 tables)
 

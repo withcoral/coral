@@ -71,6 +71,8 @@ pub struct ManifestCredentialMethod {
     pub label: Option<String>,
     /// Optional display description.
     pub description: Option<String>,
+    /// Optional hint describing how to obtain the values this method needs.
+    pub hint: Option<String>,
     /// OAuth configuration when `kind` is [`ManifestCredentialMethodKind::OAuth`].
     pub oauth: Option<ManifestOAuthCredentialSpec>,
 }
@@ -364,7 +366,7 @@ pub(crate) fn required_secret_input_names(inputs: &[ManifestInputSpec]) -> BTree
         .collect()
 }
 
-fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
+pub(crate) fn collect_declared_inputs(root: &Value) -> Result<Vec<ManifestInputSpec>> {
     let root = root
         .as_object()
         .ok_or_else(|| ManifestError::validation("manifest must be a mapping"))?;
@@ -622,6 +624,10 @@ fn parse_credential_method(
         .get("description")
         .and_then(Value::as_str)
         .map(ToString::to_string);
+    let hint = method
+        .get("hint")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
     match method.get("type").and_then(Value::as_str) {
         Some("source_config") => {
             if method.contains_key("oauth") {
@@ -633,6 +639,7 @@ fn parse_credential_method(
                 kind: ManifestCredentialMethodKind::SourceConfig,
                 label,
                 description,
+                hint,
                 oauth: None,
             })
         }
@@ -649,6 +656,7 @@ fn parse_credential_method(
                 kind: ManifestCredentialMethodKind::OAuth,
                 label,
                 description,
+                hint,
                 oauth: Some(oauth),
             })
         }
@@ -1148,7 +1156,7 @@ fn validate_input_key(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
+pub(crate) fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
     let declared: BTreeMap<String, ManifestInputKind> = inputs
         .iter()
         .map(|input| (input.key.clone(), input.kind))

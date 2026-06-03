@@ -138,6 +138,15 @@ message CatalogItem {
   }
 }
 
+// Per-kind catalog counts after workspace/schema filtering and before item-kind
+// filtering or pagination.
+message CatalogCounts {
+  // Query-visible table count.
+  uint32 table_count = 1;
+  // Query-visible table function count.
+  uint32 table_function_count = 2;
+}
+
 // Lists queryable catalog items in one workspace.
 message ListCatalogRequest {
   // Workspace whose current queryable catalog should be listed.
@@ -156,6 +165,8 @@ message ListCatalogResponse {
   repeated CatalogItem items = 1;
   // Page metadata for the catalog list.
   PaginationResponse pagination = 2;
+  // Per-kind counts for the current workspace/schema catalog snapshot.
+  CatalogCounts counts = 3;
 }
 
 // Searches queryable catalog metadata.
