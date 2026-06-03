@@ -331,8 +331,14 @@ pub(super) async fn execute_request(
                     // `Decode { retryable }` marks a transient (truncated/EOF) body. Only
                     // idempotent GET requests may be retried or surfaced as retryable.
                     let is_get = matches!(method, HttpMethod::GET);
-                    let retry =
-                        is_get && matches!(error, ProviderQueryError::Decode { retryable: true, .. });
+                    let retry = is_get
+                        && matches!(
+                            error,
+                            ProviderQueryError::Decode {
+                                retryable: true,
+                                ..
+                            }
+                        );
                     if retry && decode_retries < 2 {
                         record_http_processing_error(
                             &request_span,
