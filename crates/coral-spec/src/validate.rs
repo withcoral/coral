@@ -6,7 +6,7 @@ use crate::common::{
     BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
     MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
     RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
-    SourceTableFunctionSpec, ValueSourceSpec, WireType,
+    SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
@@ -39,7 +39,6 @@ pub(crate) struct HttpTableValidation<'a> {
     pub(crate) pagination: &'a PaginationSpec,
     pub(crate) search_limits: Option<&'a SearchLimitsSpec>,
     pub(crate) detail_hints: &'a [DetailHintSpec],
-    pub(crate) search_index: bool,
 }
 
 pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> {
@@ -53,7 +52,6 @@ pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> 
         pagination,
         search_limits,
         detail_hints,
-        search_index,
     } = input;
 
     if request.path.raw().trim().is_empty() {
@@ -74,7 +72,6 @@ pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> 
         detail_hints,
         columns,
     )?;
-    validate_bindable_filter_placement(schema, table_name, filters, search_index)?;
 
     validate_request_bindings(schema, table_name, request, &known_filters)?;
 
@@ -99,22 +96,6 @@ pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> 
     }
 
     pagination.validate(schema, table_name)
-}
-
-fn validate_bindable_filter_placement(
-    schema: &str,
-    table_name: &str,
-    filters: &[FilterSpec],
-    search_index: bool,
-) -> Result<()> {
-    if search_index && let Some(filter) = filters.iter().find(|filter| filter.bindable) {
-        return Err(ManifestError::validation(format!(
-            "filter '{}': cannot be bindable because table '{}.{}' is declared as search_index. Search-index-backed endpoints do not return complete result sets under filtered queries and are unsafe for dependent joins.",
-            filter.name, schema, table_name
-        )));
-    }
-
-    Ok(())
 }
 
 pub(crate) fn validate_http_function_names(
@@ -454,13 +435,7 @@ fn validate_detail_hints(
 fn validate_filter_capabilities(filter: &FilterSpec) -> Result<()> {
     if filter.bindable && filter.mode != FilterMode::Equality {
         return Err(ManifestError::validation(format!(
-            "filter '{}': bindable=true requires mode=equality in V1",
-            filter.name
-        )));
-    }
-    if filter.bindable && filter.wire_type != WireType::String {
-        return Err(ManifestError::validation(format!(
-            "filter '{}': only wire_type=string is supported in V1",
+            "filter '{}': bindable=true requires mode=equality",
             filter.name
         )));
     }
@@ -972,7 +947,6 @@ mod tests {
             mode: FilterMode::Equality,
             description: String::new(),
             bindable: false,
-            wire_type: crate::WireType::String,
         }]
     }
 
@@ -984,7 +958,6 @@ mod tests {
             mode: FilterMode::Equality,
             description: String::new(),
             bindable: true,
-            wire_type: crate::WireType::String,
         }
     }
 
@@ -1112,7 +1085,6 @@ mod tests {
             pagination: &PaginationSpec::default(),
             search_limits: None,
             detail_hints: &[],
-            search_index: false,
         })
     }
 
@@ -1524,7 +1496,6 @@ mod tests {
             mode: FilterMode::Contains,
             description: String::new(),
             bindable: false,
-            wire_type: crate::WireType::String,
         }];
 
         let columns = [test_column()];
@@ -1539,7 +1510,6 @@ mod tests {
             pagination: &PaginationSpec::default(),
             search_limits: None,
             detail_hints: &[],
-            search_index: false,
         })
         .expect("contains filters should not force search metadata");
     }
@@ -1582,7 +1552,6 @@ mod tests {
             mode: FilterMode::Contains,
             description: String::new(),
             bindable: false,
-            wire_type: crate::WireType::String,
         }];
 
         let columns = [test_column()];
@@ -1597,7 +1566,6 @@ mod tests {
             pagination: &PaginationSpec::default(),
             search_limits: Some(&search_limits),
             detail_hints: &detail_hints,
-            search_index: false,
         })
         .expect("search metadata should validate");
     }
@@ -1699,7 +1667,6 @@ mod tests {
             pagination: &PaginationSpec::default(),
             search_limits: None,
             detail_hints: &detail_hints,
-            search_index: false,
         })
         .expect_err("unknown detail hint result column should fail");
 
@@ -1767,7 +1734,6 @@ mod tests {
                 pagination: &PaginationSpec::default(),
                 search_limits: None,
                 detail_hints: &detail_hints,
-                search_index: false,
             })
             .expect_err("empty detail hint fields should fail");
 
@@ -1877,30 +1843,6 @@ mod tests {
     }
 
     #[test]
-    fn bindable_on_search_index_rejects() {
-        let filters = [bindable_filter("id")];
-        let columns = [test_column()];
-        let request = base_request();
-        let error = validate_http_table(HttpTableValidation {
-            schema: "demo",
-            table_name: "messages",
-            filters: &filters,
-            columns: &columns,
-            request: &request,
-            requests: &[],
-            pagination: &PaginationSpec::default(),
-            search_limits: None,
-            detail_hints: &[],
-            search_index: true,
-        })
-        .expect_err("search-index table should reject bindable filters");
-
-        assert!(error.to_string().contains(
-            "cannot be bindable because table 'demo.messages' is declared as search_index"
-        ));
-    }
-
-    #[test]
     fn bindable_non_equality_modes_reject() {
         for mode in [FilterMode::Search, FilterMode::Contains] {
             let mut filter = bindable_filter("q");
@@ -1912,7 +1854,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("filter 'q': bindable=true requires mode=equality in V1")
+                    .contains("filter 'q': bindable=true requires mode=equality")
             );
         }
     }

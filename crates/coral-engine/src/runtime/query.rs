@@ -27,7 +27,7 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, QueryExecution, QueryPlan, QueryResultObserver,
+    CatalogInfo, CoreError, DependentJoinConfig, QueryExecution, QueryPlan, QueryResultObserver,
     QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     RequestAuthenticator, SourceDecorator, SourceInputResolver, TableFunctionInfo, TableInfo,
 };
@@ -45,6 +45,7 @@ pub(crate) struct QueryRuntimeAdapter {
 struct FallbackRuntimeConfig {
     sources: Vec<QuerySource>,
     runtime_context: QueryRuntimeContext,
+    dependent_join: DependentJoinConfig,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
@@ -68,6 +69,7 @@ pub(crate) async fn build_runtime(
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let QueryRuntimeConfig {
         context: runtime_context,
+        dependent_join,
         mut extensions,
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
@@ -81,6 +83,7 @@ pub(crate) async fn build_runtime(
     let fallback_runtime = fallback_without_dependent_join.then(|| FallbackRuntimeConfig {
         sources: sources.to_vec(),
         runtime_context: runtime_context.clone(),
+        dependent_join: dependent_join.clone(),
         request_authenticators: request_authenticators.clone(),
         source_input_resolver: source_input_resolver.clone(),
     });
@@ -91,7 +94,7 @@ pub(crate) async fn build_runtime(
         &request_authenticators,
         source_input_resolver,
         extensions.source_decorators.as_mut_slice(),
-        true,
+        &dependent_join,
     )
     .await?;
 
@@ -111,9 +114,9 @@ async fn build_registered_runtime(
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
-    dependent_join_enabled: bool,
+    dependent_join: &DependentJoinConfig,
 ) -> Result<RegisteredRuntime, CoreError> {
-    let ctx = build_session_context(dependent_join_enabled)?;
+    let ctx = build_session_context(dependent_join)?;
     let registration = register_runtime_sources(
         &ctx,
         sources,
@@ -153,7 +156,9 @@ async fn build_registered_runtime(
     })
 }
 
-fn build_session_context(dependent_join_enabled: bool) -> Result<Arc<SessionContext>, CoreError> {
+fn build_session_context(
+    dependent_join: &DependentJoinConfig,
+) -> Result<Arc<SessionContext>, CoreError> {
     let session_config = SessionConfig::new().with_information_schema(true).set_bool(
         "datafusion.execution.listing_table_ignore_subdirectory",
         false,
@@ -175,8 +180,8 @@ fn build_session_context(dependent_join_enabled: bool) -> Result<Arc<SessionCont
         .with_config(session_config)
         .with_runtime_env(runtime_env)
         .with_default_features();
-    if dependent_join_enabled {
-        builder = builder.with_optimizer_rule(Arc::new(optimizer::rule()));
+    if dependent_join.optimizer_enabled() {
+        builder = builder.with_optimizer_rule(Arc::new(optimizer::rule(dependent_join.clone())));
     }
     let session_state = builder
         .with_query_planner(Arc::new(CoralQueryPlanner::new(vec![Arc::new(
@@ -392,7 +397,7 @@ impl FallbackRuntimeConfig {
             &self.request_authenticators,
             self.source_input_resolver.clone(),
             source_decorators.as_mut_slice(),
-            false,
+            &self.dependent_join.without_rewrites(),
         )
         .await
     }

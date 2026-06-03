@@ -1,9 +1,15 @@
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use coral_engine::{CoralQuery, CoreError, StatusCode};
+use coral_engine::{
+    CoralQuery, CoreError, DependentJoinConfig, DependentJoinSourceConfig, QueryRuntimeConfig,
+    StatusCode,
+};
+use coral_spec::backends::http::HttpTableSpec;
+use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex, query_param, query_param_is_missing};
@@ -166,6 +172,72 @@ async fn duplicate_resolver_rows_for_one_binding_emit_distinct_join_batches() {
             json!({ "issue_title": "First", "pr_state": "open" }),
             json!({ "issue_title": "Duplicate tuple", "pr_state": "open" }),
         ]
+    );
+}
+
+#[tokio::test]
+async fn dependent_join_accepts_safe_casts_on_join_keys() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sql = "
+        WITH input AS (
+          SELECT 'Null repo' AS issue_title,
+                 'withcoral' AS github_owner,
+                 CAST(NULL AS VARCHAR) AS github_repo,
+                 CAST(123 AS INTEGER) AS github_pr_number
+          UNION ALL
+          SELECT 'First', 'withcoral', 'coral', CAST(123 AS INTEGER)
+        )
+        SELECT input.issue_title AS issue_title, pr.state AS pr_state
+        FROM input
+        JOIN github.pull_requests AS pr
+          ON pr.owner = input.github_owner
+         AND pr.repo = input.github_repo
+         AND pr.number = input.github_pr_number
+        ORDER BY input.issue_title
+        ";
+
+    let explain_sql = format!("EXPLAIN {sql}");
+    let explain = CoralQuery::execute_sql(
+        &[build_source(github_required_manifest(&server.uri()))],
+        test_runtime(),
+        &explain_sql,
+    )
+    .await
+    .expect("explain should succeed");
+    let explain = execution_text(&explain);
+    assert!(explain.contains("DependentJoinExec"), "{explain}");
+    assert!(
+        explain.contains(
+            "binding_keys=[owner <- input.github_owner, repo <- input.github_repo, number <- input.github_pr_number]"
+        ),
+        "{explain}"
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[build_source(github_required_manifest(&server.uri()))],
+        test_runtime(),
+        sql,
+    )
+    .await
+    .expect("query should succeed");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "First", "pr_state": "open" })]
     );
 }
 
@@ -792,7 +864,17 @@ async fn resolver_rows_cap_retries_original_query_without_dependent_join_rewrite
             build_source(issues_manifest(temp.path())),
             build_source(github_broad_query_manifest(&server.uri())),
         ],
-        test_runtime(),
+        runtime_with_dependent_join(DependentJoinConfig {
+            enabled: false,
+            per_source: BTreeMap::from([(
+                "github".to_string(),
+                DependentJoinSourceConfig {
+                    enabled: Some(true),
+                    ..DependentJoinSourceConfig::default()
+                },
+            )]),
+            ..DependentJoinConfig::default()
+        }),
         "
         SELECT COUNT(*) AS row_count
         FROM issues.items AS i
@@ -812,7 +894,7 @@ async fn resolver_rows_cap_retries_original_query_without_dependent_join_rewrite
 }
 
 #[tokio::test]
-async fn parent_limit_is_page_hint_not_dependent_row_limit() {
+async fn parent_limit_caps_dependent_row_limit() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
         temp.path(),
@@ -848,7 +930,7 @@ async fn parent_limit_is_page_hint_not_dependent_row_limit() {
                 "state": "closed"
             }]
         })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -856,7 +938,7 @@ async fn parent_limit_is_page_hint_not_dependent_row_limit() {
         .and(query_param("page", "3"))
         .and(query_param("per_page", "1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -888,6 +970,95 @@ async fn parent_limit_is_page_hint_not_dependent_row_limit() {
     assert_eq!(
         execution_to_rows(&execution),
         vec![json!({ "issue_title": "First", "pr_state": "open" })]
+    );
+}
+
+#[tokio::test]
+async fn parent_limit_caps_owner_repo_dependent_list_route() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .and(query_param("owner", "withcoral"))
+        .and(query_param("repo", "coral"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "owner": "withcoral", "repo": "coral", "number": 1, "state": "open" },
+                { "owner": "withcoral", "repo": "coral", "number": 2, "state": "closed" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .and(query_param("owner", "withcoral"))
+        .and(query_param("repo", "coral"))
+        .and(query_param("page", "2"))
+        .and(query_param("per_page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "owner": "withcoral", "repo": "coral", "number": 3, "state": "draft" },
+                { "owner": "withcoral", "repo": "coral", "number": 4, "state": "merged" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut github = github_broad_query_manifest(&server.uri());
+    first_table_object_mut(&mut github).insert(
+        "pagination".to_string(),
+        json!({
+            "mode": "page",
+            "page_param": "page",
+            "page_start": 1,
+            "page_size": {
+                "default": 100,
+                "max": 100,
+                "query_param": "per_page"
+            }
+        }),
+    );
+
+    let sources = [
+        build_source(issues_manifest(temp.path())),
+        build_source(github),
+    ];
+    let sql = "
+    SELECT pr.number, pr.state
+    FROM issues.items AS i
+    JOIN github.pull_requests AS pr
+      ON pr.owner = i.github_owner
+     AND pr.repo = i.github_repo
+    LIMIT 2
+    ";
+
+    let explain = execution_text(
+        &CoralQuery::execute_sql(&sources, test_runtime(), &format!("EXPLAIN {sql}"))
+            .await
+            .expect("explain should succeed"),
+    );
+    assert!(explain.contains("page_hint=2"), "{explain}");
+
+    let execution = CoralQuery::execute_sql(&sources, test_runtime(), sql)
+        .await
+        .expect("query should succeed");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![
+            json!({ "number": 1, "state": "open" }),
+            json!({ "number": 2, "state": "closed" }),
+        ]
     );
 }
 
@@ -1017,7 +1188,7 @@ async fn first_dependent_fetch_error_fails_query_and_stops_dispatching_new_bindi
 }
 
 #[tokio::test]
-async fn dependent_fetches_honor_source_max_concurrency() {
+async fn dependent_fetches_honor_config_max_concurrency() {
     let temp = TempDir::new().expect("temp dir");
     let issues = (1..=5)
         .map(|number| issue_row(&format!("Issue {number}"), "withcoral", "coral", number))
@@ -1070,9 +1241,12 @@ async fn dependent_fetches_honor_source_max_concurrency() {
     let execution = CoralQuery::execute_sql(
         &[
             build_source(issues_manifest(temp.path())),
-            build_source(github_manifest_with_max_concurrency(&server.uri(), 2)),
+            build_source(github_manifest(&server.uri())),
         ],
-        test_runtime(),
+        runtime_with_dependent_join(DependentJoinConfig {
+            max_concurrency: 2,
+            ..DependentJoinConfig::default()
+        }),
         dependent_join_sql(),
     )
     .await
@@ -1210,6 +1384,352 @@ async fn explain_shows_dependent_join_bindings_and_caps() {
     );
     assert!(explain.contains("max_concurrency=8"), "{explain}");
     assert!(explain.contains("page_hint=None"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_config_disables_rewrite_globally() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_broad_query_manifest("http://127.0.0.1:9")),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            enabled: false,
+            ..DependentJoinConfig::default()
+        }),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(!explain.contains("DependentJoinExec"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_config_sets_default_caps() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest("http://127.0.0.1:9")),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            enabled: true,
+            max_bindings: 7,
+            max_resolver_rows: 11,
+            max_rows_per_binding: 13,
+            max_resolver_rows_per_binding: 17,
+            max_concurrency: 19,
+            per_source: BTreeMap::new(),
+        }),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        WHERE pr.state = 'open'
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(explain.contains("DependentJoinExec: table=github.pull_requests"));
+    assert!(explain.contains("max_bindings=7"), "{explain}");
+    assert!(explain.contains("max_resolver_rows=11"), "{explain}");
+    assert!(explain.contains("max_rows_per_binding=13"), "{explain}");
+    assert!(
+        explain.contains("max_resolver_rows_per_binding=17"),
+        "{explain}"
+    );
+    assert!(explain.contains("max_concurrency=19"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_config_clamps_explained_max_concurrency() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest("http://127.0.0.1:9")),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            max_concurrency: 0,
+            ..DependentJoinConfig::default()
+        }),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        WHERE pr.state = 'open'
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(explain.contains("DependentJoinExec: table=github.pull_requests"));
+    assert!(explain.contains("max_concurrency=1"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_source_config_disables_rewrite_for_source() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_broad_query_manifest("http://127.0.0.1:9")),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            per_source: BTreeMap::from([(
+                "github".to_string(),
+                DependentJoinSourceConfig {
+                    enabled: Some(false),
+                    ..DependentJoinSourceConfig::default()
+                },
+            )]),
+            ..DependentJoinConfig::default()
+        }),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(!explain.contains("DependentJoinExec"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_source_config_disables_one_mixed_bindable_side() {
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(github_broad_query_manifest("http://127.0.0.1:9")),
+            build_source(source_named(
+                github_broad_query_manifest("http://127.0.0.1:9"),
+                "mirror",
+            )),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            per_source: BTreeMap::from([(
+                "github".to_string(),
+                DependentJoinSourceConfig {
+                    enabled: Some(false),
+                    ..DependentJoinSourceConfig::default()
+                },
+            )]),
+            ..DependentJoinConfig::default()
+        }),
+        "
+        EXPLAIN
+        SELECT pr.state AS github_state, mirror.state AS mirror_state
+        FROM github.pull_requests AS pr
+        JOIN mirror.pull_requests AS mirror
+          ON mirror.owner = pr.owner
+         AND mirror.repo = pr.repo
+         AND mirror.number = pr.number
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(
+        explain.contains("DependentJoinExec: table=mirror.pull_requests"),
+        "{explain}"
+    );
+}
+
+#[tokio::test]
+async fn dependent_join_source_config_overrides_default_caps() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest("http://127.0.0.1:9")),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            max_bindings: 99,
+            max_resolver_rows: 98,
+            max_rows_per_binding: 97,
+            max_resolver_rows_per_binding: 96,
+            max_concurrency: 95,
+            per_source: BTreeMap::from([(
+                "github".to_string(),
+                DependentJoinSourceConfig {
+                    max_bindings: Some(7),
+                    max_resolver_rows: Some(11),
+                    max_rows_per_binding: Some(13),
+                    max_resolver_rows_per_binding: Some(17),
+                    max_concurrency: Some(19),
+                    ..DependentJoinSourceConfig::default()
+                },
+            )]),
+            ..DependentJoinConfig::default()
+        }),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        WHERE pr.state = 'open'
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(explain.contains("DependentJoinExec: table=github.pull_requests"));
+    assert!(explain.contains("max_bindings=7"), "{explain}");
+    assert!(explain.contains("max_resolver_rows=11"), "{explain}");
+    assert!(explain.contains("max_rows_per_binding=13"), "{explain}");
+    assert!(
+        explain.contains("max_resolver_rows_per_binding=17"),
+        "{explain}"
+    );
+    assert!(explain.contains("max_concurrency=19"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_source_config_can_enable_one_source_when_default_is_disabled() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest("http://127.0.0.1:9")),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            enabled: false,
+            per_source: BTreeMap::from([(
+                "github".to_string(),
+                DependentJoinSourceConfig {
+                    enabled: Some(true),
+                    ..DependentJoinSourceConfig::default()
+                },
+            )]),
+            ..DependentJoinConfig::default()
+        }),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        WHERE pr.state = 'open'
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(explain.contains("DependentJoinExec: table=github.pull_requests"));
+}
+
+#[test]
+fn live_pilot_manifests_keep_expected_dependent_join_surfaces() {
+    let github = core_http_manifest("sources/core/github/manifest.yaml");
+    let pulls = core_http_table(&github, "pulls");
+    assert_bindable_filters(pulls, &["owner", "repo", "pull_number"]);
+    assert_eq!(
+        request_path_for_filters(pulls, &["owner", "repo"]),
+        "/repos/{{filter.owner}}/{{filter.repo}}/pulls"
+    );
+    assert_eq!(
+        request_path_for_filters(pulls, &["owner", "repo", "pull_number"]),
+        "/repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}"
+    );
+    assert!(pulls.columns().iter().any(|column| column.name == "number"));
+
+    let linear = core_http_manifest("sources/core/linear/manifest.yaml");
+    let issues = core_http_table(&linear, "issues");
+    assert_bindable_filters(issues, &["team_id"]);
+    assert!(
+        issues
+            .columns()
+            .iter()
+            .any(|column| column.name == "team_id")
+    );
+
+    let slack = core_http_manifest("sources/core/slack/manifest.yaml");
+    let slack = slack.as_http().expect("slack should be an HTTP source");
+    let messages = slack
+        .functions
+        .iter()
+        .find(|function| function.name == "messages")
+        .expect("slack messages function should exist");
+    assert!(messages.args.iter().any(|arg| arg.name == "channel"));
+    assert_eq!(messages.request.path.raw(), "/api/conversations.history");
 }
 
 #[tokio::test]
@@ -1979,6 +2499,50 @@ fn dependent_join_sql() -> &'static str {
     "
 }
 
+fn runtime_with_dependent_join(config: DependentJoinConfig) -> QueryRuntimeConfig {
+    let mut runtime = test_runtime();
+    runtime.dependent_join = config;
+    runtime
+}
+
+fn core_http_manifest(relative_path: &str) -> ValidatedSourceManifest {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let raw = std::fs::read_to_string(repo_root.join(relative_path))
+        .expect("core source manifest should be readable");
+    parse_source_manifest_yaml(&raw).expect("core source manifest should parse")
+}
+
+fn core_http_table<'a>(
+    manifest: &'a ValidatedSourceManifest,
+    table_name: &str,
+) -> &'a HttpTableSpec {
+    manifest
+        .as_http()
+        .expect("core source should be an HTTP source")
+        .tables
+        .iter()
+        .find(|table| table.name() == table_name)
+        .expect("core source table should exist")
+}
+
+fn assert_bindable_filters(table: &HttpTableSpec, expected: &[&str]) {
+    let actual = table
+        .filters()
+        .iter()
+        .filter(|filter| filter.bindable)
+        .map(|filter| filter.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn request_path_for_filters(table: &HttpTableSpec, filters: &[&str]) -> String {
+    let filters = filters
+        .iter()
+        .map(|filter| (*filter).to_string())
+        .collect::<HashSet<_>>();
+    table.resolve_request(&filters).path.raw().to_string()
+}
+
 fn issue_row(title: &str, owner: &str, repo: &str, number: i64) -> Value {
     json!({
         "title": title,
@@ -2275,19 +2839,6 @@ fn github_filter_backed_columns_manifest(base_url: &str) -> Value {
     manifest
 }
 
-fn github_manifest_with_max_concurrency(base_url: &str, max_concurrency: usize) -> Value {
-    github_manifest_with_filters(
-        base_url,
-        Some(json!({ "max_concurrency": max_concurrency })),
-        vec![
-            json!({ "name": "owner", "bindable": true }),
-            json!({ "name": "repo", "bindable": true }),
-            json!({ "name": "number", "bindable": true }),
-            json!({ "name": "state" }),
-        ],
-    )
-}
-
 fn github_manifest_with_fetch_limit_default(base_url: &str, fetch_limit_default: usize) -> Value {
     let mut manifest = github_manifest(base_url);
     first_table_object_mut(&mut manifest).insert(
@@ -2396,6 +2947,14 @@ fn github_broad_manifest(base_url: &str) -> Value {
 
 fn github_broad_query_manifest(base_url: &str) -> Value {
     github_broad_query_manifest_with_bindable(base_url, true)
+}
+
+fn source_named(mut manifest: Value, name: &str) -> Value {
+    manifest
+        .as_object_mut()
+        .expect("test manifest should be an object")
+        .insert("name".to_string(), json!(name));
+    manifest
 }
 
 fn github_broad_query_manifest_with_bindable(base_url: &str, bindable: bool) -> Value {

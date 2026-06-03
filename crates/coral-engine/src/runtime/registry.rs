@@ -229,7 +229,7 @@ fn validate_bindable_backend_support(source: &dyn CompiledBackendSource) -> Data
 
     if !supported {
         return Err(DataFusionError::Execution(format!(
-            "source '{}': bindable filters are not supported by the current engine for backend '{}' in V1",
+            "source '{}': bindable filters are not supported by the current engine for backend '{}'",
             source.source_name(),
             backend_kind_label(source.backend_kind())
         )));
