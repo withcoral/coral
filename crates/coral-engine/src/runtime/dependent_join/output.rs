@@ -10,7 +10,7 @@ use datafusion::common::{DataFusionError, Result};
 use crate::backends::schema_from_columns;
 use crate::backends::shared::mapping::convert_items;
 use crate::runtime::dependent_join::bindings::Tuple;
-use crate::runtime::dependent_join::state::{DependentJoinRuntimeState, ResolverRowId};
+use crate::runtime::dependent_join::state::DependentJoinRuntimeState;
 
 #[derive(Clone, Copy)]
 pub(crate) struct BuildJoinedBatchesConfig<'a> {
@@ -65,10 +65,19 @@ pub(crate) fn build_joined_batches(
         )?;
         let dependent_batch = project_dependent_batch(&dependent_batch, dependent_projection)?;
 
+        let mut resolver_rows_by_batch = BTreeMap::<usize, Vec<usize>>::new();
         for resolver_row in state.resolver_rows_for_tuple(tuple) {
-            batches.push(join_for_resolver_row(
+            resolver_rows_by_batch
+                .entry(resolver_row.batch_idx)
+                .or_default()
+                .push(resolver_row.row_idx);
+        }
+
+        for (resolver_batch_idx, resolver_row_indices) in resolver_rows_by_batch {
+            batches.push(join_for_resolver_rows(
                 state,
-                *resolver_row,
+                resolver_batch_idx,
+                &resolver_row_indices,
                 &dependent_batch,
                 resolver_projection_len,
                 dependent_first,
@@ -80,38 +89,63 @@ pub(crate) fn build_joined_batches(
     Ok(batches)
 }
 
-fn join_for_resolver_row(
+fn join_for_resolver_rows(
     state: &DependentJoinRuntimeState,
-    resolver_row: ResolverRowId,
+    resolver_batch_idx: usize,
+    resolver_row_indices: &[usize],
     dependent_batch: &RecordBatch,
     resolver_projection_len: usize,
     dependent_first: bool,
     output_schema: SchemaRef,
 ) -> Result<RecordBatch> {
     let resolver_batch = state
-        .resolver_batch(resolver_row.batch_idx)
+        .resolver_batch(resolver_batch_idx)
         .ok_or_else(|| DataFusionError::Internal("dependent join resolver batch missing".into()))?;
     let dependent_rows = dependent_batch.num_rows();
-    let row_idx = u32::try_from(resolver_row.row_idx).map_err(|error| {
+    let output_rows = dependent_rows
+        .checked_mul(resolver_row_indices.len())
+        .ok_or_else(|| {
+            DataFusionError::Execution("dependent join output row count overflow".into())
+        })?;
+    let dependent_rows = u32::try_from(dependent_rows).map_err(|error| {
         DataFusionError::Execution(format!(
-            "dependent join resolver row index cannot fit Arrow take index: {error}"
+            "dependent join dependent row count cannot fit Arrow take index: {error}"
         ))
     })?;
-    let indices = UInt32Array::from(vec![row_idx; dependent_rows]);
+    let mut resolver_indices = Vec::with_capacity(output_rows);
+    let mut dependent_indices = Vec::with_capacity(output_rows);
+
+    for row_idx in resolver_row_indices {
+        let row_idx = u32::try_from(*row_idx).map_err(|error| {
+            DataFusionError::Execution(format!(
+                "dependent join resolver row index cannot fit Arrow take index: {error}"
+            ))
+        })?;
+        resolver_indices.extend(std::iter::repeat(row_idx).take(dependent_rows as usize));
+        dependent_indices.extend(0..dependent_rows);
+    }
+
+    let resolver_indices = UInt32Array::from(resolver_indices);
+    let dependent_indices = UInt32Array::from(dependent_indices);
     let resolver_arrays = resolver_batch
         .columns()
         .iter()
         .take(resolver_projection_len)
-        .map(|array| take(array.as_ref(), &indices, None).map_err(arrow_error))
+        .map(|array| take(array.as_ref(), &resolver_indices, None).map_err(arrow_error))
+        .collect::<Result<Vec<_>>>()?;
+    let dependent_arrays = dependent_batch
+        .columns()
+        .iter()
+        .map(|array| take(array.as_ref(), &dependent_indices, None).map_err(arrow_error))
         .collect::<Result<Vec<_>>>()?;
     let mut arrays = Vec::with_capacity(resolver_arrays.len() + dependent_batch.num_columns());
 
     if dependent_first {
-        arrays.extend(dependent_batch.columns().iter().cloned());
+        arrays.extend(dependent_arrays);
         arrays.extend(resolver_arrays);
     } else {
         arrays.extend(resolver_arrays);
-        arrays.extend(dependent_batch.columns().iter().cloned());
+        arrays.extend(dependent_arrays);
     }
 
     RecordBatch::try_new(output_schema, arrays).map_err(|error| {
