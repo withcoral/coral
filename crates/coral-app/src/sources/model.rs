@@ -13,7 +13,7 @@ use crate::sources::SourceName;
 pub(crate) struct CandidateSource {
     pub(crate) name: SourceName,
     pub(crate) description: String,
-    pub(crate) version: String,
+    pub(crate) version: Option<String>,
     pub(crate) inputs: Vec<ManifestInputSpec>,
     /// Network hosts this source will contact, de-duplicated and sorted.
     pub(crate) hosts: Vec<String>,

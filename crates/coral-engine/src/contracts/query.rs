@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
-use coral_spec::ValidatedSourceManifest;
+use coral_spec::backends::file::FileSourceManifest;
+use coral_spec::backends::http::HttpSourceManifest;
+use coral_spec::backends::mcp::McpSourceManifest;
+use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 
 use super::ColumnInfo;
 use crate::EngineExtensions;
@@ -14,43 +17,146 @@ use crate::EngineExtensions;
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
 pub struct QuerySource {
-    source_spec: ValidatedSourceManifest,
+    source_name: String,
+    authored_version: Option<String>,
+    description: String,
+    declared_inputs: Vec<ManifestInputSpec>,
+    test_queries: Vec<String>,
+    components: Vec<RuntimeSourceComponent>,
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
+}
+
+/// Backend-ready runtime package for one logical query source.
+#[derive(Debug, Clone)]
+pub struct RuntimeSourcePackage {
+    /// Canonical source name, also used as the visible SQL schema.
+    pub source_name: String,
+    /// Authored manifest version, when the authoring DSL has one.
+    pub authored_version: Option<String>,
+    /// Source description shown in catalog and source metadata surfaces.
+    pub description: String,
+    /// Declared source inputs in authored order.
+    pub declared_inputs: Vec<ManifestInputSpec>,
+    /// Source-level validation queries in authored order.
+    pub test_queries: Vec<String>,
+    /// Backend-ready runtime components that make up the logical source.
+    pub components: Vec<RuntimeSourceComponent>,
+}
+
+/// One backend-ready component inside an app-assembled query source package.
+#[derive(Debug, Clone)]
+pub enum RuntimeSourceComponent {
+    /// HTTP-backed runtime component.
+    Http(HttpSourceManifest),
+    /// File-backed runtime component.
+    File(FileSourceManifest),
+    /// MCP-backed runtime component.
+    Mcp(McpSourceManifest),
 }
 
 impl QuerySource {
     #[must_use]
     /// Builds one app-to-query source selection from installed metadata and a
     /// validated declarative source spec.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Preserves the existing constructor API that takes ownership of parsed manifests."
+    )]
     pub fn new(
         source_spec: ValidatedSourceManifest,
         variables: BTreeMap<String, String>,
         secrets: BTreeMap<String, String>,
     ) -> Self {
+        Self::from_manifest(&source_spec, variables, secrets)
+    }
+
+    #[must_use]
+    /// Builds one source selection from a validated v3 source manifest.
+    pub fn from_manifest(
+        source_spec: &ValidatedSourceManifest,
+        variables: BTreeMap<String, String>,
+        secrets: BTreeMap<String, String>,
+    ) -> Self {
+        let components = components_from_manifest(source_spec);
         Self {
-            source_spec,
+            source_name: source_spec.schema_name().to_string(),
+            authored_version: source_spec.source_version().map(ToString::to_string),
+            description: source_spec.description().to_string(),
+            declared_inputs: source_spec.declared_inputs().to_vec(),
+            test_queries: source_spec.test_queries().to_vec(),
+            components,
             variables,
             secrets,
         }
     }
 
+    /// Builds one source selection from app-assembled runtime components.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`](crate::CoreError) when any component belongs to a
+    /// different logical source/schema.
+    pub fn from_runtime_components(
+        package: RuntimeSourcePackage,
+        variables: BTreeMap<String, String>,
+        secrets: BTreeMap<String, String>,
+    ) -> Result<Self, crate::CoreError> {
+        for component in &package.components {
+            let component_source = component.source_name();
+            if component_source != package.source_name {
+                return Err(crate::CoreError::InvalidInput(format!(
+                    "runtime component for source '{}' belongs to source '{component_source}'",
+                    package.source_name
+                )));
+            }
+        }
+        Ok(Self {
+            source_name: package.source_name,
+            authored_version: package.authored_version,
+            description: package.description,
+            declared_inputs: package.declared_inputs,
+            test_queries: package.test_queries,
+            components: package.components,
+            variables,
+            secrets,
+        })
+    }
+
     #[must_use]
     /// Returns the canonical source name. This is also the visible SQL schema name.
     pub fn source_name(&self) -> &str {
-        self.source_spec.schema_name()
+        &self.source_name
     }
 
     #[must_use]
-    /// Returns the installed manifest version for this source.
-    pub fn version(&self) -> &str {
-        self.source_spec.source_version()
+    /// Returns the authored manifest version for this source, when present.
+    pub fn version(&self) -> Option<&str> {
+        self.authored_version.as_deref()
     }
 
     #[must_use]
-    /// Returns the validated declarative source spec for this source.
-    pub fn source_spec(&self) -> &ValidatedSourceManifest {
-        &self.source_spec
+    /// Returns the source description.
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    #[must_use]
+    /// Returns the declared source inputs in authored order.
+    pub fn declared_inputs(&self) -> &[ManifestInputSpec] {
+        &self.declared_inputs
+    }
+
+    #[must_use]
+    /// Returns the source-level validation queries in authored order.
+    pub fn test_queries(&self) -> &[String] {
+        &self.test_queries
+    }
+
+    #[must_use]
+    /// Returns backend-ready runtime components supplied by the app.
+    pub fn components(&self) -> &[RuntimeSourceComponent] {
+        &self.components
     }
 
     #[must_use]
@@ -64,6 +170,31 @@ impl QuerySource {
     pub fn secrets(&self) -> &BTreeMap<String, String> {
         &self.secrets
     }
+}
+
+impl RuntimeSourceComponent {
+    #[must_use]
+    /// Returns the logical source/schema name declared by this component.
+    pub fn source_name(&self) -> &str {
+        match self {
+            Self::Http(manifest) => &manifest.common.name,
+            Self::File(manifest) => &manifest.common.name,
+            Self::Mcp(manifest) => &manifest.common.name,
+        }
+    }
+}
+
+fn components_from_manifest(source_spec: &ValidatedSourceManifest) -> Vec<RuntimeSourceComponent> {
+    if let Some(http) = source_spec.as_http() {
+        return vec![RuntimeSourceComponent::Http(http.clone())];
+    }
+    if let Some(file) = source_spec.as_file() {
+        return vec![RuntimeSourceComponent::File(file.clone())];
+    }
+    if let Some(mcp) = source_spec.as_mcp() {
+        return vec![RuntimeSourceComponent::Mcp(mcp.clone())];
+    }
+    Vec::new()
 }
 
 /// One source-spec validation query executed during source validation.

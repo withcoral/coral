@@ -632,7 +632,11 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                     } else {
                         "available".to_string()
                     };
-                    [source.name, source.version, status]
+                    [
+                        source.name,
+                        source_ops::display_version(&source.version),
+                        status,
+                    ]
                 });
                 print_text_table(["Source", "Version", "Status"], rows);
             }
@@ -645,7 +649,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                 let rows = sources.into_iter().map(|source| {
                     [
                         source.name,
-                        source.version,
+                        source_ops::display_version(&source.version),
                         source_ops::source_origin_label(source.origin).to_string(),
                         source_ops::source_credential_storage_label(source.credential_storage)
                             .to_string(),

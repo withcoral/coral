@@ -15,6 +15,8 @@ root.
 - runtime feature registry semantics for user-facing `[features]` config
 - bundled-source manifest description and install-time manifest mapping through
   `coral-spec`
+- assembly of query-engine runtime packages from app-owned installed state,
+  including DSL v4 materialized artifacts and generated runtime components
 - query-time selection of installed sources before calling `coral-engine`
 - workspace-scoped catalog discovery behavior over query-visible tables:
   matching, pagination, exact lookup, column filtering, and missing-table
@@ -40,6 +42,15 @@ root.
   unless they own durable, independent behavior.
 - Persist imported manifests as files under app-owned state; do not inline
   them into `config.toml`.
+- Persist DSL v4 imported manifests as authored intent plus durability
+  normalization only. Descriptor hashes, generated OpenAPI metadata, semantic
+  IR, projections, and package fingerprints belong in materialized artifacts
+  or runtime package assembly, not in persisted `manifest.yaml`.
+- Treat DSL v4 materialization as a user-chosen lifecycle event: generate at
+  source add, never re-fetch descriptors or recompute projections implicitly
+  during query/list/validate, and fail with re-add guidance when artifacts are
+  missing or incompatible. Do not add migration machinery until the lifecycle is
+  explicitly designed.
 - User-facing runtime feature semantics belong in `coral_app::features`; raw
   config-file persistence, locking, and TOML extraction stay in `state/`.
 - Bundled installs persist source identity plus configured variables and
@@ -72,6 +83,9 @@ root.
   adapters need to share. CLI, MCP, and UI code should render catalog results,
   not reimplement table matching, column filtering, pagination, or
   missing-table context.
+- `sources/runtime_package.rs` owns app-level conversion from installed source
+  state and materialized artifacts into the generic runtime components accepted
+  by `coral-engine`.
 - For all service calls, keep protobuf request/response types confined to the
   service edge. Convert request data into small app-local command, query, or
   binding structs before calling managers; do not pass `coral_api::v1`
