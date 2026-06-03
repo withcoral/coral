@@ -93,8 +93,8 @@ impl CompiledBackendSource for HttpCompiledSource {
         &self.manifest.common.name
     }
 
-    fn backend_kind(&self) -> SourceBackend {
-        SourceBackend::Http
+    fn backend_kind(&self) -> Option<SourceBackend> {
+        Some(SourceBackend::Http)
     }
 
     fn has_bindable_filters(&self) -> bool {

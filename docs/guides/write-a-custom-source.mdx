@@ -218,16 +218,21 @@ tables:
 
 When a source should offer OAuth setup, keep the runtime auth shape the same and add `credential.methods` to the secret input. The OAuth method controls how Coral obtains the secret during setup; the `auth` block still decides how that stored secret is sent to the API.
 
+Give each method its own `hint` rather than one input-level hint: the field shown below the hint changes with the selected method, so scope each method's guidance to the inputs that method collects.
+
 ```yaml
 inputs:
   DEMO_API_TOKEN:
     kind: secret
-    hint: Access token for the Demo API. Use OAuth setup or paste a token with read access.
     credential:
       methods:
         - type: oauth
           label: Connect with Demo
           description: Open a browser and authorize Coral to read Demo API data.
+          hint: |
+            Signs you in through Demo in your browser and requests the
+            `read:data` scope. To use your own app, set DEMO_OAUTH_CLIENT_ID
+            to its Client ID.
           oauth:
             flow:
               type: authorization_code
@@ -247,6 +252,7 @@ inputs:
                   - read:data
         - type: source_config
           label: Paste token
+          hint: Paste a Demo API token with read access to the data you query.
 auth:
   type: HeaderAuth
   headers:

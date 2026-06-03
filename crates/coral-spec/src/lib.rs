@@ -84,6 +84,7 @@ mod loader;
 mod parser;
 mod schema;
 mod template;
+pub mod v4;
 mod validate;
 
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
@@ -115,8 +116,8 @@ pub use parser::{
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub(crate) use validate::{
-    DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation, validate_columns,
-    validate_detail_hint_references, validate_filters_and_column_exprs, validate_http_function,
-    validate_http_function_names, validate_http_table, validate_identifier, validate_table_names,
-    validate_unique_values,
+    DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
+    validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,
+    validate_filters_and_column_exprs, validate_http_function, validate_http_table,
+    validate_identifier, validate_unique_values,
 };

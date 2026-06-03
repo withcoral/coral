@@ -5,6 +5,7 @@ use std::sync::Arc;
 use coral_spec::SourceBackend;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
+use tracing::{Instrument as _, info_span};
 
 use crate::backends::{
     BackendRegistration, BackendRegistrationContext, CompiledBackendSource, RegisteredSource,
@@ -76,6 +77,20 @@ fn check_reserved_schema(schema: &str) -> DataFusionResult<()> {
 /// itself cannot be processed. Individual source registration failures are
 /// logged and skipped so the remaining sources can still be registered.
 pub(crate) async fn register_sources(
+    ctx: &SessionContext,
+    sources: Vec<SourceRegistrationCandidate>,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+) -> std::result::Result<SourceRegistrationResult, CoreError> {
+    let span = info_span!(
+        "coral.engine.sources.register",
+        source.count = sources.len(),
+    );
+    register_sources_inner(ctx, sources, source_decorators)
+        .instrument(span)
+        .await
+}
+
+async fn register_sources_inner(
     ctx: &SessionContext,
     sources: Vec<SourceRegistrationCandidate>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
@@ -223,15 +238,17 @@ fn validate_bindable_backend_support(source: &dyn CompiledBackendSource) -> Data
     }
 
     let supported = match source.backend_kind() {
-        SourceBackend::Http => true,
-        SourceBackend::File | SourceBackend::Mcp => false,
+        Some(SourceBackend::Http) => true,
+        Some(SourceBackend::File | SourceBackend::Mcp) | None => false,
     };
 
     if !supported {
         return Err(DataFusionError::Execution(format!(
             "source '{}': bindable filters are not supported by the current engine for backend '{}'",
             source.source_name(),
-            backend_kind_label(source.backend_kind())
+            source
+                .backend_kind()
+                .map_or("composite", backend_kind_label)
         )));
     }
 

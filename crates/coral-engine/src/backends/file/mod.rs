@@ -75,8 +75,8 @@ impl CompiledBackendSource for FileCompiledSource {
         &self.manifest.common.name
     }
 
-    fn backend_kind(&self) -> SourceBackend {
-        SourceBackend::File
+    fn backend_kind(&self) -> Option<SourceBackend> {
+        Some(SourceBackend::File)
     }
 
     fn has_bindable_filters(&self) -> bool {

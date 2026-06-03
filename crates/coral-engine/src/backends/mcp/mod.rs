@@ -147,8 +147,8 @@ impl CompiledBackendSource for McpCompiledSource {
         &self.manifest.common.name
     }
 
-    fn backend_kind(&self) -> SourceBackend {
-        SourceBackend::Mcp
+    fn backend_kind(&self) -> Option<SourceBackend> {
+        Some(SourceBackend::Mcp)
     }
 
     fn has_bindable_filters(&self) -> bool {

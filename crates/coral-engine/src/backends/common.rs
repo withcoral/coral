@@ -164,7 +164,7 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
 
     fn source_name(&self) -> &str;
 
-    fn backend_kind(&self) -> SourceBackend;
+    fn backend_kind(&self) -> Option<SourceBackend>;
 
     fn has_bindable_filters(&self) -> bool;
 

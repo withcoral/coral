@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check
+.PHONY: install ui-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -80,3 +80,17 @@ docs-check:
 	  --docs-json docs/docs.json \
 	  --skip-community-sources \
 	  --check
+
+# ----------------------------------------------------------------------------
+# JSON schema generation
+# ----------------------------------------------------------------------------
+# Regenerates source manifest schemas that are generated from Rust types.
+#
+#   make schema-generate   # write/refresh generated schemas
+#   make schema-check      # CI freshness check: non-zero exit if stale
+
+schema-generate:
+	cargo run --locked -p xtask -- generate-schemas
+
+schema-check:
+	cargo run --locked -p xtask -- generate-schemas --check

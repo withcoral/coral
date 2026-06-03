@@ -8,14 +8,41 @@ use serde_json::Value as JsonValue;
 use crate::{ManifestError, Result};
 
 static SOURCE_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
+static SOURCE_V4_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
 
 pub(crate) fn validate_manifest_schema(manifest_json: &JsonValue) -> Result<()> {
-    let validator = SOURCE_SCHEMA.get_or_init(|| {
+    validate_with_schema(manifest_json, source_schema())
+}
+
+pub(crate) fn validate_manifest_schema_for_dsl_version(
+    manifest_json: &JsonValue,
+    dsl_version: u32,
+) -> Result<()> {
+    if dsl_version == 4 {
+        return validate_with_schema(manifest_json, source_v4_schema());
+    }
+    validate_manifest_schema(manifest_json)
+}
+
+fn source_schema() -> &'static JSONSchema {
+    SOURCE_SCHEMA.get_or_init(|| {
         let schema_json: JsonValue =
             serde_json::from_str(include_str!("schema/source_manifest.schema.json"))
                 .expect("embedded source schema must be valid JSON");
         JSONSchema::compile(&schema_json).expect("embedded source schema must compile")
-    });
+    })
+}
+
+fn source_v4_schema() -> &'static JSONSchema {
+    SOURCE_V4_SCHEMA.get_or_init(|| {
+        let schema_json: JsonValue =
+            serde_json::from_str(include_str!("schema/source_manifest_v4.schema.json"))
+                .expect("embedded DSL v4 source schema must be valid JSON");
+        JSONSchema::compile(&schema_json).expect("embedded DSL v4 source schema must compile")
+    })
+}
+
+fn validate_with_schema(manifest_json: &JsonValue, validator: &JSONSchema) -> Result<()> {
     if let Err(errors) = validator.validate(manifest_json) {
         let problems: Vec<String> = errors
             .take(8)
@@ -64,6 +91,74 @@ tables:
     fn validate_manifest_schema_accepts_valid_http_manifest() {
         let manifest = manifest_json(valid_http_manifest());
         validate_manifest_schema(&manifest).expect("valid manifest should pass schema validation");
+    }
+
+    #[test]
+    fn validate_manifest_schema_accepts_quoted_sql_table_names() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: player.stats
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+  - name: message-events
+    description: Event messages
+    request:
+      method: GET
+      path: /events
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("table names that require SQL quoting should pass schema validation");
+    }
+
+    #[test]
+    fn validate_manifest_schema_rejects_invalid_table_function_identifier() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search-messages
+    request:
+      method: GET
+      path: /messages/search
+",
+        );
+
+        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("source manifest failed schema validation:"),
+            "{message}"
+        );
+        assert!(message.contains("/functions/0/name"), "{message}");
+        assert!(message.contains("^[A-Za-z_][A-Za-z0-9_]*$"), "{message}");
+    }
+
+    #[test]
+    fn validate_manifest_schema_directly_rejects_v4_manifest() {
+        let manifest = manifest_json(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+        );
+        validate_manifest_schema(&manifest).expect_err("v3 schema should reject v4 manifests");
     }
 
     #[test]

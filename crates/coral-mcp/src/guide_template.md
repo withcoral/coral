@@ -64,6 +64,7 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 
 ## Query Guidance
 
+- Result values of type `Int64`/`BIGINT`, `UInt64`, and `Decimal*` are returned as JSON strings, not JSON numbers, so exact values survive JSON parsing in clients that decode numbers as IEEE-754 doubles. The declared column type is unchanged; read these values as strings.
 - Use each table's `sql_reference` from `list_catalog` or `coral://tables` in `FROM` and `JOIN` clauses, for example `slack.messages`.
 - Use each table function's `sql_call_example` from `list_catalog` or `search_catalog`, filling in the required arguments before querying it.
 - Do not quote the whole `schema.table` string. Write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
