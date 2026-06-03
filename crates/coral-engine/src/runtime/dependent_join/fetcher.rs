@@ -72,7 +72,7 @@ impl BindingFetcher {
                 &filter_values,
                 &HashMap::new(),
                 row_limit,
-                self.page_hint,
+                row_limit,
             )
             .await?;
 
