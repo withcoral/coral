@@ -47,6 +47,8 @@ test_queries:
 
 Notes:
 
+- `test_queries` may substitute installed source variables using `{{input.VARIABLE_KEY}}`
+  tokens (same syntax as HTTP path and header templates). Secrets are not substituted.
 - Each query result is reported individually during `coral source test`.
 - `coral source add` and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
 - Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.
