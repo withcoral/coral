@@ -248,7 +248,9 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
-        QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
+        let mut runtime_context = self.runtime_context.clone();
+        runtime_context.trace_context = Some(tracing::Span::current().context());
+        QueryRuntimeConfig::new(runtime_context, extensions)
     }
 }
 

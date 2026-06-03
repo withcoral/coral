@@ -8,7 +8,7 @@ use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputR
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::TableFunctionImpl;
@@ -164,7 +164,7 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
 
     fn source_name(&self) -> &str;
 
-    fn backend_kind(&self) -> &'static str;
+    fn backend_kind(&self) -> SourceBackend;
 
     fn has_bindable_filters(&self) -> bool;
 

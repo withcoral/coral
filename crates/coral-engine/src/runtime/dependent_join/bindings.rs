@@ -53,7 +53,7 @@ impl BindingProjector {
         for key in self.keys.iter() {
             let index = batch
                 .schema()
-                .index_of(&key.resolver_column.name)
+                .index_of(&key.resolver_binding_name)
                 .map_err(|error| DataFusionError::Execution(error.to_string()))?;
             let array = batch.column(index);
 

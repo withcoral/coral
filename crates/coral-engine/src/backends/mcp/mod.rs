@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use coral_spec::SourceBackend;
 use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest, McpTableSpec};
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
@@ -146,8 +147,8 @@ impl CompiledBackendSource for McpCompiledSource {
         &self.manifest.common.name
     }
 
-    fn backend_kind(&self) -> &'static str {
-        "mcp"
+    fn backend_kind(&self) -> SourceBackend {
+        SourceBackend::Mcp
     }
 
     fn has_bindable_filters(&self) -> bool {
