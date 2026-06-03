@@ -2,7 +2,9 @@
 
 use std::{cmp::Reverse, collections::BTreeSet};
 
-use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
+use coral_engine::{
+    CatalogInfo, ColumnInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
@@ -86,6 +88,17 @@ enum CatalogMatchRank {
     QueryFields,
     Name,
     ExactName,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum CatalogLiteralMatchQuality {
+    Neutral,
+    QueryField,
+    TableNameSubstring,
+    TableNameTokenPlural,
+    TableNameToken,
+    TableNamePlural,
+    TableNameExact,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -312,6 +325,7 @@ impl CatalogDiscovery {
         let items = self
             .searchable_catalog_items(workspace_name, schema_name, kind)
             .await?;
+        let literal_terms = simple_literal_alternatives(pattern);
         let preferred_schemas = preferred_source_schemas(&items, &regex);
         let mut matches = items
             .into_iter()
@@ -323,6 +337,12 @@ impl CatalogDiscovery {
                 }
                 let source_preferred = preferred_schemas.contains(catalog_item_schema_name(&item));
                 let rank = catalog_match_rank(&item, &matched_fields, &regex);
+                let quality = catalog_literal_match_quality(
+                    &item,
+                    &matched_fields,
+                    literal_terms.as_deref(),
+                    source_preferred || schema_name.is_some(),
+                );
                 let table_column_preview = match &item {
                     CatalogItem::Table(table) => Some(table_column_preview(table, &regex)),
                     CatalogItem::TableFunction(_) => None,
@@ -331,6 +351,7 @@ impl CatalogDiscovery {
                 Some((
                     source_preferred,
                     rank,
+                    quality,
                     original_position,
                     CatalogSearchResult {
                         item,
@@ -340,16 +361,17 @@ impl CatalogDiscovery {
                 ))
             })
             .collect::<Vec<_>>();
-        matches.sort_by_key(|(source_preferred, rank, original_position, _)| {
+        matches.sort_by_key(|(source_preferred, rank, quality, original_position, _)| {
             (
                 Reverse(*source_preferred),
                 Reverse(*rank),
+                Reverse(*quality),
                 *original_position,
             )
         });
         let matches = matches
             .into_iter()
-            .map(|(_, _, _, result)| result)
+            .map(|(_, _, _, _, result)| result)
             .collect::<Vec<_>>();
         Ok(page_items(matches, pagination))
     }
@@ -440,6 +462,199 @@ fn preferred_source_schemas(items: &[CatalogItem], regex: &Regex) -> BTreeSet<St
     } else {
         preferred_schemas
     }
+}
+
+fn simple_literal_alternatives(pattern: &str) -> Option<Vec<String>> {
+    let mut terms = pattern
+        .split('|')
+        .map(|term| {
+            let trimmed = term.trim();
+            if term.is_empty()
+                || term != trimmed
+                || !term.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || character == '_' || character == '-'
+                })
+            {
+                None
+            } else {
+                Some(term.to_ascii_lowercase())
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    terms.sort();
+    terms.dedup();
+    (!terms.is_empty()).then_some(terms)
+}
+
+fn catalog_literal_match_quality(
+    item: &CatalogItem,
+    matched_fields: &[CatalogMetadataField],
+    literal_terms: Option<&[String]>,
+    quality_enabled: bool,
+) -> CatalogLiteralMatchQuality {
+    let Some(literal_terms) = literal_terms else {
+        return CatalogLiteralMatchQuality::Neutral;
+    };
+    if !quality_enabled
+        || matched_fields
+            .iter()
+            .all(|field| *field == CatalogMetadataField::SchemaName)
+    {
+        return CatalogLiteralMatchQuality::Neutral;
+    }
+
+    let (schema_name, item_name) = catalog_item_name_parts(item);
+    let schema_name = schema_name.to_ascii_lowercase();
+    let terms = literal_terms
+        .iter()
+        .filter(|term| term.as_str() != schema_name)
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return CatalogLiteralMatchQuality::Neutral;
+    }
+
+    let mut quality = CatalogLiteralMatchQuality::Neutral;
+    if catalog_item_name_fields_match(matched_fields) {
+        quality = quality.max(name_literal_match_quality(item_name, &terms));
+    }
+    if catalog_item_query_fields_match(matched_fields) {
+        quality = quality.max(query_field_literal_match_quality(item, &terms));
+    }
+    quality
+}
+
+fn catalog_item_name_fields_match(matched_fields: &[CatalogMetadataField]) -> bool {
+    matched_fields.iter().any(|field| {
+        matches!(
+            field,
+            CatalogMetadataField::TableName
+                | CatalogMetadataField::FunctionName
+                | CatalogMetadataField::Name
+        )
+    })
+}
+
+fn catalog_item_query_fields_match(matched_fields: &[CatalogMetadataField]) -> bool {
+    matched_fields.iter().any(|field| {
+        matches!(
+            field,
+            CatalogMetadataField::RequiredFilters
+                | CatalogMetadataField::Columns
+                | CatalogMetadataField::Arguments
+                | CatalogMetadataField::ResultColumns
+        )
+    })
+}
+
+fn name_literal_match_quality(name: &str, terms: &[&str]) -> CatalogLiteralMatchQuality {
+    let name = name.to_ascii_lowercase();
+    let tokens = search_tokens(&name);
+    terms
+        .iter()
+        .map(|term| literal_name_quality(&name, &tokens, term))
+        .max()
+        .unwrap_or(CatalogLiteralMatchQuality::Neutral)
+}
+
+fn literal_name_quality(name: &str, tokens: &[&str], term: &str) -> CatalogLiteralMatchQuality {
+    if name == term {
+        return CatalogLiteralMatchQuality::TableNameExact;
+    }
+    if plural_variants_match(name, term) {
+        return CatalogLiteralMatchQuality::TableNamePlural;
+    }
+    if tokens.iter().any(|token| token == &term) {
+        return CatalogLiteralMatchQuality::TableNameToken;
+    }
+    if tokens
+        .iter()
+        .any(|token| plural_variants_match(token, term))
+    {
+        return CatalogLiteralMatchQuality::TableNameTokenPlural;
+    }
+    if term.len() >= 3 && name.contains(term) {
+        return CatalogLiteralMatchQuality::TableNameSubstring;
+    }
+    CatalogLiteralMatchQuality::Neutral
+}
+
+fn query_field_literal_match_quality(
+    item: &CatalogItem,
+    terms: &[&str],
+) -> CatalogLiteralMatchQuality {
+    let matches = match item {
+        CatalogItem::Table(table) => {
+            table
+                .required_filters
+                .iter()
+                .any(|filter| value_has_literal_token_match(filter, terms))
+                || table
+                    .columns
+                    .iter()
+                    .any(|column| column_has_literal_token_match(column, terms))
+        }
+        CatalogItem::TableFunction(function) => {
+            function.arguments.iter().any(|argument| {
+                value_has_literal_token_match(&argument.name, terms)
+                    || argument
+                        .values
+                        .iter()
+                        .any(|value| value_has_literal_token_match(value, terms))
+            }) || function
+                .result_columns
+                .iter()
+                .any(|column| result_column_has_literal_token_match(column, terms))
+        }
+    };
+    if matches {
+        CatalogLiteralMatchQuality::QueryField
+    } else {
+        CatalogLiteralMatchQuality::Neutral
+    }
+}
+
+fn column_has_literal_token_match(column: &ColumnInfo, terms: &[&str]) -> bool {
+    value_has_literal_token_match(&column.name, terms)
+        || value_has_literal_token_match(&column.data_type, terms)
+        || value_has_literal_token_match(&column.description, terms)
+}
+
+fn result_column_has_literal_token_match(
+    column: &TableFunctionResultColumnInfo,
+    terms: &[&str],
+) -> bool {
+    value_has_literal_token_match(&column.name, terms)
+        || value_has_literal_token_match(&column.data_type, terms)
+        || value_has_literal_token_match(&column.description, terms)
+}
+
+fn value_has_literal_token_match(value: &str, terms: &[&str]) -> bool {
+    let value = value.to_ascii_lowercase();
+    let tokens = search_tokens(&value);
+    terms.iter().any(|term| {
+        tokens
+            .iter()
+            .any(|token| token == term || plural_variants_match(token, term))
+            || term.len() >= 3 && value.contains(term)
+    })
+}
+
+fn search_tokens(value: &str) -> Vec<&str> {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn plural_variants_match(left: &str, right: &str) -> bool {
+    if left.len().min(right.len()) < 3 {
+        return false;
+    }
+    left.strip_suffix('s') == Some(right)
+        || right.strip_suffix('s') == Some(left)
+        || left.strip_suffix("es") == Some(right)
+        || right.strip_suffix("es") == Some(left)
 }
 
 pub(crate) fn search_pagination(pagination: Option<Pagination>) -> Result<Pagination, AppError> {

@@ -603,6 +603,81 @@ pub(crate) fn fixture_manifest_with_source_aware_search_yaml(name: &str) -> Stri
     }))
 }
 
+pub(crate) fn fixture_manifest_with_canonical_table_ranking_yaml() -> String {
+    manifest_yaml(&json!({
+        "name": "github",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [
+            {
+                "name": "aaa_review_events",
+                "description": "Review events",
+                "request": {
+                    "method": "GET",
+                    "path": "/reviews",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "pull_request_id", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "private_properties",
+                "description": "Private repository properties",
+                "request": {
+                    "method": "GET",
+                    "path": "/private-properties",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "pull_request_comments",
+                "description": "Pull request comments",
+                "request": {
+                    "method": "GET",
+                    "path": "/pull-request-comments",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "body", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "pulls",
+                "description": "Pull requests",
+                "request": {
+                    "method": "GET",
+                    "path": "/pulls",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "title", "type": "Utf8" },
+                ],
+            },
+            {
+                "name": "zzz_pr_checks",
+                "description": "PR checks",
+                "request": {
+                    "method": "GET",
+                    "path": "/pr-checks",
+                },
+                "response": {},
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                ],
+            },
+        ],
+    }))
+}
+
 pub(crate) fn fixture_function_only_manifest_yaml() -> String {
     manifest_yaml(&json!({
         "name": "searchy",

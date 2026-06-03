@@ -5,13 +5,14 @@
 
 use coral_api::v1::{
     DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-    SearchCatalogRequest, catalog_item,
+    SearchCatalogRequest, SearchCatalogResponse, catalog_item,
 };
 use coral_client::default_workspace;
 use tonic::Request;
 
 use super::harness::{
-    GrpcHarness, fixture_manifest_with_column_preview_yaml, fixture_manifest_with_functions_yaml,
+    GrpcHarness, fixture_manifest_with_canonical_table_ranking_yaml,
+    fixture_manifest_with_column_preview_yaml, fixture_manifest_with_functions_yaml,
     fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_filter_yaml,
     fixture_manifest_with_search_ranking_yaml, fixture_manifest_with_source_aware_search_yaml,
 };
@@ -42,6 +43,47 @@ fn search_result_schema_name(result: &coral_api::v1::CatalogSearchResult) -> &st
         catalog_item::Item::Table(table) => table.schema_name.as_str(),
         catalog_item::Item::TableFunction(function) => function.schema_name.as_str(),
     }
+}
+
+async fn import_canonical_table_ranking_sources(harness: &GrpcHarness) {
+    harness
+        .import_source(
+            fixture_manifest_with_canonical_table_ranking_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    for source in ["linear", "notion"] {
+        harness
+            .import_source(
+                fixture_manifest_with_source_aware_search_yaml(source),
+                Vec::new(),
+                Vec::new(),
+            )
+            .await;
+    }
+}
+
+async fn search_canonical_table_ranking(
+    harness: &GrpcHarness,
+    pattern: &str,
+) -> SearchCatalogResponse {
+    harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: pattern.to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 10,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect("canonical table ranking search catalog")
+        .into_inner()
 }
 
 #[tokio::test]
@@ -369,6 +411,94 @@ async fn search_catalog_does_not_source_boost_broad_pattern() {
             ("linear", "issues"),
             ("linear", "users"),
             ("notion", "users"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_ranks_canonical_table_before_incidental_same_source_matches() {
+    let harness = GrpcHarness::new().await;
+    import_canonical_table_ranking_sources(&harness).await;
+    let response = search_canonical_table_ranking(&harness, "github|pull|request|pr").await;
+
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(search_result_item_name)
+            .collect::<Vec<_>>(),
+        vec![
+            "pulls",
+            "pull_request_comments",
+            "zzz_pr_checks",
+            "private_properties",
+            "aaa_review_events"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_keeps_column_only_match_below_table_name_match() {
+    let harness = GrpcHarness::new().await;
+    import_canonical_table_ranking_sources(&harness).await;
+    let response = search_canonical_table_ranking(&harness, "github|pull|request").await;
+
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(search_result_item_name)
+            .collect::<Vec<_>>(),
+        vec![
+            "pulls",
+            "pull_request_comments",
+            "aaa_review_events",
+            "private_properties",
+            "zzz_pr_checks"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_does_not_boost_short_literal_substrings() {
+    let harness = GrpcHarness::new().await;
+    import_canonical_table_ranking_sources(&harness).await;
+    let response = search_canonical_table_ranking(&harness, "github|pr").await;
+
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(search_result_item_name)
+            .collect::<Vec<_>>(),
+        vec![
+            "zzz_pr_checks",
+            "private_properties",
+            "aaa_review_events",
+            "pull_request_comments",
+            "pulls"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_catalog_preserves_stable_order_for_simple_schema_only_matches() {
+    let harness = GrpcHarness::new().await;
+    import_canonical_table_ranking_sources(&harness).await;
+    let response = search_canonical_table_ranking(&harness, "github").await;
+
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .map(search_result_item_name)
+            .collect::<Vec<_>>(),
+        vec![
+            "aaa_review_events",
+            "private_properties",
+            "pull_request_comments",
+            "pulls",
+            "zzz_pr_checks"
         ]
     );
 }
