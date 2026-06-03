@@ -843,10 +843,9 @@ async fn run_source_add_bundled(
         let hosts =
             source_ops::resolve_bundled_source_hosts(app, &available.name, variables.clone())
                 .await?;
-        if !source_ops::confirm_source_hosts(&hosts, false)? {
-            println!("Cancelled. Source '{}' was not connected.", available.name);
-            return Ok(None);
-        }
+        // Non-interactive setup has no prompt to decline; the host list is
+        // printed for visibility only.
+        source_ops::confirm_source_hosts(&hosts, false)?;
         Ok(Some(
             source_ops::add_bundled_source(app, &available.name, variables, secrets).await?,
         ))
@@ -888,13 +887,9 @@ async fn run_source_add_file(
             source_ops::collect_inputs_from_env(manifest.declared_inputs(), interactive_command)?;
         let hosts = manifest
             .outbound_hosts_with_input_values(&source_ops::source_variables_map(&variables));
-        if !source_ops::confirm_source_hosts(&hosts, false)? {
-            println!(
-                "Cancelled. Source '{}' was not connected.",
-                manifest.schema_name()
-            );
-            return Ok(None);
-        }
+        // Non-interactive setup has no prompt to decline; the host list is
+        // printed for visibility only.
+        source_ops::confirm_source_hosts(&hosts, false)?;
         Ok(Some(
             source_ops::import_source(app, manifest_yaml, variables, secrets).await?,
         ))
