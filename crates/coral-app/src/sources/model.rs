@@ -67,23 +67,12 @@ impl AuthOneOfSecretRequirement {
         let mut keys = Vec::new();
         for value in values {
             match value {
-                // Secret credential branch: a value the caller can supply (or
-                // already have stored) to satisfy this auth choice. Repeated
-                // keys fail the guard and fall through to be skipped below.
                 ValueSourceSpec::Input { key } | ValueSourceSpec::Bearer { key }
                     if declared_secret_names.contains(key) && !keys.contains(key) =>
                 {
                     keys.push(key.clone());
                 }
-                // A branch that always yields a value at auth time without any
-                // user-supplied secret (e.g. a literal). The choice can
-                // authenticate on its own, so there is nothing to require — even
-                // if other branches are secrets.
                 _ if value_source_always_resolves(value) => return None,
-                // Any other branch (template, runtime state, …) only *might*
-                // resolve at auth time, so it neither satisfies nor cancels the
-                // requirement. Skip it and keep scanning for secret branches so a
-                // mixed `one_of` still enforces its secret alternatives.
                 _ => {}
             }
         }
@@ -95,9 +84,6 @@ impl AuthOneOfSecretRequirement {
     }
 }
 
-/// Returns `true` when `value` is guaranteed to resolve to a non-empty value at
-/// auth time without any user-supplied secret, so a `one_of` containing it can
-/// always authenticate on its own and needs no install-time credential.
 fn value_source_always_resolves(value: &ValueSourceSpec) -> bool {
     match value {
         ValueSourceSpec::Literal { value } => !literal_renders_empty(value),
@@ -106,8 +92,6 @@ fn value_source_always_resolves(value: &ValueSourceSpec) -> bool {
     }
 }
 
-/// Mirrors the runtime treatment of a literal value source: only `null` and the
-/// empty string render to an empty header value.
 fn literal_renders_empty(value: &Value) -> bool {
     match value {
         Value::Null => true,
@@ -194,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn one_of_of_secret_branches_requires_one_of_them() {
+    fn one_of_secret_branches_require_one_of_them() {
         let value = ValueSourceSpec::OneOf {
             values: vec![
                 ValueSourceSpec::Bearer {
@@ -214,8 +198,6 @@ mod tests {
 
     #[test]
     fn one_of_mixing_secret_with_runtime_branch_still_requires_the_secret() {
-        // A runtime branch (here: `state`) only *might* hold a value at auth
-        // time, so it must not silently drop the secret requirement.
         let value = ValueSourceSpec::OneOf {
             values: vec![
                 ValueSourceSpec::Bearer {
@@ -232,8 +214,6 @@ mod tests {
 
     #[test]
     fn one_of_with_guaranteed_literal_fallback_requires_nothing() {
-        // The literal always supplies a header value, so auth never depends on
-        // the secret and the source must remain installable without it.
         let value = ValueSourceSpec::OneOf {
             values: vec![
                 ValueSourceSpec::Bearer {

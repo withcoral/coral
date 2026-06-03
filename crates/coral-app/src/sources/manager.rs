@@ -578,8 +578,8 @@ impl SourceManager {
         } = request.bindings;
         // Switching one branch of an auth `one_of` supersedes its siblings, so
         // expand the replaced set to cover every sibling. This is computed
-        // unconditionally — independent of the credential-storage decision
-        // below — so the purge is a property of the validated bindings rather
+        // unconditionally, independent of the credential-storage decision
+        // below, so the purge is a property of the validated bindings rather
         // than of whichever storage branch happens to run.
         let replaced_credential_inputs = expand_auth_one_of_siblings(
             replaced_credential_inputs,
@@ -1146,8 +1146,8 @@ fn validate_bindings(
             }
             ManifestInputKind::Secret
                 if input.required
-                    && !secret_values.contains_key(&input.key)
-                    && !stored_material.contains_key(&input.key)
+                    && !secret_value_present(&secret_values, &input.key)
+                    && !secret_value_present(stored_material, &input.key)
                     && !filled_secret_keys.contains(&input.key) =>
             {
                 return Err(AppError::InvalidInput(format!(
@@ -1173,10 +1173,16 @@ fn validate_bindings(
         )));
     }
 
+    let non_empty_secret_values = secret_values
+        .iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+
     Ok(ValidatedBindings {
         variables: variable_values,
-        replaced_credential_inputs: secret_values.keys().cloned().collect(),
-        secrets: secret_values,
+        replaced_credential_inputs: non_empty_secret_values.keys().cloned().collect(),
+        secrets: non_empty_secret_values,
     })
 }
 
@@ -1189,7 +1195,7 @@ fn source_needs_stored_material_for_validation(
     Ok(candidate.inputs.iter().any(|input| {
         input.kind == ManifestInputKind::Secret
             && input.required
-            && !supplied_secrets.contains_key(&input.key)
+            && !secret_value_present(&supplied_secrets, &input.key)
             && !filled_secret_keys.contains(&input.key)
     }) || candidate
         .auth_one_of_secret_requirements
@@ -1250,8 +1256,8 @@ fn rebuild_source_credential_material(
 /// Supplying a fresh credential for one branch of an auth choice (for example
 /// switching a Linear source from OAuth to a raw API key) supersedes the other
 /// branches. Their stored material must be purged, otherwise the stale sibling
-/// lingers and—because `one_of` resolves the first non-empty value in manifest
-/// order—can keep authenticating with the superseded method. Membership is
+/// lingers and, because `one_of` resolves the first non-empty value in manifest
+/// order, can keep authenticating with the superseded method. Membership is
 /// tested against the original inputs so the result is independent of group
 /// ordering and only touches groups the caller directly supplied a value for.
 fn expand_auth_one_of_siblings(
@@ -1369,16 +1375,15 @@ fn collect_unique_variables(
 
 fn collect_unique_secrets(secrets: &[SourceBinding]) -> Result<BTreeMap<String, String>, AppError> {
     let mut values = BTreeMap::new();
+    let mut seen = BTreeSet::new();
     for secret in secrets {
         let key = normalize_binding_key("source secret key", &secret.key)?;
-        if secret.value.is_empty() {
-            continue;
-        }
-        if values.insert(key.clone(), secret.value.clone()).is_some() {
+        if !seen.insert(key.clone()) {
             return Err(AppError::InvalidInput(format!(
                 "source secret '{key}' is repeated"
             )));
         }
+        values.insert(key, secret.value.clone());
     }
     Ok(values)
 }
@@ -2365,6 +2370,97 @@ tables:
     }
 
     #[test]
+    fn import_rejects_empty_unknown_secret_binding() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout);
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "TYPO_TOKEN".to_string(),
+                            value: String::new(),
+                        }],
+                    },
+                },
+            )
+            .expect_err("empty unknown secret should still be validated");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown source secret 'TYPO_TOKEN'"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn import_rejects_empty_stored_required_secret() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let workspace_name = default_workspace();
+
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+        credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), String::new())]),
+            )
+            .expect("replace material with empty secret");
+
+        let error = manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("empty stored required secret should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing required source secret 'API_TOKEN'"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn import_replaces_malformed_existing_credential_material() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -2949,7 +3045,7 @@ tables:
             .expect("switch to api key");
         assert_eq!(updated.secrets, vec!["API_KEY".to_string()]);
 
-        // The superseded OAuth credential — bare value and metadata — must be
+        // The superseded OAuth credential, bare value and metadata, must be
         // gone, so the bearer-first branch can no longer win over the API key.
         let material = credential_manager
             .read_material(
@@ -3171,7 +3267,7 @@ tables:
             event_tx,
         );
         // The flow errors during the token exchange, so only the authorization
-        // event is emitted — there is no completion event to await.
+        // event is emitted; there is no completion event to await.
         let callback = async {
             let event = event_rx
                 .recv()

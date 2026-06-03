@@ -303,35 +303,6 @@ async fn source_info_renders_metadata_for_available_source() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_info_renders_one_of_input_requirements() {
-    let server = MockServer::start().await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "info", "linear"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        stdout.contains("LINEAR_OAUTH_ACCESS_TOKEN"),
-        "expected OAuth input key: {stdout}"
-    );
-    assert!(
-        stdout.contains("LINEAR_API_KEY"),
-        "expected API key input key: {stdout}"
-    );
-    assert!(
-        stdout.contains(
-            "At least one required for auth header 'Authorization': LINEAR_OAUTH_ACCESS_TOKEN, LINEAR_API_KEY"
-        ),
-        "expected one-of input requirement with context: {stdout}"
-    );
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn source_info_renders_installed_imported_source() {
     let server = MockServer::start().await;
 
@@ -930,7 +901,6 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
                     installed: false,
                     origin: SourceOrigin::Bundled as i32,
                     credential_storage: SourceCredentialStorage::Unspecified as i32,
-                    one_of_input_requirements: Vec::new(),
                 }],
             }),
     )

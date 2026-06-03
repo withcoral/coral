@@ -26,10 +26,10 @@ use coral_api::v1::{
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
     PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceInputOneOfRequirement, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    import_source_response, source_input_spec::Input as ProtoSourceInput,
+    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
+    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_o_auth_response, import_source_response,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tempfile::TempDir;
@@ -289,7 +289,6 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::File as i32,
-                one_of_input_requirements: Vec::new(),
             },
             SourceInfo {
                 name: "slack".to_string(),
@@ -299,7 +298,6 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::Unspecified as i32,
-                one_of_input_requirements: Vec::new(),
             },
         ],
     }
@@ -334,7 +332,6 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::File as i32,
-            one_of_input_requirements: Vec::new(),
         }),
         "slack" => Ok(SourceInfo {
             name: "slack".to_string(),
@@ -344,7 +341,6 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: false,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
-            one_of_input_requirements: Vec::new(),
         }),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
@@ -354,40 +350,6 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
-            one_of_input_requirements: Vec::new(),
-        }),
-        "linear" => Ok(SourceInfo {
-            name: "linear".to_string(),
-            description: "Linear data".to_string(),
-            version: "2.4.0".to_string(),
-            inputs: vec![
-                SourceInputSpec {
-                    key: "LINEAR_OAUTH_ACCESS_TOKEN".to_string(),
-                    required: false,
-                    hint: String::new(),
-                    input: Some(ProtoSourceInput::Secret(SourceSecretInput {
-                        credential: None,
-                    })),
-                },
-                SourceInputSpec {
-                    key: "LINEAR_API_KEY".to_string(),
-                    required: false,
-                    hint: String::new(),
-                    input: Some(ProtoSourceInput::Secret(SourceSecretInput {
-                        credential: None,
-                    })),
-                },
-            ],
-            installed: false,
-            origin: SourceOrigin::Bundled as i32,
-            credential_storage: SourceCredentialStorage::Unspecified as i32,
-            one_of_input_requirements: vec![SourceInputOneOfRequirement {
-                keys: vec![
-                    "LINEAR_OAUTH_ACCESS_TOKEN".to_string(),
-                    "LINEAR_API_KEY".to_string(),
-                ],
-                context: "auth header 'Authorization'".to_string(),
-            }],
         }),
         "versionless" => Ok(SourceInfo {
             name: "versionless".to_string(),
@@ -397,7 +359,6 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
-            one_of_input_requirements: Vec::new(),
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }

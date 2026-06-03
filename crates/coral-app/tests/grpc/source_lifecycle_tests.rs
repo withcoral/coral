@@ -916,32 +916,6 @@ async fn get_source_info_returns_available_bundled_metadata() {
 }
 
 #[tokio::test]
-async fn get_source_info_returns_linear_auth_one_of_requirements() {
-    let harness = GrpcHarness::new().await;
-
-    let linear = harness
-        .source_client()
-        .get_source_info(Request::new(GetSourceInfoRequest {
-            workspace: Some(default_workspace()),
-            name: "linear".to_string(),
-        }))
-        .await
-        .expect("get linear source info")
-        .into_inner()
-        .source_info
-        .expect("linear source info response");
-
-    assert_eq!(linear.one_of_input_requirements.len(), 1);
-    assert_eq!(
-        linear.one_of_input_requirements[0].keys,
-        vec![
-            "LINEAR_OAUTH_ACCESS_TOKEN".to_string(),
-            "LINEAR_API_KEY".to_string()
-        ]
-    );
-}
-
-#[tokio::test]
 async fn get_source_info_returns_sentry_oauth_credential_metadata() {
     let harness = GrpcHarness::new().await;
 

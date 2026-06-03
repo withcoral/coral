@@ -256,7 +256,7 @@ impl QueryManager {
         let missing_secrets: Vec<String> = source_spec
             .required_secret_names()
             .into_iter()
-            .filter(|name| !stored_secrets.contains_key(name))
+            .filter(|name| !secret_value_present(&stored_secrets, name))
             .collect();
         if let Some((first, rest)) = missing_secrets.split_first() {
             let detail = if rest.is_empty() {
@@ -270,7 +270,10 @@ impl QueryManager {
             )));
         }
         for secret_name in source_spec.declared_secret_names() {
-            if let Some(value) = stored_secrets.get(&secret_name) {
+            if let Some(value) = stored_secrets
+                .get(&secret_name)
+                .filter(|value| !value.is_empty())
+            {
                 resolved_secrets.insert(secret_name, value.clone());
             }
         }
@@ -479,6 +482,10 @@ fn validate_required_variables(
     Ok(())
 }
 
+fn secret_value_present(values: &BTreeMap<String, String>, key: &str) -> bool {
+    values.get(key).is_some_and(|value| !value.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -636,6 +643,77 @@ tables:
         assert_eq!(
             query_source.secrets(),
             &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())])
+        );
+    }
+
+    #[test]
+    fn load_query_source_rejects_empty_stored_required_secret() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.com
+inputs:
+  API_TOKEN:
+    kind: secret
+tables:
+  - name: messages
+    description: Messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("write manifest");
+        let source = InstalledSource {
+            name: source_name.clone(),
+            version: Some("0.1.0".to_string()),
+            variables: BTreeMap::new(),
+            secrets: vec!["API_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::File),
+            origin: SourceOrigin::Imported,
+        };
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace_name, source.clone())
+            .expect("persist source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), String::new())]),
+            )
+            .expect("persist empty secret material");
+
+        let error = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect_err("empty required secret should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source 'secured_messages' is missing secret 'API_TOKEN'"),
+            "unexpected error: {error:#}"
         );
     }
 

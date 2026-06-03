@@ -575,24 +575,6 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             println!("      {}", style(&input.hint).dim());
         }
     }
-    for requirement in &source.one_of_input_requirements {
-        if requirement.keys.is_empty() {
-            continue;
-        }
-        let location = if requirement.context.is_empty() {
-            String::new()
-        } else {
-            format!(" for {}", requirement.context)
-        };
-        println!(
-            "    {}",
-            style(format!(
-                "At least one required{location}: {}",
-                requirement.keys.join(", ")
-            ))
-            .dim()
-        );
-    }
 }
 
 pub(crate) fn display_version(version: &str) -> String {

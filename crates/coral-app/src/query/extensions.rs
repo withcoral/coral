@@ -122,7 +122,7 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
         let missing_secrets: Vec<String> = source
             .required_secret_names()
             .into_iter()
-            .filter(|name| !resolved.contains_key(name))
+            .filter(|name| !input_value_present(&resolved, name))
             .collect();
         if let Some((first, rest)) = missing_secrets.split_first() {
             let detail = if rest.is_empty() {
@@ -143,7 +143,18 @@ fn resolve_from_material(
     source: &SourceInputResolutionContext,
     material: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
-    coral_spec::resolve_inputs(source.declared_inputs(), material, source.variables())
+    let mut resolved =
+        coral_spec::resolve_inputs(source.declared_inputs(), material, source.variables());
+    for input in source
+        .declared_inputs()
+        .iter()
+        .filter(|input| input.kind == ManifestInputKind::Secret)
+    {
+        if !input_value_present(&resolved, &input.key) {
+            resolved.remove(&input.key);
+        }
+    }
+    resolved
 }
 
 fn source_with_refreshed_secrets(
@@ -157,11 +168,16 @@ fn source_with_refreshed_secrets(
         .filter_map(|input| {
             material
                 .get(&input.key)
+                .filter(|value| !value.is_empty())
                 .cloned()
                 .map(|value| (input.key.clone(), value))
         })
         .collect();
     source.with_secrets(refreshed_secrets)
+}
+
+fn input_value_present(values: &BTreeMap<String, String>, key: &str) -> bool {
+    values.get(key).is_some_and(|value| !value.is_empty())
 }
 
 pub(crate) fn engine_extensions_for_providers(
@@ -303,6 +319,40 @@ mod tests {
             .expect("AWS provider should register aws authenticator");
 
         assert_eq!(authenticator.name(), "aws_sigv4");
+    }
+
+    #[test]
+    fn empty_stored_secret_is_absent_from_input_resolution_context() {
+        let source_spec = coral_spec::parse_source_manifest_yaml(
+            r"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+base_url: https://api.example.com
+tables:
+  - name: messages
+    description: Messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("parse source manifest");
+        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
+        let context = SourceInputResolutionContext::from_query_source(&source);
+        let material = BTreeMap::from([("API_TOKEN".to_string(), String::new())]);
+
+        let resolved = resolve_from_material(&context, &material);
+        let delegated = source_with_refreshed_secrets(&context, &material);
+
+        assert!(!resolved.contains_key("API_TOKEN"));
+        assert!(!delegated.secrets().contains_key("API_TOKEN"));
     }
 
     #[test]
