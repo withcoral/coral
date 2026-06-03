@@ -41,7 +41,7 @@ coral source test lemon_squeezy
 | `variants`              | Variants of each product, controlling price, billing interval, licensing, and trial settings                    |
 | `customers`             | Customers who have made purchases, with MRR and cumulative revenue                                              |
 | `orders`                | Individual purchase transactions with full price and tax breakdowns in store currency and USD                   |
-| `order_items`           | Line items within each order                                                                                    |
+| `order_items`           | Line items within each order, with price and quantity per variant purchased                                     |
 | `subscriptions`         | Active and historical subscriptions with billing status, renewal dates, and payment method                      |
 | `subscription_invoices` | Invoices generated per subscription billing cycle                                                               |
 | `discounts`             | Coupon codes with validity windows, redemption limits, and subscription discount duration settings              |
@@ -56,8 +56,14 @@ store's currency: `stores.total_revenue`, `stores.thirty_day_revenue`,
 suffixed `_usd` are also USD cents. Divide any cent value by 100 to get the
 decimal amount.
 
-> **Note on fetch limits:** High-cardinality tables (`orders`, `customers`,
-> `subscriptions`, `subscription_invoices`, `license_keys`,
+Most price columns have a `_formatted` counterpart (e.g. `total_formatted`,
+`mrr_formatted`, `subtotal_formatted`) that returns a pre-formatted
+human-readable string in the store's currency (e.g. `"$9.99"`). Use the raw
+integer columns for arithmetic and aggregation; use the `_formatted` columns
+for display.
+
+> **Note on fetch limits:** High-cardinality tables (`orders`, `order_items`,
+> `customers`, `subscriptions`, `subscription_invoices`, `license_keys`,
 > `discount_redemptions`) default to fetching up to 500 rows per unfiltered
 > query to avoid exhausting the 300 req/min rate limit.
 > Use filters to scope queries to a specific store, subscription, or date range
@@ -131,11 +137,26 @@ ORDER BY active_count DESC;
 SELECT
   name,
   email,
-  ROUND(mrr / 100.0, 2)                   AS mrr_usd,
-  ROUND(total_revenue_currency / 100.0, 2) AS lifetime_revenue_usd
+  mrr_formatted                    AS mrr,
+  total_revenue_currency_formatted AS lifetime_revenue
 FROM lemon_squeezy.customers
 ORDER BY mrr DESC
 LIMIT 20;
+```
+
+### Revenue by product including quantity
+
+```sql
+SELECT
+  oi.product_name,
+  oi.variant_name,
+  SUM(oi.quantity)                        AS units_sold,
+  ROUND(SUM(oi.price * oi.quantity) / 100.0, 2) AS gross_revenue
+FROM lemon_squeezy.order_items oi
+JOIN lemon_squeezy.orders o ON o.id = CAST(oi.order_id AS VARCHAR)
+WHERE o.status = 'paid'
+GROUP BY 1, 2
+ORDER BY gross_revenue DESC;
 ```
 
 ### License key usage vs limit
@@ -188,7 +209,7 @@ SELECT
   i.id            AS invoice_id,
   i.subscription_id,
   i.currency,
-  ROUND(i.total / 100.0, 2) AS total,
+  i.total_formatted,
   i.status,
   i.created_at
 FROM lemon_squeezy.subscription_invoices i
@@ -203,7 +224,7 @@ LIMIT 25;
 SELECT
   o.order_number,
   o.user_email,
-  ROUND(o.total_usd / 100.0, 2) AS total_usd,
+  o.total_formatted,
   o.refunded_at,
   i.identifier                  AS linear_issue,
   i.title                       AS issue_title
@@ -223,8 +244,17 @@ LIMIT 10;
   so each field is a direct SQL column.
 - Monetary values are always integers (cents). There are no decimal money
   columns in this source.
+- Most price columns have a `_formatted` counterpart returning a
+  human-readable string (e.g. `total_formatted`, `setup_fee_formatted`,
+  `mrr_formatted`). These are for display only — always use the raw integer
+  columns for `SUM`, `AVG`, and other aggregations.
+- `order_items.quantity` records how many units were purchased per line item.
+  Multiply `price × quantity` to get the true line-item revenue; using `price`
+  alone undercounts multi-unit purchases.
 - `subscription_invoices.urls__invoice_url` is the signed PDF download URL for
   an invoice. It is null for invoices in pending status.
+- `subscription_invoices.tax_inclusive` indicates whether the invoice total
+  was calculated with tax already included in the displayed price.
 - The `license_keys.instances_count` column is the live activation count
   returned by the API. It may briefly lag behind actual activation events.
 - Test-mode and live-mode stores are completely separate. You must re-add the

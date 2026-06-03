@@ -223,8 +223,7 @@ tables:
           path: [attributes, slug]
       - name: description
         type: Utf8
-        nullable: true
-        description: Product description (may contain HTML).
+        description: The description of the product in HTML.
         expr:
           kind: path
           path: [attributes, description]
@@ -236,7 +235,7 @@ tables:
           path: [attributes, status]
       - name: status_formatted
         type: Utf8
-        description: Human-readable status label.
+        description: The formatted status of the product.
         expr:
           kind: path
           path: [attributes, status_formatted]
@@ -267,6 +266,13 @@ tables:
         expr:
           kind: path
           path: [attributes, from_price]
+      - name: from_price_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable price of the cheapest variant (when multiple variants exist).
+        expr:
+          kind: path
+          path: [attributes, from_price_formatted]
       - name: to_price
         type: Int64
         nullable: true
@@ -274,6 +280,13 @@ tables:
         expr:
           kind: path
           path: [attributes, to_price]
+      - name: to_price_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable price of the most expensive variant (when multiple variants exist).
+        expr:
+          kind: path
+          path: [attributes, to_price_formatted]
       - name: pay_what_you_want
         type: Boolean
         description: Whether the product uses pay-what-you-want pricing.
@@ -408,7 +421,7 @@ tables:
           path: [attributes, suggested_price]
       - name: status
         type: Utf8
-        description: "Variant status: draft or published."
+        description: "Variant status: pending, draft, or published."
         expr:
           kind: path
           path: [attributes, status]
@@ -544,6 +557,7 @@ tables:
       rows_path:
         - data
       row_strategy: direct
+    fetch_limit_default: 500
     pagination:
       mode: page
       page_param: "page[number]"
@@ -552,7 +566,6 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -584,7 +597,7 @@ tables:
           path: [attributes, email]
       - name: status
         type: Utf8
-        description: "Customer status: subscribed or unsubscribed."
+        description: "Email marketing status of the customer: subscribed, unsubscribed, archived, requires_verification, invalid_email, or bounced."
         expr:
           kind: path
           path: [attributes, status]
@@ -615,18 +628,39 @@ tables:
         expr:
           kind: path
           path: [attributes, country]
+      - name: country_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable country name of the customer (e.g. "United States").
+        expr:
+          kind: path
+          path: [attributes, country_formatted]
       - name: total_revenue_currency
         type: Int64
         description: Total revenue from this customer in USD cents.
         expr:
           kind: path
           path: [attributes, total_revenue_currency]
+      - name: total_revenue_currency_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable total revenue from this customer (e.g. "$843.32").
+        expr:
+          kind: path
+          path: [attributes, total_revenue_currency_formatted]
       - name: mrr
         type: Int64
         description: Monthly recurring revenue from this customer in USD cents.
         expr:
           kind: path
           path: [attributes, mrr]
+      - name: mrr_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable monthly recurring revenue from this customer (e.g. "$19.99").
+        expr:
+          kind: path
+          path: [attributes, mrr_formatted]
       - name: created_at
         type: Timestamp
         description: When the customer record was first created.
@@ -671,6 +705,7 @@ tables:
       rows_path:
         - data
       row_strategy: direct
+    fetch_limit_default: 500
     pagination:
       mode: page
       page_param: "page[number]"
@@ -679,7 +714,6 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -748,6 +782,12 @@ tables:
         expr:
           kind: path
           path: [attributes, subtotal]
+      - name: setup_fee
+        type: Int64
+        description: Setup fee in store-currency cents.
+        expr:
+          kind: path
+          path: [attributes, setup_fee]
       - name: discount_total
         type: Int64
         description: Total discount applied in store-currency cents.
@@ -766,12 +806,24 @@ tables:
         expr:
           kind: path
           path: [attributes, total]
+      - name: refunded_amount
+        type: Int64
+        description: Refunded amount in store-currency cents.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount]
       - name: subtotal_usd
         type: Int64
         description: Subtotal in USD cents.
         expr:
           kind: path
           path: [attributes, subtotal_usd]
+      - name: setup_fee_usd
+        type: Int64
+        description: Setup fee in USD cents.
+        expr:
+          kind: path
+          path: [attributes, setup_fee_usd]
       - name: discount_total_usd
         type: Int64
         description: Discount in USD cents.
@@ -790,6 +842,12 @@ tables:
         expr:
           kind: path
           path: [attributes, total_usd]
+      - name: refunded_amount_usd
+        type: Int64
+        description: Refunded amount in USD cents.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount_usd]
       - name: tax_name
         type: Utf8
         nullable: true
@@ -812,7 +870,7 @@ tables:
           path: [attributes, tax_inclusive]
       - name: status
         type: Utf8
-        description: "Order status: pending, failed, paid, refunded."
+        description: "Order status: pending, failed, paid, refunded, partial_refund, or fraudulent."
         expr:
           kind: path
           path: [attributes, status]
@@ -838,6 +896,41 @@ tables:
           expr:
             kind: path
             path: [attributes, refunded_at]
+      - name: subtotal_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable subtotal in the order currency (e.g. "$9.99").
+        expr:
+          kind: path
+          path: [attributes, subtotal_formatted]
+      - name: setup_fee_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable setup fee in the order currency (e.g. "$9.99").
+        expr:
+          kind: path
+          path: [attributes, setup_fee_formatted]
+      - name: discount_total_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable total discount in the order currency (e.g. "$0.00").
+        expr:
+          kind: path
+          path: [attributes, discount_total_formatted]
+      - name: tax_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable tax amount in the order currency (e.g. "$2.00").
+        expr:
+          kind: path
+          path: [attributes, tax_formatted]
+      - name: total_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable grand total in the order currency (e.g. "$11.99").
+        expr:
+          kind: path
+          path: [attributes, total_formatted]
       - name: created_at
         type: Timestamp
         description: When the order was placed.
@@ -883,6 +976,7 @@ tables:
       rows_path:
         - data
       row_strategy: direct
+    fetch_limit_default: 500
     pagination:
       mode: page
       page_param: "page[number]"
@@ -941,6 +1035,12 @@ tables:
         expr:
           kind: path
           path: [attributes, price]
+      - name: quantity
+        type: Int64
+        description: Quantity purchased for this line item.
+        expr:
+          kind: path
+          path: [attributes, quantity]
       - name: created_at
         type: Timestamp
         description: When this order item was created.
@@ -998,6 +1098,7 @@ tables:
       rows_path:
         - data
       row_strategy: direct
+    fetch_limit_default: 500
     pagination:
       mode: page
       page_param: "page[number]"
@@ -1006,7 +1107,6 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -1216,6 +1316,7 @@ tables:
       rows_path:
         - data
       row_strategy: direct
+    fetch_limit_default: 500
     pagination:
       mode: page
       page_param: "page[number]"
@@ -1224,7 +1325,6 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -1254,9 +1354,27 @@ tables:
         expr:
           kind: path
           path: [attributes, subscription_id]
+      - name: customer_id
+        type: Int64
+        description: ID of the customer this invoice belongs to.
+        expr:
+          kind: path
+          path: [attributes, customer_id]
+      - name: user_name
+        type: Utf8
+        description: Full name of the customer.
+        expr:
+          kind: path
+          path: [attributes, user_name]
+      - name: user_email
+        type: Utf8
+        description: Email address of the customer.
+        expr:
+          kind: path
+          path: [attributes, user_email]
       - name: billing_reason
         type: Utf8
-        description: "Reason for this invoice: initial or renewal."
+        description: "Reason for this invoice: initial, renewal, or updated."
         expr:
           kind: path
           path: [attributes, billing_reason]
@@ -1304,18 +1422,84 @@ tables:
         expr:
           kind: path
           path: [attributes, tax]
+      - name: tax_inclusive
+        type: Boolean
+        description: Whether the invoice was created with tax-inclusive pricing.
+        expr:
+          kind: path
+          path: [attributes, tax_inclusive]
+      - name: subtotal_usd
+        type: Int64
+        description: Subtotal in USD cents.
+        expr:
+          kind: path
+          path: [attributes, subtotal_usd]
+      - name: discount_total_usd
+        type: Int64
+        description: Discount in USD cents.
+        expr:
+          kind: path
+          path: [attributes, discount_total_usd]
+      - name: tax_usd
+        type: Int64
+        description: Tax in USD cents.
+        expr:
+          kind: path
+          path: [attributes, tax_usd]
       - name: total
         type: Int64
         description: Grand total charged in store-currency cents.
         expr:
           kind: path
           path: [attributes, total]
+      - name: refunded_amount
+        type: Int64
+        description: Refunded amount in store-currency cents.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount]
       - name: total_usd
         type: Int64
         description: Grand total in USD cents.
         expr:
           kind: path
           path: [attributes, total_usd]
+      - name: refunded_amount_usd
+        type: Int64
+        description: Refunded amount in USD cents.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount_usd]
+      - name: subtotal_formatted
+        type: Utf8
+        description: Human-readable subtotal amount.
+        expr:
+          kind: path
+          path: [attributes, subtotal_formatted]
+      - name: discount_total_formatted
+        type: Utf8
+        description: Human-readable discount amount.
+        expr:
+          kind: path
+          path: [attributes, discount_total_formatted]
+      - name: tax_formatted
+        type: Utf8
+        description: Human-readable tax amount.
+        expr:
+          kind: path
+          path: [attributes, tax_formatted]
+      - name: total_formatted
+        type: Utf8
+        description: Human-readable total amount.
+        expr:
+          kind: path
+          path: [attributes, total_formatted]
+      - name: refunded_amount_formatted
+        type: Utf8
+        description: Human-readable refunded amount.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount_formatted]
       - name: status
         type: Utf8
         description: "Invoice status: pending, paid, void, refunded, partial_refund."
@@ -1544,6 +1728,7 @@ tables:
       rows_path:
         - data
       row_strategy: direct
+    fetch_limit_default: 500
     pagination:
       mode: page
       page_param: "page[number]"
@@ -1552,7 +1737,6 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 500
     filters:
       - name: store_id
         type: Int64
@@ -1711,6 +1895,7 @@ tables:
       rows_path:
         - data
       row_strategy: direct
+    fetch_limit_default: 500
     pagination:
       mode: page
       page_param: "page[number]"
@@ -1719,7 +1904,6 @@ tables:
         default: 100
         max: 100
         query_param: "page[size]"
-      fetch_limit_default: 500
     filters:
       - name: discount_id
         type: Int64
