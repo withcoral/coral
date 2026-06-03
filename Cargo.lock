@@ -1206,7 +1206,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "apple-native-keyring-store",
  "arrow",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "arrow",
  "coral-api",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "coral-api",
  "coral-app",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "coral-spec"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "jsonschema",
  "schemars",
@@ -6692,7 +6692,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "clap",
