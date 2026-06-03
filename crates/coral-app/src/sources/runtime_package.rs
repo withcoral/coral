@@ -108,6 +108,7 @@ fn http_manifest_for_surface(
                         }
                     },
                     pagination: projection.pagination.clone(),
+                    cache: None,
                 });
             }
             ProjectionKind::TableFunction { function_kind } => {
