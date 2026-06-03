@@ -137,8 +137,8 @@ ORDER BY active_count DESC;
 SELECT
   name,
   email,
-  mrr_formatted                    AS mrr,
-  total_revenue_currency_formatted AS lifetime_revenue
+  ROUND(mrr / 100.0, 2)                   AS mrr_usd,
+  ROUND(total_revenue_currency / 100.0, 2) AS lifetime_revenue_usd
 FROM lemon_squeezy.customers
 ORDER BY mrr DESC
 LIMIT 20;
