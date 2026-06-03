@@ -10,6 +10,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
+use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::compile_query_source;
@@ -36,11 +37,16 @@ use crate::{
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
-    fallback_runtime: Option<FallbackRuntimeConfig>,
+    fallback_runtime: Option<FallbackRuntime>,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
+}
+
+struct FallbackRuntime {
+    config: FallbackRuntimeConfig,
+    runtime: OnceCell<RegisteredRuntime>,
 }
 
 #[derive(Clone)]
@@ -89,13 +95,16 @@ async fn build_runtime_inner(
     // one-shot registration hooks today, so decorated runtimes keep resolver-row
     // overflow as a hard error instead of applying decorators a second time with
     // potentially different side effects.
-    let fallback_without_dependent_join = extensions.source_decorators.is_empty();
-    let fallback_runtime = fallback_without_dependent_join.then(|| FallbackRuntimeConfig {
-        sources: sources.to_vec(),
-        runtime_context: runtime_context.clone(),
-        dependent_join: dependent_join.clone(),
-        request_authenticators: request_authenticators.clone(),
-        source_input_resolver: source_input_resolver.clone(),
+    let fallback_without_dependent_join =
+        dependent_join.optimizer_enabled() && extensions.source_decorators.is_empty();
+    let fallback_runtime = fallback_without_dependent_join.then(|| {
+        FallbackRuntime::new(FallbackRuntimeConfig {
+            sources: sources.to_vec(),
+            runtime_context: runtime_context.clone(),
+            dependent_join: dependent_join.clone(),
+            request_authenticators: request_authenticators.clone(),
+            source_input_resolver: source_input_resolver.clone(),
+        })
     });
 
     let primary = build_registered_runtime(
@@ -335,7 +344,9 @@ impl QueryRuntimeAdapter {
                     "dependent join resolver row cap exceeded",
                 );
 
-                let fallback = fallback_runtime.build_without_dependent_join().await?;
+                let fallback = fallback_runtime
+                    .get_or_build_without_dependent_join()
+                    .await?;
 
                 self.execute_sql_once(&fallback.ctx, sql)
                     .await
@@ -434,6 +445,21 @@ impl FallbackRuntimeConfig {
             &self.dependent_join.without_rewrites(),
         )
         .await
+    }
+}
+
+impl FallbackRuntime {
+    fn new(config: FallbackRuntimeConfig) -> Self {
+        Self {
+            config,
+            runtime: OnceCell::new(),
+        }
+    }
+
+    async fn get_or_build_without_dependent_join(&self) -> Result<&RegisteredRuntime, CoreError> {
+        self.runtime
+            .get_or_try_init(|| async { self.config.build_without_dependent_join().await })
+            .await
     }
 }
 
