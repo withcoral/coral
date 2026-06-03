@@ -38,6 +38,8 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 **`search_catalog`**: deterministic regex matching over database catalog metadata.
 
 - Arguments: required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, `offset`.
+- Searches table and table-function names, descriptions, ordinary table columns, arguments, result columns, guides, and required filters.
+- Ordinary table hits include capped `column_preview` entries plus `column_count` and `omitted_column_count`. Use `list_columns` when you need the full schema.
 
 **`describe_table`**: compact metadata for one table.
 

@@ -531,7 +531,7 @@ fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
                 "type": "array",
                 "items": {
                     "oneOf": [
-                        catalog_search_item_output_schema(catalog_table_item_output_schema()),
+                        catalog_table_search_item_output_schema(),
                         catalog_search_item_output_schema(catalog_table_function_item_output_schema())
                     ]
                 }
@@ -555,6 +555,79 @@ fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
             }
         }
     }))
+}
+
+fn catalog_table_search_item_output_schema() -> Value {
+    let mut schema = catalog_search_item_output_schema(catalog_table_item_output_schema());
+    let table = schema
+        .pointer_mut("/properties/table")
+        .and_then(Value::as_object_mut)
+        .expect("table catalog item schema has table object");
+    table
+        .get_mut("required")
+        .and_then(Value::as_array_mut)
+        .expect("table schema has required array")
+        .extend([
+            json!("column_count"),
+            json!("column_preview"),
+            json!("omitted_column_count"),
+        ]);
+    table
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .expect("table schema has properties object")
+        .extend([
+            (
+                "column_count".to_string(),
+                json!({
+                    "type": "integer",
+                    "minimum": 0
+                }),
+            ),
+            (
+                "column_preview".to_string(),
+                json!({
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": table_column_preview_output_schema()
+                }),
+            ),
+            (
+                "omitted_column_count".to_string(),
+                json!({
+                    "type": "integer",
+                    "minimum": 0
+                }),
+            ),
+        ]);
+    schema
+}
+
+fn table_column_preview_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": [
+            "column_name",
+            "data_type",
+            "is_required_filter",
+            "description",
+            "matched_fields"
+        ],
+        "additionalProperties": false,
+        "properties": {
+            "column_name": { "type": "string" },
+            "data_type": { "type": "string" },
+            "is_required_filter": { "type": "boolean" },
+            "description": { "type": "string" },
+            "matched_fields": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["column_name", "description", "data_type"]
+                }
+            }
+        }
+    })
 }
 
 fn catalog_search_item_output_schema(mut schema: Value) -> Value {
@@ -584,6 +657,7 @@ fn catalog_search_item_output_schema(mut schema: Value) -> Value {
                         "description",
                         "guide",
                         "required_filters",
+                        "columns",
                         "arguments",
                         "result_columns"
                     ]

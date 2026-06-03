@@ -27,9 +27,9 @@ use coral_api::v1::{
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
     PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
     Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response,
-    source_input_spec::Input as ProtoSourceInput,
+    Table, TableColumnPreview, TableColumnPreviewColumn, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    import_source_response, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tempfile::TempDir;
@@ -189,6 +189,13 @@ fn table_matched_fields(table: &Table, regex: &regex::Regex) -> Vec<String> {
     {
         matches.push("required_filters".to_string());
     }
+    if table
+        .columns
+        .iter()
+        .any(|column| !column_matched_fields(column, regex).is_empty())
+    {
+        matches.push("columns".to_string());
+    }
     matches
 }
 
@@ -202,6 +209,28 @@ fn column_matched_fields(column: &Column, regex: &regex::Regex) -> Vec<String> {
         .into_iter()
         .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
         .collect()
+}
+
+fn table_column_preview(table: &Table, regex: &regex::Regex) -> TableColumnPreview {
+    let columns = table
+        .columns
+        .iter()
+        .take(8)
+        .map(|column| TableColumnPreviewColumn {
+            name: column.name.clone(),
+            data_type: column.data_type.clone(),
+            is_required_filter: column.is_required_filter,
+            description: column.description.clone(),
+            matched_fields: column_matched_fields(column, regex),
+        })
+        .collect::<Vec<_>>();
+    let column_count = u32::try_from(table.columns.len()).unwrap_or(u32::MAX);
+    let preview_count = u32::try_from(columns.len()).unwrap_or(u32::MAX);
+    TableColumnPreview {
+        column_count,
+        columns,
+        omitted_column_count: column_count.saturating_sub(preview_count),
+    }
 }
 
 fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
@@ -700,6 +729,7 @@ impl CatalogService for MockCatalogService {
                             item: Some(catalog_item::Item::Table(table_summary(&table))),
                         }),
                         matched_fields,
+                        table_column_preview: Some(table_column_preview(&table, &pattern)),
                     });
                 }
             }
