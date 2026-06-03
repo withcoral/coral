@@ -620,7 +620,6 @@ tables:
           path: [attributes, unit_price_decimal]
       - name: setup_fee_enabled
         type: Boolean
-        nullable: true
         description: Whether this price has a setup fee.
         expr:
           kind: path
@@ -1399,7 +1398,6 @@ tables:
           path: [attributes, card_last_four]
       - name: payment_processor
         type: Utf8
-        nullable: true
         description: Payment processor used (stripe or paypal).
         expr:
           kind: path

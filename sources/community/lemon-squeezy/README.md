@@ -38,7 +38,7 @@ coral source test lemon_squeezy
 | ----------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `stores`                | Stores owned by the authenticated account, with revenue totals and 30-day summaries                             |
 | `products`              | Products listed in your stores                                                                                  |
-| `variants`              | Legacy variant metadata and back-compat pricing/billing defaults for each product                              |
+| `variants`              | Legacy variant metadata and back-compat pricing/billing defaults — current price records live in `prices`      |
 | `prices`                 | Current price records for variants, including billing scheme, tiers, trials, and price history                 |
 | `customers`             | Customers who have made purchases, with MRR and cumulative revenue                                              |
 | `orders`                | Individual purchase transactions with full price and tax breakdowns in store currency and USD                   |
@@ -204,7 +204,7 @@ GROUP BY d.id, d.code, d.amount_type, d.amount, d.status, s.currency
 ORDER BY redemptions DESC;
 ```
 
-### Subscription invoices — recent failed payments
+### Subscription invoices — recent void and refunded invoices
 
 ```sql
 SELECT
@@ -244,8 +244,12 @@ LIMIT 10;
   handles back-off automatically when the limit is reached.
 - All responses use the JSON:API format. Coral flattens the `attributes` object
   so each field is a direct SQL column.
-- Monetary values are always integers (cents). There are no decimal money
-  columns in this source.
+- Monetary values are almost always integers (cents). The only exceptions are
+  `prices.unit_price_decimal` and the `unit_price_decimal` field nested inside
+  `prices.tiers` objects — both are string representations of the cent amount
+  as a decimal (e.g. `"9.99"`). Use `prices.unit_price` for `SUM`, `AVG`, and
+  other arithmetic; `unit_price_decimal` is provided for display or when
+  sub-cent precision is required.
 - Most price columns have a `_formatted` counterpart returning a
   human-readable string (e.g. `total_formatted`, `setup_fee_formatted`,
   `mrr_formatted`). These are for display only — always use the raw integer
@@ -255,8 +259,9 @@ LIMIT 10;
   alone undercounts multi-unit purchases.
 - `subscription_invoices.urls__invoice_url` is the signed PDF download URL for
   an invoice. It is null for invoices in pending status.
-- `subscription_invoices.tax_inclusive` indicates whether the invoice total
-  was calculated with tax already included in the displayed price.
+- `tax_inclusive` on both `orders` and `subscription_invoices` indicates
+  whether the total was calculated with tax already included in the displayed
+  price.
 - The `license_keys.instances_count` column is the live activation count
   returned by the API. It may briefly lag behind actual activation events.
 - Test-mode and live-mode stores are completely separate. You must re-add the
