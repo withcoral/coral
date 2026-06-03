@@ -550,4 +550,32 @@ mod tests {
         assert!(fresh_source.try_admit(1).await);
         assert_eq!(expired_source.weighted_size(), 0);
     }
+
+    #[tokio::test]
+    async fn admission_defers_global_expiry_cleanup_until_capacity_pressure() {
+        let registry = HttpCacheRegistry::with_policy(64, Some(10), HashMap::new());
+        let expired_source = registry
+            .get_or_create("default", "expired_source", "0.1.0")
+            .await;
+        expired_source
+            .put(
+                "expired".to_string(),
+                HttpCacheEntry {
+                    payload: json!({"stale": true}),
+                    next_url: None,
+                    ttl: Duration::from_millis(1),
+                    estimated_bytes: 1,
+                },
+            )
+            .await;
+        assert_eq!(expired_source.weighted_size(), 1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let fresh_source = registry
+            .get_or_create("default", "fresh_source", "0.1.0")
+            .await;
+
+        assert!(fresh_source.try_admit(1).await);
+        assert_eq!(expired_source.weighted_size(), 1);
+    }
 }

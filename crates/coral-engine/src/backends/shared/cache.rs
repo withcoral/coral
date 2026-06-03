@@ -376,7 +376,7 @@ where
         });
     }
 
-    async fn run_pending_tasks_for_all_buckets(&self) {
+    async fn remove_expired_known_entries_from_all_buckets(&self) {
         let buckets = {
             let guard = self
                 .inner
@@ -388,6 +388,15 @@ where
         for bucket in &buckets {
             bucket.remove_expired_known_entries().await;
         }
+    }
+
+    fn current_weighted_size(&self) -> u64 {
+        let guard = self
+            .inner
+            .entries
+            .lock()
+            .expect("cache registry mutex poisoned");
+        guard.values().map(CacheBucket::weighted_size).sum::<u64>()
     }
 
     fn prune_empty_buckets(&self) {
@@ -408,17 +417,13 @@ where
         let Some(total) = self.inner.total_max_bytes else {
             return true;
         };
-        self.run_pending_tasks_for_all_buckets().await;
+        if self.current_weighted_size().saturating_add(incoming_bytes) <= total {
+            return true;
+        }
+
+        self.remove_expired_known_entries_from_all_buckets().await;
         self.prune_empty_buckets();
-        let current = {
-            let guard = self
-                .inner
-                .entries
-                .lock()
-                .expect("cache registry mutex poisoned");
-            guard.values().map(CacheBucket::weighted_size).sum::<u64>()
-        };
-        current.saturating_add(incoming_bytes) <= total
+        self.current_weighted_size().saturating_add(incoming_bytes) <= total
     }
 
     #[cfg(test)]
