@@ -560,13 +560,13 @@ impl PersistedDependentJoinConfig {
         let default = DependentJoinConfig::default();
         let mut per_source = BTreeMap::new();
         for (source_name, source_config) in self.per_source {
+            let source_name = SourceName::parse(&source_name)?;
             if !selected_source_names
                 .iter()
-                .any(|selected_source_name| selected_source_name == &source_name)
+                .any(|selected_source_name| selected_source_name == source_name.as_str())
             {
                 continue;
             }
-            let source_name = SourceName::parse(&source_name)?;
             per_source.insert(
                 source_name.as_str().to_string(),
                 source_config.try_into_runtime_config(source_name.as_str())?,
@@ -870,6 +870,31 @@ max_concurrency = 4
                     },
                 )]),
             }
+        );
+    }
+
+    #[test]
+    fn matches_dependent_join_source_config_after_source_name_normalization() {
+        let raw = r#"
+version = 1
+
+[engine.dependent_join.per_source." github "]
+enabled = false
+"#;
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("dependent join config should be valid");
+
+        assert_eq!(
+            config.per_source.get("github"),
+            Some(&DependentJoinSourceConfig {
+                enabled: Some(false),
+                ..DependentJoinSourceConfig::default()
+            })
         );
     }
 
