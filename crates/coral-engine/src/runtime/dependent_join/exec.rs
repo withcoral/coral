@@ -9,7 +9,7 @@ use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::{Result, Statistics, plan_err};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::execution_plan::{EmissionType, ExecutionPlanProperties};
 use datafusion::physical_plan::metrics::{
     Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
@@ -70,11 +70,9 @@ pub(crate) struct DependentJoinExecConfig {
 
 impl DependentJoinExec {
     pub(crate) fn new(config: DependentJoinExecConfig) -> Self {
-        let props = Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&config.output_schema)),
-            Partitioning::UnknownPartitioning(1),
-            EmissionType::Final,
-            Boundedness::Bounded,
+        let props = Arc::new(dependent_join_properties(
+            &config.output_schema,
+            &config.resolver,
         ));
 
         Self {
@@ -100,6 +98,8 @@ impl DependentJoinExec {
     }
 
     fn with_resolver(&self, resolver: Arc<dyn ExecutionPlan>) -> Self {
+        let props = Arc::new(dependent_join_properties(&self.output_schema, &resolver));
+
         Self {
             resolver,
             dependent: self.dependent.clone(),
@@ -117,10 +117,22 @@ impl DependentJoinExec {
             max_concurrency: self.max_concurrency,
             page_hint: self.page_hint,
             output_schema: Arc::clone(&self.output_schema),
-            props: Arc::clone(&self.props),
+            props,
             metrics: self.metrics.clone(),
         }
     }
+}
+
+fn dependent_join_properties(
+    output_schema: &SchemaRef,
+    resolver: &Arc<dyn ExecutionPlan>,
+) -> PlanProperties {
+    PlanProperties::new(
+        EquivalenceProperties::new(Arc::clone(output_schema)),
+        Partitioning::UnknownPartitioning(1),
+        EmissionType::Final,
+        resolver.boundedness(),
+    )
 }
 
 #[derive(Clone)]
