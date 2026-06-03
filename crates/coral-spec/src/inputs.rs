@@ -96,6 +96,58 @@ pub struct ManifestOAuthCredentialSpec {
     pub client: ManifestOAuthClientSpec,
     /// Optional OAuth scope parameter configuration.
     pub scopes: Option<ManifestOAuthScopesSpec>,
+    /// How a retrieved OAuth access token is stored as the secret value.
+    pub access_token_scheme: OAuthAccessTokenScheme,
+}
+
+/// How a retrieved OAuth access token is stored as a source secret value.
+///
+/// The stored value is sent verbatim as the credential at query time (for
+/// example via `from: input`), so a provider that requires an HTTP
+/// authentication scheme on its OAuth tokens can have it applied once at
+/// storage time instead of at every request. Pasted credentials are
+/// unaffected — only OAuth-retrieved tokens are formatted — which lets a single
+/// secret input accept both a raw API key and a scheme-prefixed OAuth token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OAuthAccessTokenScheme {
+    /// Store the access token verbatim.
+    #[default]
+    Raw,
+    /// Store the access token as `Bearer <token>`.
+    Bearer,
+}
+
+impl OAuthAccessTokenScheme {
+    /// Canonical manifest label for this scheme.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Bearer => "bearer",
+        }
+    }
+
+    /// Parse a canonical manifest scheme label.
+    #[must_use]
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value {
+            "raw" => Some(Self::Raw),
+            "bearer" => Some(Self::Bearer),
+            _ => None,
+        }
+    }
+
+    /// Apply the scheme to a retrieved access token to produce the stored
+    /// secret value. Empty tokens are left untouched so empty-credential
+    /// detection still treats them as missing.
+    #[must_use]
+    pub fn apply(self, access_token: &str) -> String {
+        match self {
+            Self::Raw => access_token.to_string(),
+            Self::Bearer if access_token.is_empty() => access_token.to_string(),
+            Self::Bearer => format!("Bearer {access_token}"),
+        }
+    }
 }
 
 /// OAuth provider endpoint URLs rendered with source variables.
@@ -727,6 +779,11 @@ fn parse_oauth(
         .get("scopes")
         .map(|scopes| parse_oauth_scopes(input_key, scopes))
         .transpose()?;
+    let access_token_scheme = oauth
+        .get("access_token_scheme")
+        .map(|value| parse_access_token_scheme(input_key, value))
+        .transpose()?
+        .unwrap_or_default();
     validate_oauth_flow_fields(
         input_key,
         &flow,
@@ -748,6 +805,20 @@ fn parse_oauth(
         token_url,
         client,
         scopes,
+        access_token_scheme,
+    })
+}
+
+fn parse_access_token_scheme(input_key: &str, value: &Value) -> Result<OAuthAccessTokenScheme> {
+    let label = value.as_str().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.access_token_scheme must be a string"
+        ))
+    })?;
+    OAuthAccessTokenScheme::from_label(label).ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.access_token_scheme has unsupported value '{label}'"
+        ))
     })
 }
 
@@ -1266,7 +1337,7 @@ mod tests {
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
         ManifestOAuthCredentialSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
         ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
-        ManifestOAuthScopeDelimiter, collect_source_inputs_value,
+        ManifestOAuthScopeDelimiter, OAuthAccessTokenScheme, collect_source_inputs_value,
     };
     use crate::{ManifestError, Result};
     use std::collections::BTreeMap;
@@ -1275,6 +1346,94 @@ mod tests {
         let root: serde_json::Value =
             serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
         collect_source_inputs_value(&root)
+    }
+
+    fn oauth_manifest_with_scheme(scheme_line: &str) -> String {
+        format!(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  DEMO_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/oauth/token
+            client:
+              id:
+                default: demo-client
+{scheme_line}
+base_url: https://provider.example.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: input
+      key: DEMO_TOKEN
+"
+        )
+    }
+
+    fn parsed_oauth_access_token_scheme(manifest: &str) -> OAuthAccessTokenScheme {
+        let inputs = collect(manifest).expect("collect inputs");
+        inputs
+            .iter()
+            .find_map(|input| input.credential.as_ref())
+            .expect("a credential input")
+            .methods
+            .iter()
+            .find_map(|method| method.oauth.as_ref())
+            .expect("an oauth method")
+            .access_token_scheme
+    }
+
+    #[test]
+    fn oauth_access_token_scheme_defaults_to_raw() {
+        assert_eq!(
+            parsed_oauth_access_token_scheme(&oauth_manifest_with_scheme("")),
+            OAuthAccessTokenScheme::Raw
+        );
+    }
+
+    #[test]
+    fn oauth_access_token_scheme_parses_bearer() {
+        assert_eq!(
+            parsed_oauth_access_token_scheme(&oauth_manifest_with_scheme(
+                "            access_token_scheme: bearer"
+            )),
+            OAuthAccessTokenScheme::Bearer
+        );
+    }
+
+    #[test]
+    fn oauth_access_token_scheme_rejects_unknown_value() {
+        let error = collect(&oauth_manifest_with_scheme(
+            "            access_token_scheme: basic",
+        ))
+        .expect_err("unknown scheme must be rejected");
+        assert!(
+            error.to_string().contains("access_token_scheme"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn oauth_access_token_scheme_applies_prefix_to_non_empty_tokens() {
+        assert_eq!(OAuthAccessTokenScheme::Raw.apply("tok"), "tok");
+        assert_eq!(OAuthAccessTokenScheme::Bearer.apply("tok"), "Bearer tok");
+        // Empty tokens stay empty so empty-credential detection still treats
+        // them as missing rather than as a bare "Bearer ".
+        assert_eq!(OAuthAccessTokenScheme::Bearer.apply(""), "");
     }
 
     #[test]
@@ -2028,6 +2187,7 @@ tables: []
                 secret: None,
             },
             scopes: None,
+            access_token_scheme: OAuthAccessTokenScheme::Raw,
         };
         let source_inputs =
             BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
@@ -2071,6 +2231,7 @@ tables: []
                 secret: None,
             },
             scopes: None,
+            access_token_scheme: OAuthAccessTokenScheme::Raw,
         };
         let source_inputs =
             BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);

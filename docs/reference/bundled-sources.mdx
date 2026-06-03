@@ -308,31 +308,24 @@ See [LaunchDarkly API token docs](https://launchdarkly.com/docs/home/account/api
 
 ### `linear`
 
-`LINEAR_API_KEY` (optional)
+`LINEAR_API_KEY` (required)
 
-You can paste a personal API key with the Read permission, which
-gives read-only access to all tables. You can optionally scope the
-key to specific teams.
-See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys).
-
-Leave this empty during interactive setup to connect with Linear OAuth.
-
-`LINEAR_OAUTH_ACCESS_TOKEN` (optional)
-
-Connect with Linear OAuth, or paste a raw OAuth access token.
-Coral uses a built-in OAuth client by default; to use your own,
-enter a client ID when prompted for LINEAR_OAUTH_CLIENT_ID.
-The app needs the `read` scope and the redirect callback URL
+Connect with Linear OAuth for guided setup, or paste a personal API
+key with the Read permission (read-only access to all tables, and you
+can optionally scope the key to specific teams).
+Coral uses a built-in OAuth client by default; to use your own, enter
+a client ID when prompted for LINEAR_OAUTH_CLIENT_ID. The app needs
+the `read` scope and the redirect callback URL
 `http://127.0.0.1:53682/oauth/callback`.
-A pasted raw token is not refreshed automatically and must be
-replaced once it expires; connect with guided OAuth instead to
-store a refresh token and reconnect without re-pasting.
-See [Linear OAuth docs](https://linear.app/developers/oauth-2-0-authentication).
+A pasted API key is not refreshed automatically; connect with guided
+OAuth instead to store a refresh token and reconnect without re-pasting.
+See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys)
+and [Linear OAuth docs](https://linear.app/developers/oauth-2-0-authentication).
 
 Credential methods:
 
 - **Connect with Linear OAuth** — Use the default Linear OAuth app or provide your own client ID.
-- **Paste Linear OAuth access token** — Paste a raw Linear OAuth access token.
+- **Paste a Linear API key** — Paste a personal API key with the Read permission.
 
 ### `notion`
 

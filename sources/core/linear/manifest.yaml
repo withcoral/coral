@@ -9,27 +9,19 @@ description: >-
 inputs:
   LINEAR_API_KEY:
     kind: secret
-    required: false
+    required: true
     hint: |
-      You can paste a personal API key with the Read permission, which
-      gives read-only access to all tables. You can optionally scope the
-      key to specific teams.
-      See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys).
-
-      Leave this empty during interactive setup to connect with Linear OAuth.
-  LINEAR_OAUTH_ACCESS_TOKEN:
-    kind: secret
-    required: false
-    hint: |
-      Connect with Linear OAuth, or paste a raw OAuth access token.
-      Coral uses a built-in OAuth client by default; to use your own,
-      enter a client ID when prompted for LINEAR_OAUTH_CLIENT_ID.
-      The app needs the `read` scope and the redirect callback URL
+      Connect with Linear OAuth for guided setup, or paste a personal API
+      key with the Read permission (read-only access to all tables, and you
+      can optionally scope the key to specific teams).
+      Coral uses a built-in OAuth client by default; to use your own, enter
+      a client ID when prompted for LINEAR_OAUTH_CLIENT_ID. The app needs
+      the `read` scope and the redirect callback URL
       `http://127.0.0.1:53682/oauth/callback`.
-      A pasted raw token is not refreshed automatically and must be
-      replaced once it expires; connect with guided OAuth instead to
-      store a refresh token and reconnect without re-pasting.
-      See [Linear OAuth docs](https://linear.app/developers/oauth-2-0-authentication).
+      A pasted API key is not refreshed automatically; connect with guided
+      OAuth instead to store a refresh token and reconnect without re-pasting.
+      See [Linear API key docs](https://linear.app/docs/api-and-webhooks#api-keys)
+      and [Linear OAuth docs](https://linear.app/developers/oauth-2-0-authentication).
     credential:
       methods:
         - type: oauth
@@ -53,20 +45,20 @@ inputs:
                 delimiter: comma
                 values:
                   - read
+            # Linear requires the `Bearer` scheme for OAuth access tokens but a
+            # raw value for personal API keys, so store the retrieved token
+            # pre-formatted and send the secret verbatim (`from: input` below).
+            access_token_scheme: bearer
         - type: source_config
-          label: Paste Linear OAuth access token
-          description: Paste a raw Linear OAuth access token.
+          label: Paste a Linear API key
+          description: Paste a personal API key with the Read permission.
 base_url: https://api.linear.app
 auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: one_of
-      values:
-        - from: bearer
-          key: LINEAR_OAUTH_ACCESS_TOKEN
-        - from: input
-          key: LINEAR_API_KEY
+      from: input
+      key: LINEAR_API_KEY
 test_queries:
   - SELECT * FROM linear.users LIMIT 1
 functions:

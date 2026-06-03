@@ -189,7 +189,8 @@
         "redirect_uri_port_mode": { "type": "string", "enum": ["fixed", "random"] },
         "endpoints": { "$ref": "#/$defs/oauth_endpoints" },
         "client": { "$ref": "#/$defs/oauth_client" },
-        "scopes": { "$ref": "#/$defs/oauth_scopes" }
+        "scopes": { "$ref": "#/$defs/oauth_scopes" },
+        "access_token_scheme": { "type": "string", "enum": ["raw", "bearer"] }
       },
       "oneOf": [
         {

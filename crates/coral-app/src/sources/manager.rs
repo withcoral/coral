@@ -24,9 +24,7 @@ use crate::sources::materialization::{
     cleanup_materialization_backup, cleanup_materialization_tmp, new_materialization_suffix,
     replace_v4_materialization, restore_materialization_backup,
 };
-use crate::sources::model::{
-    AuthOneOfSecretRequirement, CandidateSource, InstalledSource, SourceOrigin,
-};
+use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
@@ -142,9 +140,9 @@ struct ValidatedBindings {
     secrets: BTreeMap<String, String>,
     /// Source secret inputs whose previously stored material (bare value and
     /// OAuth metadata) must be purged before the new credential set is written.
-    /// Holds every input the caller supplied a fresh value for; persisting also
-    /// folds in the auth `from: one_of` siblings so switching auth methods
-    /// clears the superseded alternative.
+    /// Holds every input the caller supplied a fresh value for, so switching a
+    /// secret's credential method (e.g. from OAuth to a pasted key) clears the
+    /// superseded material instead of leaving stale OAuth metadata behind.
     replaced_credential_inputs: BTreeSet<String>,
 }
 
@@ -576,15 +574,6 @@ impl SourceManager {
             secrets,
             replaced_credential_inputs,
         } = request.bindings;
-        // Switching one branch of an auth `one_of` supersedes its siblings, so
-        // expand the replaced set to cover every sibling. This is computed
-        // unconditionally, independent of the credential-storage decision
-        // below, so the purge is a property of the validated bindings rather
-        // than of whichever storage branch happens to run.
-        let replaced_credential_inputs = expand_auth_one_of_siblings(
-            replaced_credential_inputs,
-            &request.candidate.auth_one_of_secret_requirements,
-        );
         let (visible_secret_keys, credential_storage) =
             if let Some(requested_storage) = request.credential_storage {
                 let credential_write = match credential_guard.update_material_or_empty_on_parse(
@@ -1158,20 +1147,6 @@ fn validate_bindings(
             _ => {}
         }
     }
-    for requirement in &candidate.auth_one_of_secret_requirements {
-        if requirement.keys.iter().any(|key| {
-            secret_value_present(&secret_values, key)
-                || secret_value_present(stored_material, key)
-                || filled_secret_keys.contains(key)
-        }) {
-            continue;
-        }
-        return Err(AppError::InvalidInput(format!(
-            "missing source credential for {}: provide one of {}",
-            requirement.context,
-            requirement.keys.join(", ")
-        )));
-    }
 
     let non_empty_secret_values = secret_values
         .iter()
@@ -1197,14 +1172,7 @@ fn source_needs_stored_material_for_validation(
             && input.required
             && !secret_value_present(&supplied_secrets, &input.key)
             && !filled_secret_keys.contains(&input.key)
-    }) || candidate
-        .auth_one_of_secret_requirements
-        .iter()
-        .any(|requirement| {
-            !requirement.keys.iter().any(|key| {
-                secret_value_present(&supplied_secrets, key) || filled_secret_keys.contains(key)
-            })
-        }))
+    }))
 }
 
 fn secret_value_present(values: &BTreeMap<String, String>, key: &str) -> bool {
@@ -1226,8 +1194,10 @@ fn material_key_belongs_to_source_secret(
 /// Rebuild a source's stored credential material for a persist: keep only what
 /// still belongs to a declared source secret, purge each replaced input (its
 /// bare value and any OAuth metadata), then layer the freshly supplied secrets
-/// back on top. `replaced_credential_inputs` is the already-sibling-expanded
-/// set, so purged auth `one_of` alternatives are not re-added by the `extend`.
+/// back on top. `replaced_credential_inputs` is exactly the set of credential
+/// inputs the caller supplied a fresh value for, so re-credentialing a secret
+/// (for example pasting a key over a former OAuth token) drops its stale OAuth
+/// metadata before the new value is written.
 fn rebuild_source_credential_material(
     mut credential_material: BTreeMap<String, String>,
     candidate: &CandidateSource,
@@ -1248,34 +1218,6 @@ fn rebuild_source_credential_material(
     }
     credential_material.extend(secrets.clone());
     credential_material
-}
-
-/// Expand a set of replaced credential inputs to cover every sibling of the
-/// auth `from: one_of` groups they participate in.
-///
-/// Supplying a fresh credential for one branch of an auth choice (for example
-/// switching a Linear source from OAuth to a raw API key) supersedes the other
-/// branches. Their stored material must be purged, otherwise the stale sibling
-/// lingers and, because `one_of` resolves the first non-empty value in manifest
-/// order, can keep authenticating with the superseded method. Membership is
-/// tested against the original inputs so the result is independent of group
-/// ordering and only touches groups the caller directly supplied a value for.
-fn expand_auth_one_of_siblings(
-    mut replaced_inputs: BTreeSet<String>,
-    requirements: &[AuthOneOfSecretRequirement],
-) -> BTreeSet<String> {
-    let mut siblings = BTreeSet::new();
-    for requirement in requirements {
-        if requirement
-            .keys
-            .iter()
-            .any(|key| replaced_inputs.contains(key))
-        {
-            siblings.extend(requirement.keys.iter().cloned());
-        }
-    }
-    replaced_inputs.extend(siblings);
-    replaced_inputs
 }
 
 fn source_oauth_config<'a>(
@@ -1337,6 +1279,7 @@ fn merge_oauth_material_into_bindings(
         let OAuthCredentialMaterial {
             input_key,
             access_token,
+            access_token_scheme,
             internal_metadata,
             safe_metadata: _,
         } = material;
@@ -1348,7 +1291,12 @@ fn merge_oauth_material_into_bindings(
         bindings
             .replaced_credential_inputs
             .insert(input_key.clone());
-        bindings.secrets.insert(input_key, access_token);
+        // Store the access token formatted per the method's scheme (e.g.
+        // `Bearer <token>`) so a single secret input can serve both a raw pasted
+        // key and a scheme-prefixed OAuth token through one `from: input` header.
+        bindings
+            .secrets
+            .insert(input_key, access_token_scheme.apply(&access_token));
         bindings.secrets.extend(internal_metadata);
     }
     Ok(())
@@ -1501,8 +1449,7 @@ mod tests {
     use super::{
         ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
-        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, SourceOrigin,
-        describe_manifest, normalize_binding_key,
+        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, normalize_binding_key,
     };
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
@@ -1711,148 +1658,20 @@ tables:
         )
     }
 
-    fn manifest_with_oauth_one_of_auth_secret(token_url: &str, redirect_port: u16) -> String {
-        format!(
-            r#"
-name: secured_messages
-version: 0.4.0
-dsl_version: 3
-backend: http
-inputs:
-  API_TOKEN:
-    kind: secret
-    required: false
-    credential:
-      methods:
-        - type: oauth
-          label: Connect
-          description: Use OAuth.
-          oauth:
-            flow:
-              type: authorization_code
-              pkce: required
-            redirect_uri: http://127.0.0.1:{redirect_port}/oauth/callback
-            endpoints:
-              authorization_url: https://provider.example.com/oauth/authorize
-              token_url: {token_url}
-            client:
-              id:
-                default: default-client
-  API_KEY:
-    kind: secret
-    required: false
-base_url: "https://example.com"
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: one_of
-      values:
-        - from: bearer
-          key: API_TOKEN
-        - from: input
-          key: API_KEY
-tables:
-  - name: messages
-    description: Secured messages
-    request:
-      method: GET
-      path: /messages
-    response: {{}}
-    columns:
-      - name: id
-        type: Utf8
-"#
-        )
-    }
-
-    fn manifest_with_alternative_auth_secrets() -> String {
-        r#"
-name: secured_messages
-version: 0.3.0
-dsl_version: 3
-backend: http
-inputs:
-  API_KEY:
-    kind: secret
-    required: false
-  OAUTH_TOKEN:
-    kind: secret
-    required: false
-base_url: "https://example.com"
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: one_of
-      values:
-        - from: bearer
-          key: OAUTH_TOKEN
-        - from: input
-          key: API_KEY
-tables:
-  - name: messages
-    description: Secured messages
-    request:
-      method: GET
-      path: /messages
-    response: {}
-    columns:
-      - name: id
-        type: Utf8
-"#
-        .to_string()
-    }
-
-    fn manifest_with_two_one_of_auth_headers() -> String {
-        r#"
-name: secured_messages
-version: 0.3.0
-dsl_version: 3
-backend: http
-inputs:
-  PRIMARY_TOKEN:
-    kind: secret
-    required: false
-  PRIMARY_KEY:
-    kind: secret
-    required: false
-  SECONDARY_TOKEN:
-    kind: secret
-    required: false
-  SECONDARY_KEY:
-    kind: secret
-    required: false
-base_url: "https://example.com"
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: one_of
-      values:
-        - from: bearer
-          key: PRIMARY_TOKEN
-        - from: input
-          key: PRIMARY_KEY
-    - name: X-Workspace-Token
-      from: one_of
-      values:
-        - from: bearer
-          key: SECONDARY_TOKEN
-        - from: input
-          key: SECONDARY_KEY
-tables:
-  - name: messages
-    description: Secured messages
-    request:
-      method: GET
-      path: /messages
-    response: {}
-    columns:
-      - name: id
-        type: Utf8
-"#
-        .to_string()
+    /// Single-secret OAuth manifest whose OAuth method marks tokens as
+    /// `access_token_scheme: bearer` and reads the secret verbatim
+    /// (`from: input`), mirroring the Linear source where a pasted API key is
+    /// raw and an OAuth token carries its own `Bearer` scheme.
+    fn manifest_with_bearer_oauth_secret(token_url: &str, redirect_port: u16) -> String {
+        manifest_with_oauth_secret(token_url, redirect_port)
+            .replace(
+                "                default: default-client\n",
+                "                default: default-client\n            access_token_scheme: bearer\n",
+            )
+            .replace(
+                "      from: template\n      template: Bearer {{input.API_TOKEN}}",
+                "      from: input\n      key: API_TOKEN",
+            )
     }
 
     fn manifest_with_templated_oauth_endpoints(
@@ -2122,75 +1941,6 @@ tables:
                 .to_string()
                 .contains("must not start with reserved prefix '__coral'")
         );
-    }
-
-    #[test]
-    fn import_rejects_auth_one_of_without_any_secret() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout);
-
-        let error = manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_with_alternative_auth_secrets(),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect_err("missing credential should fail");
-
-        assert!(
-            error.to_string().contains(
-                "missing source credential for auth header 'Authorization': provide one of OAUTH_TOKEN, API_KEY"
-            ),
-            "unexpected error: {error:#}"
-        );
-    }
-
-    #[test]
-    fn import_reuses_stored_auth_one_of_secret_when_reimporting() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout);
-
-        manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_with_alternative_auth_secrets(),
-                    bindings: SourceBindings {
-                        variables: vec![],
-                        secrets: vec![SourceBinding {
-                            key: "API_KEY".to_string(),
-                            value: "api-key".to_string(),
-                        }],
-                    },
-                },
-            )
-            .expect("first import");
-
-        let updated = manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_with_alternative_auth_secrets(),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("reimport should use stored credential");
-
-        assert_eq!(updated.secrets, vec!["API_KEY".to_string()]);
     }
 
     #[test]
@@ -2619,6 +2369,76 @@ tables:
     }
 
     #[test]
+    fn import_with_empty_secret_binding_preserves_stored_oauth_material() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        credential_manager
+            .replace_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([
+                    ("API_TOKEN".to_string(), "Bearer oauth-token".to_string()),
+                    (
+                        "__coral_oauth.QVBJX1RPS0VO.method".to_string(),
+                        "oauth".to_string(),
+                    ),
+                    (
+                        "__coral_oauth.QVBJX1RPS0VO.refresh_token".to_string(),
+                        "refresh-token".to_string(),
+                    ),
+                ]),
+            )
+            .expect("seed credential material");
+
+        // Re-importing with an explicitly empty secret value must not clobber the
+        // stored OAuth token or its metadata: empty bindings are treated as
+        // missing, so a source re-imports cleanly without re-pasting.
+        let source = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: String::new(),
+                        }],
+                    },
+                },
+            )
+            .expect("import source");
+
+        assert_eq!(source.secrets, vec!["API_TOKEN"]);
+        let material = credential_manager
+            .read_material(
+                &default_workspace(),
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("Bearer oauth-token")
+        );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.refresh_token")
+                .map(String::as_str),
+            Some("refresh-token")
+        );
+    }
+
+    #[test]
     fn import_preserves_credential_store_io_errors_when_material_is_needed() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -2916,7 +2736,7 @@ tables:
     }
 
     #[tokio::test]
-    async fn import_with_oauth_satisfies_auth_one_of_secret_requirement() {
+    async fn import_with_oauth_stores_bearer_prefixed_token() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -2934,11 +2754,14 @@ tables:
         let import = manager.import_source_with_credentials(
             &workspace_name,
             ImportSourceWithCredentialsCommand {
-                manifest_yaml: manifest_with_oauth_one_of_auth_secret(
-                    &fixture.token_url,
-                    redirect_port,
-                ),
-                bindings: SourceBindings::default(),
+                manifest_yaml: manifest_with_bearer_oauth_secret(&fixture.token_url, redirect_port),
+                bindings: SourceBindings {
+                    variables: vec![SourceBinding {
+                        key: "API_BASE".to_string(),
+                        value: "https://api.example.test".to_string(),
+                    }],
+                    secrets: Vec::new(),
+                },
                 oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
                     input_key: "API_TOKEN".to_string(),
                     method_index: 0,
@@ -2954,281 +2777,36 @@ tables:
                 .expect("authorization event")
                 .into_event();
             let ImportSourceWithCredentialsEvent::OAuthAuthorization {
-                input_key,
-                authorization_url,
-                ..
+                authorization_url, ..
             } = event
             else {
                 panic!("unexpected import event");
             };
-            assert_eq!(input_key, "API_TOKEN");
             callback(&authorization_url, redirect_port).await;
-            let event = event_rx
+            event_rx
                 .recv()
                 .await
                 .expect("completion event")
                 .into_event();
-            let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
         };
 
         let (source, ()) = tokio::join!(import, callback);
-        let source = source.expect("OAuth import should satisfy one_of auth");
-        assert_eq!(source.secrets, vec!["API_TOKEN"]);
+        source.expect("import source with OAuth");
+        fixture.token_server.await.expect("token server");
         let material = credential_manager
             .read_material(
-                &default_workspace(),
+                &workspace_name,
                 &credential_set_id,
                 CredentialStorageKind::File,
             )
             .expect("read material");
+        // The OAuth method declares `access_token_scheme: bearer`, so the stored
+        // secret carries the scheme and a plain `from: input` header sends the
+        // correct `Authorization: Bearer <token>` while a pasted raw API key
+        // (stored verbatim) is unaffected.
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),
-            Some("access-token")
-        );
-    }
-
-    #[test]
-    fn switching_auth_one_of_branch_clears_stored_sibling_credential() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
-        let source_name = SourceName::parse("secured_messages").expect("source");
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let workspace_name = default_workspace();
-        let manifest_yaml =
-            manifest_with_oauth_one_of_auth_secret("https://oauth.example.com/token", 53682);
-
-        // The source was previously connected through the OAuth branch, so the
-        // bearer-first `API_TOKEN` and its OAuth metadata are already stored.
-        credential_manager
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-                &BTreeMap::from([
-                    ("API_TOKEN".to_string(), "oauth-token".to_string()),
-                    (
-                        "__coral_oauth.QVBJX1RPS0VO.method".to_string(),
-                        "oauth".to_string(),
-                    ),
-                    (
-                        "__coral_oauth.QVBJX1RPS0VO.refresh_token".to_string(),
-                        "refresh-token".to_string(),
-                    ),
-                ]),
-            )
-            .expect("seed oauth material");
-
-        // Re-add the source choosing the sibling API key branch instead.
-        let updated = manager
-            .import_source(
-                &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml,
-                    bindings: SourceBindings {
-                        variables: Vec::new(),
-                        secrets: vec![SourceBinding {
-                            key: "API_KEY".to_string(),
-                            value: "raw-api-key".to_string(),
-                        }],
-                    },
-                },
-            )
-            .expect("switch to api key");
-        assert_eq!(updated.secrets, vec!["API_KEY".to_string()]);
-
-        // The superseded OAuth credential, bare value and metadata, must be
-        // gone, so the bearer-first branch can no longer win over the API key.
-        let material = credential_manager
-            .read_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-            )
-            .expect("read material after switch");
-        assert_eq!(
-            material.get("API_KEY").map(String::as_str),
-            Some("raw-api-key")
-        );
-        assert!(
-            !material.contains_key("API_TOKEN"),
-            "stale OAuth access token must be cleared"
-        );
-        assert!(
-            !material
-                .keys()
-                .any(|key| key.starts_with("__coral_oauth.QVBJX1RPS0VO.")),
-            "stale OAuth metadata must be cleared"
-        );
-    }
-
-    #[test]
-    fn empty_auth_one_of_secret_does_not_clear_stored_sibling_credential() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
-        let source_name = SourceName::parse("secured_messages").expect("source");
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let workspace_name = default_workspace();
-        let manifest_yaml = manifest_with_alternative_auth_secrets();
-
-        manager
-            .import_source(
-                &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_yaml.clone(),
-                    bindings: SourceBindings {
-                        variables: Vec::new(),
-                        secrets: vec![SourceBinding {
-                            key: "API_KEY".to_string(),
-                            value: "raw-api-key".to_string(),
-                        }],
-                    },
-                },
-            )
-            .expect("first import");
-
-        let updated = manager
-            .import_source(
-                &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml,
-                    bindings: SourceBindings {
-                        variables: Vec::new(),
-                        secrets: vec![SourceBinding {
-                            key: "OAUTH_TOKEN".to_string(),
-                            value: String::new(),
-                        }],
-                    },
-                },
-            )
-            .expect("empty sibling should be ignored");
-        assert_eq!(updated.secrets, vec!["API_KEY".to_string()]);
-
-        let material = credential_manager
-            .read_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-            )
-            .expect("read material after empty sibling");
-        assert_eq!(
-            material.get("API_KEY").map(String::as_str),
-            Some("raw-api-key")
-        );
-        assert!(
-            !material.contains_key("OAUTH_TOKEN"),
-            "empty sibling should not be persisted"
-        );
-    }
-
-    #[test]
-    fn auth_one_of_requirements_cover_each_one_of_header() {
-        let candidate = describe_manifest(
-            &manifest_with_two_one_of_auth_headers(),
-            SourceOrigin::Imported,
-            false,
-        )
-        .expect("describe manifest");
-
-        let requirements = &candidate.auth_one_of_secret_requirements;
-        assert_eq!(
-            requirements.len(),
-            2,
-            "each one_of auth header should produce its own requirement"
-        );
-        let first = requirements.first().expect("first requirement");
-        assert_eq!(first.context, "auth header 'Authorization'");
-        assert_eq!(
-            first.keys,
-            vec!["PRIMARY_TOKEN".to_string(), "PRIMARY_KEY".to_string()]
-        );
-        let second = requirements.get(1).expect("second requirement");
-        assert_eq!(second.context, "auth header 'X-Workspace-Token'");
-        assert_eq!(
-            second.keys,
-            vec!["SECONDARY_TOKEN".to_string(), "SECONDARY_KEY".to_string()]
-        );
-    }
-
-    #[test]
-    fn switching_one_auth_one_of_branch_leaves_other_group_intact() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
-        let source_name = SourceName::parse("secured_messages").expect("source");
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let workspace_name = default_workspace();
-
-        // Both auth headers were previously satisfied by their API-key branch.
-        credential_manager
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-                &BTreeMap::from([
-                    ("PRIMARY_KEY".to_string(), "old-primary-key".to_string()),
-                    ("SECONDARY_KEY".to_string(), "secondary-key".to_string()),
-                ]),
-            )
-            .expect("seed material");
-
-        // Switch only the first header to its token branch.
-        let updated = manager
-            .import_source(
-                &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_with_two_one_of_auth_headers(),
-                    bindings: SourceBindings {
-                        variables: Vec::new(),
-                        secrets: vec![SourceBinding {
-                            key: "PRIMARY_TOKEN".to_string(),
-                            value: "new-primary-token".to_string(),
-                        }],
-                    },
-                },
-            )
-            .expect("switch primary header branch");
-        assert!(updated.secrets.contains(&"PRIMARY_TOKEN".to_string()));
-        assert!(updated.secrets.contains(&"SECONDARY_KEY".to_string()));
-
-        let material = credential_manager
-            .read_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-            )
-            .expect("read material after switch");
-        assert_eq!(
-            material.get("PRIMARY_TOKEN").map(String::as_str),
-            Some("new-primary-token")
-        );
-        assert!(
-            !material.contains_key("PRIMARY_KEY"),
-            "the switched header's sibling must be purged"
-        );
-        assert_eq!(
-            material.get("SECONDARY_KEY").map(String::as_str),
-            Some("secondary-key"),
-            "an unrelated one_of group must be left untouched"
+            Some("Bearer access-token")
         );
     }
 
@@ -3253,11 +2831,14 @@ tables:
         let import = manager.import_source_with_credentials(
             &workspace_name,
             ImportSourceWithCredentialsCommand {
-                manifest_yaml: manifest_with_oauth_one_of_auth_secret(
-                    &fixture.token_url,
-                    redirect_port,
-                ),
-                bindings: SourceBindings::default(),
+                manifest_yaml: manifest_with_oauth_secret(&fixture.token_url, redirect_port),
+                bindings: SourceBindings {
+                    variables: vec![SourceBinding {
+                        key: "API_BASE".to_string(),
+                        value: "https://api.example.test".to_string(),
+                    }],
+                    secrets: Vec::new(),
+                },
                 oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
                     input_key: "API_TOKEN".to_string(),
                     method_index: 0,

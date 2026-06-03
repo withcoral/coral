@@ -856,27 +856,23 @@ async fn get_source_info_returns_available_bundled_metadata() {
         .iter()
         .find(|input| input.key == "LINEAR_API_KEY")
         .expect("linear api key input");
-    assert!(!linear_api_key.required);
+    assert!(linear_api_key.required);
     let ProtoSourceInput::Secret(linear_api_key) =
         linear_api_key.input.as_ref().expect("linear api key input")
     else {
         panic!("linear api key should be a secret input");
     };
-    assert!(linear_api_key.credential.is_none());
-    let linear_oauth_token = linear
-        .inputs
-        .iter()
-        .find(|input| input.key == "LINEAR_OAUTH_ACCESS_TOKEN")
-        .expect("linear oauth token input");
-    assert!(!linear_oauth_token.required);
-    let ProtoSourceInput::Secret(linear_oauth_token) = linear_oauth_token
-        .input
-        .as_ref()
-        .expect("linear oauth token input")
-    else {
-        panic!("linear oauth token should be a secret input");
-    };
-    let credential = linear_oauth_token.credential.as_ref().expect("credential");
+    // Linear authenticates through a single secret input, filled either by the
+    // guided OAuth flow or by pasting a key, so both credential methods hang off
+    // LINEAR_API_KEY and there is no separate OAuth-token input.
+    assert!(
+        !linear
+            .inputs
+            .iter()
+            .any(|input| input.key == "LINEAR_OAUTH_ACCESS_TOKEN"),
+        "linear should no longer declare a separate OAuth token input"
+    );
+    let credential = linear_api_key.credential.as_ref().expect("credential");
     assert_eq!(credential.methods.len(), 2);
     let ProtoCredentialMethod::Oauth(oauth) =
         credential.methods[0].method.as_ref().expect("method")

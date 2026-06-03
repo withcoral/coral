@@ -711,7 +711,7 @@ mod tests {
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestOAuthClientIdSpec, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
         ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
-        ManifestOAuthRedirectUriPortMode,
+        ManifestOAuthRedirectUriPortMode, OAuthAccessTokenScheme,
     };
 
     #[test]
@@ -749,6 +749,7 @@ mod tests {
                                 secret: None,
                             },
                             scopes: None,
+                            access_token_scheme: OAuthAccessTokenScheme::Raw,
                         }),
                     },
                     ManifestCredentialMethod {

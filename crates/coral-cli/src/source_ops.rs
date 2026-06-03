@@ -1719,7 +1719,7 @@ mod tests {
     #[test]
     fn credential_method_first_defers_env_for_secrets_with_credential_methods() {
         let input = ManifestInputSpec {
-            key: "LINEAR_OAUTH_ACCESS_TOKEN".to_string(),
+            key: "SOURCE_OAUTH_TOKEN".to_string(),
             kind: ManifestInputKind::Secret,
             required: false,
             default_value: String::new(),

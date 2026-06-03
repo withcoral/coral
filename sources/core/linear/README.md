@@ -7,7 +7,8 @@
 
 ## Authentication
 
-Requires one of `LINEAR_OAUTH_ACCESS_TOKEN` or `LINEAR_API_KEY`.
+Requires a single `LINEAR_API_KEY` secret, filled either by connecting with
+Linear OAuth (recommended) or by pasting a personal API key.
 
 For guided setup, connect with Linear OAuth:
 
@@ -18,12 +19,12 @@ coral source add linear --interactive
 Coral uses a built-in OAuth client by default. To use your own Linear OAuth app,
 enter its client ID when prompted for `LINEAR_OAUTH_CLIENT_ID`. The app needs
 the `read` scope and the redirect callback URL
-`http://127.0.0.1:53682/oauth/callback`.
+`http://127.0.0.1:53682/oauth/callback`. OAuth keeps a refresh token so the
+connection renews automatically.
 
-You can also paste a raw OAuth access token or provide a `LINEAR_API_KEY` with
-Linear's Read permission. Raw pasted OAuth tokens are not refreshed
-automatically and must be replaced once they expire. API keys can optionally be
-scoped to specific teams.
+Alternatively, paste a personal API key with Linear's Read permission (read-only
+access to all tables, optionally scoped to specific teams). A pasted key is not
+refreshed automatically; reconnect with guided OAuth to avoid re-pasting.
 
 To rotate or update credentials, run the same command again.
 

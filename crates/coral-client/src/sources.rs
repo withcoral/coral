@@ -13,7 +13,7 @@ use coral_spec::{
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
     ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec,
-    ManifestOAuthScopesSpec,
+    ManifestOAuthScopesSpec, OAuthAccessTokenScheme,
 };
 
 /// Errors returned while decoding source input metadata from the gRPC API.
@@ -161,6 +161,10 @@ fn oauth_from_proto(
             .as_ref()
             .map(oauth_scopes_from_proto)
             .transpose()?,
+        // The access-token scheme is server-side only (it governs how the app
+        // stores a retrieved token); the proto does not carry it, so the
+        // client-reconstructed spec uses the default.
+        access_token_scheme: OAuthAccessTokenScheme::default(),
     })
 }
 

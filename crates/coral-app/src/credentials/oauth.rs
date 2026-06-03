@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use coral_spec::{
     ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthEndpointUrls,
     ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
-    ManifestOAuthScopeDelimiter,
+    ManifestOAuthScopeDelimiter, OAuthAccessTokenScheme,
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde_json::Value;
@@ -77,7 +77,13 @@ pub(crate) struct OAuthAuthorization {
 #[derive(Clone)]
 pub(crate) struct OAuthCredentialMaterial {
     pub(crate) input_key: String,
+    /// The bare access token returned by the provider. Validation treats an
+    /// empty token as a missing credential; the scheme below decides how the
+    /// non-empty token is formatted before it is persisted as the secret value.
     pub(crate) access_token: String,
+    /// How the access token should be stored as the secret value (raw, or
+    /// `Bearer <token>`). Pasted credentials are unaffected.
+    pub(crate) access_token_scheme: OAuthAccessTokenScheme,
     pub(crate) internal_metadata: BTreeMap<String, String>,
     pub(crate) safe_metadata: BTreeMap<String, String>,
 }
@@ -316,6 +322,7 @@ impl OAuthCredentialService {
         apply_refreshed_token(
             request.access_token_material_key,
             request.metadata_prefix.as_str(),
+            request.oauth.access_token_scheme,
             credential_material,
             &token,
         );
@@ -1265,6 +1272,7 @@ fn oauth_credential_material(
     OAuthCredentialMaterial {
         input_key: session.input_key.clone(),
         access_token: token.access_token.clone(),
+        access_token_scheme: session.oauth.access_token_scheme,
         internal_metadata,
         safe_metadata: safe_metadata(token),
     }
@@ -1369,12 +1377,13 @@ fn oauth_refresh_config(
 fn apply_refreshed_token(
     access_token_material_key: &str,
     metadata_prefix: &str,
+    access_token_scheme: OAuthAccessTokenScheme,
     material: &mut BTreeMap<String, String>,
     token: &TokenResponse,
 ) {
     material.insert(
         access_token_material_key.to_string(),
-        token.access_token.clone(),
+        access_token_scheme.apply(&token.access_token),
     );
     material.insert(format!("{metadata_prefix}method"), "oauth".to_string());
     match token.expires_at {
@@ -1459,7 +1468,7 @@ mod tests {
         ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
         ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
         ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec,
-        ManifestOAuthScopesSpec,
+        ManifestOAuthScopesSpec, OAuthAccessTokenScheme,
     };
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
@@ -2477,6 +2486,7 @@ mod tests {
                     values: vec!["repo".to_string(), "read:org".to_string()],
                 },
             }),
+            access_token_scheme: OAuthAccessTokenScheme::Raw,
         }
     }
 
@@ -2504,6 +2514,7 @@ mod tests {
                     values: vec!["repo".to_string(), "read:org".to_string()],
                 },
             }),
+            access_token_scheme: OAuthAccessTokenScheme::Raw,
         }
     }
 
