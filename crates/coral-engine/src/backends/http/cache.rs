@@ -5,8 +5,8 @@
 //! params, body hash, hashed vary header values, and the declared TTL. Rendered
 //! request material is hashed before it becomes part of the stored cache key.
 
-use std::collections::HashMap;
-use std::hash::Hasher as _;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash as _, Hasher as _};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -47,7 +47,7 @@ pub(crate) type HttpResponseCache = CacheBucket<HttpCacheEntry>;
 /// Held by long-lived callers (e.g. `QueryManager`) so cache entries
 /// survive across the per-query runtime rebuild.
 #[derive(Clone)]
-pub struct HttpCacheRegistry {
+pub(crate) struct HttpCacheRegistry {
     inner: CacheRegistry<HttpCacheEntry>,
 }
 
@@ -63,7 +63,7 @@ impl HttpCacheRegistry {
     /// Build a registry with default per-source capacity (256 MiB) and no
     /// cross-source ceiling.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: CacheRegistry::new(),
         }
@@ -77,7 +77,7 @@ impl HttpCacheRegistry {
     /// per-source caches; entries that would push the running total over the
     /// ceiling are skipped (the response is still returned to the caller).
     #[must_use]
-    pub fn with_policy(
+    pub(crate) fn with_policy(
         default_max_bytes: u64,
         total_max_bytes: Option<u64>,
         per_source_max_bytes: HashMap<String, u64>,
@@ -91,20 +91,20 @@ impl HttpCacheRegistry {
         }
     }
 
-    pub(crate) fn get_or_create(
+    pub(crate) async fn get_or_create(
         &self,
         namespace: &str,
         source_name: &str,
         source_version: &str,
-        input_fingerprint: u64,
     ) -> HttpResponseCache {
-        self.inner.get_or_create(CacheBucketKey::new(
-            namespace,
-            "http",
-            source_name,
-            source_version,
-            input_fingerprint,
-        ))
+        self.inner
+            .get_or_create(CacheBucketKey::new(
+                namespace,
+                "http",
+                source_name,
+                source_version,
+            ))
+            .await
     }
 
     /// Soft check: would admitting `incoming_bytes` keep the registry's total
@@ -113,6 +113,11 @@ impl HttpCacheRegistry {
     #[cfg(test)]
     pub(crate) fn try_admit(&self, incoming_bytes: u64) -> bool {
         self.inner.try_admit(incoming_bytes)
+    }
+
+    #[cfg(test)]
+    fn bucket_count(&self) -> usize {
+        self.inner.bucket_count()
     }
 }
 
@@ -134,6 +139,7 @@ impl Default for HttpCacheRegistry {
 pub(crate) fn build_cache_key(
     source_name: &str,
     source_version: &str,
+    resolved_input_fingerprint: u64,
     table_name: &str,
     method: &str,
     url: &str,
@@ -142,19 +148,16 @@ pub(crate) fn build_cache_key(
     vary_headers: &[(String, Option<u64>)],
     ttl_secs: u64,
 ) -> String {
-    let mut sorted_qs = query_pairs.to_vec();
-    sorted_qs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
     let mut vary_sorted = vary_headers.to_vec();
     vary_sorted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
     let url_hash = hash_cache_bytes(url.as_bytes());
-    let query_hash = hash_cache_value(&sorted_qs);
+    let query_hash = hash_cache_value(query_pairs);
     let vary_hash = hash_cache_value(&vary_sorted);
     let body_hash = body_hash.map(|hash| format!("{hash:016x}"));
 
     format!(
-        "v{CACHE_FORMAT_VERSION}\t{source_name}\t{source_version}\t{table_name}\t{method}\turl:{url_hash:016x}\tquery:{query_hash:016x}\tbody:{body_hash:?}\tvary:{vary_hash:016x}\tttl:{ttl_secs}"
+        "v{CACHE_FORMAT_VERSION}\t{source_name}\t{source_version}\tinputs:{resolved_input_fingerprint:016x}\t{table_name}\t{method}\turl:{url_hash:016x}\tquery:{query_hash:016x}\tbody:{body_hash:?}\tvary:{vary_hash:016x}\tttl:{ttl_secs}"
     )
 }
 
@@ -163,7 +166,16 @@ pub(crate) fn estimate_json_bytes(value: &Value) -> usize {
     serde_json::to_string(value).map_or(0, |s| s.len())
 }
 
-fn hash_cache_value<T: std::hash::Hash>(value: &T) -> u64 {
+pub(crate) fn resolved_inputs_cache_fingerprint(resolved_inputs: &BTreeMap<String, String>) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (key, value) in resolved_inputs {
+        key.hash(&mut hasher);
+        hash_cache_bytes(value.as_bytes()).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn hash_cache_value<T: std::hash::Hash + ?Sized>(value: &T) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     value.hash(&mut hasher);
     hasher.finish()
@@ -179,6 +191,7 @@ mod tests {
         let key1 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -190,6 +203,7 @@ mod tests {
         let key2 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -206,6 +220,7 @@ mod tests {
         let key1 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -217,6 +232,7 @@ mod tests {
         let key2 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -229,10 +245,11 @@ mod tests {
     }
 
     #[test]
-    fn cache_key_normalises_query_param_order() {
+    fn cache_key_preserves_query_param_order() {
         let key1 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "items",
             "GET",
             "https://api.example.com/items",
@@ -247,6 +264,7 @@ mod tests {
         let key2 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "items",
             "GET",
             "https://api.example.com/items",
@@ -258,7 +276,7 @@ mod tests {
             &[],
             60,
         );
-        assert_eq!(key1, key2);
+        assert_ne!(key1, key2);
     }
 
     #[test]
@@ -266,6 +284,7 @@ mod tests {
         let key1 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -277,6 +296,36 @@ mod tests {
         let key2 = build_cache_key(
             "demo",
             "0.2.0",
+            0,
+            "users",
+            "GET",
+            "https://api.example.com/users",
+            &[],
+            None,
+            &[],
+            300,
+        );
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn cache_key_differs_for_different_resolved_inputs() {
+        let key1 = build_cache_key(
+            "demo",
+            "0.1.0",
+            1,
+            "users",
+            "GET",
+            "https://api.example.com/users",
+            &[],
+            None,
+            &[],
+            300,
+        );
+        let key2 = build_cache_key(
+            "demo",
+            "0.1.0",
+            2,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -293,6 +342,7 @@ mod tests {
         let key1 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -304,6 +354,7 @@ mod tests {
         let key2 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -320,6 +371,7 @@ mod tests {
         let key1 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -331,6 +383,7 @@ mod tests {
         let key2 = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users",
@@ -347,6 +400,7 @@ mod tests {
         let key = build_cache_key(
             "demo",
             "0.1.0",
+            0,
             "users",
             "GET",
             "https://api.example.com/users?token=secret-token",
@@ -361,6 +415,27 @@ mod tests {
         assert!(!key.contains("https://api.example.com"));
         assert!(key.contains("url:"));
         assert!(key.contains("query:"));
+    }
+
+    #[test]
+    fn resolved_inputs_fingerprint_hashes_values() {
+        let inputs = BTreeMap::from([("TOKEN".to_string(), "secret-token".to_string())]);
+        let fingerprint = resolved_inputs_cache_fingerprint(&inputs);
+        let key = build_cache_key(
+            "demo",
+            "0.1.0",
+            fingerprint,
+            "users",
+            "GET",
+            "https://api.example.com/users",
+            &[],
+            None,
+            &[],
+            300,
+        );
+
+        assert_ne!(fingerprint, 0);
+        assert!(!key.contains("secret-token"));
     }
 
     #[tokio::test]
@@ -410,21 +485,41 @@ mod tests {
         assert!(registry.try_admit(1024 * 1024));
     }
 
-    #[test]
-    fn registry_returns_distinct_caches_for_distinct_sources() {
+    #[tokio::test]
+    async fn registry_returns_distinct_caches_for_distinct_sources() {
         let mut overrides = HashMap::new();
         overrides.insert("large_source".to_string(), 1024);
         let registry = HttpCacheRegistry::with_policy(64, None, overrides);
-        let small = registry.get_or_create("default", "small_source", "0.1.0", 0);
-        let large = registry.get_or_create("default", "large_source", "0.1.0", 0);
+        let small = registry
+            .get_or_create("default", "small_source", "0.1.0")
+            .await;
+        let large = registry
+            .get_or_create("default", "large_source", "0.1.0")
+            .await;
         // Small source uses the default capacity (64); large source has an override (1024).
-        // Different moka caches → different identity. We can't read max_capacity off
+        // Different moka caches mean different identity. We can't read max_capacity off
         // moka directly, but admission against a zero-size ceiling proves the registry
         // is exercising both entries.
         assert_eq!(small.weighted_size(), 0);
         assert_eq!(large.weighted_size(), 0);
         let zero_ceiling = HttpCacheRegistry::with_policy(64, Some(0), HashMap::new());
-        let _ = zero_ceiling.get_or_create("default", "s", "0", 0);
+        let _ = zero_ceiling.get_or_create("default", "s", "0").await;
         assert!(!zero_ceiling.try_admit(1));
+    }
+
+    #[tokio::test]
+    async fn registry_prunes_empty_obsolete_buckets_on_lookup() {
+        let registry = HttpCacheRegistry::with_policy(64, None, HashMap::new());
+        let first = registry
+            .get_or_create("default", "first_source", "0.1.0")
+            .await;
+        assert_eq!(registry.bucket_count(), 1);
+        drop(first);
+
+        let _second = registry
+            .get_or_create("default", "second_source", "0.1.0")
+            .await;
+
+        assert_eq!(registry.bucket_count(), 1);
     }
 }

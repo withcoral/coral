@@ -27,7 +27,6 @@ pub(crate) struct CacheBucketKey {
     backend: &'static str,
     source_name: String,
     source_version: String,
-    input_fingerprint: u64,
 }
 
 impl CacheBucketKey {
@@ -36,14 +35,12 @@ impl CacheBucketKey {
         backend: &'static str,
         source_name: impl Into<String>,
         source_version: impl Into<String>,
-        input_fingerprint: u64,
     ) -> Self {
         Self {
             namespace: namespace.into(),
             backend,
             source_name: source_name.into(),
             source_version: source_version.into(),
-            input_fingerprint,
         }
     }
 
@@ -139,6 +136,18 @@ where
     /// Approximate weighted byte size currently stored.
     pub(crate) fn weighted_size(&self) -> u64 {
         self.inner.weighted_size()
+    }
+
+    fn entry_count(&self) -> u64 {
+        self.inner.entry_count()
+    }
+
+    fn has_external_refs(&self) -> bool {
+        Arc::strong_count(&self.inner) > 1
+    }
+
+    async fn run_pending_tasks(&self) {
+        self.inner.run_pending_tasks().await;
     }
 
     /// Soft admission check against the parent registry's `total_max_bytes`,
@@ -246,7 +255,8 @@ where
         }
     }
 
-    pub(crate) fn get_or_create(&self, key: CacheBucketKey) -> CacheBucket<V> {
+    pub(crate) async fn get_or_create(&self, key: CacheBucketKey) -> CacheBucket<V> {
+        self.prune_empty_buckets(&key).await;
         let mut guard = self
             .inner
             .entries
@@ -266,6 +276,33 @@ where
         cache
     }
 
+    async fn prune_empty_buckets(&self, keep: &CacheBucketKey) {
+        let buckets = {
+            let guard = self
+                .inner
+                .entries
+                .lock()
+                .expect("cache registry mutex poisoned");
+            guard.values().cloned().collect::<Vec<_>>()
+        };
+        for bucket in &buckets {
+            bucket.run_pending_tasks().await;
+        }
+        drop(buckets);
+
+        let mut guard = self
+            .inner
+            .entries
+            .lock()
+            .expect("cache registry mutex poisoned");
+        guard.retain(|key, bucket| {
+            key == keep
+                || bucket.has_external_refs()
+                || bucket.entry_count() > 0
+                || bucket.weighted_size() > 0
+        });
+    }
+
     /// Soft check: would admitting `incoming_bytes` keep the registry's total
     /// weighted size within `total_max_bytes`? Returns `true` if no ceiling is
     /// configured.
@@ -282,6 +319,15 @@ where
             guard.values().map(CacheBucket::weighted_size).sum::<u64>()
         };
         current.saturating_add(incoming_bytes) <= total
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bucket_count(&self) -> usize {
+        self.inner
+            .entries
+            .lock()
+            .expect("cache registry mutex poisoned")
+            .len()
     }
 }
 

@@ -219,13 +219,50 @@ fn validate_cache_policy(
         Duration::ZERO
     };
 
+    let vary_headers = raw.vary.unwrap_or_default().headers;
+    for header in &vary_headers {
+        validate_cache_vary_header_name(header)?;
+    }
+
     Ok(Some(HttpCachePolicySpec {
         mode,
         ttl,
-        vary_headers: raw.vary.unwrap_or_default().headers,
+        vary_headers,
         max_pages: raw.max_pages,
         max_entry_bytes: raw.max_entry_bytes,
     }))
+}
+
+fn validate_cache_vary_header_name(header: &str) -> crate::Result<()> {
+    if header.is_empty() || !header.bytes().all(is_http_token_byte) {
+        return Err(crate::ManifestError::validation(format!(
+            "invalid cache vary header name '{header}'"
+        )));
+    }
+    Ok(())
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'!' | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'\''
+            | b'*'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~'
+            | b'0'..=b'9'
+            | b'A'..=b'Z'
+            | b'a'..=b'z'
+    )
 }
 
 /// Validated top-level manifest for an HTTP-backed source.
@@ -305,7 +342,9 @@ pub struct HttpTableSpec {
     pub requests: Vec<RequestRouteSpec>,
     pub response: ResponseSpec,
     pub pagination: PaginationSpec,
-    /// Opt-in cache policy for this table, or `None` if caching is disabled.
+    /// Opt-in cache policy for this table. `None` means no cache block was
+    /// configured; `Some` callers must check `mode` to determine whether caching
+    /// is enabled.
     pub cache: Option<HttpCachePolicySpec>,
 }
 

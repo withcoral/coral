@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, HttpCacheRegistry, QueryRuntimeConfig,
-    QueryRuntimeContext, RequestAuthenticator, RequestAuthenticatorError, StatusCode,
+    QueryRuntimeContext, RequestAuthenticator, RequestAuthenticatorError,
+    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -2177,6 +2178,53 @@ fn runtime_with_cache_registry_and_namespace(
     QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
 }
 
+fn runtime_with_cache_registry_namespace_and_resolver(
+    registry: Arc<HttpCacheRegistry>,
+    namespace: &str,
+    resolver: Arc<dyn SourceInputResolver>,
+) -> QueryRuntimeConfig {
+    let extensions = EngineExtensions {
+        cache_namespace: Some(namespace.to_string()),
+        http_cache_registry: Some(registry),
+        source_input_resolver: Some(resolver),
+        ..EngineExtensions::default()
+    };
+    QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
+}
+
+fn runtime_with_cache_registry_without_namespace(
+    registry: Arc<HttpCacheRegistry>,
+) -> QueryRuntimeConfig {
+    let extensions = EngineExtensions {
+        http_cache_registry: Some(registry),
+        ..EngineExtensions::default()
+    };
+    QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
+}
+
+#[derive(Debug, Default)]
+struct RotatingTokenResolver {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SourceInputResolver for RotatingTokenResolver {
+    async fn resolve_inputs(
+        &self,
+        _source: &SourceInputResolutionContext,
+    ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
+        let token = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            "token-a"
+        } else {
+            "token-b"
+        };
+        Ok(BTreeMap::from([(
+            "API_TOKEN".to_string(),
+            token.to_string(),
+        )]))
+    }
+}
+
 fn cached_http_manifest(name: &str, base_url: &str) -> Value {
     json!({
         "name": name,
@@ -2356,6 +2404,39 @@ async fn cache_registry_isolates_namespaces() {
 }
 
 #[tokio::test]
+async fn cache_registry_without_namespace_disables_cache() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let source = build_source(cached_http_manifest(
+        "http_registry_no_namespace",
+        &server.uri(),
+    ));
+    let registry = Arc::new(HttpCacheRegistry::new());
+
+    let _ = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        runtime_with_cache_registry_without_namespace(registry.clone()),
+        "SELECT id FROM http_registry_no_namespace.users",
+    )
+    .await
+    .expect("first query should succeed");
+
+    let _ = CoralQuery::execute_sql(
+        &[source],
+        runtime_with_cache_registry_without_namespace(registry),
+        "SELECT id FROM http_registry_no_namespace.users",
+    )
+    .await
+    .expect("second query should succeed");
+}
+
+#[tokio::test]
 async fn cache_registry_isolates_different_source_inputs() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -2382,6 +2463,52 @@ async fn cache_registry_isolates_different_source_inputs() {
         &[source_b],
         runtime_with_cache_registry_and_namespace(registry, "workspace"),
         "SELECT id FROM http_registry_inputs.users",
+    )
+    .await
+    .expect("token-b query should succeed");
+}
+
+#[tokio::test]
+async fn cache_key_includes_request_time_resolved_inputs() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("Authorization", "token-a"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("Authorization", "token-b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source_with_secrets(
+        cached_authenticated_http_manifest("http_registry_refreshed_inputs", &server.uri()),
+        [("API_TOKEN", "static-token")],
+    );
+    let registry = Arc::new(HttpCacheRegistry::new());
+    let resolver = Arc::new(RotatingTokenResolver::default());
+
+    let _ = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        runtime_with_cache_registry_namespace_and_resolver(
+            registry.clone(),
+            "workspace",
+            resolver.clone(),
+        ),
+        "SELECT id FROM http_registry_refreshed_inputs.users",
+    )
+    .await
+    .expect("token-a query should succeed");
+
+    let _ = CoralQuery::execute_sql(
+        &[source],
+        runtime_with_cache_registry_namespace_and_resolver(registry, "workspace", resolver),
+        "SELECT id FROM http_registry_refreshed_inputs.users",
     )
     .await
     .expect("token-b query should succeed");

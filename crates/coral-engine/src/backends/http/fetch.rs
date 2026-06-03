@@ -9,7 +9,9 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::cache::{HttpCacheEntry, build_cache_key, estimate_json_bytes};
+use crate::backends::http::cache::{
+    HttpCacheEntry, build_cache_key, estimate_json_bytes, resolved_inputs_cache_fingerprint,
+};
 use crate::backends::http::client::HttpSourceClient;
 use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::{
@@ -20,6 +22,7 @@ use crate::backends::http::request::{RequestBody, build_query_pairs, build_reque
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::transport::{OutgoingHttpRequest, execute_request};
 use crate::backends::http::url::{join_url, normalize_base_url};
+use crate::backends::shared::cache::hash_cache_bytes;
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
 use crate::backends::shared::template::{
@@ -88,14 +91,6 @@ fn http_method_label(method: HttpMethod) -> &'static str {
         HttpMethod::GET => "GET",
         HttpMethod::POST => "POST",
     }
-}
-
-fn hash_cache_bytes(value: &[u8]) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash as _, Hasher as _};
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn hash_request_body(body: &RequestBody) -> u64 {
@@ -223,6 +218,7 @@ pub(super) async fn fetch_rows(
         }
 
         let resolved_inputs = client.resolved_inputs_for_request().await?;
+        let resolved_input_fingerprint = resolved_inputs_cache_fingerprint(&resolved_inputs);
         let state_values = pagination_state_values(&state);
         let render_context = RenderContext::new(
             filter_values,
@@ -305,6 +301,7 @@ pub(super) async fn fetch_rows(
                     let key = build_cache_key(
                         &client.source_schema,
                         &client.source_version,
+                        resolved_input_fingerprint,
                         target.name(),
                         http_method_label(active_request.method),
                         &url,

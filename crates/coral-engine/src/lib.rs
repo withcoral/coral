@@ -60,11 +60,11 @@ mod composition;
 pub mod contracts;
 mod runtime;
 
-pub use backends::http::cache::HttpCacheRegistry;
 pub use composition::{
-    EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-    RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
+    EngineExtensions, HttpCacheRegistry, QueryResultObserver, QueryResultObserverError,
+    RequestAuthenticator, RequestAuthenticatorError, SourceDecorator, SourceDecoratorError,
+    SourceFailurePolicy, SourceInputResolutionContext, SourceInputResolver,
+    SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,

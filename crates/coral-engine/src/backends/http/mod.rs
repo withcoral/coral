@@ -47,9 +47,8 @@ struct HttpCompiledSource {
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    cache_namespace: String,
-    source_input_fingerprint: u64,
-    http_cache_registry: Option<Arc<cache::HttpCacheRegistry>>,
+    cache_namespace: Option<String>,
+    http_cache_registry: Option<Arc<crate::HttpCacheRegistry>>,
 }
 
 pub(crate) fn compile_manifest(
@@ -63,7 +62,6 @@ pub(crate) fn compile_manifest(
         body_capture_max_bytes: request.runtime_context.body_capture_max_bytes,
         source_input_resolver: request.source_input_resolver.clone(),
         cache_namespace: request.cache_namespace.clone(),
-        source_input_fingerprint: request.source_input_fingerprint,
         http_cache_registry: request.http_cache_registry.clone(),
     })
 }
@@ -84,14 +82,18 @@ impl CompiledBackendSource for HttpCompiledSource {
         registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
         let http = client::default_http_client(registration, &self.manifest.common.name)?;
-        let cache = self.http_cache_registry.as_ref().map(|registry| {
-            registry.get_or_create(
-                &self.cache_namespace,
-                &self.manifest.common.name,
-                &self.manifest.common.version,
-                self.source_input_fingerprint,
-            )
-        });
+        let cache = match (&self.http_cache_registry, &self.cache_namespace) {
+            (Some(registry), Some(namespace)) => Some(
+                registry
+                    .get_or_create(
+                        namespace,
+                        &self.manifest.common.name,
+                        &self.manifest.common.version,
+                    )
+                    .await,
+            ),
+            _ => None,
+        };
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),

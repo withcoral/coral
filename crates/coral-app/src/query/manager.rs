@@ -318,8 +318,12 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
-        extensions.cache_namespace = Some(workspace_name.as_str().to_string());
-        extensions.http_cache_registry = self.http_cache_registry.as_ref().map(Arc::clone);
+        extensions
+            .cache_namespace
+            .get_or_insert_with(|| workspace_name.as_str().to_string());
+        if extensions.http_cache_registry.is_none() {
+            extensions.http_cache_registry = self.http_cache_registry.as_ref().map(Arc::clone);
+        }
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
@@ -518,6 +522,20 @@ mod tests {
         manager: QueryManager,
     }
 
+    struct CacheOverrideProvider {
+        registry: Arc<HttpCacheRegistry>,
+    }
+
+    impl EngineExtensionsProvider for CacheOverrideProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            EngineExtensions {
+                cache_namespace: Some("provider-namespace".to_string()),
+                http_cache_registry: Some(Arc::clone(&self.registry)),
+                ..EngineExtensions::default()
+            }
+        }
+    }
+
     fn query_manager_with(
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
@@ -571,6 +589,32 @@ mod tests {
             runtime.extensions.cache_namespace.as_deref(),
             Some(WorkspaceName::default().as_str())
         );
+    }
+
+    #[test]
+    fn runtime_config_preserves_provider_owned_cache_extensions() {
+        let provider_registry = Arc::new(HttpCacheRegistry::new());
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default(),
+            vec![Arc::new(CacheOverrideProvider {
+                registry: Arc::clone(&provider_registry),
+            })],
+        );
+
+        let runtime = fixture
+            .manager
+            .runtime_config(&WorkspaceName::default(), &[]);
+
+        assert_eq!(
+            runtime.extensions.cache_namespace.as_deref(),
+            Some("provider-namespace")
+        );
+        let runtime_registry = runtime
+            .extensions
+            .http_cache_registry
+            .as_ref()
+            .expect("provider registry should be preserved");
+        assert!(Arc::ptr_eq(runtime_registry, &provider_registry));
     }
 
     #[test]

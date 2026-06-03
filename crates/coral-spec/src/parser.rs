@@ -362,6 +362,39 @@ functions:
     }
 
     #[test]
+    fn parse_source_manifest_rejects_invalid_cache_vary_header_name() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    cache:
+      mode: ttl
+      ttl: 1m
+      vary:
+        headers:
+          - 'Authorization: Bearer'
+",
+        )
+        .expect_err("invalid vary header should fail manifest parsing");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid cache vary header name 'Authorization: Bearer'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn parse_source_manifest_rejects_whitespace_only_test_query() {
         let error = parse_source_manifest_yaml(
             r#"

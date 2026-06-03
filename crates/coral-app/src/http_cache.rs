@@ -53,8 +53,8 @@ struct HttpCacheConfigFile {
 #[serde(default, deny_unknown_fields)]
 struct RawHttpCacheConfig {
     enabled: bool,
-    default_max_bytes_per_source: String,
-    total_max_bytes: Option<String>,
+    default_max_bytes_per_source: RawByteSize,
+    total_max_bytes: Option<RawByteSize>,
     sources: HashMap<String, RawSourceCacheConfig>,
 }
 
@@ -62,7 +62,7 @@ impl Default for RawHttpCacheConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            default_max_bytes_per_source: format!("{DEFAULT_PER_SOURCE_MAX_BYTES}B"),
+            default_max_bytes_per_source: RawByteSize::Integer(DEFAULT_PER_SOURCE_MAX_BYTES),
             total_max_bytes: None,
             sources: HashMap::new(),
         }
@@ -72,24 +72,42 @@ impl Default for RawHttpCacheConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSourceCacheConfig {
-    max_bytes: String,
+    max_bytes: RawByteSize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum RawByteSize {
+    Integer(u64),
+    String(String),
+}
+
+impl RawByteSize {
+    fn parse(&self) -> Result<u64, String> {
+        match self {
+            Self::Integer(value) => Ok(*value),
+            Self::String(value) => parse_byte_size(value),
+        }
+    }
 }
 
 impl TryFrom<RawHttpCacheConfig> for HttpCacheConfig {
     type Error = AppError;
 
     fn try_from(raw: RawHttpCacheConfig) -> Result<Self, Self::Error> {
-        let default_max_bytes_per_source = parse_byte_size(&raw.default_max_bytes_per_source)
+        let default_max_bytes_per_source = raw
+            .default_max_bytes_per_source
+            .parse()
             .map_err(|err| http_cache_error("default_max_bytes_per_source", &err))?;
         let total_max_bytes = raw
             .total_max_bytes
-            .as_deref()
-            .map(parse_byte_size)
+            .as_ref()
+            .map(RawByteSize::parse)
             .transpose()
             .map_err(|err| http_cache_error("total_max_bytes", &err))?;
         let mut per_source_max_bytes = HashMap::with_capacity(raw.sources.len());
         for (source_name, source_config) in raw.sources {
-            let bytes = parse_byte_size(&source_config.max_bytes).map_err(|err| {
+            let bytes = source_config.max_bytes.parse().map_err(|err| {
                 http_cache_error(&format!("sources.{source_name}.max_bytes"), &err)
             })?;
             per_source_max_bytes.insert(source_name, bytes);
@@ -234,6 +252,27 @@ max_bytes = "16MiB"
         assert_eq!(
             cfg.per_source_max_bytes.get("jsonph"),
             Some(&(16 * 1024 * 1024))
+        );
+    }
+
+    #[test]
+    fn loads_bare_integer_byte_limits() {
+        let cfg = load_with_config(
+            r"
+[http_cache]
+default_max_bytes_per_source = 134217728
+total_max_bytes  = 2147483648
+
+[http_cache.sources.github]
+max_bytes = 524288000
+",
+        )
+        .expect("config loads");
+        assert_eq!(cfg.default_max_bytes_per_source, 128 * 1024 * 1024);
+        assert_eq!(cfg.total_max_bytes, Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(
+            cfg.per_source_max_bytes.get("github"),
+            Some(&(500 * 1024 * 1024))
         );
     }
 
