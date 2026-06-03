@@ -13,11 +13,14 @@ This source authenticates with a **YouTube Data API v3 API key** — *not* OAuth
 and aren't exposed by this source. See [Limitations](#limitations) for fields
 that can still be hidden on public content.
 
-Every call counts against your Google Cloud project's daily quota — the
-default is **10,000 units per day** per project. Per-method costs are listed
-in [Quota](#quota); the source follows YouTube's `pageToken` cursors
-automatically, so bound queries with SQL `LIMIT` to cap both row volume and
-quota use.
+Every call counts against your Google Cloud project's daily quota. YouTube
+splits this into two independent buckets: a **general Data API quota**
+(default 10,000 units/day) used by `channels`, `videos`, `playlist_items`,
+`comment_threads`, and `comments`; and a separate **Search Queries** bucket
+(default 100 `search.list` calls/day) used only by `youtube.search`. See
+[Quota](#quota) for the per-table breakdown. The source follows YouTube's
+`pageToken` cursors automatically, so bound queries with SQL `LIMIT` to cap
+row volume and quota use.
 
 ## Setup
 
@@ -72,23 +75,30 @@ The `uploads` playlist ID returned here can be passed straight to
 
 ## Quota
 
-The YouTube Data API v3 has a default quota of **10,000 units per day**
-per project. Costs per table:
+The YouTube Data API v3 splits requests across two independent quota buckets:
 
-| Table | Units per call |
-|---|---|
-| `channels` | 1 |
-| `channels_by_handle` | 1 |
-| `playlist_items` | 1 |
-| `videos` | 1 |
-| `comment_threads` | 1 |
-| `comments` | 1 |
-| **`search`** | **100** |
+- **General Data API quota** — default **10,000 units/day** per project.
+  Every table here except `search` draws from this bucket at **1 unit per
+  call**.
+- **Search Queries bucket** — default **100 `search.list` calls/day** per
+  project, each costing 1 unit in that bucket. `youtube.search` is the only
+  table that draws from this bucket; it does **not** consume general-quota
+  units.
 
-`search` is expensive — each call costs 100 units regardless of result
-count. The table defaults to 50 results (`fetch_limit_default: 50`) to
-limit accidental drain. Request a quota increase in Google Cloud Console
-if you need more capacity.
+| Table | Quota bucket | Cost per call |
+|---|---|---|
+| `channels` | General (10,000/day) | 1 unit |
+| `channels_by_handle` | General | 1 unit |
+| `playlist_items` | General | 1 unit |
+| `videos` | General | 1 unit |
+| `comment_threads` | General | 1 unit |
+| `comments` | General | 1 unit |
+| **`search`** | **Search Queries (100/day)** | **1 unit (separate bucket)** |
+
+Because the Search Queries bucket caps you at 100 `search.list` calls per day
+out of the box, `youtube.search` defaults to 50 rows (`fetch_limit_default:
+50`) to keep one query to one call. Request a quota increase in Google
+Cloud Console if you need more search capacity.
 
 ## Common workflows
 
@@ -102,8 +112,9 @@ Most YouTube analysis chains a few tables together. The typical paths:
   per call.
 - **Keyword search → video detail** — query `youtube.search` for a keyword
   (set `type='video'` if you only want videos), collect `id__video_id`s, then
-  enrich them via `youtube.videos`. Each `search` page costs **100 units**;
-  prefer `playlist_items` when you only need one channel's own uploads.
+  enrich them via `youtube.videos`. Each `search` page counts against the
+  separate **Search Queries** bucket (default 100 calls/day); prefer
+  `playlist_items` when you only need one channel's own uploads.
 - **Comment analysis** — for a video ID, `youtube.comment_threads` returns
   top-level threads with their first comment inline. For full reply trees,
   follow up with `youtube.comments` per thread.
@@ -171,10 +182,11 @@ Search YouTube for videos, channels, or playlists by keyword.
 **Optional filters:** `channel_id`, `type`, `order`, `published_after`,
 `published_before`
 
-**WARNING:** Each call costs 100 quota units — 100× more expensive than
-every other table. The table defaults to 50 results. To browse a
-channel's videos without a keyword, use `youtube.playlist_items` instead
-(1 unit per call).
+**WARNING:** `search.list` uses YouTube's separate **Search Queries** quota
+bucket (default **100 calls/day**), distinct from the 10,000-unit general
+Data API quota. Each call costs 1 unit in that bucket; the table defaults to
+50 results to keep one query to one call. To browse a channel's videos
+against the general quota (1 unit/call), use `youtube.playlist_items` instead.
 
 ### `youtube.comment_threads`
 
@@ -229,7 +241,7 @@ SELECT id, snippet__title, snippet__channel_title,
 FROM youtube.videos
 WHERE video_id = 'dQw4w9WgXcQ,jNQXAC9IVRw';
 
--- Search for videos (costs 100 quota units)
+-- Search for videos (1 call against the Search Queries bucket; 100/day default)
 SELECT id__video_id, snippet__title, snippet__channel_title,
        snippet__published_at
 FROM youtube.search
@@ -277,9 +289,10 @@ LIMIT 20;
 - **Statistics as strings.** YouTube returns `viewCount`, `likeCount`,
   `subscriberCount`, and similar counts as JSON strings, not numbers. Use
   `CAST(statistics__view_count AS BIGINT)` for numeric comparisons.
-- **`search` quota cost.** Each `search` call costs 100 quota units vs. 1
-  for every other table. The 10,000-unit daily quota allows ~100 search
-  calls per day.
+- **`search` quota bucket.** `youtube.search` draws from a separate
+  **Search Queries** quota bucket (default **100 `search.list` calls/day**),
+  not the general 10,000-unit Data API quota. Each call costs 1 unit in that
+  bucket; the 50-row default keeps one query to one call.
 - **`comment_threads` has no reply content.** Each row contains the top-level
   comment and a reply count (`snippet__total_reply_count`), but reply text is
   not fetched. Use `youtube.comments WHERE parent_id = '<top_comment__id>'`

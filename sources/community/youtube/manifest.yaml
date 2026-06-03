@@ -731,11 +731,12 @@ tables:
       (`relevance`, `date`, `rating`, `title`, `videoCount`, `viewCount`),
       and RFC 3339 date bounds via `published_after` / `published_before`.
 
-      WARNING: each search call costs 100 quota units — 100× more expensive
-      than every other table. The daily default quota is 10,000 units (~100
-      calls/day). Defaults to 50 results to limit accidental drain; add an
-      explicit LIMIT for larger scans. To browse a channel's videos cheaply
-      (1 unit/call), use `youtube.playlist_items` instead.
+      WARNING: search.list uses a separate "Search Queries" quota bucket
+      (default 100 calls/day), distinct from the 10,000-unit general Data API
+      quota. Each call costs 1 unit in that bucket. Defaults to 50 results to
+      keep one query to one call; add an explicit LIMIT for larger scans. To
+      browse a channel's videos against the general quota (1 unit/call), use
+      `youtube.playlist_items` instead.
 
       The result `id__video_id`, `id__channel_id`, or `id__playlist_id`
       column will be populated depending on the result type; the others will
