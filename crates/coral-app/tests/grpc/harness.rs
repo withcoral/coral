@@ -395,6 +395,76 @@ pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
     }))
 }
 
+fn simple_http_table(name: &str, description: &str, path: &str) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "request": {
+            "method": "GET",
+            "path": path,
+        },
+        "response": {},
+        "columns": [
+            { "name": "id", "type": "Utf8" },
+        ],
+    })
+}
+
+pub(crate) fn fixture_manifest_with_search_ranking_yaml() -> String {
+    let filtered_records = json!({
+        "name": "filtered_records",
+        "description": "Filtered records",
+        "request": {
+            "method": "GET",
+            "path": "/records",
+            "query": [
+                { "name": "owner", "from": "filter", "key": "owner" },
+            ],
+        },
+        "response": {},
+        "columns": [
+            { "name": "id", "type": "Utf8" },
+            { "name": "owner", "type": "Utf8" },
+        ],
+        "filters": [
+            { "name": "owner", "required": true },
+        ],
+    });
+    manifest_yaml(&json!({
+        "name": "ranked",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [
+            filtered_records,
+            simple_http_table("notes", "Audit history", "/notes"),
+            simple_http_table("schema_only", "Generic rows", "/generic"),
+            simple_http_table("tickets", "Ticket records", "/tickets"),
+        ],
+    }))
+}
+
+pub(crate) fn fixture_manifest_with_source_aware_search_yaml(name: &str) -> String {
+    let tables = match name {
+        "github" => json!([simple_http_table("users", "GitHub users", "/users")]),
+        "linear" => json!([
+            simple_http_table("issues", "Linear issues", "/issues"),
+            simple_http_table("users", "Linear users", "/users"),
+        ]),
+        "notion" => json!([simple_http_table("users", "Notion users", "/users")]),
+        source => panic!("unsupported source-aware search fixture source: {source}"),
+    };
+    manifest_yaml(&json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": tables,
+    }))
+}
+
 pub(crate) fn fixture_function_only_manifest_yaml() -> String {
     manifest_yaml(&json!({
         "name": "searchy",

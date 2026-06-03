@@ -1,6 +1,6 @@
 //! Workspace-scoped catalog discovery operations.
 
-use std::collections::BTreeSet;
+use std::{cmp::Reverse, collections::BTreeSet};
 
 use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
@@ -61,6 +61,16 @@ pub(crate) enum CatalogItemKind {
 pub(crate) struct CatalogSearchResult {
     pub(crate) item: CatalogItem,
     pub(crate) matched_fields: Vec<CatalogMetadataField>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum CatalogMatchRank {
+    SchemaOnly,
+    Guide,
+    Description,
+    QueryFields,
+    Name,
+    ExactName,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -268,18 +278,42 @@ impl CatalogDiscovery {
         pagination: Pagination,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
         let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
-        let matches = self
+        let items = self
             .catalog_items(workspace_name, schema_name, kind)
-            .await?
+            .await?;
+        let preferred_schemas = preferred_source_schemas(&items, &regex);
+        let mut matches = items
             .into_iter()
-            .filter_map(|item| {
+            .enumerate()
+            .filter_map(|(original_position, item)| {
                 let matched_fields = catalog_item_matched_fields(&item, &regex);
-                (!matched_fields.is_empty()).then_some(CatalogSearchResult {
-                    item,
-                    matched_fields,
-                })
+                if matched_fields.is_empty() {
+                    return None;
+                }
+                let source_preferred = preferred_schemas.contains(catalog_item_schema_name(&item));
+                let rank = catalog_match_rank(&item, &matched_fields, &regex);
+                Some((
+                    source_preferred,
+                    rank,
+                    original_position,
+                    CatalogSearchResult {
+                        item,
+                        matched_fields,
+                    },
+                ))
             })
-            .collect();
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|(source_preferred, rank, original_position, _)| {
+            (
+                Reverse(*source_preferred),
+                Reverse(*rank),
+                *original_position,
+            )
+        });
+        let matches = matches
+            .into_iter()
+            .map(|(_, _, _, result)| result)
+            .collect::<Vec<_>>();
         Ok(page_items(matches, pagination))
     }
 
@@ -343,6 +377,34 @@ fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {
     }
 }
 
+fn catalog_item_schema_name(item: &CatalogItem) -> &str {
+    match item {
+        CatalogItem::Table(table) => table.schema_name.as_str(),
+        CatalogItem::TableFunction(function) => function.schema_name.as_str(),
+    }
+}
+
+fn preferred_source_schemas(items: &[CatalogItem], regex: &Regex) -> BTreeSet<String> {
+    let visible_schemas = items
+        .iter()
+        .map(catalog_item_schema_name)
+        .collect::<BTreeSet<_>>();
+    if visible_schemas.len() <= 1 {
+        return BTreeSet::new();
+    }
+
+    let preferred_schemas = visible_schemas
+        .iter()
+        .filter(|schema| regex_matches_entire_value(regex, schema))
+        .map(|schema| (*schema).to_string())
+        .collect::<BTreeSet<_>>();
+    if preferred_schemas.is_empty() || preferred_schemas.len() == visible_schemas.len() {
+        BTreeSet::new()
+    } else {
+        preferred_schemas
+    }
+}
+
 pub(crate) fn search_pagination(pagination: Option<Pagination>) -> Result<Pagination, AppError> {
     pagination_with_limits(pagination, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT)
 }
@@ -399,6 +461,76 @@ fn catalog_item_matched_fields(item: &CatalogItem, regex: &Regex) -> Vec<Catalog
         CatalogItem::Table(table) => table_matched_fields(table, regex),
         CatalogItem::TableFunction(function) => table_function_matched_fields(function, regex),
     }
+}
+
+fn catalog_match_rank(
+    item: &CatalogItem,
+    matched_fields: &[CatalogMetadataField],
+    regex: &Regex,
+) -> CatalogMatchRank {
+    if catalog_item_exact_name_match(item, regex) {
+        return CatalogMatchRank::ExactName;
+    }
+    if catalog_item_name_match(item, regex) {
+        return CatalogMatchRank::Name;
+    }
+    if matched_fields.iter().any(|field| {
+        matches!(
+            field,
+            CatalogMetadataField::RequiredFilters
+                | CatalogMetadataField::Arguments
+                | CatalogMetadataField::ResultColumns
+        )
+    }) {
+        return CatalogMatchRank::QueryFields;
+    }
+    if matched_fields.contains(&CatalogMetadataField::Description) {
+        return CatalogMatchRank::Description;
+    }
+    if matched_fields.contains(&CatalogMetadataField::Guide) {
+        return CatalogMatchRank::Guide;
+    }
+    CatalogMatchRank::SchemaOnly
+}
+
+fn catalog_item_exact_name_match(item: &CatalogItem, regex: &Regex) -> bool {
+    let (schema_name, item_name) = catalog_item_name_parts(item);
+    let qualified_name = format!("{schema_name}.{item_name}");
+    regex_matches_entire_value(regex, item_name)
+        || regex_matches_entire_value(regex, qualified_name.as_str())
+}
+
+fn catalog_item_name_match(item: &CatalogItem, regex: &Regex) -> bool {
+    let (schema_name, item_name) = catalog_item_name_parts(item);
+    if regex.is_match(item_name) {
+        return true;
+    }
+    let qualified_name = format!("{schema_name}.{item_name}");
+    qualified_name_match_touches_item_name(regex, qualified_name.as_str(), schema_name)
+}
+
+fn catalog_item_name_parts(item: &CatalogItem) -> (&str, &str) {
+    match item {
+        CatalogItem::Table(table) => (&table.schema_name, &table.table_name),
+        CatalogItem::TableFunction(function) => (&function.schema_name, &function.function_name),
+    }
+}
+
+fn regex_matches_entire_value(regex: &Regex, value: &str) -> bool {
+    regex
+        .find(value)
+        .is_some_and(|match_| match_.start() == 0 && match_.end() == value.len())
+}
+
+fn qualified_name_match_touches_item_name(
+    regex: &Regex,
+    qualified_name: &str,
+    schema_name: &str,
+) -> bool {
+    let item_name_start = schema_name.len() + 1;
+    regex
+        .find_iter(qualified_name)
+        .any(|match_| match_.end() > item_name_start)
 }
 
 fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<CatalogMetadataField> {
