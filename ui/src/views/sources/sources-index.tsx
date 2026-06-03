@@ -191,7 +191,7 @@ export function SourcesIndex() {
         ) : null}
 
         {connected.length > 0 ? (
-          <Section title="Connected" count={connected.length}>
+          <Section title="Configured" count={connected.length}>
             <div className={styles.cardGrid}>
               {connected.map((entry) => (
                 <SourceCard
@@ -298,10 +298,7 @@ function SourceCard({ entry, onClick }: { entry: IndexEntry; onClick: () => void
       ) : null}
       {entry.installed ? (
         <div className={styles.cardFooter}>
-          <span className={styles.connectedPill}>
-            <Icon name="CircleCheck" size="14" color="inherit" />
-            Connected
-          </span>
+          <span className={styles.connectedPill}>Configured</span>
         </div>
       ) : null}
     </button>

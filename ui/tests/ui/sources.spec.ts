@@ -1,7 +1,7 @@
 import { sourceLifecycleHandlers, sourceOAuthInstallHandlers } from './support/source-handlers'
 import { expect, test } from './playwright.setup'
 
-test('lists core sources by category, searches, and shows connected status', async ({
+test('lists core sources by category, searches, and shows configured status', async ({
   network,
   page,
   review,
@@ -15,10 +15,10 @@ test('lists core sources by category, searches, and shows connected status', asy
   await page.goto('/#/sources')
 
   await expect(page.getByRole('heading', { name: 'Sources', level: 1 })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Connected' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Configured' })).toBeVisible()
   const githubCard = page.getByRole('button', { name: /Github/i })
   await expect(githubCard).toBeVisible()
-  await expect(githubCard.getByText('Connected')).toBeVisible()
+  await expect(githubCard.getByText('Configured')).toBeVisible()
   await expect(githubCard.getByText('Imported')).toBeVisible()
   await expect(githubCard.getByText('v1.1.6')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Observability' })).toBeVisible()
@@ -70,7 +70,7 @@ test('installs a core source via paste, edits a binding, and removes it', async 
   await expect(installDialog.getByRole('button', { name: 'Add source' })).toBeEnabled()
   await installDialog.getByRole('button', { name: 'Add source' }).click()
 
-  await expect(page.getByText(`Saved linear`)).toBeVisible()
+  await expect(page.getByText(`Configured linear`)).toBeVisible()
   await expect(page.getByText('Credentials were saved but not verified.')).toBeVisible()
   await review.pause()
 
@@ -173,7 +173,7 @@ test('installs GitHub through OAuth device code', async ({ network, page, review
   )
   await review.pause()
 
-  await expect(page.getByText('Saved github')).toBeVisible()
+  await expect(page.getByText('Configured github')).toBeVisible()
 })
 
 test('cmd-F focuses the search input', async ({ network, page, review }) => {

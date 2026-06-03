@@ -210,7 +210,7 @@ function SourceDetailDialogContent({
           </Dialog.Title>
           <Dialog.Description render={<div />}>
             <Typography.BodySmall variant="secondary">
-              {source?.version ? `v${source.version}` : 'Connected source'}
+              {source?.version ? `v${source.version}` : 'Configured source'}
             </Typography.BodySmall>
           </Dialog.Description>
         </div>

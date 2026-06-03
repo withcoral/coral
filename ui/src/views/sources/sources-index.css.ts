@@ -157,15 +157,14 @@ export const cardFooter = style({
 
 export const connectedPill = style({
   alignItems: 'center',
-  background: theme.pill.green.background,
-  border: `1px solid ${theme.pill.green.stroke}`,
+  background: theme.surface.onMainContent,
+  border: `1px solid ${theme.stroke.secondary}`,
   borderRadius: 999,
-  color: theme.pill.green.color,
+  color: theme.content.secondary,
   display: 'inline-flex',
   flexShrink: 0,
   fontSize: 11,
   fontWeight: 600,
-  gap: 4,
   padding: '2px 8px',
 })
 
