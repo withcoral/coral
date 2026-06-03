@@ -1224,3 +1224,18 @@ impl MockServer {
         self.task.await.expect("join").expect("server");
     }
 }
+
+/// Single-quotes a value for safe interpolation into a `sh -c` command line.
+pub(crate) fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Wraps a command so it runs under a pseudo-tty via `script`, letting tests
+/// drive interactive prompts that require a terminal.
+pub(crate) fn script_command(command: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("script -q -e /dev/null {command}")
+    } else {
+        format!("script -q -e -c {} /dev/null", sh_quote(command))
+    }
+}

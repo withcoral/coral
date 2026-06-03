@@ -16,7 +16,7 @@ use coral_api::v1::{
     source_input_spec::Input as ProtoSourceInput,
 };
 #[cfg(feature = "cli-test-server")]
-use harness::{MockServer, MockServerConfig};
+use harness::{MockServer, MockServerConfig, script_command, sh_quote};
 
 #[test]
 fn onboard_rejects_non_interactive_terminals() {
@@ -137,18 +137,4 @@ async fn onboard_update_credentials_confirms_hosts_before_reconfigure() {
     );
 
     server.shutdown().await;
-}
-
-#[cfg(feature = "cli-test-server")]
-fn sh_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-#[cfg(feature = "cli-test-server")]
-fn script_command(command: &str) -> String {
-    if cfg!(target_os = "macos") {
-        format!("script -q -e /dev/null {command}")
-    } else {
-        format!("script -q -e -c {} /dev/null", sh_quote(command))
-    }
 }

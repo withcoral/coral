@@ -30,7 +30,7 @@ use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 use coral_spec::{
     ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec,
-    ValidatedSourceManifest, parse_source_manifest_yaml,
+    ValidatedSourceManifest, normalize_input_value, parse_source_manifest_yaml,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
@@ -255,7 +255,7 @@ impl SourceManager {
         let source_variables = variables
             .iter()
             .filter_map(|binding| {
-                let value = normalize_binding_value(&binding.value);
+                let value = normalize_input_value(&binding.value);
                 (!value.is_empty()).then(|| (binding.key.clone(), value))
             })
             .collect::<BTreeMap<_, _>>();
@@ -1289,7 +1289,7 @@ fn collect_unique_variables(
     let mut values = BTreeMap::new();
     for variable in variables {
         let key = normalize_binding_key("source variable key", &variable.key)?;
-        let value = normalize_binding_value(&variable.value);
+        let value = normalize_input_value(&variable.value);
         if value.is_empty() {
             continue;
         }
@@ -1306,7 +1306,7 @@ fn collect_unique_secrets(secrets: &[SourceBinding]) -> Result<BTreeMap<String, 
     let mut values = BTreeMap::new();
     for secret in secrets {
         let key = normalize_binding_key("source secret key", &secret.key)?;
-        let value = normalize_binding_value(&secret.value);
+        let value = normalize_input_value(&secret.value);
         if value.is_empty() {
             continue;
         }
@@ -1317,10 +1317,6 @@ fn collect_unique_secrets(secrets: &[SourceBinding]) -> Result<BTreeMap<String, 
         }
     }
     Ok(values)
-}
-
-fn normalize_binding_value(value: &str) -> String {
-    value.trim().to_string()
 }
 
 fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {

@@ -25,7 +25,7 @@ use coral_api::v1::{
 use tempfile::tempdir;
 use tonic::Code;
 
-use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
+use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream, script_command, sh_quote};
 
 #[cfg(feature = "embedded-ui")]
 #[test]
@@ -933,6 +933,86 @@ async fn source_add_confirms_hosts_resolved_from_env_variables() {
     assert_eq!(
         create_requests[0].variables[0].value,
         "https://gitlab.internal/api/v4"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_interactive_declining_hosts_does_not_create_source() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default()
+            .with_discover_sources(DiscoverSourcesResponse {
+                sources: vec![SourceInfo {
+                    name: "gitlab".to_string(),
+                    description: "GitLab data".to_string(),
+                    version: "1.0.0".to_string(),
+                    inputs: vec![SourceInputSpec {
+                        key: "GITLAB_API_BASE".to_string(),
+                        required: false,
+                        hint: "GitLab API base URL".to_string(),
+                        input: Some(ProtoSourceInput::Variable(SourceVariableInput {
+                            default_value: "https://gitlab.com/api/v4".to_string(),
+                        })),
+                    }],
+                    hosts: vec!["gitlab.com".to_string()],
+                    installed: false,
+                    origin: SourceOrigin::Bundled as i32,
+                    credential_storage: SourceCredentialStorage::Unspecified as i32,
+                }],
+            })
+            .with_resolve_bundled_source_hosts(ResolveBundledSourceHostsResponse {
+                hosts: vec!["gitlab.internal".to_string()],
+            }),
+    )
+    .await;
+
+    // GITLAB_API_BASE is supplied via the environment, so the only interactive
+    // prompt before secrets is the host confirmation. Drive it through a
+    // pseudo-tty and answer "no".
+    let command = format!(
+        "env CORAL_ENDPOINT={} CORAL_CONFIG_DIR={} GITLAB_API_BASE={} {} source add --interactive gitlab",
+        sh_quote(server.endpoint_uri()),
+        sh_quote(&server.config_dir().display().to_string()),
+        sh_quote("https://gitlab.internal/api/v4"),
+        sh_quote(env!("CARGO_BIN_EXE_coral")),
+    );
+    let shell = format!("printf 'n\\r' | {}", script_command(&command));
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(shell)
+        .output()
+        .expect("run source add through pseudo-tty");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "declining hosts should exit cleanly\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("gitlab.internal"),
+        "expected the resolved host to be shown before the prompt: {stdout}"
+    );
+    assert!(
+        stdout.contains("was not connected"),
+        "expected the cancellation message: {stdout}"
+    );
+
+    // The hosts were resolved for display, but declining must prevent any
+    // source from being created.
+    assert_eq!(
+        server.resolve_bundled_source_hosts_requests().len(),
+        1,
+        "expected exactly one host resolution"
+    );
+    assert!(
+        server.create_bundled_source_requests().is_empty(),
+        "declining the host confirmation must not create the source"
+    );
+    assert_eq!(
+        server.source_operation_events(),
+        vec!["resolve_bundled_source_hosts"],
+        "expected host resolution with no subsequent create"
     );
 
     server.shutdown().await;

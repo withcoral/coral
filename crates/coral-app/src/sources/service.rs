@@ -456,14 +456,14 @@ fn source_bindings_from_proto(
 fn source_variable_from_proto(variable: SourceVariable) -> SourceBinding {
     SourceBinding {
         key: variable.key,
-        value: variable.value.trim().to_string(),
+        value: coral_spec::normalize_input_value(&variable.value),
     }
 }
 
 fn oauth_credential_input_from_proto(input: OAuthCredentialInput) -> SourceBinding {
     SourceBinding {
         key: input.key,
-        value: input.value.trim().to_string(),
+        value: coral_spec::normalize_input_value(&input.value),
     }
 }
 
@@ -490,7 +490,7 @@ fn oauth_credential_retrieval_from_proto(
 fn source_secret_from_proto(secret: SourceSecret) -> SourceBinding {
     SourceBinding {
         key: secret.key,
-        value: secret.value.trim().to_string(),
+        value: coral_spec::normalize_input_value(&secret.value),
     }
 }
 

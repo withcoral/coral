@@ -20,6 +20,7 @@ use crate::common::parse_manifest_data_type;
 use crate::inputs::{
     collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
 };
+use crate::validate::validate_host_template_inputs;
 use crate::{
     ColumnSpec, DeclaredRelation, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec,
     ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
@@ -211,7 +212,13 @@ impl FileSourceSpec {
     }
 
     /// Validates file-backed source settings.
-    fn validate_for_file(&self, schema: &str, table: &str, format: FileFormat) -> Result<()> {
+    fn validate_for_file(
+        &self,
+        schema: &str,
+        table: &str,
+        format: FileFormat,
+        declared_inputs: &[ManifestInputSpec],
+    ) -> Result<()> {
         validate_source_scoped_template(schema, table, "source.location", &self.location)?;
         let mut seen_partitions = HashSet::new();
         for partition in &self.partitions {
@@ -239,7 +246,7 @@ impl FileSourceSpec {
                 )));
             }
             ("s3", Some(FileObjectStoreSpec::S3 { region, auth })) => {
-                validate_s3_object_store(schema, table, region.as_ref(), auth)?;
+                validate_s3_object_store(schema, table, region.as_ref(), auth, declared_inputs)?;
             }
             ("s3", None) => {
                 return Err(ManifestError::validation(format!(
@@ -289,9 +296,18 @@ fn validate_s3_object_store(
     table: &str,
     region: Option<&ParsedTemplate>,
     auth: &S3AuthSpec,
+    declared_inputs: &[ManifestInputSpec],
 ) -> Result<()> {
     if let Some(region) = region {
         validate_source_scoped_template(schema, table, "source.object_store.region", region)?;
+        // The region determines the S3 service host (`s3.<region>.amazonaws.com`)
+        // shown during outbound-host confirmation, so it may only template
+        // non-secret variable inputs.
+        validate_host_template_inputs(
+            &format!("{schema}.{table} source.object_store.region"),
+            region,
+            declared_inputs,
+        )?;
     }
     auth.validate(schema, table)
 }
@@ -512,7 +528,11 @@ impl FileFormatOptions {
 }
 
 impl RawFileTableSpec {
-    fn into_validated(self, schema: &str) -> Result<FileTableSpec> {
+    fn into_validated(
+        self,
+        schema: &str,
+        declared_inputs: &[ManifestInputSpec],
+    ) -> Result<FileTableSpec> {
         let format = FileFormat::parse(&self.format, schema, &self.name)?;
         if format.requires_declared_columns() && self.columns.is_empty() {
             return Err(ManifestError::validation(format!(
@@ -522,7 +542,8 @@ impl RawFileTableSpec {
             )));
         }
 
-        self.source.validate_for_file(schema, &self.name, format)?;
+        self.source
+            .validate_for_file(schema, &self.name, format, declared_inputs)?;
         validate_columns(&self.columns, schema, &self.name)?;
         validate_native_file_table_features(
             schema,
@@ -634,7 +655,7 @@ impl FileSourceManifest {
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
             .into_iter()
-            .map(|table| table.into_validated(&common.name))
+            .map(|table| table.into_validated(&common.name, &declared_inputs))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             common,

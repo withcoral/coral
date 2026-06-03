@@ -211,8 +211,7 @@ async fn prompt_bundled_source_inputs_after_host_confirmation(
         .iter()
         .map(manifest_input_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let host_variables =
-        source_ops::collect_variables_for_host_confirmation(&inputs, true, "coral onboard")?;
+    let host_variables = source_ops::prompt_variables_for_host_confirmation(&inputs)?;
     let hosts =
         source_ops::resolve_bundled_source_hosts(app, &source.name, host_variables.clone()).await?;
     if !source_ops::confirm_source_hosts(&hosts, true)? {

@@ -102,6 +102,7 @@ pub use common::{
     ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
     SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
     TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    normalize_input_value,
 };
 pub use error::{ManifestError, Result};
 pub use inputs::{

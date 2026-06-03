@@ -24,7 +24,7 @@ use crate::{
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
-    validate::validate_template,
+    validate::{validate_host_template_inputs, validate_template},
     validate_declared_relation_namespace, validate_detail_hint_references, validate_http_function,
     validate_http_table, validate_test_queries,
 };
@@ -324,6 +324,11 @@ impl HttpSourceManifest {
             &base_url,
             &HashSet::new(),
             &format!("source '{}'", common.name),
+        )?;
+        validate_host_template_inputs(
+            &format!("source '{}' base_url", common.name),
+            &base_url,
+            &declared_inputs,
         )?;
 
         Ok(Self {

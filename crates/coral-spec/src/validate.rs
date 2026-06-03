@@ -8,7 +8,9 @@ use crate::common::{
     RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
     SourceTableFunctionSpec, ValueSourceSpec,
 };
-use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
+use crate::{
+    ManifestError, ManifestInputKind, ManifestInputSpec, ParsedTemplate, Result, TemplateNamespace,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeclaredRelationKind {
@@ -915,6 +917,78 @@ pub(crate) fn validate_template(
     }
 
     Ok(())
+}
+
+/// Validates that no `input.KEY` token which can determine the outbound *host*
+/// of a URL (an HTTP `base_url`, an S3 `region`, …) references a `kind: secret`
+/// input — only `kind: variable` inputs may.
+///
+/// Outbound-host confirmation resolves these templates from the non-secret
+/// variable values the user supplies *before* connecting — secrets are only
+/// collected afterward — so a secret-backed host could never be shown for
+/// confirmation: the user would approve a `{{…}}` placeholder while the runtime
+/// quietly substitutes the secret and contacts the real, unconfirmed host.
+/// Reject it at validation instead, mirroring the rule already enforced for
+/// OAuth endpoint templates.
+///
+/// Only tokens in the scheme/authority (host[:port]) region are restricted; a
+/// secret that appears later in the path or query (e.g. a bot token in
+/// `https://api.telegram.org/bot{{input.TOKEN}}`) does not change which host is
+/// contacted and is allowed. A bare value with no `://` (e.g. an S3 region) is
+/// treated as entirely host-determining. Undeclared references are left to the
+/// field's own reference check.
+pub(crate) fn validate_host_template_inputs(
+    context: &str,
+    template: &ParsedTemplate,
+    declared_inputs: &[ManifestInputSpec],
+) -> Result<()> {
+    let mut after_scheme = false;
+    let mut after_authority = false;
+    for part in template.parts() {
+        match part {
+            crate::TemplatePart::Literal(text) => {
+                advance_past_url_authority(text, &mut after_scheme, &mut after_authority);
+            }
+            crate::TemplatePart::Token(token) => {
+                if after_authority || !matches!(token.namespace(), TemplateNamespace::Input) {
+                    continue;
+                }
+                let Some(input) = declared_inputs.iter().find(|input| input.key == token.key())
+                else {
+                    continue;
+                };
+                if input.kind != ManifestInputKind::Variable {
+                    return Err(ManifestError::validation(format!(
+                        "{context} references input '{}' in the host portion of the URL, but only `kind: variable` inputs may determine an outbound host (hosts are confirmed before secrets are collected)",
+                        token.key()
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Advances `after_scheme`/`after_authority` flags over a literal URL fragment.
+/// The authority ends at the first `/`, `?`, or `#` following `://`.
+fn advance_past_url_authority(text: &str, after_scheme: &mut bool, after_authority: &mut bool) {
+    if *after_authority {
+        return;
+    }
+    let rest = if *after_scheme {
+        text
+    } else {
+        match text.split_once("://") {
+            Some((_, rest)) => {
+                *after_scheme = true;
+                rest
+            }
+            None => return,
+        }
+    };
+    if rest.contains(['/', '?', '#']) {
+        *after_authority = true;
+    }
 }
 
 #[cfg(test)]

@@ -678,4 +678,110 @@ tables:
             vec!["s3.eu-west-1.amazonaws.com".to_string()]
         );
     }
+
+    #[test]
+    fn allows_secret_input_in_base_url_path() {
+        // A secret in the path (e.g. a Telegram bot token in `/bot<TOKEN>`)
+        // does not determine the host, so it is permitted; the host is the
+        // static authority and is reported correctly.
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+base_url: "https://api.telegram.org/bot{{input.API_TOKEN}}"
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /getUpdates
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("a secret in the base_url path should be allowed");
+        assert_eq!(
+            manifest.outbound_hosts(),
+            vec!["api.telegram.org".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_base_url_templating_a_secret_input() {
+        // A host that resolves from a secret can never be shown for
+        // outbound-host confirmation (secrets are collected afterward), so the
+        // manifest must not declare one. See `validate_host_template_inputs`.
+        let error = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  SECRET_HOST:
+    kind: secret
+base_url: "https://{{input.SECRET_HOST}}.example.com"
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect_err("secret-templated base_url host should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("only `kind: variable` inputs may determine an outbound host"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_s3_region_templating_a_secret_input() {
+        let error = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+inputs:
+  AWS_REGION:
+    kind: secret
+tables:
+  - name: events
+    description: Demo events
+    format: jsonl
+    source:
+      location: s3://example-bucket/events/
+      object_store:
+        type: s3
+        region: "{{input.AWS_REGION}}"
+        auth:
+          type: instance_profile
+    columns:
+      - name: kind
+        type: Utf8
+"#,
+        )
+        .expect_err("secret-templated S3 region should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("only `kind: variable` inputs may determine an outbound host"),
+            "unexpected error: {error}"
+        );
+    }
 }

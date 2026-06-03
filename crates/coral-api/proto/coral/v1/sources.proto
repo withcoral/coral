@@ -258,8 +258,11 @@ message SourceInfo {
   SourceCredentialStorage credential_storage = 7;
   // Network hosts this source will contact, derived from the manifest's base
   // URL, OAuth provider endpoints, remote MCP URLs, and S3 service endpoints.
-  // De-duplicated and sorted. Shown to the user as a confirmation step before
-  // installation or credential updates.
+  // De-duplicated and sorted. Resolved using only the manifest's *default*
+  // input values, so it is advisory for discovery display and may differ from
+  // the hosts actually contacted once the user supplies variables (e.g. a
+  // self-hosted base URL). For the authoritative pre-connect confirmation list,
+  // call ResolveBundledSourceHosts with the configured variables.
   repeated string hosts = 8;
 }
 

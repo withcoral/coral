@@ -812,32 +812,45 @@ async fn run_source_add_bundled(
         .map(manifest_input_from_proto)
         .collect::<Result<Vec<_>, _>>()
         .map_err(anyhow::Error::from)?;
-    let interactive_command = format!("coral source add --interactive {}", available.name);
-    let host_variables = source_ops::collect_variables_for_host_confirmation(
-        &inputs,
-        interactive,
-        &interactive_command,
-    )?;
-    let hosts =
-        source_ops::resolve_bundled_source_hosts(app, &available.name, host_variables.clone())
-            .await?;
-    if !source_ops::confirm_source_hosts(&hosts, interactive)? {
-        println!("Cancelled. Source '{}' was not connected.", available.name);
-        return Ok(None);
-    }
-    let source = if interactive {
-        let inputs = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
+    if interactive {
+        // Prompt only the host-determining variables first, confirm the hosts,
+        // then collect secrets — so the user reviews where the source connects
+        // before handing over any credentials.
+        let host_variables = source_ops::prompt_variables_for_host_confirmation(&inputs)?;
+        let hosts =
+            source_ops::resolve_bundled_source_hosts(app, &available.name, host_variables.clone())
+                .await?;
+        if !source_ops::confirm_source_hosts(&hosts, true)? {
+            println!("Cancelled. Source '{}' was not connected.", available.name);
+            return Ok(None);
+        }
+        let collected = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
             &inputs,
             host_variables,
             source_ops::CredentialPromptMode::EnvFirst,
         )?;
-        source_ops::add_bundled_source_with_credentials(app, &available.name, inputs).await?
+        Ok(Some(
+            source_ops::add_bundled_source_with_credentials(app, &available.name, collected)
+                .await?,
+        ))
     } else {
+        // Collect every input from the environment once. This reads each
+        // variable exactly once and surfaces all missing required inputs
+        // (variables and secrets) together, before the host list is shown.
+        let interactive_command = format!("coral source add --interactive {}", available.name);
         let (variables, secrets) =
             source_ops::collect_inputs_from_env(&inputs, interactive_command)?;
-        source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
-    };
-    Ok(Some(source))
+        let hosts =
+            source_ops::resolve_bundled_source_hosts(app, &available.name, variables.clone())
+                .await?;
+        if !source_ops::confirm_source_hosts(&hosts, false)? {
+            println!("Cancelled. Source '{}' was not connected.", available.name);
+            return Ok(None);
+        }
+        Ok(Some(
+            source_ops::add_bundled_source(app, &available.name, variables, secrets).await?,
+        ))
+    }
 }
 
 async fn run_source_add_file(
@@ -846,37 +859,46 @@ async fn run_source_add_file(
     interactive: bool,
 ) -> Result<Option<Source>, CliError> {
     let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
-    let interactive_command = format!(
-        "coral source add --interactive --file {}",
-        source_ops::shell_quote_arg(&file.display().to_string())
-    );
-    let host_variables = source_ops::collect_variables_for_host_confirmation(
-        manifest.declared_inputs(),
-        interactive,
-        &interactive_command,
-    )?;
-    let hosts = manifest
-        .outbound_hosts_with_input_values(&source_ops::source_variables_map(&host_variables));
-    if !source_ops::confirm_source_hosts(&hosts, interactive)? {
-        println!(
-            "Cancelled. Source '{}' was not connected.",
-            manifest.schema_name()
-        );
-        return Ok(None);
-    }
-    let source = if interactive {
-        let inputs = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
+    if interactive {
+        let host_variables =
+            source_ops::prompt_variables_for_host_confirmation(manifest.declared_inputs())?;
+        let hosts = manifest
+            .outbound_hosts_with_input_values(&source_ops::source_variables_map(&host_variables));
+        if !source_ops::confirm_source_hosts(&hosts, true)? {
+            println!(
+                "Cancelled. Source '{}' was not connected.",
+                manifest.schema_name()
+            );
+            return Ok(None);
+        }
+        let collected = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
             manifest.declared_inputs(),
             host_variables,
             source_ops::CredentialPromptMode::EnvFirst,
         )?;
-        source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
+        Ok(Some(
+            source_ops::import_source_with_credentials(app, manifest_yaml, collected).await?,
+        ))
     } else {
+        let interactive_command = format!(
+            "coral source add --interactive --file {}",
+            source_ops::shell_quote_arg(&file.display().to_string())
+        );
         let (variables, secrets) =
             source_ops::collect_inputs_from_env(manifest.declared_inputs(), interactive_command)?;
-        source_ops::import_source(app, manifest_yaml, variables, secrets).await?
-    };
-    Ok(Some(source))
+        let hosts = manifest
+            .outbound_hosts_with_input_values(&source_ops::source_variables_map(&variables));
+        if !source_ops::confirm_source_hosts(&hosts, false)? {
+            println!(
+                "Cancelled. Source '{}' was not connected.",
+                manifest.schema_name()
+            );
+            return Ok(None);
+        }
+        Ok(Some(
+            source_ops::import_source(app, manifest_yaml, variables, secrets).await?,
+        ))
+    }
 }
 
 #[cfg(test)]

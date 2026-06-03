@@ -25,7 +25,7 @@ use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
-    parse_source_manifest_yaml,
+    normalize_input_value, parse_source_manifest_yaml,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -749,18 +749,12 @@ pub(crate) fn collect_inputs_from_env(
     )
 }
 
-pub(crate) fn collect_variables_for_host_confirmation(
-    inputs: &[ManifestInputSpec],
-    interactive: bool,
-    interactive_command: &str,
-) -> Result<Vec<SourceVariable>, anyhow::Error> {
-    if interactive {
-        return prompt_variables_for_host_confirmation(inputs);
-    }
-    collect_variables_from_env(inputs, interactive_command)
-}
-
-fn prompt_variables_for_host_confirmation(
+/// Collects the non-secret `variable` inputs (env first, then prompt) needed to
+/// resolve a source's outbound hosts for confirmation, before any secrets are
+/// requested. Used by the interactive `source add` and `onboard` flows; the
+/// non-interactive path instead collects every input once via
+/// [`collect_inputs_from_env`] and reuses its variables for host resolution.
+pub(crate) fn prompt_variables_for_host_confirmation(
     inputs: &[ManifestInputSpec],
 ) -> Result<Vec<SourceVariable>, anyhow::Error> {
     let mut variables = Vec::new();
@@ -781,48 +775,6 @@ fn prompt_variables_for_host_confirmation(
             variables.push(variable);
         }
     }
-    Ok(variables)
-}
-
-fn collect_variables_from_env(
-    inputs: &[ManifestInputSpec],
-    interactive_command: &str,
-) -> Result<Vec<SourceVariable>, anyhow::Error> {
-    let mut variables = Vec::new();
-    let mut missing = Vec::new();
-
-    for input in inputs
-        .iter()
-        .filter(|input| input.kind == ManifestInputKind::Variable)
-    {
-        let raw = read_source_input_env(&input.key).unwrap_or_default();
-        let raw = normalize_input_value(&raw);
-        let value = if raw.is_empty() {
-            input.default_value.clone()
-        } else {
-            raw
-        };
-        if value.is_empty() {
-            if input.required {
-                missing.push(input.key.clone());
-            }
-            continue;
-        }
-        variables.push(SourceVariable {
-            key: input.key.clone(),
-            value,
-        });
-    }
-
-    if !missing.is_empty() {
-        return Err(anyhow::anyhow!(
-            "missing required environment variable{}: {}. Set the variable{} or run `{interactive_command}`.",
-            if missing.len() == 1 { "" } else { "s" },
-            missing.join(", "),
-            if missing.len() == 1 { "" } else { "s" },
-        ));
-    }
-
     Ok(variables)
 }
 
@@ -1782,17 +1734,19 @@ pub(crate) fn finalize_input_value(
     if !value.is_empty() {
         return Ok(Some(value));
     }
-    if input.required {
+    // An empty entry is omitted so the server applies the manifest default
+    // (see `validate_bindings`, which fills the default before its required
+    // check). A field is only "missing" when it is required AND declares no
+    // default to fall back to — matching the non-interactive env collector and
+    // fixing the interactive divergence where a required input with a default
+    // could never be satisfied by pressing Enter.
+    if input.required && normalize_input_value(&input.default_value).is_empty() {
         return Err(anyhow::anyhow!(
             "missing required {kind_label} '{}'",
             input.key
         ));
     }
     Ok(None)
-}
-
-fn normalize_input_value(value: &str) -> String {
-    value.trim().to_string()
 }
 
 #[cfg(test)]
@@ -2169,6 +2123,27 @@ mod tests {
         let error = finalize_input_value(&input, "", "source secret")
             .expect_err("required empty input should fail");
         assert!(error.to_string().contains("missing required source secret"));
+    }
+
+    #[test]
+    fn empty_required_input_with_default_is_omitted_for_server_side_defaults() {
+        // A required variable that declares a default is satisfied by that
+        // default (the server applies it), so leaving the interactive prompt
+        // empty must omit it rather than error — matching the non-interactive
+        // env collector instead of diverging from it.
+        let input = ManifestInputSpec {
+            key: "API_BASE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "https://api.example.com".to_string(),
+            hint: None,
+            credential: None,
+        };
+        assert_eq!(
+            finalize_input_value(&input, "   ", "source variable")
+                .expect("required input with a default should be omitted, not rejected"),
+            None
+        );
     }
 
     #[test]
