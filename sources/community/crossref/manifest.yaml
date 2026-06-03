@@ -1,5 +1,5 @@
 name: crossref
-version: 0.2.2
+version: 0.2.3
 dsl_version: 3
 backend: http
 description: >
@@ -152,15 +152,15 @@ tables:
   # crossref.authors
   # — Surfaces author sub-fields directly from the works endpoint.
   #   Each row is one work; author data is joined as comma-separated strings.
-  #   Use the search_authors() function for per-author row granularity.
   # ---------------------------------------------------------------------------
   - name: authors
     description: >
       Author metadata surfaced from Crossref works. Each row is one work;
       the given, family, sequence, orcid, and affiliation columns contain
       comma-separated values across all authors on that work.
-      Requires a query or filter — unfiltered scans are not supported.
-      For per-author row granularity use the search_authors() function.
+      A query or filter is recommended to keep result sets manageable, but
+      is not required — unfiltered scans are permitted up to Crossref's
+      10,000-result offset cap.
     request:
       method: GET
       path: /works
@@ -240,14 +240,15 @@ tables:
   # crossref.references
   # — Surfaces reference sub-fields directly from the works endpoint.
   #   Each row is one work; reference data is joined as pipe-separated strings.
-  #   Use the search_references() function for per-reference row granularity.
   # ---------------------------------------------------------------------------
   - name: references
     description: >
       Reference metadata surfaced from Crossref works. Each row is one work;
       the doi, article_title, author, journal_title, year, and unstructured
       columns contain pipe-separated values across all references in that work.
-      Requires a query or filter — unfiltered scans are not supported.
+      A query or filter is recommended to keep result sets manageable, but
+      is not required — unfiltered scans are permitted up to Crossref's
+      10,000-result offset cap.
     request:
       method: GET
       path: /works
