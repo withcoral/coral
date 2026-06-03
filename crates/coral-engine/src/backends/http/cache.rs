@@ -511,13 +511,13 @@ mod tests {
     async fn registry_prunes_empty_obsolete_buckets_on_lookup() {
         let registry = HttpCacheRegistry::with_policy(64, None, HashMap::new());
         let first = registry
-            .get_or_create("default", "first_source", "0.1.0")
+            .get_or_create("default", "versioned_source", "0.1.0")
             .await;
         assert_eq!(registry.bucket_count(), 1);
         drop(first);
 
         let _second = registry
-            .get_or_create("default", "second_source", "0.1.0")
+            .get_or_create("default", "versioned_source", "0.2.0")
             .await;
 
         assert_eq!(registry.bucket_count(), 1);

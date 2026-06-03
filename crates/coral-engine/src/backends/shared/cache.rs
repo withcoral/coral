@@ -47,6 +47,12 @@ impl CacheBucketKey {
     fn source_name(&self) -> &str {
         &self.source_name
     }
+
+    fn same_source_family(&self, other: &Self) -> bool {
+        self.namespace == other.namespace
+            && self.backend == other.backend
+            && self.source_name == other.source_name
+    }
 }
 
 struct EntryExpiry<V>(PhantomData<V>);
@@ -256,7 +262,19 @@ where
     }
 
     pub(crate) async fn get_or_create(&self, key: CacheBucketKey) -> CacheBucket<V> {
-        self.prune_empty_buckets(&key).await;
+        {
+            let guard = self
+                .inner
+                .entries
+                .lock()
+                .expect("cache registry mutex poisoned");
+            if let Some(existing) = guard.get(&key) {
+                return existing.clone();
+            }
+        }
+
+        self.prune_empty_source_family_buckets(&key).await;
+
         let mut guard = self
             .inner
             .entries
@@ -265,6 +283,7 @@ where
         if let Some(existing) = guard.get(&key) {
             return existing.clone();
         }
+
         let max_bytes = self
             .inner
             .per_source_max_bytes
@@ -276,14 +295,18 @@ where
         cache
     }
 
-    async fn prune_empty_buckets(&self, keep: &CacheBucketKey) {
+    async fn prune_empty_source_family_buckets(&self, keep: &CacheBucketKey) {
         let buckets = {
             let guard = self
                 .inner
                 .entries
                 .lock()
                 .expect("cache registry mutex poisoned");
-            guard.values().cloned().collect::<Vec<_>>()
+            guard
+                .iter()
+                .filter(|(key, _bucket)| key.same_source_family(keep))
+                .map(|(_key, bucket)| bucket.clone())
+                .collect::<Vec<_>>()
         };
         for bucket in &buckets {
             bucket.run_pending_tasks().await;
@@ -297,6 +320,7 @@ where
             .expect("cache registry mutex poisoned");
         guard.retain(|key, bucket| {
             key == keep
+                || !key.same_source_family(keep)
                 || bucket.has_external_refs()
                 || bucket.entry_count() > 0
                 || bucket.weighted_size() > 0

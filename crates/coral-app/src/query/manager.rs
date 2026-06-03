@@ -318,12 +318,8 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
-        extensions
-            .cache_namespace
-            .get_or_insert_with(|| workspace_name.as_str().to_string());
-        if extensions.http_cache_registry.is_none() {
-            extensions.http_cache_registry = self.http_cache_registry.as_ref().map(Arc::clone);
-        }
+        extensions.cache_namespace = Some(workspace_name.as_str().to_string());
+        extensions.http_cache_registry = self.http_cache_registry.as_ref().map(Arc::clone);
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
@@ -592,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_preserves_provider_owned_cache_extensions() {
+    fn runtime_config_uses_app_owned_cache_extensions() {
         let provider_registry = Arc::new(HttpCacheRegistry::new());
         let fixture = query_manager_with(
             QueryRuntimeContext::default(),
@@ -607,14 +603,49 @@ mod tests {
 
         assert_eq!(
             runtime.extensions.cache_namespace.as_deref(),
-            Some("provider-namespace")
+            Some(WorkspaceName::default().as_str())
         );
         let runtime_registry = runtime
             .extensions
             .http_cache_registry
             .as_ref()
-            .expect("provider registry should be preserved");
-        assert!(Arc::ptr_eq(runtime_registry, &provider_registry));
+            .expect("app registry should be installed");
+        assert!(!Arc::ptr_eq(runtime_registry, &provider_registry));
+    }
+
+    #[test]
+    fn runtime_config_cache_disabled_overrides_provider_registry() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout should be created");
+        std::fs::write(
+            layout.config_file(),
+            r"
+[http_cache]
+enabled = false
+",
+        )
+        .expect("config should be written");
+        let provider_registry = Arc::new(HttpCacheRegistry::new());
+        let manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            QueryRuntimeContext::default(),
+            layout,
+            vec![Arc::new(CacheOverrideProvider {
+                registry: provider_registry,
+            })],
+        )
+        .expect("query manager should build");
+
+        let runtime = manager.runtime_config(&WorkspaceName::default(), &[]);
+
+        assert_eq!(
+            runtime.extensions.cache_namespace.as_deref(),
+            Some(WorkspaceName::default().as_str())
+        );
+        assert!(runtime.extensions.http_cache_registry.is_none());
     }
 
     #[test]

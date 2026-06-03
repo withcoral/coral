@@ -234,35 +234,12 @@ fn validate_cache_policy(
 }
 
 fn validate_cache_vary_header_name(header: &str) -> crate::Result<()> {
-    if header.is_empty() || !header.bytes().all(is_http_token_byte) {
-        return Err(crate::ManifestError::validation(format!(
-            "invalid cache vary header name '{header}'"
-        )));
-    }
+    http::header::HeaderName::from_bytes(header.as_bytes()).map_err(|error| {
+        crate::ManifestError::validation(format!(
+            "invalid cache vary header name '{header}': {error}"
+        ))
+    })?;
     Ok(())
-}
-
-fn is_http_token_byte(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'!' | b'#'
-            | b'$'
-            | b'%'
-            | b'&'
-            | b'\''
-            | b'*'
-            | b'+'
-            | b'-'
-            | b'.'
-            | b'^'
-            | b'_'
-            | b'`'
-            | b'|'
-            | b'~'
-            | b'0'..=b'9'
-            | b'A'..=b'Z'
-            | b'a'..=b'z'
-    )
 }
 
 /// Validated top-level manifest for an HTTP-backed source.
