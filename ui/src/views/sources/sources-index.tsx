@@ -131,14 +131,10 @@ export function SourcesIndex() {
     }
   }
 
-  const onInstalled = useCallback(
-    (name: string) => {
-      setInstallingName(null)
-      void refresh()
-      setDetailName(name)
-    },
-    [refresh],
-  )
+  const onInstalled = useCallback(() => {
+    setInstallingName(null)
+    void refresh()
+  }, [refresh])
 
   const onRemoved = useCallback(() => {
     setDetailName(null)

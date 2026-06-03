@@ -232,6 +232,15 @@ const installedLinear: Source = create(SourceSchema, {
   secrets: [create(SourceSecretSchema, { key: 'LINEAR_API_TOKEN', value: '' })],
 })
 
+const installedImportedMissingInfo: Source = create(SourceSchema, {
+  name: 'custom_source',
+  version: '',
+  origin: SourceOrigin.IMPORTED,
+  credentialStorage: SourceCredentialStorage.FILE,
+  variables: [create(SourceVariableSchema, { key: 'CUSTOM_API_BASE', value: 'https://api.test' })],
+  secrets: [create(SourceSecretSchema, { key: 'CUSTOM_TOKEN', value: '' })],
+})
+
 export const initialInstalledSources: Source[] = [installedCloudwatchLogs, installedGithub]
 
 export const discoverInitialResponse = create(DiscoverSourcesResponseSchema, {
@@ -254,12 +263,20 @@ export const listEmptyResponse = create(ListSourcesResponseSchema, {
   sources: [],
 })
 
+export const listMissingInfoResponse = create(ListSourcesResponseSchema, {
+  sources: [installedImportedMissingInfo],
+})
+
 export const listAfterGithubOauthResponse = create(ListSourcesResponseSchema, {
   sources: [installedBundledGithub],
 })
 
 export const discoverGithubOauthResponse = create(DiscoverSourcesResponseSchema, {
   sources: [githubOauthCatalogInfo],
+})
+
+export const discoverEmptyResponse = create(DiscoverSourcesResponseSchema, {
+  sources: [],
 })
 
 export const listAfterLinearInstallResponse = create(ListSourcesResponseSchema, {
@@ -285,6 +302,9 @@ export const getInstalledCloudwatchLogsResponse = create(GetSourceResponseSchema
 })
 export const getInstalledLinearResponse = create(GetSourceResponseSchema, {
   source: installedLinear,
+})
+export const getInstalledMissingInfoResponse = create(GetSourceResponseSchema, {
+  source: installedImportedMissingInfo,
 })
 
 export const createLinearResponse = create(CreateBundledSourceResponseSchema, {

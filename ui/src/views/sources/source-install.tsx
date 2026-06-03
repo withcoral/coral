@@ -23,7 +23,7 @@ import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
   createBundledSourceWithOAuth,
-  getBundledSourceInfo,
+  getSourceInfo,
   type InstallInput,
   type ResolvedSourceInfo,
 } from '@/lib/sources'
@@ -95,7 +95,7 @@ function SourceInstallDialogContent({
 
   useEffect(() => {
     let cancelled = false
-    getBundledSourceInfo(name)
+    getSourceInfo(name)
       .then((info) => !cancelled && setResolved(info))
       .catch((e) => !cancelled && setLoadError(e instanceof Error ? e.message : String(e)))
     return () => {

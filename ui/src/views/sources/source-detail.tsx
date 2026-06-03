@@ -15,8 +15,8 @@ import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
   deleteSource,
-  getBundledSourceInfo,
   getInstalledSource,
+  getSourceInfo,
   originLabel,
   type InstallInput,
   type SourceOriginLabel,
@@ -25,6 +25,9 @@ import {
 import * as styles from './source-detail.css'
 
 const SECRET_PLACEHOLDER = '••••••••'
+
+const IMPORTED_EDIT_NOTICE =
+  "Imported sources can't be edited here yet — re-import the source spec to change its credentials."
 
 export function SourceDetailDialog({
   name,
@@ -74,19 +77,25 @@ function SourceDetailDialogContent({
   const [saving, setSaving] = useState(false)
 
   const refresh = useCallback(async () => {
-    try {
-      const installed = await getInstalledSource(name)
-      const info =
-        originLabel(installed.origin) === 'bundled' ? (await getBundledSourceInfo(name)).info : null
-      setSource(installed)
-      setSourceInfo(info)
-      setDrafts({})
-      setLoadError(null)
-    } catch (e) {
+    // getSourceInfo no longer depends on the installed origin, so fetch both in
+    // parallel. Source info is best-effort (imported sources may not have it).
+    const [installedResult, infoResult] = await Promise.allSettled([
+      getInstalledSource(name),
+      getSourceInfo(name),
+    ])
+
+    if (installedResult.status === 'rejected') {
+      const reason = installedResult.reason
       setSource(null)
       setSourceInfo(null)
-      setLoadError(e instanceof Error ? e.message : String(e))
+      setLoadError(reason instanceof Error ? reason.message : String(reason))
+      return
     }
+
+    setSource(installedResult.value)
+    setSourceInfo(infoResult.status === 'fulfilled' ? infoResult.value.info : null)
+    setDrafts({})
+    setLoadError(null)
   }, [name])
 
   useEffect(() => {
@@ -179,8 +188,8 @@ function SourceDetailDialogContent({
         }
       }
       await createBundledSource(name, bindings)
+      onClose()
       addToast('success', { title: `Updated ${name}` })
-      await refresh()
     } catch (e) {
       addToast('error', { title: e instanceof Error ? e.message : String(e) })
     } finally {
@@ -229,6 +238,7 @@ function SourceDetailDialogContent({
         <SourceInfoBindings
           disabled={!editable || saving}
           drafts={drafts}
+          editable={editable}
           onSecretBlur={(key) => {
             const draftKey = `sec:${key}`
             if (drafts[draftKey] !== '') return
@@ -339,10 +349,7 @@ function FallbackBindings({
     <section className={styles.section}>
       <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
       {!editable ? (
-        <Typography.BodySmall variant="tertiary">
-          Imported sources can't be edited here yet — re-import the source spec to change its
-          credentials.
-        </Typography.BodySmall>
+        <Typography.BodySmall variant="tertiary">{IMPORTED_EDIT_NOTICE}</Typography.BodySmall>
       ) : null}
       <div className={styles.fieldGroup}>
         {source.variables.map((v) => {
@@ -382,6 +389,7 @@ function FallbackBindings({
 function SourceInfoBindings({
   disabled,
   drafts,
+  editable,
   onSecretBlur,
   onSecretFocus,
   onValueChange,
@@ -390,6 +398,7 @@ function SourceInfoBindings({
 }: {
   disabled: boolean
   drafts: Record<string, string>
+  editable: boolean
   onSecretBlur: (key: string) => void
   onSecretFocus: (key: string) => void
   onValueChange: (key: string, value: string, secret: boolean) => void
@@ -411,6 +420,9 @@ function SourceInfoBindings({
   return (
     <section className={styles.section}>
       <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+      {!editable ? (
+        <Typography.BodySmall variant="tertiary">{IMPORTED_EDIT_NOTICE}</Typography.BodySmall>
+      ) : null}
       <div className={styles.fieldGroup}>
         {sourceInfo.inputs.map((input) => (
           <SourceInfoInputRow

@@ -76,7 +76,7 @@ export async function discoverBundled(): Promise<CatalogEntry[]> {
   return resp.sources.map(toCatalogEntry)
 }
 
-export async function getBundledSourceInfo(name: string): Promise<ResolvedSourceInfo> {
+export async function getSourceInfo(name: string): Promise<ResolvedSourceInfo> {
   const resp = await sourceClient.getSourceInfo(
     create(GetSourceInfoRequestSchema, { workspace: WORKSPACE, name }),
   )

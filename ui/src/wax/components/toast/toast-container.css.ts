@@ -1,6 +1,10 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 
-export const toastContainer = style({})
+import { zIndex } from '@/wax/theme/theme.css'
+
+export const toastContainer = style({
+  zIndex: zIndex.notification,
+})
 
 // Override react-toastify default styles to use our custom toast styling
 globalStyle(`${toastContainer} .Toastify__toast`, {
