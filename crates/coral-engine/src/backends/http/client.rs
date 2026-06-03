@@ -9,7 +9,7 @@ use opentelemetry::Context as OtelContext;
 use serde_json::Value;
 
 use crate::backends::BackendRegistrationContext;
-use crate::backends::http::fetch::fetch_rows;
+use crate::backends::http::fetch::{FetchCompleteness, fetch_rows};
 use crate::backends::http::filter_usage::{HttpRequestFilterUsage, http_request_filter_names};
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
@@ -210,6 +210,7 @@ impl HttpSourceClient {
             arg_values,
             sql_limit.or(target.fetch_limit_default()),
             sql_limit,
+            FetchCompleteness::Default,
         )
         .await
     }
@@ -229,6 +230,7 @@ impl HttpSourceClient {
             arg_values,
             row_limit,
             page_hint,
+            FetchCompleteness::Complete,
         )
         .await
     }

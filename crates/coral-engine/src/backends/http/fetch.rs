@@ -30,6 +30,12 @@ struct FetchLimits {
     max_search_calls: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FetchCompleteness {
+    Default,
+    Complete,
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
@@ -41,9 +47,10 @@ pub(super) async fn fetch_rows(
     arg_values: &HashMap<String, String>,
     row_limit: Option<usize>,
     page_hint: Option<usize>,
+    completeness: FetchCompleteness,
 ) -> Result<Vec<Value>> {
     let mut all_rows = Vec::new();
-    let limits = resolve_fetch_limits(target, row_limit, page_hint);
+    let limits = resolve_fetch_limits(target, row_limit, page_hint, completeness);
     let pagination = target
         .pagination()
         .validated(&client.source_schema, target.name())
@@ -272,6 +279,7 @@ fn resolve_fetch_limits(
     target: &HttpFetchTarget,
     row_limit: Option<usize>,
     page_hint: Option<usize>,
+    completeness: FetchCompleteness,
 ) -> FetchLimits {
     let Some(search_limits) = target.search_limits() else {
         return FetchLimits {
@@ -281,16 +289,23 @@ fn resolve_fetch_limits(
         };
     };
 
-    let requested_top_k = page_hint.unwrap_or(search_limits.default_top_k);
+    let default_top_k = match completeness {
+        FetchCompleteness::Default => search_limits.default_top_k,
+        FetchCompleteness::Complete => search_limits.max_top_k,
+    };
+    let requested_top_k = page_hint.unwrap_or(default_top_k);
     let requested_top_k = row_limit.map_or(requested_top_k, |limit| requested_top_k.min(limit));
     let max_candidates = search_limits
         .max_top_k
         .saturating_mul(search_limits.max_calls_per_query);
+    let effective_limit = match (row_limit, completeness) {
+        (Some(limit), _) => Some(limit),
+        (None, FetchCompleteness::Default) => Some(requested_top_k),
+        (None, FetchCompleteness::Complete) => Some(max_candidates),
+    };
 
     FetchLimits {
-        effective_limit: row_limit
-            .or(Some(requested_top_k))
-            .map(|limit| limit.min(max_candidates)),
+        effective_limit: effective_limit.map(|limit| limit.min(max_candidates)),
         page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
         max_search_calls: Some(search_limits.max_calls_per_query),
     }

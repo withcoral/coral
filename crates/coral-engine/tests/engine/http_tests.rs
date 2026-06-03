@@ -861,6 +861,97 @@ async fn unconsumed_like_filter_is_applied_before_limit() {
 }
 
 #[tokio::test]
+async fn complete_search_fetch_preserves_candidates_for_residual_filters() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/users"))
+        .and(query_param("q", "needle"))
+        .and(query_param("per_page", "2"))
+        .and(query_param_is_missing("state"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "title": "First", "state": "closed", "q": "needle" },
+                { "title": "Second", "state": "closed", "q": "needle" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/users"))
+        .and(query_param("q", "needle"))
+        .and(query_param("per_page", "3"))
+        .and(query_param_is_missing("state"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "title": "First", "state": "closed", "q": "needle" },
+                { "title": "Second", "state": "closed", "q": "needle" },
+                { "title": "Third", "state": "open", "q": "needle" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_search_complete",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP search users",
+            "search_limits": {
+                "default_top_k": 2,
+                "max_top_k": 3,
+                "max_calls_per_query": 1
+            },
+            "filters": [
+                { "name": "q", "mode": "search" },
+                { "name": "state" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/users",
+                "query": [
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "pagination": {
+                "page_size": {
+                    "default": 50,
+                    "max": 50,
+                    "query_param": "per_page"
+                }
+            },
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" },
+                { "name": "q", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title, state FROM http_search_complete.users \
+             WHERE q LIKE '%needle%' AND state = 'open'",
+        )
+        .await
+        .expect("complete search fetch should preserve candidates for local filtering"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Third", "state": "open" })]);
+}
+
+#[tokio::test]
 async fn internal_table_function_builds_http_search_request() {
     let function_name = internal_table_function_name("search", "search_issues");
     assert_search_function_query(&format!(
