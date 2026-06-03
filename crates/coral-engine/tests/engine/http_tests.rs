@@ -2242,11 +2242,12 @@ async fn cache_coalesces_concurrent_scans_in_same_query() {
         .await;
 
     let source = build_source(cached_http_manifest("http_cache_coalesce", &server.uri()));
+    let registry = Arc::new(HttpCacheRegistry::new());
 
     let _ = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
-            test_runtime(),
+            runtime_with_cache_registry(registry),
             "SELECT id FROM http_cache_coalesce.users \
              UNION ALL \
              SELECT id FROM http_cache_coalesce.users",
