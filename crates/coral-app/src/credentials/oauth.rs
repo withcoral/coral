@@ -155,6 +155,7 @@ struct OAuthRefreshConfig {
     client_secret: Option<String>,
     client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
     refresh_token: String,
+    access_token_scheme: OAuthAccessTokenScheme,
 }
 
 impl OAuthCredentialService {
@@ -322,7 +323,7 @@ impl OAuthCredentialService {
         apply_refreshed_token(
             request.access_token_material_key,
             request.metadata_prefix.as_str(),
-            request.oauth.access_token_scheme,
+            refresh.access_token_scheme,
             credential_material,
             &token,
         );
@@ -1255,6 +1256,10 @@ fn oauth_credential_material(
     if let Some(scope) = token.scope.as_deref() {
         internal_metadata.insert(format!("{prefix}scope"), scope.to_string());
     }
+    internal_metadata.insert(
+        format!("{prefix}access_token_scheme"),
+        session.oauth.access_token_scheme.label().to_string(),
+    );
     internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
     internal_metadata.insert(
         format!("{prefix}token_url"),
@@ -1365,12 +1370,24 @@ fn oauth_refresh_config(
             "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client secret metadata is missing"
         )));
     }
+    let access_token_scheme = material
+        .get(&format!("{metadata_prefix}access_token_scheme"))
+        .map(|value| {
+            OAuthAccessTokenScheme::from_label(value).ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "stored OAuth access token scheme for source secret '{access_token_material_key}' is invalid: {value}"
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or(oauth.access_token_scheme);
     Ok(Some(OAuthRefreshConfig {
         token_url,
         client_id,
         client_secret,
         client_secret_transport,
         refresh_token,
+        access_token_scheme,
     }))
 }
 
@@ -1386,6 +1403,10 @@ fn apply_refreshed_token(
         access_token_scheme.apply(&token.access_token),
     );
     material.insert(format!("{metadata_prefix}method"), "oauth".to_string());
+    material.insert(
+        format!("{metadata_prefix}access_token_scheme"),
+        access_token_scheme.label().to_string(),
+    );
     match token.expires_at {
         Some(expires_at) => {
             material.insert(

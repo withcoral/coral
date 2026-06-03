@@ -82,6 +82,65 @@ async fn query_refreshes_expired_oauth_access_token_at_request_time() {
 }
 
 #[tokio::test]
+async fn query_refresh_uses_stored_access_token_scheme_for_selected_oauth_method() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            bearer_from_input_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "Bearer expired-token".to_string(),
+            }],
+        )
+        .await;
+
+    let secret_path =
+        source_dir(harness.config_dir(), "bearer_refresh_messages").join("secrets.env");
+    let prefix = oauth_metadata_prefix("API_TOKEN");
+    fs::write(
+        &secret_path,
+        format!(
+            "\
+API_TOKEN=Bearer expired-token
+{prefix}method=oauth
+{prefix}access_token_scheme=bearer
+{prefix}access_token_expires_at={}
+{prefix}refresh_token=stored-refresh-token
+{prefix}client_id=stored-client
+{prefix}token_url={}
+",
+            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            fixture.token_url,
+        ),
+    )
+    .expect("seed bearer oauth material");
+
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM bearer_refresh_messages.messages")
+        .await;
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        fixture.message_authorizations(),
+        vec!["Bearer refreshed-token".to_string()]
+    );
+    let material = fs::read_to_string(secret_path).expect("read refreshed material");
+    assert!(
+        material.contains("API_TOKEN=\"Bearer refreshed-token\""),
+        "{material}"
+    );
+    assert!(
+        material.contains(&format!("{prefix}access_token_scheme=bearer")),
+        "{material}"
+    );
+}
+
+#[tokio::test]
 async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
@@ -603,6 +662,87 @@ fn oauth_refresh_manifest_yaml(base_url: &str, token_url: &str) -> String {
         "tables": [{
             "name": "messages",
             "description": "Messages behind an OAuth access token",
+            "request": {
+                "method": "GET",
+                "path": "/messages",
+            },
+            "response": {
+                "rows_path": ["data"],
+            },
+            "columns": [
+                {"name": "id", "type": "Utf8"},
+            ],
+        }],
+    }))
+    .expect("serialize manifest")
+}
+
+fn bearer_from_input_refresh_manifest_yaml(base_url: &str, token_url: &str) -> String {
+    serde_yaml::to_string(&json!({
+        "name": "bearer_refresh_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "inputs": {
+            "API_BASE": { "kind": "variable" },
+            "API_TOKEN": {
+                "kind": "secret",
+                "credential": {
+                    "methods": [
+                        {
+                            "type": "oauth",
+                            "oauth": {
+                                "flow": {
+                                    "type": "authorization_code",
+                                    "pkce": "disabled",
+                                },
+                                "redirect_uri": "http://127.0.0.1:53682/oauth/callback",
+                                "redirect_uri_port_mode": "fixed",
+                                "endpoints": {
+                                    "authorization_url": "https://provider.example.test/oauth/authorize",
+                                    "token_url": token_url,
+                                },
+                                "client": {
+                                    "id": { "default": "raw-client" },
+                                },
+                                "access_token_scheme": "raw",
+                            },
+                        },
+                        {
+                            "type": "oauth",
+                            "oauth": {
+                                "flow": {
+                                    "type": "authorization_code",
+                                    "pkce": "disabled",
+                                },
+                                "redirect_uri": "http://127.0.0.1:53682/oauth/callback",
+                                "redirect_uri_port_mode": "fixed",
+                                "endpoints": {
+                                    "authorization_url": "https://provider.example.test/oauth/authorize",
+                                    "token_url": token_url,
+                                },
+                                "client": {
+                                    "id": { "default": "bearer-client" },
+                                },
+                                "access_token_scheme": "bearer",
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+        "base_url": base_url,
+        "auth": {
+            "type": "HeaderAuth",
+            "headers": [{
+                "name": "Authorization",
+                "from": "input",
+                "key": "API_TOKEN",
+            }],
+        },
+        "tables": [{
+            "name": "messages",
+            "description": "Messages behind a stored bearer OAuth access token",
             "request": {
                 "method": "GET",
                 "path": "/messages",

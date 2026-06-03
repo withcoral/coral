@@ -1209,10 +1209,13 @@ machine running Coral directly.
 
 ### Inspecting configured inputs
 
-OAuth stores the token response `access_token` as the source secret value. If a
-runtime auth header needs a bearer value, use `from: bearer` with that input
-key. If the source also accepts a full pasted API-key header, wrap the API-key
-input and OAuth bearer input in `from: one_of`.
+By default, OAuth stores the token response `access_token` as the source secret
+value. If that raw token must be sent as `Authorization: Bearer <token>`, use
+`from: bearer` with that input key. If one secret must support both pasted raw
+API-key headers and OAuth bearer tokens, set `access_token_scheme: bearer` on
+the OAuth method and send the secret with `from: input`. Use separate optional
+secrets plus `from: one_of` only when the provider really has separate stored
+credential slots.
 
 At runtime, installed source inputs are also surfaced through `coral.inputs`.
 This is useful when agents or scripts need to inspect non-secret source config

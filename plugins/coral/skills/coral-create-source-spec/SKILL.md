@@ -254,27 +254,40 @@ auth:
       key: FOOBAR_API_TOKEN
 ```
 
-When a provider accepts either a full pasted API-key header or an OAuth access token, declare both credential inputs as optional secrets, then use `from: one_of`. Coral tries the values in order and uses the first configured one, so put the credential users should prefer first:
+When a provider accepts either a full pasted API-key header or an OAuth access token, prefer one secret with both credential methods. Set `access_token_scheme: bearer` on the OAuth method, then send the stored secret verbatim with `from: input`; pasted API keys stay raw while OAuth-retrieved tokens are stored as `Bearer <token>`:
 
 ```yaml
 inputs:
-  FOOBAR_API_KEY:
+  FOOBAR_API_KEY_OR_TOKEN:
     kind: secret
-    required: false
-  FOOBAR_OAUTH_ACCESS_TOKEN:
-    kind: secret
-    required: false
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Foobar
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://foobar.example.com/oauth/authorize
+              token_url: https://foobar.example.com/oauth/token
+            client:
+              id:
+                input: FOOBAR_OAUTH_CLIENT_ID
+            access_token_scheme: bearer
+        - type: source_config
+          label: Paste API key
 auth:
   type: HeaderAuth
   headers:
     - name: Authorization
-      from: one_of
-      values:
-        - from: bearer
-          key: FOOBAR_OAUTH_ACCESS_TOKEN
-        - from: input
-          key: FOOBAR_API_KEY
+      from: input
+      key: FOOBAR_API_KEY_OR_TOKEN
 ```
+
+Reserve separate optional secrets plus `from: one_of` for providers with genuinely separate stored credential slots or different runtime locations.
 
 ## Local Data Sources
 

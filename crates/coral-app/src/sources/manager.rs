@@ -2808,6 +2808,12 @@ tables:
             material.get("API_TOKEN").map(String::as_str),
             Some("Bearer access-token")
         );
+        assert_eq!(
+            material
+                .get("__coral_oauth.QVBJX1RPS0VO.access_token_scheme")
+                .map(String::as_str),
+            Some("bearer")
+        );
     }
 
     #[tokio::test]

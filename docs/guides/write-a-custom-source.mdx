@@ -261,19 +261,41 @@ auth:
       key: DEMO_API_TOKEN
 ```
 
-When an API supports either a complete pasted API-key header or an OAuth access
-token, declare both credential inputs as optional secrets, then use
-`from: one_of` and put the pasted header first, followed by a `from: bearer`
-fallback for the raw OAuth token.
+When one secret needs to support either a complete pasted API-key header or an
+OAuth access token, set `access_token_scheme: bearer` on the OAuth method and
+send the stored secret with `from: input`. Coral stores OAuth-retrieved tokens
+as `Bearer <token>` while leaving pasted `source_config` values unchanged. Use
+separate optional secrets with `from: one_of` only when the provider really has
+separate stored credential slots or different runtime auth locations.
 
 ```yaml
 inputs:
-  DEMO_API_KEY:
+  DEMO_AUTH:
     kind: secret
-    required: false
-  DEMO_OAUTH_ACCESS_TOKEN:
-    kind: secret
-    required: false
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://demo.example.com/oauth/authorize
+              token_url: https://demo.example.com/oauth/token
+            client:
+              id:
+                input: DEMO_OAUTH_CLIENT_ID
+            access_token_scheme: bearer
+        - type: source_config
+          label: Paste API key header
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: input
+      key: DEMO_AUTH
 ```
 
 ### OAuth client and redirect options
