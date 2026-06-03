@@ -8,8 +8,8 @@ use crate::{
     ParsedTemplate, RequestSpec, Result, TableFunctionArgSpec,
 };
 
-use super::derive::{pagination_owns_input, pagination_query_param_names};
 use super::model::{Projection, SqlInputExposure};
+use super::pagination::{pagination_owns_input, pagination_query_param_names};
 
 pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
     let pagination_query_params = pagination_query_param_names(&projection.pagination);

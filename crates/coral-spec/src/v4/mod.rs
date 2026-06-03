@@ -7,14 +7,14 @@ pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 1;
 pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v2";
 pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v3";
 
-pub(crate) mod artifacts;
-pub(crate) mod diagnostics;
-pub(crate) mod ir;
-pub(crate) mod manifest;
-pub(crate) mod naming;
-pub(crate) mod projections;
+mod artifacts;
+mod diagnostics;
+mod ir;
+mod manifest;
+mod naming;
+mod projections;
 mod schema;
-pub(crate) mod surfaces;
+mod surfaces;
 
 #[cfg(test)]
 mod manifest_tests;
@@ -48,7 +48,7 @@ pub use projections::{
     request_spec_for_projection,
 };
 pub use schema::generated_v4_source_manifest_schema;
-pub use surfaces::openapi::{
+pub use surfaces::{
     OpenApiDocumentMetadata, import_openapi_surface, normalize_source_document,
     openapi_document_metadata,
 };

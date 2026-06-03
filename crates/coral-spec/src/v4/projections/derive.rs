@@ -8,7 +8,7 @@ use crate::v4::ir::{
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
 use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-use crate::{ManifestDataType, PaginationSpec, Result, SearchLimitsSpec, SourceTableFunctionKind};
+use crate::{ManifestDataType, Result, SearchLimitsSpec, SourceTableFunctionKind};
 
 use super::model::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
@@ -17,6 +17,7 @@ use super::model::{
 use super::names::{
     is_search_operation, projection_guide, projection_name, resolve_projection_name_collisions,
 };
+use super::pagination::pagination_query_param_names;
 
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
@@ -160,32 +161,6 @@ fn projection_input_sql_exposure(
     (exposure, pagination_owned_query_input)
 }
 
-pub(super) fn pagination_query_param_names(pagination: &PaginationSpec) -> HashSet<&str> {
-    let mut names = HashSet::new();
-    if let Some(name) = pagination.page_param.as_deref() {
-        names.insert(name);
-    }
-    if let Some(name) = pagination.offset_param.as_deref() {
-        names.insert(name);
-    }
-    if let Some(name) = pagination.cursor_param.as_deref() {
-        names.insert(name);
-    }
-    if let Some(page_size) = &pagination.page_size
-        && let Some(name) = page_size.query_param.as_deref()
-    {
-        names.insert(name);
-    }
-    names
-}
-
-pub(super) fn pagination_owns_input(
-    input: &ProjectionInput,
-    pagination_query_params: &HashSet<&str>,
-) -> bool {
-    input.source_location == OpenApiParameterLocation::Query
-        && pagination_query_params.contains(input.wire_name.as_str())
-}
 fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
     let type_by_id = ir
         .types

@@ -1,6 +1,7 @@
 mod derive;
 mod model;
 mod names;
+mod pagination;
 mod runtime;
 
 pub use derive::generate_projection_catalog;
