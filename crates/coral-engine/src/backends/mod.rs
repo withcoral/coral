@@ -67,9 +67,11 @@
 //!   hands a `ListingTableConfig` to `DataFusion`. No transport / fetch /
 //!   response files because `DataFusion` owns those layers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash as _, Hasher as _};
 use std::sync::Arc;
 
+use crate::backends::shared::cache::hash_cache_bytes;
 use crate::{
     CoreError, QuerySource, RequestAuthenticator, RuntimeSourceComponent, SourceInputResolver,
 };
@@ -96,6 +98,7 @@ pub(crate) fn compile_query_source(
     runtime_context: &crate::QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    cache_namespace: Option<String>,
     http_cache_registry: Option<Arc<crate::backends::http::cache::HttpCacheRegistry>>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     if source.components().is_empty() {
@@ -111,6 +114,8 @@ pub(crate) fn compile_query_source(
         source_variables: source.variables().clone(),
         request_authenticators,
         source_input_resolver,
+        cache_namespace: cache_namespace.unwrap_or_else(|| "default".to_string()),
+        source_input_fingerprint: source_input_fingerprint(source),
         http_cache_registry,
     };
     let compiled_components = source
@@ -122,6 +127,21 @@ pub(crate) fn compile_query_source(
         source.source_name().to_string(),
         compiled_components,
     ))
+}
+
+fn source_input_fingerprint(source: &QuerySource) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for (key, value) in source.variables() {
+        "variable".hash(&mut hasher);
+        key.hash(&mut hasher);
+        hash_cache_bytes(value.as_bytes()).hash(&mut hasher);
+    }
+    for (key, value) in source.secrets() {
+        "secret".hash(&mut hasher);
+        key.hash(&mut hasher);
+        hash_cache_bytes(value.as_bytes()).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn compile_component(
@@ -157,6 +177,8 @@ pub(crate) fn compile_source_manifest(
             source_variables,
             request_authenticators: &request_authenticators,
             source_input_resolver: None,
+            cache_namespace: "default".to_string(),
+            source_input_fingerprint: source_input_fingerprint(&source),
             http_cache_registry: None,
         },
     )

@@ -318,6 +318,7 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
+        extensions.cache_namespace = Some(workspace_name.as_str().to_string());
         extensions.http_cache_registry = self.http_cache_registry.as_ref().map(Arc::clone);
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
@@ -566,6 +567,10 @@ mod tests {
             .body_capture_max_bytes
             .expect("body capture config");
         assert_eq!(config, 42);
+        assert_eq!(
+            runtime.extensions.cache_namespace.as_deref(),
+            Some(WorkspaceName::default().as_str())
+        );
     }
 
     #[test]

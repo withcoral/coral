@@ -28,6 +28,9 @@ pub struct EngineExtensions {
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
     pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    /// App-owned namespace for backend caches. Apps should scope this to the
+    /// workspace or tenant boundary.
+    pub cache_namespace: Option<String>,
     /// Caller-owned HTTP cache registry; `None` disables HTTP response caching.
     pub http_cache_registry: Option<Arc<HttpCacheRegistry>>,
 }

@@ -176,6 +176,7 @@ pub(crate) fn engine_extensions_for_providers(
             query_result_observers,
             request_authenticators,
             source_input_resolver,
+            cache_namespace,
             http_cache_registry,
         } = extra;
         merged.source_decorators.extend(source_decorators);
@@ -183,6 +184,9 @@ pub(crate) fn engine_extensions_for_providers(
         merged.request_authenticators.extend(request_authenticators);
         if source_input_resolver.is_some() {
             merged.source_input_resolver = source_input_resolver;
+        }
+        if cache_namespace.is_some() {
+            merged.cache_namespace = cache_namespace;
         }
         if http_cache_registry.is_some() {
             merged.http_cache_registry = http_cache_registry;
