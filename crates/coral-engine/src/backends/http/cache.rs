@@ -111,8 +111,8 @@ impl HttpCacheRegistry {
     /// weighted size within `total_max_bytes`? Returns `true` if no ceiling is
     /// configured.
     #[cfg(test)]
-    pub(crate) fn try_admit(&self, incoming_bytes: u64) -> bool {
-        self.inner.try_admit(incoming_bytes)
+    pub(crate) async fn try_admit(&self, incoming_bytes: u64) -> bool {
+        self.inner.try_admit(incoming_bytes).await
     }
 
     #[cfg(test)]
@@ -479,10 +479,10 @@ mod tests {
         assert_eq!(estimated, serialized.len());
     }
 
-    #[test]
-    fn registry_with_no_ceiling_admits_anything() {
+    #[tokio::test]
+    async fn registry_with_no_ceiling_admits_anything() {
         let registry = HttpCacheRegistry::with_policy(1024, None, HashMap::new());
-        assert!(registry.try_admit(1024 * 1024));
+        assert!(registry.try_admit(1024 * 1024).await);
     }
 
     #[tokio::test]
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(large.weighted_size(), 0);
         let zero_ceiling = HttpCacheRegistry::with_policy(64, Some(0), HashMap::new());
         let _ = zero_ceiling.get_or_create("default", "s", "0").await;
-        assert!(!zero_ceiling.try_admit(1));
+        assert!(!zero_ceiling.try_admit(1).await);
     }
 
     #[tokio::test]
@@ -521,5 +521,33 @@ mod tests {
             .await;
 
         assert_eq!(registry.bucket_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn admission_ignores_expired_entries_from_other_sources() {
+        let registry = HttpCacheRegistry::with_policy(64, Some(1), HashMap::new());
+        let expired_source = registry
+            .get_or_create("default", "expired_source", "0.1.0")
+            .await;
+        expired_source
+            .put(
+                "expired".to_string(),
+                HttpCacheEntry {
+                    payload: json!({"stale": true}),
+                    next_url: None,
+                    ttl: Duration::from_millis(1),
+                    estimated_bytes: 1,
+                },
+            )
+            .await;
+        assert_eq!(expired_source.weighted_size(), 1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let fresh_source = registry
+            .get_or_create("default", "fresh_source", "0.1.0")
+            .await;
+
+        assert!(fresh_source.try_admit(1).await);
+        assert_eq!(expired_source.weighted_size(), 0);
     }
 }

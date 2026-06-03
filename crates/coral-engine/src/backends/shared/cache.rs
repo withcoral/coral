@@ -1,6 +1,6 @@
 //! Shared in-memory cache primitives for backend-owned response caches.
 
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash as _, Hasher as _};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
@@ -107,6 +107,9 @@ where
     V: CacheValue,
 {
     inner: Arc<Cache<String, V>>,
+    // Moka can report an expired key as a miss while its weight remains pending;
+    // this side index lets admission explicitly invalidate those stale entries.
+    known_keys: Arc<Mutex<HashSet<String>>>,
     registry: Option<Weak<CacheRegistryInner<V>>>,
 }
 
@@ -121,6 +124,8 @@ where
     }
 
     fn build(max_bytes: u64, registry: Option<Weak<CacheRegistryInner<V>>>) -> Self {
+        let known_keys = Arc::new(Mutex::new(HashSet::<String>::new()));
+        let listener_keys = Arc::clone(&known_keys);
         let inner = Cache::builder()
             .max_capacity(max_bytes)
             .weigher(|_key: &String, value: &V| {
@@ -132,9 +137,15 @@ where
                 weight
             })
             .expire_after(EntryExpiry::<V>::default())
+            .eviction_listener(move |key, _value, _cause| {
+                if let Ok(mut guard) = listener_keys.lock() {
+                    guard.remove(key.as_str());
+                }
+            })
             .build();
         Self {
             inner: Arc::new(inner),
+            known_keys,
             registry,
         }
     }
@@ -152,21 +163,55 @@ where
         Arc::strong_count(&self.inner) > 1
     }
 
-    async fn run_pending_tasks(&self) {
+    async fn remove_expired_known_entries(&self) {
         self.inner.run_pending_tasks().await;
+
+        let known_keys = self.known_keys();
+        let mut expired_keys = Vec::new();
+        for key in known_keys {
+            if !self.inner.contains_key(&key) {
+                self.inner.invalidate(&key).await;
+                expired_keys.push(key);
+            }
+        }
+        if expired_keys.is_empty() {
+            return;
+        }
+
+        self.inner.run_pending_tasks().await;
+        let mut guard = self.known_keys.lock().expect("cache key mutex poisoned");
+        for key in expired_keys {
+            guard.remove(&key);
+        }
+    }
+
+    fn known_keys(&self) -> Vec<String> {
+        self.known_keys
+            .lock()
+            .expect("cache key mutex poisoned")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    fn remember_key(&self, key: &str) {
+        self.known_keys
+            .lock()
+            .expect("cache key mutex poisoned")
+            .insert(key.to_string());
     }
 
     /// Soft admission check against the parent registry's `total_max_bytes`,
     /// if any. Returns `true` when no registry is attached or no total
     /// ceiling is configured.
-    pub(crate) fn try_admit(&self, incoming_bytes: u64) -> bool {
+    pub(crate) async fn try_admit(&self, incoming_bytes: u64) -> bool {
         let Some(weak) = &self.registry else {
             return true;
         };
         let Some(inner) = weak.upgrade() else {
             return true;
         };
-        CacheRegistry { inner }.try_admit(incoming_bytes)
+        CacheRegistry { inner }.try_admit(incoming_bytes).await
     }
 
     /// Return the cached entry for `key`, or `None` on miss or expiry.
@@ -178,7 +223,9 @@ where
     /// Insert `entry` under `key`.
     #[cfg(test)]
     pub(crate) async fn put(&self, key: String, entry: V) {
-        self.inner.insert(key, entry).await;
+        self.inner.insert(key.clone(), entry).await;
+        self.inner.run_pending_tasks().await;
+        self.remember_key(&key);
     }
 
     /// Single-flight get-or-fetch. Returns `(entry, is_fresh)` where
@@ -198,7 +245,9 @@ where
             .or_try_insert_with(init)
             .await?;
         let is_fresh = entry.is_fresh();
-        Ok((entry.into_value(), is_fresh))
+        let value = entry.into_value();
+        self.remember_key(key);
+        Ok((value, is_fresh))
     }
 }
 
@@ -309,7 +358,7 @@ where
                 .collect::<Vec<_>>()
         };
         for bucket in &buckets {
-            bucket.run_pending_tasks().await;
+            bucket.remove_expired_known_entries().await;
         }
         drop(buckets);
 
@@ -327,13 +376,40 @@ where
         });
     }
 
+    async fn run_pending_tasks_for_all_buckets(&self) {
+        let buckets = {
+            let guard = self
+                .inner
+                .entries
+                .lock()
+                .expect("cache registry mutex poisoned");
+            guard.values().cloned().collect::<Vec<_>>()
+        };
+        for bucket in &buckets {
+            bucket.remove_expired_known_entries().await;
+        }
+    }
+
+    fn prune_empty_buckets(&self) {
+        let mut guard = self
+            .inner
+            .entries
+            .lock()
+            .expect("cache registry mutex poisoned");
+        guard.retain(|_key, bucket| {
+            bucket.has_external_refs() || bucket.entry_count() > 0 || bucket.weighted_size() > 0
+        });
+    }
+
     /// Soft check: would admitting `incoming_bytes` keep the registry's total
     /// weighted size within `total_max_bytes`? Returns `true` if no ceiling is
     /// configured.
-    pub(crate) fn try_admit(&self, incoming_bytes: u64) -> bool {
+    pub(crate) async fn try_admit(&self, incoming_bytes: u64) -> bool {
         let Some(total) = self.inner.total_max_bytes else {
             return true;
         };
+        self.run_pending_tasks_for_all_buckets().await;
+        self.prune_empty_buckets();
         let current = {
             let guard = self
                 .inner

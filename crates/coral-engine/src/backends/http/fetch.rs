@@ -381,7 +381,7 @@ pub(super) async fn fetch_rows(
                         );
                         return Err(FetchSkipped::not_cacheable(payload, next_url));
                     }
-                    if !cache.try_admit(estimated_bytes as u64) {
+                    if !cache.try_admit(estimated_bytes as u64).await {
                         tracing::trace!(
                             source = %source_schema,
                             table = %table_name,
