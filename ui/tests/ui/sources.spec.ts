@@ -1,8 +1,4 @@
-import {
-  sourceLifecycleHandlers,
-  sourceMissingInfoHandlers,
-  sourceOAuthInstallHandlers,
-} from './support/source-handlers'
+import { sourceLifecycleHandlers, sourceOAuthInstallHandlers } from './support/source-handlers'
 import { expect, test } from './playwright.setup'
 
 test('lists core sources by category, searches, and shows configured status', async ({
@@ -169,7 +165,7 @@ test('imported installed source detail uses effective source info', async ({
 
   await review.chapter(
     'Open an imported installed source',
-    'GitHub uses source info metadata even though the installed origin is imported',
+    'GitHub is configured as an imported source; discovery resolves its effective metadata',
   )
   await page.getByRole('button', { name: /Github/i }).click()
 
@@ -188,39 +184,6 @@ test('imported installed source detail uses effective source info', async ({
     dialog.getByText("Imported sources can't be edited here yet", { exact: false }),
   ).toBeVisible()
   await expect(dialog.getByRole('button', { name: 'Save changes' })).toHaveCount(0)
-  await review.pause()
-})
-
-test('installed source detail falls back when source info is missing', async ({
-  network,
-  page,
-  review,
-}) => {
-  network.use(...sourceMissingInfoHandlers())
-
-  await page.goto('/#/sources')
-
-  await review.chapter(
-    'Open a source without source info',
-    'The dialog still shows recorded bindings and remove controls',
-  )
-  await page.getByRole('button', { name: /custom_source/i }).click()
-
-  const dialog = page.getByRole('dialog', { name: /custom_source/i })
-  await expect(dialog.getByRole('heading', { name: 'Configuration' })).toBeVisible()
-  await expect(dialog.getByText('CUSTOM_API_BASE', { exact: true })).toBeVisible()
-  await expect(dialog.getByText('CUSTOM_TOKEN', { exact: true })).toBeVisible()
-  const variableInputs = dialog.locator('input[type="text"]')
-  await expect(variableInputs).toHaveCount(1)
-  await expect(variableInputs.nth(0)).toHaveValue('https://api.test')
-  const secretInputs = dialog.locator('input[type="password"]')
-  await expect(secretInputs).toHaveCount(1)
-  await expect(secretInputs.nth(0)).toHaveAttribute('placeholder', '••••••••')
-  await expect(
-    dialog.getByText("Imported sources can't be edited here yet", { exact: false }),
-  ).toBeVisible()
-  await expect(dialog.getByText('source info custom_source not found')).toHaveCount(0)
-  await expect(dialog.getByRole('button', { name: 'Remove' })).toBeVisible()
   await review.pause()
 })
 

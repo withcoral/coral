@@ -228,6 +228,30 @@ impl SourceManager {
                 candidate.credential_storage = Some(*storage);
             }
         }
+
+        // Imported sources aren't in the bundled catalog, so append their
+        // resolved metadata here. This keeps discovery the single source of
+        // effective source info for clients, avoiding any client-side merge of
+        // the installed list against the catalog. Resolution is best-effort: a
+        // broken or missing imported manifest is skipped rather than failing the
+        // whole catalog (the detail path surfaces the specific error).
+        let catalog_names = candidates
+            .iter()
+            .map(|candidate| candidate.name.clone())
+            .collect::<BTreeSet<_>>();
+        for source in &installed_sources {
+            if source.origin != SourceOrigin::Imported || catalog_names.contains(&source.name) {
+                continue;
+            }
+            match resolve_installed_manifest(workspace_name, source, &self.layout) {
+                Ok(resolved) => candidates.push(resolved.candidate),
+                Err(error) => warn!(
+                    source = %source.name,
+                    %error,
+                    "skipping imported source with unresolvable manifest during discovery"
+                ),
+            }
+        }
         Ok(candidates)
     }
 

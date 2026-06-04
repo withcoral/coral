@@ -71,6 +71,42 @@ async fn import_source_persists_and_lists() {
 }
 
 #[tokio::test]
+async fn discover_sources_includes_installed_imported_sources() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let discovered = harness
+        .source_client()
+        .discover_sources(Request::new(DiscoverSourcesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("discover sources")
+        .into_inner()
+        .sources;
+
+    // Bundled catalog entries are still present and reported as bundled.
+    assert!(
+        discovered
+            .iter()
+            .any(|source| source.name == "github" && source.origin == SourceOrigin::Bundled as i32)
+    );
+
+    // The imported source is surfaced through discovery with its resolved
+    // effective metadata, so clients need no separate installed-list merge.
+    let imported = discovered
+        .iter()
+        .find(|source| source.name == "local_messages")
+        .expect("imported source present in discovery");
+    assert_eq!(imported.origin, SourceOrigin::Imported as i32);
+    assert!(imported.installed);
+    assert_eq!(imported.version, "0.1.0");
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 

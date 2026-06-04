@@ -7,7 +7,6 @@ import {
   DiscoverSourcesRequestSchema,
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
-  ListSourcesRequestSchema,
   SourceOrigin,
   type OAuthCredentialRetrieval,
   type Source,
@@ -17,12 +16,6 @@ import {
 import { sourceClient, WORKSPACE } from './coral-clients'
 
 export type SourceOriginLabel = 'bundled' | 'imported' | 'unknown'
-
-export interface InstalledSource {
-  name: string
-  version: string
-  origin: SourceOriginLabel
-}
 
 export interface CatalogEntry {
   name: string
@@ -48,24 +41,13 @@ export function originLabel(origin: SourceOrigin): SourceOriginLabel {
   return 'unknown'
 }
 
-function toInstalled(s: Source): InstalledSource {
-  return { name: s.name, version: s.version, origin: originLabel(s.origin) }
-}
-
-export async function listInstalledSources(): Promise<InstalledSource[]> {
-  const resp = await sourceClient.listSources(
-    create(ListSourcesRequestSchema, { workspace: WORKSPACE }),
-  )
-  return resp.sources.map(toInstalled)
-}
-
 function toCatalogEntry(s: SourceInfo): CatalogEntry {
   return {
     name: s.name,
     description: s.description,
     version: s.version,
     installed: s.installed,
-    origin: 'bundled',
+    origin: originLabel(s.origin),
   }
 }
 

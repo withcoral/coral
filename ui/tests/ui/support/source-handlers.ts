@@ -19,7 +19,6 @@ import {
   createGithubOauthResponses,
   createLinearResponse,
   deleteSourceResponse,
-  discoverEmptyResponse,
   discoverGithubOauthResponse,
   discoverAfterLinearInstallResponse,
   discoverAfterLinearRemovedResponse,
@@ -31,13 +30,11 @@ import {
   getInstalledCloudwatchLogsResponse,
   getInstalledGithubResponse,
   getInstalledLinearResponse,
-  getInstalledMissingInfoResponse,
   listAfterGithubOauthResponse,
   listAfterLinearInstallResponse,
   listAfterLinearRemovedResponse,
   listEmptyResponse,
   listInitialResponse,
-  listMissingInfoResponse,
 } from './source-fixtures'
 
 const discoverUrl = '*/coral.v1.SourceService/DiscoverSources'
@@ -162,26 +159,6 @@ export function sourceOAuthInstallHandlers() {
         createGithubOauthResponses,
         { delayMs: 1500 },
       )
-    }),
-  ]
-}
-
-export function sourceMissingInfoHandlers() {
-  return [
-    http.post(discoverUrl, () =>
-      grpcWebResponse(DiscoverSourcesResponseSchema, discoverEmptyResponse),
-    ),
-    http.post(listUrl, () => grpcWebResponse(ListSourcesResponseSchema, listMissingInfoResponse)),
-    http.post(getInfoUrl, async ({ request }) => {
-      const message = await grpcWebRequest(GetSourceInfoRequestSchema, request)
-      return grpcWebError(5, `source info ${message.name} not found`)
-    }),
-    http.post(getUrl, async ({ request }) => {
-      const message = await grpcWebRequest(GetSourceRequestSchema, request)
-      if (message.name !== 'custom_source') {
-        return grpcWebError(5, `source ${message.name} not found`)
-      }
-      return grpcWebResponse(GetSourceResponseSchema, getInstalledMissingInfoResponse)
     }),
   ]
 }

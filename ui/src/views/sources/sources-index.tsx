@@ -7,12 +7,7 @@ import { Typography } from '@/wax/components/typography'
 import { ErrorBanner } from '@/components/error-banner'
 import { providerIcon } from '@/lib/provider-icons'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
-import {
-  discoverBundled,
-  listInstalledSources,
-  type CatalogEntry,
-  type InstalledSource,
-} from '@/lib/sources'
+import { discoverBundled, type CatalogEntry } from '@/lib/sources'
 
 import { SourceDetailDialog } from './source-detail'
 import { SourceInstallDialog } from './source-install'
@@ -22,7 +17,6 @@ type IndexEntry = CatalogEntry
 
 export function SourcesIndex() {
   const [bundled, setBundled] = useState<CatalogEntry[] | null>(null)
-  const [installed, setInstalled] = useState<InstalledSource[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [installingName, setInstallingName] = useState<string | null>(null)
@@ -44,51 +38,24 @@ export function SourcesIndex() {
   }, [])
 
   const refresh = useCallback(async () => {
-    const [installedRes, bundledRes] = await Promise.allSettled([
-      listInstalledSources(),
-      discoverBundled(),
-    ])
-    if (installedRes.status === 'fulfilled') setInstalled(installedRes.value)
-    if (bundledRes.status === 'fulfilled') setBundled(bundledRes.value)
-    const failure =
-      installedRes.status === 'rejected'
-        ? installedRes.reason
-        : bundledRes.status === 'rejected'
-          ? bundledRes.reason
-          : null
-    setError(failure ? (failure instanceof Error ? failure.message : String(failure)) : null)
+    try {
+      setBundled(await discoverBundled())
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }, [])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
-  const loading = installed === null && bundled === null && !error
+  const loading = bundled === null && !error
 
-  const allEntries = useMemo<IndexEntry[]>(() => {
-    const bundledByName = new Map((bundled ?? []).map((entry) => [entry.name, entry]))
-    const merged: IndexEntry[] = (bundled ?? []).map((entry) => ({ ...entry }))
-    for (const installedSource of installed ?? []) {
-      const bundledEntry = bundledByName.get(installedSource.name)
-      if (bundledEntry) {
-        const target = merged.find((entry) => entry.name === installedSource.name)
-        if (target) {
-          target.installed = true
-          target.origin = installedSource.origin
-        }
-      } else {
-        merged.push({
-          name: installedSource.name,
-          description: '',
-          version: installedSource.version,
-          installed: true,
-          origin: installedSource.origin === 'bundled' ? 'bundled' : 'imported',
-        })
-      }
-    }
-    merged.sort((a, b) => a.name.localeCompare(b.name))
-    return merged
-  }, [bundled, installed])
+  const allEntries = useMemo<IndexEntry[]>(
+    () => (bundled ?? []).toSorted((a, b) => a.name.localeCompare(b.name)),
+    [bundled],
+  )
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()

@@ -58,7 +58,9 @@ const githubInfo = create(SourceInfoSchema, {
   description: 'Query repositories, issues, and pull requests from GitHub.',
   version: '1.1.6',
   installed: true,
-  origin: SourceOrigin.BUNDLED,
+  // Modelled as an imported install whose effective metadata the backend now
+  // resolves through DiscoverSources (no client-side catalog merge).
+  origin: SourceOrigin.IMPORTED,
   credentialStorage: SourceCredentialStorage.FILE,
   inputs: [
     create(SourceInputSpecSchema, {
@@ -117,6 +119,8 @@ const githubInfo = create(SourceInfoSchema, {
 export const githubOauthCatalogInfo = create(SourceInfoSchema, {
   ...githubInfo,
   installed: false,
+  // The OAuth install flow exercises GitHub as a bundled catalog source.
+  origin: SourceOrigin.BUNDLED,
 })
 
 const cloudwatchLogsInfo = create(SourceInfoSchema, {
@@ -232,15 +236,6 @@ const installedLinear: Source = create(SourceSchema, {
   secrets: [create(SourceSecretSchema, { key: 'LINEAR_API_TOKEN', value: '' })],
 })
 
-const installedImportedMissingInfo: Source = create(SourceSchema, {
-  name: 'custom_source',
-  version: '',
-  origin: SourceOrigin.IMPORTED,
-  credentialStorage: SourceCredentialStorage.FILE,
-  variables: [create(SourceVariableSchema, { key: 'CUSTOM_API_BASE', value: 'https://api.test' })],
-  secrets: [create(SourceSecretSchema, { key: 'CUSTOM_TOKEN', value: '' })],
-})
-
 export const initialInstalledSources: Source[] = [installedCloudwatchLogs, installedGithub]
 
 export const discoverInitialResponse = create(DiscoverSourcesResponseSchema, {
@@ -263,20 +258,12 @@ export const listEmptyResponse = create(ListSourcesResponseSchema, {
   sources: [],
 })
 
-export const listMissingInfoResponse = create(ListSourcesResponseSchema, {
-  sources: [installedImportedMissingInfo],
-})
-
 export const listAfterGithubOauthResponse = create(ListSourcesResponseSchema, {
   sources: [installedBundledGithub],
 })
 
 export const discoverGithubOauthResponse = create(DiscoverSourcesResponseSchema, {
   sources: [githubOauthCatalogInfo],
-})
-
-export const discoverEmptyResponse = create(DiscoverSourcesResponseSchema, {
-  sources: [],
 })
 
 export const listAfterLinearInstallResponse = create(ListSourcesResponseSchema, {
@@ -302,9 +289,6 @@ export const getInstalledCloudwatchLogsResponse = create(GetSourceResponseSchema
 })
 export const getInstalledLinearResponse = create(GetSourceResponseSchema, {
   source: installedLinear,
-})
-export const getInstalledMissingInfoResponse = create(GetSourceResponseSchema, {
-  source: installedImportedMissingInfo,
 })
 
 export const createLinearResponse = create(CreateBundledSourceResponseSchema, {
