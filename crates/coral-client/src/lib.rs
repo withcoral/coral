@@ -47,6 +47,7 @@ pub use error::{ClientError, QueryResultError};
 pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,
+    render_error_block,
 };
 
 /// Fully decoded unary query response.

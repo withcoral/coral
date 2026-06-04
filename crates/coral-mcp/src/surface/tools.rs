@@ -88,11 +88,7 @@ pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
         })),
     )
     .with_annotations(
-        ToolAnnotations::with_title("Run SQL")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(true),
+        tool_annotations("Run SQL", true, true, true),
     )
 }
 
@@ -124,30 +120,14 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
                         }
                     ]
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum catalog items to return, from 1 to 200. Defaults to 50.",
-                    "minimum": 1,
-                    "maximum": 200,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching catalog items to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
+                "limit": limit_input_schema("catalog items", 50, 200),
+                "offset": offset_input_schema("catalog items")
             }
         })),
     )
     .with_raw_output_schema(list_catalog_output_schema())
     .with_annotations(
-        ToolAnnotations::with_title("List Catalog")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
+        tool_annotations("List Catalog", true, true, false),
     )
 }
 
@@ -183,30 +163,14 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
                     "type": "boolean",
                     "description": "Whether regex matching is case-insensitive. Defaults to true."
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum catalog items to return, from 1 to 100. Defaults to 20.",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 20
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching catalog items to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
+                "limit": limit_input_schema("catalog items", 20, 100),
+                "offset": offset_input_schema("catalog items")
             }
         })),
     )
     .with_raw_output_schema(search_catalog_output_schema())
     .with_annotations(
-        ToolAnnotations::with_title("Search Catalog")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
+        tool_annotations("Search Catalog", true, true, false),
     )
 }
 
@@ -229,13 +193,7 @@ pub(crate) fn describe_table_tool() -> Tool {
             }
         })),
     )
-    .with_annotations(
-        ToolAnnotations::with_title("Describe Table")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
-    )
+    .with_annotations(tool_annotations("Describe Table", true, true, false))
 }
 
 pub(crate) fn list_columns_tool() -> Tool {
@@ -266,30 +224,14 @@ pub(crate) fn list_columns_tool() -> Tool {
                     "type": "boolean",
                     "description": "Only return columns that are required filters. Defaults to false."
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum columns to return, from 1 to 200. Defaults to 50.",
-                    "minimum": 1,
-                    "maximum": 200,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching columns to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
+                "limit": limit_input_schema("columns", 50, 200),
+                "offset": offset_input_schema("columns")
             }
         })),
     )
     .with_raw_output_schema(list_columns_output_schema())
     .with_annotations(
-        ToolAnnotations::with_title("List Columns")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
+        tool_annotations("List Columns", true, true, false),
     )
 }
 
@@ -317,12 +259,43 @@ pub(crate) fn feedback_tool() -> Tool {
         })),
     )
     .with_annotations(
-        ToolAnnotations::with_title("Store Feedback Report")
-            .read_only(false)
-            .destructive(false)
-            .idempotent(false)
-            .open_world(true),
+        tool_annotations("Store Feedback Report", false, false, true),
     )
+}
+
+fn tool_annotations(
+    title: &str,
+    read_only: bool,
+    idempotent: bool,
+    open_world: bool,
+) -> ToolAnnotations {
+    ToolAnnotations::with_title(title)
+        .read_only(read_only)
+        .destructive(false)
+        .idempotent(idempotent)
+        .open_world(open_world)
+}
+
+fn limit_input_schema(item_name: &str, default: u32, maximum: u32) -> Value {
+    json!({
+        "type": "integer",
+        "description": format!(
+            "Maximum {item_name} to return, from 1 to {maximum}. Defaults to {default}."
+        ),
+        "minimum": 1,
+        "maximum": maximum,
+        "default": default
+    })
+}
+
+fn offset_input_schema(item_name: &str) -> Value {
+    json!({
+        "type": "integer",
+        "description": format!("Number of matching {item_name} to skip. Defaults to 0."),
+        "minimum": 0,
+        "maximum": u32::MAX,
+        "default": 0
+    })
 }
 
 pub(crate) fn required_string_argument(
@@ -441,39 +414,16 @@ fn connected_source_names_text(source_names: &[String]) -> Option<String> {
 }
 
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        catalog_table_item_output_schema(),
-                        catalog_table_function_item_output_schema()
-                    ]
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    }))
+    json_object_schema(&paged_schema(
+        "items",
+        json!({
+            "oneOf": [
+                catalog_table_item_output_schema(),
+                catalog_table_function_item_output_schema()
+            ]
+        }),
+        [],
+    ))
 }
 
 fn catalog_table_item_output_schema() -> Value {
@@ -567,39 +517,16 @@ fn catalog_table_function_item_output_schema() -> Value {
 }
 
 fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        catalog_search_item_output_schema(catalog_table_item_output_schema()),
-                        catalog_search_item_output_schema(catalog_table_function_item_output_schema())
-                    ]
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    }))
+    json_object_schema(&paged_schema(
+        "items",
+        json!({
+            "oneOf": [
+                catalog_search_item_output_schema(catalog_table_item_output_schema()),
+                catalog_search_item_output_schema(catalog_table_function_item_output_schema())
+            ]
+        }),
+        [],
+    ))
 }
 
 fn catalog_search_item_output_schema(mut schema: Value) -> Value {
@@ -649,68 +576,46 @@ fn list_columns_output_schema() -> Arc<Map<String, Value>> {
 }
 
 fn list_columns_page_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["schema_name", "table_name", "columns", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "schema_name": { "type": "string" },
-            "table_name": { "type": "string" },
-            "columns": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": [
-                        "column_name",
-                        "data_type",
-                        "is_nullable",
-                        "is_virtual",
-                        "is_required_filter",
-                        "description",
-                        "ordinal_position"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                        "column_name": { "type": "string" },
-                        "data_type": { "type": "string" },
-                        "is_nullable": { "type": "boolean" },
-                        "is_virtual": { "type": "boolean" },
-                        "is_required_filter": { "type": "boolean" },
-                        "description": { "type": "string" },
-                        "ordinal_position": {
-                            "type": "integer",
-                            "minimum": 0
-                        },
-                        "matched_fields": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                "type": "string",
-                                "enum": ["column_name", "description", "data_type"]
-                            }
-                        }
+    paged_schema(
+        "columns",
+        json!({
+            "type": "object",
+            "required": [
+                "column_name",
+                "data_type",
+                "is_nullable",
+                "is_virtual",
+                "is_required_filter",
+                "description",
+                "ordinal_position"
+            ],
+            "additionalProperties": false,
+            "properties": {
+                "column_name": { "type": "string" },
+                "data_type": { "type": "string" },
+                "is_nullable": { "type": "boolean" },
+                "is_virtual": { "type": "boolean" },
+                "is_required_filter": { "type": "boolean" },
+                "description": { "type": "string" },
+                "ordinal_position": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "matched_fields": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string",
+                        "enum": ["column_name", "description", "data_type"]
                     }
                 }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
             }
-        }
-    })
+        }),
+        [
+            ("schema_name", string_schema()),
+            ("table_name", string_schema()),
+        ],
+    )
 }
 
 fn missing_table_output_schema() -> Value {
@@ -776,6 +681,55 @@ fn missing_table_summary_output_schema() -> Value {
             }
         }
     })
+}
+
+fn paged_schema<const N: usize>(
+    collection_key: &str,
+    collection_items_schema: Value,
+    extra_properties: [(&str, Value); N],
+) -> Value {
+    let mut required = extra_properties
+        .iter()
+        .map(|(key, _)| Value::from(*key))
+        .collect::<Vec<_>>();
+    required.extend(["total", "limit", "offset", "has_more"].map(Value::from));
+    required.insert(N, Value::from(collection_key));
+
+    let mut properties = Map::new();
+    for (key, value) in extra_properties {
+        properties.insert(key.to_string(), value);
+    }
+    properties.insert(
+        collection_key.to_string(),
+        Value::Object(Map::from_iter([
+            ("type".to_string(), Value::from("array")),
+            ("items".to_string(), collection_items_schema),
+        ])),
+    );
+    insert_pagination_schema_properties(&mut properties);
+
+    json!({
+        "type": "object",
+        "required": required,
+        "additionalProperties": false,
+        "properties": properties
+    })
+}
+
+fn insert_pagination_schema_properties(properties: &mut Map<String, Value>) {
+    properties.insert("total".to_string(), integer_schema(0));
+    properties.insert("limit".to_string(), integer_schema(1));
+    properties.insert("offset".to_string(), integer_schema(0));
+    properties.insert("has_more".to_string(), json!({ "type": "boolean" }));
+    properties.insert("next_offset".to_string(), integer_schema(0));
+}
+
+fn string_schema() -> Value {
+    json!({ "type": "string" })
+}
+
+fn integer_schema(minimum: u64) -> Value {
+    json!({ "type": "integer", "minimum": minimum })
 }
 
 pub(crate) fn optional_string_argument(

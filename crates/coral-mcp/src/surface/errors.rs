@@ -1,86 +1,40 @@
-use std::collections::HashMap;
-use std::fmt::Write as _;
-
-use coral_client::{DecodedStatusError, decode_status_error};
+use coral_client::{DecodedStatusError, decode_status_error, render_error_block};
 use rmcp::{
     ErrorData,
     model::{CallToolResult, Content},
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
-pub(crate) struct ToolError {
-    pub(crate) summary: String,
-    pub(crate) detail: String,
-    pub(crate) hint: Option<String>,
-    pub(crate) grpc_code: String,
-    pub(crate) reason: Option<String>,
-    pub(crate) retryable: bool,
-    pub(crate) metadata: HashMap<String, String>,
-}
-
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "callers always pass an owned ToolError that is not used after this call"
-)]
-pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
-    let mut text = format!("Error: {}", error.summary);
-    if !error.detail.is_empty() {
-        write!(text, "\nDetail: {}", error.detail).expect("writing to String cannot fail");
-    }
-    if let Some(hint) = &error.hint {
-        write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
-    }
-
-    let metadata = error
-        .metadata
-        .iter()
-        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
-        .collect::<Map<_, _>>();
-
-    let structured = serde_json::to_value(StructuredToolErrorValue {
-        error: ToolErrorValue {
-            summary: &error.summary,
-            detail: &error.detail,
-            hint: error.hint.as_deref(),
-            grpc_code: &error.grpc_code,
-            reason: error.reason.as_deref(),
-            retryable: error.retryable,
-            metadata: Value::Object(metadata),
-        },
-    })
-    .expect("tool error value serializes");
-    let mut result = CallToolResult::structured_error(structured);
-    result.content = vec![Content::text(text)];
-    result
-}
-
-pub(crate) fn tool_error_from_status(operation: &str, status: &tonic::Status) -> ToolError {
+pub(crate) fn tool_error_result_from_status(
+    operation: &str,
+    status: &tonic::Status,
+) -> CallToolResult {
     let grpc_code = status.code().to_string();
 
     match decode_status_error(status) {
-        DecodedStatusError::Structured(error) => ToolError {
-            summary: error.summary.clone(),
-            detail: error.detail.clone(),
-            hint: error.hint.clone(),
-            grpc_code,
-            reason: Some(error.reason.clone()),
+        DecodedStatusError::Structured(error) => tool_error_result(ToolErrorValue {
+            summary: &error.summary,
+            detail: &error.detail,
+            hint: error.hint.as_deref(),
+            grpc_code: &grpc_code,
+            reason: Some(&error.reason),
             retryable: error.retryable,
-            metadata: error.metadata.clone(),
-        },
+            metadata: metadata_value(&error.metadata),
+        }),
         DecodedStatusError::Plain(message) => {
             let code = status.code();
             let (summary, hint) = plain_fallback(operation, code);
-            ToolError {
-                summary,
-                detail: message,
-                hint,
-                grpc_code,
+            tool_error_result(ToolErrorValue {
+                summary: &summary,
+                detail: &message,
+                hint: hint.as_deref(),
+                grpc_code: &grpc_code,
                 reason: None,
                 retryable: code == tonic::Code::Unavailable,
-                metadata: HashMap::new(),
-            }
+                metadata: Value::Object(Map::new()),
+            })
         }
     }
 }
@@ -111,6 +65,24 @@ fn plain_fallback(operation: &str, code: tonic::Code) -> (String, Option<String>
         ),
         _ => (format!("{operation} failed"), None),
     }
+}
+
+fn tool_error_result(error: ToolErrorValue<'_>) -> CallToolResult {
+    let text = render_error_block(error.summary, error.detail, error.hint);
+    let structured = serde_json::to_value(StructuredToolErrorValue { error })
+        .expect("tool error value serializes");
+    let mut result = CallToolResult::structured_error(structured);
+    result.content = vec![Content::text(text)];
+    result
+}
+
+fn metadata_value(metadata: &HashMap<String, String>) -> Value {
+    Value::Object(
+        metadata
+            .iter()
+            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+            .collect::<Map<_, _>>(),
+    )
 }
 
 pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
@@ -173,7 +145,6 @@ struct StatusErrorDataValue<'a> {
 #[cfg(test)]
 mod tests {
     #![expect(
-        clippy::get_unwrap,
         clippy::indexing_slicing,
         reason = "JSON shape assertions intentionally fail loudly in tests"
     )]
@@ -186,23 +157,25 @@ mod tests {
 
     use coral_client::CORAL_ERROR_DOMAIN;
 
-    use super::{ToolError, status_to_error_data, tool_error_from_status, tool_error_result};
+    use super::{status_to_error_data, tool_error_result_from_status};
 
     #[test]
     fn tool_error_result_includes_structured_error_payload() {
-        let result = tool_error_result(ToolError {
-            summary: "Query failed".to_string(),
-            detail: "planner error".to_string(),
-            hint: Some("Retry with valid SQL.".to_string()),
-            grpc_code: "InvalidArgument".to_string(),
-            reason: None,
-            retryable: false,
-            metadata: HashMap::new(),
-        });
+        let status = Status::new(Code::InvalidArgument, "planner error");
+        let result = tool_error_result_from_status("Query", &status);
         assert_eq!(result.is_error, Some(true));
         let json = result.structured_content.expect("structured content");
-        assert_eq!(json["error"]["grpc_code"], "InvalidArgument");
+        assert_eq!(
+            json["error"]["grpc_code"],
+            Code::InvalidArgument.to_string()
+        );
         assert_eq!(json["error"]["retryable"], false);
+    }
+
+    fn tool_error_json(status: &Status) -> serde_json::Value {
+        tool_error_result_from_status("Query", status)
+            .structured_content
+            .expect("structured content")
     }
 
     fn build_coral_status(reason: &str, metadata: Vec<(&str, &str)>, retryable: bool) -> Status {
@@ -236,19 +209,19 @@ mod tests {
             ],
             false,
         );
-        let error = tool_error_from_status("Query", &status);
+        let json = tool_error_json(&status);
         assert_eq!(
-            error.summary,
+            json["error"]["summary"],
             "github.pulls requires `WHERE owner = <constant>`"
         );
-        assert_eq!(error.detail, "missing required filter");
+        assert_eq!(json["error"]["detail"], "missing required filter");
         assert_eq!(
-            error.hint.as_deref(),
-            Some("Add a constant equality filter on `owner`.")
+            json["error"]["hint"],
+            "Add a constant equality filter on `owner`."
         );
-        assert_eq!(error.reason.as_deref(), Some("MISSING_REQUIRED_FILTER"));
-        assert!(!error.retryable);
-        assert_eq!(error.metadata.get("schema").unwrap(), "github");
+        assert_eq!(json["error"]["reason"], "MISSING_REQUIRED_FILTER");
+        assert_eq!(json["error"]["retryable"], false);
+        assert_eq!(json["error"]["metadata"]["schema"], "github");
     }
 
     #[test]
@@ -264,9 +237,7 @@ mod tests {
             ],
             false,
         );
-        let error = tool_error_from_status("Query", &status);
-        let result = tool_error_result(error);
-        let json = result.structured_content.expect("structured content");
+        let json = tool_error_json(&status);
         assert_eq!(json["error"]["reason"], "PROVIDER_REQUEST_FAILED");
         assert_eq!(json["error"]["retryable"], false);
         assert_eq!(json["error"]["metadata"]["source"], "github");
@@ -288,13 +259,7 @@ mod tests {
             ],
             true,
         );
-        let error = tool_error_from_status("Query", &status);
-        assert!(error.retryable);
-        let result = tool_error_result(error);
-        assert_eq!(
-            result.structured_content.expect("structured content")["error"]["retryable"],
-            true
-        );
+        assert_eq!(tool_error_json(&status)["error"]["retryable"], true);
     }
 
     #[test]
@@ -314,9 +279,7 @@ mod tests {
             ],
             false,
         );
-        let error = tool_error_from_status("Query", &status);
-        let result = tool_error_result(error);
-        let json = result.structured_content.expect("structured content");
+        let json = tool_error_json(&status);
         assert_eq!(json["error"]["retryable"], false);
         assert_eq!(
             json["error"]["grpc_code"],
@@ -331,20 +294,23 @@ mod tests {
     #[test]
     fn plain_status_falls_back_to_static_dispatch() {
         let status = Status::new(Code::InvalidArgument, "SQL must not be empty");
-        let error = tool_error_from_status("Query", &status);
-        assert_eq!(error.summary, "Query request is invalid");
-        assert_eq!(error.detail, "SQL must not be empty");
-        assert!(error.hint.is_some());
-        assert!(error.reason.is_none());
-        assert!(!error.retryable);
+        let json = tool_error_json(&status);
+        assert_eq!(json["error"]["summary"], "Query request is invalid");
+        assert_eq!(json["error"]["detail"], "SQL must not be empty");
+        assert!(json["error"]["hint"].is_string());
+        assert!(json["error"]["reason"].is_null());
+        assert_eq!(json["error"]["retryable"], false);
     }
 
     #[test]
     fn plain_unavailable_is_retryable() {
         let status = Status::new(Code::Unavailable, "transport error");
-        let error = tool_error_from_status("Query", &status);
-        assert!(error.retryable, "plain Unavailable should be retryable");
-        assert_eq!(error.summary, "Query is unavailable");
+        let json = tool_error_json(&status);
+        assert_eq!(
+            json["error"]["retryable"], true,
+            "plain Unavailable should be retryable"
+        );
+        assert_eq!(json["error"]["summary"], "Query is unavailable");
     }
 
     #[test]

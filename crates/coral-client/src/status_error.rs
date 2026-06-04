@@ -8,6 +8,7 @@
 //! `coral-mcp`, and any future SDK — sees the same shape.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 pub use coral_api::CORAL_ERROR_DOMAIN;
 use coral_api::{
@@ -44,6 +45,23 @@ pub struct CoralQueryError {
     pub metadata: HashMap<String, String>,
     /// The plain-text message from `Status::message()`.
     pub message: String,
+}
+
+/// Renders labelled `Error:` / `Detail:` / `Hint:` text for structured errors.
+///
+/// The returned block does not include a trailing newline. Callers that write
+/// line-oriented stderr can append one, while structured transports can embed
+/// the text verbatim.
+#[must_use]
+pub fn render_error_block(summary: &str, detail: &str, hint: Option<&str>) -> String {
+    let mut text = format!("Error: {summary}");
+    if !detail.is_empty() {
+        write!(text, "\nDetail: {detail}").expect("writing to String cannot fail");
+    }
+    if let Some(hint) = hint {
+        write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
+    }
+    text
 }
 
 /// Decodes a structured Coral query error from a `tonic::Status`,
@@ -110,7 +128,7 @@ mod tests {
 
     use coral_api::CORAL_ERROR_DOMAIN;
 
-    use super::{DecodedStatusError, decode_status_error};
+    use super::{CoralQueryError, DecodedStatusError, decode_status_error};
 
     fn build_coral_status(reason: &str, metadata: Vec<(&str, &str)>, retryable: bool) -> Status {
         let meta: std::collections::HashMap<String, String> = metadata
@@ -126,13 +144,24 @@ mod tests {
         Status::with_error_details_vec(Code::FailedPrecondition, "test message", details)
     }
 
+    fn assert_plain_message(status: &Status, expected: &str) {
+        match decode_status_error(status) {
+            DecodedStatusError::Plain(message) => assert_eq!(message, expected),
+            DecodedStatusError::Structured(_) => panic!("expected Plain"),
+        }
+    }
+
+    fn structured_error(status: &Status) -> Box<CoralQueryError> {
+        match decode_status_error(status) {
+            DecodedStatusError::Structured(err) => err,
+            DecodedStatusError::Plain(_) => panic!("expected Structured"),
+        }
+    }
+
     #[test]
     fn plain_status_without_details_falls_back_to_message() {
         let status = Status::new(Code::FailedPrecondition, "raw legacy message");
-        match decode_status_error(&status) {
-            DecodedStatusError::Plain(message) => assert_eq!(message, "raw legacy message"),
-            DecodedStatusError::Structured(_) => panic!("expected Plain"),
-        }
+        assert_plain_message(&status, "raw legacy message");
     }
 
     #[test]
@@ -142,10 +171,7 @@ mod tests {
             "opaque upstream failure",
             b"not a google.rpc.Status payload".to_vec().into(),
         );
-        match decode_status_error(&status) {
-            DecodedStatusError::Plain(message) => assert_eq!(message, "opaque upstream failure"),
-            DecodedStatusError::Structured(_) => panic!("expected Plain"),
-        }
+        assert_plain_message(&status, "opaque upstream failure");
     }
 
     #[test]
@@ -158,12 +184,7 @@ mod tests {
         ))];
         let status = Status::with_error_details_vec(Code::Internal, "not ours", details);
 
-        match decode_status_error(&status) {
-            DecodedStatusError::Plain(message) => assert_eq!(message, "not ours"),
-            DecodedStatusError::Structured(_) => {
-                panic!("wrong domain must not produce Structured")
-            }
-        }
+        assert_plain_message(&status, "not ours");
     }
 
     #[test]
@@ -182,33 +203,29 @@ mod tests {
             ],
             false,
         );
-        match decode_status_error(&status) {
-            DecodedStatusError::Structured(err) => {
-                assert_eq!(err.reason, "MISSING_REQUIRED_FILTER");
-                assert_eq!(
-                    err.summary,
-                    "github.issues requires `WHERE repo = <constant>`"
-                );
-                assert_eq!(
-                    err.hint.as_deref(),
-                    Some("Add a constant equality filter on `repo`.")
-                );
-                assert_eq!(err.metadata.get("schema").expect("schema"), "github");
-                assert_eq!(err.metadata.get("table").expect("table"), "issues");
-                assert_eq!(err.metadata.get("column").expect("column"), "repo");
-                assert!(
-                    !err.metadata.contains_key("summary"),
-                    "summary promoted out of metadata"
-                );
-                assert!(
-                    !err.metadata.contains_key("hint"),
-                    "hint promoted out of metadata"
-                );
-                assert!(!err.retryable);
-                assert_eq!(err.message, "test message");
-            }
-            DecodedStatusError::Plain(_) => panic!("expected Structured"),
-        }
+        let err = structured_error(&status);
+        assert_eq!(err.reason, "MISSING_REQUIRED_FILTER");
+        assert_eq!(
+            err.summary,
+            "github.issues requires `WHERE repo = <constant>`"
+        );
+        assert_eq!(
+            err.hint.as_deref(),
+            Some("Add a constant equality filter on `repo`.")
+        );
+        assert_eq!(err.metadata.get("schema").expect("schema"), "github");
+        assert_eq!(err.metadata.get("table").expect("table"), "issues");
+        assert_eq!(err.metadata.get("column").expect("column"), "repo");
+        assert!(
+            !err.metadata.contains_key("summary"),
+            "summary promoted out of metadata"
+        );
+        assert!(
+            !err.metadata.contains_key("hint"),
+            "hint promoted out of metadata"
+        );
+        assert!(!err.retryable);
+        assert_eq!(err.message, "test message");
     }
 
     #[test]
@@ -218,13 +235,9 @@ mod tests {
             vec![("http_status", "500")],
             true,
         );
-        match decode_status_error(&status) {
-            DecodedStatusError::Structured(err) => {
-                assert!(err.retryable);
-                assert_eq!(err.reason, "PROVIDER_REQUEST_FAILED");
-            }
-            DecodedStatusError::Plain(_) => panic!("expected Structured"),
-        }
+        let err = structured_error(&status);
+        assert!(err.retryable);
+        assert_eq!(err.reason, "PROVIDER_REQUEST_FAILED");
     }
 
     #[test]
@@ -243,31 +256,22 @@ mod tests {
             ],
             false,
         );
-        match decode_status_error(&status) {
-            DecodedStatusError::Structured(err) => {
-                assert_eq!(err.summary, "Source authentication failed (401)");
-                assert_eq!(err.detail, "bad credentials");
-                assert!(err.hint.as_deref().unwrap().contains("Re-install"));
-                assert_eq!(err.metadata.get("source").expect("source"), "github");
-                assert_eq!(err.metadata.get("http_status").expect("http status"), "401");
-                assert_eq!(err.metadata.get("http_method").expect("http method"), "GET");
-                assert!(!err.metadata.contains_key("summary"));
-                assert!(!err.metadata.contains_key("detail"));
-                assert!(!err.metadata.contains_key("hint"));
-            }
-            DecodedStatusError::Plain(_) => panic!("expected Structured"),
-        }
+        let err = structured_error(&status);
+        assert_eq!(err.summary, "Source authentication failed (401)");
+        assert_eq!(err.detail, "bad credentials");
+        assert!(err.hint.as_deref().unwrap().contains("Re-install"));
+        assert_eq!(err.metadata.get("source").expect("source"), "github");
+        assert_eq!(err.metadata.get("http_status").expect("http status"), "401");
+        assert_eq!(err.metadata.get("http_method").expect("http method"), "GET");
+        assert!(!err.metadata.contains_key("summary"));
+        assert!(!err.metadata.contains_key("detail"));
+        assert!(!err.metadata.contains_key("hint"));
     }
 
     #[test]
     fn empty_details_bytes_fall_back_even_with_non_empty_message() {
         let status = Status::new(Code::NotFound, "resource not found: github.issues");
         assert!(status.details().is_empty());
-        match decode_status_error(&status) {
-            DecodedStatusError::Plain(message) => {
-                assert_eq!(message, "resource not found: github.issues");
-            }
-            DecodedStatusError::Structured(_) => panic!("expected Plain"),
-        }
+        assert_plain_message(&status, "resource not found: github.issues");
     }
 }

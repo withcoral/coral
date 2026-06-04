@@ -32,7 +32,7 @@ use crate::{
         list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
         required_string_argument, search_catalog_arguments, search_catalog_tool,
         search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        tables_resource_content, tool_error_result_from_status,
     },
     telemetry,
 };
@@ -579,9 +579,7 @@ fn finish_tool_call(
         }
         Ok(ToolCallOutcome::ToolError { operation, status }) => {
             telemetry::record_tonic_status(span, &status);
-            Ok(tool_error_result(tool_error_from_status(
-                operation, &status,
-            )))
+            Ok(tool_error_result_from_status(operation, &status))
         }
         Err(error) => {
             telemetry::record_protocol_error(span, &error);

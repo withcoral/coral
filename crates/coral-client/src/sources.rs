@@ -281,56 +281,21 @@ mod tests {
 
     #[test]
     fn manifest_input_from_proto_preserves_credential_methods() {
-        let input = SourceInputSpec {
-            key: "API_TOKEN".to_string(),
-            required: true,
-            hint: String::new(),
-            input: Some(ProtoSourceInput::Secret(SourceSecretInput {
-                credential: Some(SourceCredential {
-                    methods: vec![
-                        SourceCredentialMethod {
-                            label: "Connect".to_string(),
-                            description: String::new(),
-                            hint: "Authorize in your browser.".to_string(),
-                            method: Some(ProtoCredentialMethod::Oauth(Box::new(
-                                OAuthCredentialMethod {
-                                    flow: OauthCredentialFlowType::AuthorizationCode as i32,
-                                    pkce: OauthCredentialPkceMode::Required as i32,
-                                    redirect_uri: "http://127.0.0.1:53682/oauth/callback"
-                                        .to_string(),
-                                    endpoints: Some(OAuthCredentialEndpoints {
-                                        authorization_url:
-                                            "https://provider.example.com/oauth/authorize"
-                                                .to_string(),
-                                        token_url: "https://provider.example.com/oauth/token"
-                                            .to_string(),
-                                        device_authorization_url: String::new(),
-                                    }),
-                                    client: Some(OAuthCredentialClient {
-                                        id: Some(OAuthCredentialClientId {
-                                            default_value: "default-client".to_string(),
-                                            input: String::new(),
-                                        }),
-                                        secret: None,
-                                    }),
-                                    redirect_uri_port_mode:
-                                        OauthCredentialRedirectUriPortMode::Random as i32,
-                                    scopes: None,
-                                },
-                            ))),
-                        },
-                        SourceCredentialMethod {
-                            label: "Paste token".to_string(),
-                            description: String::new(),
-                            hint: String::new(),
-                            method: Some(ProtoCredentialMethod::SourceConfig(
-                                SourceConfigCredentialMethod {},
-                            )),
-                        },
-                    ],
-                }),
-            })),
-        };
+        let input = source_input_with_methods(vec![
+            oauth_method(
+                OauthCredentialFlowType::AuthorizationCode,
+                OauthCredentialPkceMode::Required,
+                OauthCredentialRedirectUriPortMode::Random,
+            ),
+            SourceCredentialMethod {
+                label: "Paste token".to_string(),
+                description: String::new(),
+                hint: String::new(),
+                method: Some(ProtoCredentialMethod::SourceConfig(
+                    SourceConfigCredentialMethod {},
+                )),
+            },
+        ]);
 
         let input = manifest_input_from_proto(&input).expect("manifest input");
         let credential = input.credential.expect("credential");
@@ -387,43 +352,55 @@ mod tests {
         flow: OauthCredentialFlowType,
         pkce: OauthCredentialPkceMode,
     ) -> SourceInputSpec {
+        source_input_with_methods(vec![oauth_method(
+            flow,
+            pkce,
+            OauthCredentialRedirectUriPortMode::Fixed,
+        )])
+    }
+
+    fn source_input_with_methods(methods: Vec<SourceCredentialMethod>) -> SourceInputSpec {
         SourceInputSpec {
             key: "API_TOKEN".to_string(),
             required: true,
             hint: String::new(),
             input: Some(ProtoSourceInput::Secret(SourceSecretInput {
-                credential: Some(SourceCredential {
-                    methods: vec![SourceCredentialMethod {
-                        label: "Connect".to_string(),
-                        description: String::new(),
-                        hint: String::new(),
-                        method: Some(ProtoCredentialMethod::Oauth(Box::new(
-                            OAuthCredentialMethod {
-                                flow: flow as i32,
-                                pkce: pkce as i32,
-                                redirect_uri: "http://127.0.0.1:53682/oauth/callback".to_string(),
-                                endpoints: Some(OAuthCredentialEndpoints {
-                                    authorization_url:
-                                        "https://provider.example.com/oauth/authorize".to_string(),
-                                    token_url: "https://provider.example.com/oauth/token"
-                                        .to_string(),
-                                    device_authorization_url: String::new(),
-                                }),
-                                client: Some(OAuthCredentialClient {
-                                    id: Some(OAuthCredentialClientId {
-                                        default_value: "default-client".to_string(),
-                                        input: String::new(),
-                                    }),
-                                    secret: None,
-                                }),
-                                redirect_uri_port_mode: OauthCredentialRedirectUriPortMode::Fixed
-                                    as i32,
-                                scopes: None,
-                            },
-                        ))),
-                    }],
-                }),
+                credential: Some(SourceCredential { methods }),
             })),
+        }
+    }
+
+    fn oauth_method(
+        flow: OauthCredentialFlowType,
+        pkce: OauthCredentialPkceMode,
+        redirect_uri_port_mode: OauthCredentialRedirectUriPortMode,
+    ) -> SourceCredentialMethod {
+        SourceCredentialMethod {
+            label: "Connect".to_string(),
+            description: String::new(),
+            hint: "Authorize in your browser.".to_string(),
+            method: Some(ProtoCredentialMethod::Oauth(Box::new(
+                OAuthCredentialMethod {
+                    flow: flow as i32,
+                    pkce: pkce as i32,
+                    redirect_uri: "http://127.0.0.1:53682/oauth/callback".to_string(),
+                    endpoints: Some(OAuthCredentialEndpoints {
+                        authorization_url: "https://provider.example.com/oauth/authorize"
+                            .to_string(),
+                        token_url: "https://provider.example.com/oauth/token".to_string(),
+                        device_authorization_url: String::new(),
+                    }),
+                    client: Some(OAuthCredentialClient {
+                        id: Some(OAuthCredentialClientId {
+                            default_value: "default-client".to_string(),
+                            input: String::new(),
+                        }),
+                        secret: None,
+                    }),
+                    redirect_uri_port_mode: redirect_uri_port_mode as i32,
+                    scopes: None,
+                },
+            ))),
         }
     }
 
@@ -475,21 +452,12 @@ mod tests {
 
     #[test]
     fn manifest_input_from_proto_rejects_missing_credential_method() {
-        let input = SourceInputSpec {
-            key: "API_TOKEN".to_string(),
-            required: true,
+        let input = source_input_with_methods(vec![SourceCredentialMethod {
+            label: "Connect".to_string(),
+            description: String::new(),
             hint: String::new(),
-            input: Some(ProtoSourceInput::Secret(SourceSecretInput {
-                credential: Some(SourceCredential {
-                    methods: vec![SourceCredentialMethod {
-                        label: "Connect".to_string(),
-                        description: String::new(),
-                        hint: String::new(),
-                        method: None,
-                    }],
-                }),
-            })),
-        };
+            method: None,
+        }]);
 
         let error = manifest_input_from_proto(&input).expect_err("missing method should fail");
 
