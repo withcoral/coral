@@ -32,7 +32,11 @@ pub fn generate_projection_catalog(
         }
         diagnostics.extend(ir.diagnostics.clone());
     }
-    resolve_projection_name_collisions(manifest, surfaces, &mut projections);
+    diagnostics.extend(resolve_projection_name_collisions(
+        manifest,
+        surfaces,
+        &mut projections,
+    ));
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),

@@ -294,6 +294,23 @@ components:
         .get("pulls_list_commits")
         .expect("pulls_list_commits projection");
     assert_eq!(pull_commits.0, "repos_pulls_commits");
+
+    let catalog_collision_diagnostics = catalog
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+        .collect::<Vec<_>>();
+    assert_eq!(catalog_collision_diagnostics.len(), 3);
+    let projection_collision_diagnostics = catalog
+        .projections
+        .iter()
+        .flat_map(|projection| &projection.diagnostics)
+        .filter(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+        .count();
+    assert_eq!(
+        projection_collision_diagnostics,
+        catalog_collision_diagnostics.len()
+    );
 }
 
 #[test]
