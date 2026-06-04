@@ -192,10 +192,11 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::OnceLock;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use crate::backends::http::client::HttpSourceClient;
     use crate::backends::http::test_support::parse_http_manifest;
+    use coral_spec::backends::http::HttpSourceManifest;
 
     static TEST_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
@@ -203,80 +204,49 @@ mod tests {
         TEST_HTTP_CLIENT.get_or_init(reqwest::Client::new).clone()
     }
 
-    #[test]
-    fn backend_client_requires_source_scoped_credentials() {
-        let manifest = parse_http_manifest(json!({
-            "dsl_version": 3,
-            "name": "alpha",
-            "version": "0.1.0",
-            "backend": "http",
-            "base_url": "https://api.example.com",
-            "auth": {
-                "type": "HeaderAuth",
-                "headers": [{
-                    "name": "Authorization",
-                    "from": "template",
-                    "template": "Bearer {{input.API_KEY}}"
-                }]
-            },
-            "inputs": {
-                "API_KEY": { "kind": "secret" }
-            },
-            "tables": [{
-                "name": "items",
-                "description": "items",
-                "request": { "path": "/items" },
-                "columns": [{
-                    "name": "id",
-                    "type": "Utf8"
-                }]
-            }]
-        }));
-        let source_secrets = BTreeMap::new();
+    fn alpha_manifest(body: Value) -> HttpSourceManifest {
+        let Value::Object(mut manifest) = body else {
+            panic!("test manifest body must be an object");
+        };
 
-        let error = HttpSourceClient::from_manifest(
-            &manifest,
-            &source_secrets,
-            &BTreeMap::new(),
-            &HashMap::new(),
-            None,
-            test_http_client(),
-        )
-        .expect_err("missing source-scoped credentials must fail");
+        for (key, value) in [
+            ("dsl_version", json!(3)),
+            ("name", json!("alpha")),
+            ("version", json!("0.1.0")),
+            ("backend", json!("http")),
+            ("base_url", json!("https://api.example.com")),
+        ] {
+            manifest.entry(key.to_string()).or_insert(value);
+        }
 
-        assert!(
-            error
-                .to_string()
-                .contains("missing source input 'API_KEY' for template token")
-        );
+        parse_http_manifest(Value::Object(manifest))
     }
 
-    #[test]
-    fn backend_client_rejects_unresolved_table_request_path_inputs() {
-        let manifest = parse_http_manifest(json!({
-            "dsl_version": 3,
-            "name": "alpha",
-            "version": "0.1.0",
-            "backend": "http",
-            "base_url": "https://api.example.com",
-            "inputs": {
-                "API_KEY": { "kind": "secret" },
-                "ACCOUNT_ID": { "kind": "variable" }
-            },
-            "tables": [{
-                "name": "items",
-                "description": "items",
-                "request": {
-                    "path": "/{{input.ACCOUNT_ID}}/items"
-                },
-                "columns": [{
-                    "name": "id",
-                    "type": "Utf8"
-                }]
-            }]
-        }));
+    fn items_table(request: &Value) -> Value {
+        json!({
+            "name": "items",
+            "description": "items",
+            "request": request,
+            "columns": id_columns(),
+        })
+    }
 
-        let error = HttpSourceClient::from_manifest(
+    fn search_items_function(request: &Value) -> Value {
+        json!({
+            "name": "search_items",
+            "description": "Search items",
+            "request": request,
+            "columns": id_columns(),
+        })
+    }
+
+    fn id_columns() -> Value {
+        json!([{ "name": "id", "type": "Utf8" }])
+    }
+
+    fn client_error(manifest: Value, expectation: &str) -> String {
+        let manifest = alpha_manifest(manifest);
+        HttpSourceClient::from_manifest(
             &manifest,
             &BTreeMap::new(),
             &BTreeMap::new(),
@@ -284,122 +254,50 @@ mod tests {
             None,
             test_http_client(),
         )
-        .expect_err("missing table request path inputs must fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("table 'items' request path could not be resolved")
-        );
+        .expect_err(expectation)
+        .to_string()
     }
 
-    #[test]
-    fn backend_client_rejects_unresolved_table_request_header_inputs() {
-        let manifest = parse_http_manifest(json!({
-            "dsl_version": 3,
-            "name": "alpha",
-            "version": "0.1.0",
-            "backend": "http",
-            "base_url": "https://api.example.com",
-            "inputs": {
-                "ACCOUNT_ID": { "kind": "variable" }
+    struct RequestInputCase {
+        name: &'static str,
+        request: Value,
+        expected_suffix: &'static str,
+    }
+
+    fn unresolved_account_request_cases() -> [RequestInputCase; 4] {
+        [
+            RequestInputCase {
+                name: "path",
+                request: json!({ "path": "/{{input.ACCOUNT_ID}}/items" }),
+                expected_suffix: "path could not be resolved",
             },
-            "tables": [{
-                "name": "items",
-                "description": "items",
-                "request": {
+            RequestInputCase {
+                name: "header",
+                request: json!({
                     "path": "/items",
                     "headers": [{
                         "name": "X-Account",
                         "from": "input",
                         "key": "ACCOUNT_ID"
                     }]
-                },
-                "columns": [{
-                    "name": "id",
-                    "type": "Utf8"
-                }]
-            }]
-        }));
-
-        let error = HttpSourceClient::from_manifest(
-            &manifest,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &HashMap::new(),
-            None,
-            test_http_client(),
-        )
-        .expect_err("missing table request header inputs must fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("table 'items' request header 'X-Account' could not be resolved")
-        );
-    }
-
-    #[test]
-    fn backend_client_rejects_unresolved_table_request_query_inputs() {
-        let manifest = parse_http_manifest(json!({
-            "dsl_version": 3,
-            "name": "alpha",
-            "version": "0.1.0",
-            "backend": "http",
-            "base_url": "https://api.example.com",
-            "inputs": {
-                "ACCOUNT_ID": { "kind": "variable" }
+                }),
+                expected_suffix: "header 'X-Account' could not be resolved",
             },
-            "tables": [{
-                "name": "items",
-                "description": "items",
-                "request": {
+            RequestInputCase {
+                name: "query",
+                request: json!({
                     "path": "/items",
                     "query": [{
                         "name": "account_id",
                         "from": "input",
                         "key": "ACCOUNT_ID"
                     }]
-                },
-                "columns": [{
-                    "name": "id",
-                    "type": "Utf8"
-                }]
-            }]
-        }));
-
-        let error = HttpSourceClient::from_manifest(
-            &manifest,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &HashMap::new(),
-            None,
-            test_http_client(),
-        )
-        .expect_err("missing table request query inputs must fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("table 'items' request query param 'account_id' could not be resolved")
-        );
-    }
-
-    #[test]
-    fn backend_client_rejects_unresolved_table_request_body_inputs() {
-        let manifest = parse_http_manifest(json!({
-            "dsl_version": 3,
-            "name": "alpha",
-            "version": "0.1.0",
-            "backend": "http",
-            "base_url": "https://api.example.com",
-            "inputs": {
-                "ACCOUNT_ID": { "kind": "variable" }
+                }),
+                expected_suffix: "query param 'account_id' could not be resolved",
             },
-            "tables": [{
-                "name": "items",
-                "description": "items",
-                "request": {
+            RequestInputCase {
+                name: "body",
+                request: json!({
                     "method": "POST",
                     "path": "/items",
                     "body": [{
@@ -407,171 +305,113 @@ mod tests {
                         "from": "input",
                         "key": "ACCOUNT_ID"
                     }]
-                },
-                "columns": [{
-                    "name": "id",
-                    "type": "Utf8"
-                }]
-            }]
-        }));
+                }),
+                expected_suffix: "body field 'account.id' could not be resolved",
+            },
+        ]
+    }
 
-        let error = HttpSourceClient::from_manifest(
-            &manifest,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &HashMap::new(),
-            None,
-            test_http_client(),
-        )
-        .expect_err("missing table request body inputs must fail");
+    fn account_input_manifest(fields: Value) -> Value {
+        let Value::Object(mut manifest) = json!({
+            "inputs": {
+                "ACCOUNT_ID": { "kind": "variable" }
+            }
+        }) else {
+            unreachable!("account input manifest fixture is an object");
+        };
+        let Value::Object(fields) = fields else {
+            unreachable!("manifest fixture overrides must be an object");
+        };
+        manifest.extend(fields);
+        Value::Object(manifest)
+    }
 
-        assert!(
-            error
-                .to_string()
-                .contains("table 'items' request body field 'account.id' could not be resolved")
-        );
+    fn assert_unresolved_account_request_inputs(
+        request_label: &str,
+        surfaces: impl Fn(&Value) -> Value,
+    ) {
+        for case in unresolved_account_request_cases() {
+            let expected = format!("{request_label} request {}", case.expected_suffix);
+            let error = client_error(
+                account_input_manifest(surfaces(&case.request)),
+                &format!(
+                    "missing {request_label} request {} input should fail",
+                    case.name
+                ),
+            );
+
+            assert!(
+                error.contains(&expected),
+                "unexpected error for {}: {error}",
+                case.name
+            );
+        }
     }
 
     #[test]
-    fn backend_client_rejects_unresolved_request_route_inputs() {
-        let manifest = parse_http_manifest(json!({
-            "dsl_version": 3,
-            "name": "alpha",
-            "version": "0.1.0",
-            "backend": "http",
-            "base_url": "https://api.example.com",
-            "inputs": {
-                "ACCOUNT_ID": { "kind": "variable" }
-            },
-            "tables": [{
-                "name": "items",
-                "description": "items",
-                "request": { "path": "/items" },
-                "requests": [{
-                    "when_filters": ["account_id"],
-                    "method": "GET",
-                    "path": "/{{input.ACCOUNT_ID}}/items"
-                }],
-                "filters": [{
-                    "name": "account_id"
-                }],
-                "columns": [{
-                    "name": "id",
-                    "type": "Utf8"
-                }]
-            }]
-        }));
+    fn backend_client_requires_source_scoped_credentials() {
+        let error = client_error(
+            json!({
+                "auth": {
+                    "type": "HeaderAuth",
+                    "headers": [{
+                        "name": "Authorization",
+                        "from": "template",
+                        "template": "Bearer {{input.API_KEY}}"
+                    }]
+                },
+                "inputs": {
+                    "API_KEY": { "kind": "secret" }
+                },
+                "tables": [items_table(&json!({ "path": "/items" }))]
+            }),
+            "missing source-scoped credentials must fail",
+        );
 
-        let error = HttpSourceClient::from_manifest(
-            &manifest,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &HashMap::new(),
-            None,
-            test_http_client(),
-        )
-        .expect_err("missing request route inputs must fail");
+        assert!(error.contains("missing source input 'API_KEY' for template token"));
+    }
 
-        assert!(error.to_string().contains(
-            "table 'items' request route for filters [account_id] path could not be resolved"
-        ));
+    #[test]
+    fn backend_client_rejects_unresolved_table_request_inputs() {
+        assert_unresolved_account_request_inputs(
+            "table 'items'",
+            |request| json!({ "tables": [items_table(request)] }),
+        );
+
+        let error = client_error(
+            account_input_manifest(json!({
+                "tables": [json!({
+                    "name": "items",
+                    "description": "items",
+                    "request": { "path": "/items" },
+                    "requests": [{
+                        "when_filters": ["account_id"],
+                        "method": "GET",
+                        "path": "/{{input.ACCOUNT_ID}}/items"
+                    }],
+                    "filters": [{
+                        "name": "account_id"
+                    }],
+                    "columns": id_columns()
+                })]
+            })),
+            "missing table request route input should fail",
+        );
+        assert!(
+            error.contains(
+                "table 'items' request route for filters [account_id] path could not be resolved"
+            ),
+            "unexpected error for route: {error}"
+        );
     }
 
     #[test]
     fn backend_client_rejects_unresolved_function_request_inputs() {
-        let cases = [
-            (
-                "path",
-                json!({
-                    "path": "/{{input.ACCOUNT_ID}}/items"
-                }),
-                "function 'search_items' request path could not be resolved",
-            ),
-            (
-                "header",
-                json!({
-                    "path": "/items",
-                    "headers": [{
-                        "name": "X-Account",
-                        "from": "input",
-                        "key": "ACCOUNT_ID"
-                    }]
-                }),
-                "function 'search_items' request header 'X-Account' could not be resolved",
-            ),
-            (
-                "query",
-                json!({
-                    "path": "/items",
-                    "query": [{
-                        "name": "account_id",
-                        "from": "input",
-                        "key": "ACCOUNT_ID"
-                    }]
-                }),
-                "function 'search_items' request query param 'account_id' could not be resolved",
-            ),
-            (
-                "body",
-                json!({
-                    "method": "POST",
-                    "path": "/items",
-                    "body": [{
-                        "path": ["account", "id"],
-                        "from": "input",
-                        "key": "ACCOUNT_ID"
-                    }]
-                }),
-                "function 'search_items' request body field 'account.id' could not be resolved",
-            ),
-        ];
-
-        for (name, request, expected) in cases {
-            let manifest = parse_http_manifest(json!({
-                "dsl_version": 3,
-                "name": "alpha",
-                "version": "0.1.0",
-                "backend": "http",
-                "base_url": "https://api.example.com",
-                "inputs": {
-                    "ACCOUNT_ID": { "kind": "variable" }
-                },
-                "tables": [{
-                    "name": "items",
-                    "description": "items",
-                    "request": { "path": "/items" },
-                    "columns": [{
-                        "name": "id",
-                        "type": "Utf8"
-                    }]
-                }],
-                "functions": [{
-                    "name": "search_items",
-                    "description": "Search items",
-                    "request": request,
-                    "columns": [{
-                        "name": "id",
-                        "type": "Utf8"
-                    }]
-                }]
-            }));
-
-            let error = HttpSourceClient::from_manifest(
-                &manifest,
-                &BTreeMap::new(),
-                &BTreeMap::new(),
-                &HashMap::new(),
-                None,
-                test_http_client(),
-            )
-            .expect_err(&format!(
-                "missing function request {name} input should fail"
-            ));
-
-            assert!(
-                error.to_string().contains(expected),
-                "unexpected error for {name}: {error}"
-            );
-        }
+        assert_unresolved_account_request_inputs("function 'search_items'", |request| {
+            json!({
+                "tables": [items_table(&json!({ "path": "/items" }))],
+                "functions": [search_items_function(request)]
+            })
+        });
     }
 }

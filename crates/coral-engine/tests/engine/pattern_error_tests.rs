@@ -3,9 +3,8 @@
 
 use std::path::Path;
 
-use coral_engine::{CoralQuery, CoreError, QuerySource};
+use coral_engine::{CoralQuery, CoreError, QueryExecution, QuerySource};
 use serde_json::{Value, json};
-use tempfile::TempDir;
 
 use crate::harness::{
     assert_row_count, build_source, execution_to_rows, test_runtime, write_jsonl_file,
@@ -63,14 +62,25 @@ fn write_projects_fixture(dir: &Path) -> QuerySource {
     build_source(manifest(dir))
 }
 
+async fn execute_projects_query(sql: &str) -> Result<QueryExecution, CoreError> {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source = write_projects_fixture(temp.path());
+    CoralQuery::execute_sql(&[source], test_runtime(), sql).await
+}
+
+async fn assert_project_names_query(sql: &str, expected: &[&str]) {
+    let execution = execute_projects_query(sql)
+        .await
+        .expect("project query should succeed");
+
+    assert_row_count(&execution, expected.len());
+    let rows = execution_to_rows(&execution);
+    assert_eq!(project_names(&rows), expected);
+}
+
 #[tokio::test]
 async fn similar_to_with_like_wildcard_returns_clear_error() {
-    let temp = TempDir::new().expect("temp dir");
-    let source = write_projects_fixture(temp.path());
-
-    let error = CoralQuery::execute_sql(
-        &[source],
-        test_runtime(),
+    let error = execute_projects_query(
         "SELECT id, name FROM linear.projects WHERE name SIMILAR TO '(Slack|Weekly)%'",
     )
     .await
@@ -83,71 +93,37 @@ async fn similar_to_with_like_wildcard_returns_clear_error() {
 
 #[tokio::test]
 async fn regex_match_with_percent_is_valid() {
-    let temp = TempDir::new().expect("temp dir");
-    let source = write_projects_fixture(temp.path());
-
     // % is a literal character in regex — no error, just zero matches
-    let execution = CoralQuery::execute_sql(
-        &[source],
-        test_runtime(),
+    assert_project_names_query(
         "SELECT id, name FROM linear.projects WHERE name ~ '(Slack|Weekly)%'",
+        &[],
     )
-    .await
-    .expect("regex with literal % should succeed");
-
-    assert_row_count(&execution, 0);
+    .await;
 }
 
 #[tokio::test]
 async fn similar_to_with_regex_syntax_succeeds() {
-    let temp = TempDir::new().expect("temp dir");
-    let source = write_projects_fixture(temp.path());
-
-    let execution = CoralQuery::execute_sql(
-        &[source],
-        test_runtime(),
+    assert_project_names_query(
         "SELECT id, name FROM linear.projects WHERE name SIMILAR TO '(Slack|Weekly).*' ORDER BY id",
+        &["Slack Planning", "Weekly Sync"],
     )
-    .await
-    .expect("regex-shaped SIMILAR TO should succeed");
-
-    assert_row_count(&execution, 2);
-    let rows = execution_to_rows(&execution);
-    assert_eq!(project_names(&rows), vec!["Slack Planning", "Weekly Sync"]);
+    .await;
 }
 
 #[tokio::test]
 async fn regex_match_with_valid_regex_succeeds() {
-    let temp = TempDir::new().expect("temp dir");
-    let source = write_projects_fixture(temp.path());
-
-    let execution = CoralQuery::execute_sql(
-        &[source],
-        test_runtime(),
+    assert_project_names_query(
         "SELECT id, name FROM linear.projects WHERE name ~ '^(Slack|Weekly)' ORDER BY id",
+        &["Slack Planning", "Weekly Sync"],
     )
-    .await
-    .expect("valid regex should succeed");
-
-    assert_row_count(&execution, 2);
-    let rows = execution_to_rows(&execution);
-    assert_eq!(project_names(&rows), vec!["Slack Planning", "Weekly Sync"]);
+    .await;
 }
 
 #[tokio::test]
 async fn like_with_wildcards_still_works() {
-    let temp = TempDir::new().expect("temp dir");
-    let source = write_projects_fixture(temp.path());
-
-    let execution = CoralQuery::execute_sql(
-        &[source],
-        test_runtime(),
+    assert_project_names_query(
         "SELECT id, name FROM linear.projects WHERE name LIKE 'Slack%' OR name LIKE 'Weekly%' ORDER BY id",
+        &["Slack Planning", "Weekly Sync"],
     )
-    .await
-    .expect("LIKE should remain unaffected");
-
-    assert_row_count(&execution, 2);
-    let rows = execution_to_rows(&execution);
-    assert_eq!(project_names(&rows), vec!["Slack Planning", "Weekly Sync"]);
+    .await;
 }

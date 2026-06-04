@@ -11,9 +11,9 @@ use datafusion::prelude::SessionContext;
 
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, RegisteredTable, SourceTableFunctions, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
-    registered_columns_from_specs, required_filter_names,
+    RegisteredTable, SourceTableFunctions, build_registered_source, build_registered_table,
+    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
+    required_filter_names,
 };
 use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -138,27 +138,19 @@ impl CompiledBackendSource for HttpCompiledSource {
             ));
         }
 
-        let secret_keys = self
-            .source_input_resolution
-            .secrets()
-            .keys()
-            .cloned()
-            .collect();
-        let inputs = build_registered_inputs(
+        let source = build_registered_source(
+            &self.manifest.common.name,
+            table_infos,
+            table_function_infos,
             self.source_input_resolution.declared_inputs(),
             self.source_input_resolution.variables(),
-            &secret_keys,
+            self.source_input_resolution.secrets(),
         );
 
         Ok(BackendRegistration {
             tables,
             table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
+            source,
         })
     }
 }

@@ -687,6 +687,32 @@ mod tests {
         TableRefParts::new(parts.iter().map(ToString::to_string).collect())
     }
 
+    fn hint(err: &StructuredQueryError) -> &str {
+        err.hint().expect("hint should be present")
+    }
+
+    fn assert_hint_contains(err: &StructuredQueryError, expected: &str) {
+        let hint = hint(err);
+        assert!(hint.contains(expected), "got: {hint}");
+    }
+
+    fn assert_hint_not_contains(err: &StructuredQueryError, unexpected: &str) {
+        let hint = hint(err);
+        assert!(!hint.contains(unexpected), "got: {hint}");
+    }
+
+    fn assert_metadata(err: &StructuredQueryError, key: &str, expected: Option<&str>) {
+        assert_eq!(err.metadata().get(key).map(String::as_str), expected);
+    }
+
+    fn assert_summary_contains(err: &StructuredQueryError, expected: &str) {
+        assert!(
+            err.summary().contains(expected),
+            "summary mismatch: {}",
+            err.summary()
+        );
+    }
+
     #[test]
     fn reason_consts_match_wire_contract() {
         // Guard against an accidental rename: these literal values are the
@@ -704,11 +730,7 @@ mod tests {
 
         assert_eq!(err.reason(), UNKNOWN_COLUMN_REASON);
         assert_eq!(err.status(), StatusCode::InvalidArgument);
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("g.\"playerID\""),
-            "expected case-preserving quoted hint, got: {hint}"
-        );
+        assert_hint_contains(&err, "g.\"playerID\"");
     }
 
     #[test]
@@ -719,15 +741,8 @@ mod tests {
         let missing = cp(&["demo", "users", "player"], "id");
         let err = StructuredQueryError::unknown_column(&missing, &valid);
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("demo.users.\"player.id\""),
-            "hint must quote the literal-dot name, got: {hint}"
-        );
-        assert!(
-            !hint.contains("demo.users.player.id"),
-            "hint must not render the unquoted 4-part form, got: {hint}"
-        );
+        assert_hint_contains(&err, "demo.users.\"player.id\"");
+        assert_hint_not_contains(&err, "demo.users.player.id");
     }
 
     #[test]
@@ -740,11 +755,7 @@ mod tests {
         let missing = cp(&["player"], "id");
         let err = StructuredQueryError::unknown_column(&missing, &valid);
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("hockey.master.\"player.id\""),
-            "hint must suggest the fully-qualified quoted form, got: {hint}"
-        );
+        assert_hint_contains(&err, "hockey.master.\"player.id\"");
     }
 
     #[test]
@@ -752,8 +763,7 @@ mod tests {
         let valid = vec![cp(&[], "user_login"), cp(&[], "title")];
         let err = StructuredQueryError::unknown_column(&cp(&[], "user_llogin"), &valid);
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(hint.contains("user_login"), "got: {hint}");
+        assert_hint_contains(&err, "user_login");
     }
 
     #[test]
@@ -779,12 +789,8 @@ mod tests {
 
         assert_eq!(err.reason(), TABLE_NOT_FOUND_REASON);
         assert_eq!(err.status(), StatusCode::NotFound);
-        let hint = err.hint().expect("hint should be present");
-        assert!(hint.contains("coral.tables"), "got: {hint}");
-        assert!(
-            !hint.contains("coral source"),
-            "hint must stay transport-neutral (no CLI-specific commands), got: {hint}"
-        );
+        assert_hint_contains(&err, "coral.tables");
+        assert_hint_not_contains(&err, "coral source");
     }
 
     #[test]
@@ -828,11 +834,7 @@ mod tests {
             &tables,
         );
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("hockey.\"Master\""),
-            "expected case-preserving quoted hint, got: {hint}"
-        );
+        assert_hint_contains(&err, "hockey.\"Master\"");
     }
 
     #[test]
@@ -845,8 +847,7 @@ mod tests {
         let err =
             StructuredQueryError::table_not_found(&tr(&["datafusion", "hockey", "game"]), &tables);
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(hint.contains("hockey.games"), "got: {hint}");
+        assert_hint_contains(&err, "hockey.games");
     }
 
     #[test]
@@ -857,19 +858,9 @@ mod tests {
             &tables,
         );
 
-        assert!(
-            err.summary().contains("`hockey.master`"),
-            "summary should strip catalog prefix, got: {}",
-            err.summary()
-        );
-        assert_eq!(
-            err.metadata().get("schema").map(String::as_str),
-            Some("hockey")
-        );
-        assert_eq!(
-            err.metadata().get("table").map(String::as_str),
-            Some("master")
-        );
+        assert_summary_contains(&err, "`hockey.master`");
+        assert_metadata(&err, "schema", Some("hockey"));
+        assert_metadata(&err, "table", Some("master"));
     }
 
     #[test]
@@ -881,21 +872,10 @@ mod tests {
         let err =
             StructuredQueryError::table_not_found(&tr(&["datafusion", "public", "games"]), &tables);
 
-        assert_eq!(err.metadata().get("schema"), None);
-        assert_eq!(
-            err.metadata().get("table").map(String::as_str),
-            Some("games")
-        );
-        assert!(
-            err.summary().contains("`games`"),
-            "summary should show the bare table, got: {}",
-            err.summary()
-        );
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("hockey.games"),
-            "unqualified miss with a close match should suggest the schema-qualified form, got: {hint}"
-        );
+        assert_metadata(&err, "schema", None);
+        assert_metadata(&err, "table", Some("games"));
+        assert_summary_contains(&err, "`games`");
+        assert_hint_contains(&err, "hockey.games");
     }
 
     #[test]
@@ -909,21 +889,10 @@ mod tests {
             &tables,
         );
 
-        assert_eq!(err.metadata().get("schema"), None);
-        assert_eq!(
-            err.metadata().get("table").map(String::as_str),
-            Some("player.stats")
-        );
-        assert!(
-            err.summary().contains("`player.stats`"),
-            "summary should show the dotted bare table, got: {}",
-            err.summary()
-        );
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("hockey.\"player.stats\""),
-            "hint should quote dotted table name, got: {hint}"
-        );
+        assert_metadata(&err, "schema", None);
+        assert_metadata(&err, "table", Some("player.stats"));
+        assert_summary_contains(&err, "`player.stats`");
+        assert_hint_contains(&err, "hockey.\"player.stats\"");
     }
 
     #[test]
@@ -938,28 +907,12 @@ mod tests {
             &tables,
         );
 
-        assert_eq!(err.metadata().get("schema"), None);
-        assert_eq!(
-            err.metadata().get("table").map(String::as_str),
-            Some("github.pulls")
-        );
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("`\"github.pulls\"` is one quoted identifier"),
-            "hint should explain whole-reference quoting, got: {hint}"
-        );
-        assert!(
-            hint.contains("`github.pulls`"),
-            "hint should suggest the SQL-safe unquoted qualified reference, got: {hint}"
-        );
-        assert!(
-            hint.contains("`\"github\".\"pulls\"`"),
-            "hint should show per-identifier quoting as the alternative, got: {hint}"
-        );
-        assert!(
-            hint.contains("do not quote the whole `schema.table` string"),
-            "hint should explicitly reject whole-reference quoting, got: {hint}"
-        );
+        assert_metadata(&err, "schema", None);
+        assert_metadata(&err, "table", Some("github.pulls"));
+        assert_hint_contains(&err, "`\"github.pulls\"` is one quoted identifier");
+        assert_hint_contains(&err, "`github.pulls`");
+        assert_hint_contains(&err, "`\"github\".\"pulls\"`");
+        assert_hint_contains(&err, "do not quote the whole `schema.table` string");
     }
 
     #[test]
@@ -970,24 +923,11 @@ mod tests {
             &tables,
         );
 
-        assert_eq!(err.metadata().get("schema"), None);
-        assert_eq!(
-            err.metadata().get("table").map(String::as_str),
-            Some("github.pulls")
-        );
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("`\"github.pulls\"` is one quoted identifier"),
-            "hint should explain whole-reference quoting, got: {hint}"
-        );
-        assert!(
-            hint.contains("`\"GitHub\".\"Pulls\"`"),
-            "hint should suggest the case-preserved table reference, got: {hint}"
-        );
-        assert!(
-            !hint.contains("or `\"GitHub\".\"Pulls\"`"),
-            "hint should not duplicate equivalent suggestions, got: {hint}"
-        );
+        assert_metadata(&err, "schema", None);
+        assert_metadata(&err, "table", Some("github.pulls"));
+        assert_hint_contains(&err, "`\"github.pulls\"` is one quoted identifier");
+        assert_hint_contains(&err, "`\"GitHub\".\"Pulls\"`");
+        assert_hint_not_contains(&err, "or `\"GitHub\".\"Pulls\"`");
     }
 
     #[test]
@@ -998,11 +938,7 @@ mod tests {
             &tables,
         );
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            !hint.contains("`\"github.pulls\"` is one quoted identifier"),
-            "ambiguous case-insensitive matches should not pick an arbitrary table, got: {hint}"
-        );
+        assert_hint_not_contains(&err, "`\"github.pulls\"` is one quoted identifier");
     }
 
     #[test]
@@ -1015,12 +951,8 @@ mod tests {
             &tables,
         );
 
-        assert_eq!(
-            err.metadata().get("schema").map(String::as_str),
-            Some("public")
-        );
-        let hint = err.hint().expect("hint should be present");
-        assert!(hint.contains("public.\"Reports\""), "got: {hint}");
+        assert_metadata(&err, "schema", Some("public"));
+        assert_hint_contains(&err, "public.\"Reports\"");
     }
 
     #[test]
@@ -1033,19 +965,9 @@ mod tests {
             &tables,
         );
 
-        assert_eq!(
-            err.metadata().get("schema").map(String::as_str),
-            Some("foo.bar")
-        );
-        assert_eq!(
-            err.metadata().get("table").map(String::as_str),
-            Some("items")
-        );
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("\"foo.bar\".\"Items\""),
-            "hint should quote dotted schema as one identifier, got: {hint}"
-        );
+        assert_metadata(&err, "schema", Some("foo.bar"));
+        assert_metadata(&err, "table", Some("items"));
+        assert_hint_contains(&err, "\"foo.bar\".\"Items\"");
     }
 
     #[test]
@@ -1058,14 +980,8 @@ mod tests {
             &tables,
         );
 
-        assert_eq!(
-            err.metadata().get("schema").map(String::as_str),
-            Some("foo.bar")
-        );
-        assert_eq!(
-            err.metadata().get("table").map(String::as_str),
-            Some("missing")
-        );
+        assert_metadata(&err, "schema", Some("foo.bar"));
+        assert_metadata(&err, "table", Some("missing"));
     }
 
     #[test]
@@ -1076,8 +992,7 @@ mod tests {
         let tables = vec![table("hockey", "zzzzzzzzz")];
         let err = StructuredQueryError::table_not_found(&tr(&["games"]), &tables);
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(hint.contains("coral.tables"), "got: {hint}");
+        assert_hint_contains(&err, "coral.tables");
     }
 
     #[test]
@@ -1091,16 +1006,9 @@ mod tests {
             &tables,
         );
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("stripe.accounts"),
-            "unqualified miss should suggest the closest schema-qualified name, got: {hint}"
-        );
-        assert_eq!(err.metadata().get("schema"), None);
-        assert_eq!(
-            err.metadata().get("table").map(String::as_str),
-            Some("account")
-        );
+        assert_hint_contains(&err, "stripe.accounts");
+        assert_metadata(&err, "schema", None);
+        assert_metadata(&err, "table", Some("account"));
     }
 
     #[test]
@@ -1113,11 +1021,7 @@ mod tests {
             &tables,
         );
 
-        let hint = err.hint().expect("hint should be present");
-        assert!(
-            hint.contains("coral.tables"),
-            "no-match unqualified case should fall back to catalog pointer, got: {hint}"
-        );
+        assert_hint_contains(&err, "coral.tables");
     }
 
     #[test]

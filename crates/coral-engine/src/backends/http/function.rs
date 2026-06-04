@@ -23,11 +23,7 @@ use crate::backends::http::provider::{HttpJsonExecRequest, http_json_exec};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::literal_to_string;
-
-struct FunctionCallContext<'a> {
-    source_schema: &'a str,
-    function_name: &'a str,
-}
+use crate::backends::shared::function_args::{FunctionCallContext, bind_table_function_args};
 
 /// Immutable execution state shared by every invocation of one registered HTTP
 /// table function.
@@ -155,95 +151,22 @@ fn bind_function_args(
     function: &SourceTableFunctionSpec,
     args: &[Expr],
 ) -> Result<HashMap<String, String>> {
-    let context = FunctionCallContext {
-        source_schema,
-        function_name: function.name.as_str(),
-    };
-    ensure_no_extra_args(&context, function.args.len(), args.len())?;
-
-    let mut required_missing = Vec::new();
-    let mut arg_values = HashMap::with_capacity(function.args.len());
-
-    for (index, spec) in function.args.iter().enumerate() {
-        let Some(value) = resolve_call_arg_literal(&context, spec.name.as_str(), args.get(index))?
-        else {
-            if spec.required {
-                required_missing.push(spec.name.as_str());
-            }
-            continue;
-        };
-        ensure_call_arg_allowed_value(&context, spec.name.as_str(), &value, &spec.values)?;
-        arg_values.insert(spec.bind.arg.clone(), value);
-    }
-
-    if !required_missing.is_empty() {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} missing required argument(s): {}",
-            context.source_schema,
-            context.function_name,
-            required_missing.join(", ")
-        )));
-    }
-
-    Ok(arg_values)
-}
-
-fn ensure_no_extra_args(
-    context: &FunctionCallContext<'_>,
-    expected: usize,
-    actual: usize,
-) -> Result<()> {
-    if actual > expected {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} expected at most {} arguments, got {}",
-            context.source_schema, context.function_name, expected, actual
-        )));
-    }
-    Ok(())
-}
-
-fn resolve_call_arg_literal(
-    context: &FunctionCallContext<'_>,
-    arg_name: &str,
-    expr: Option<&Expr>,
-) -> Result<Option<String>> {
-    let Some(expr) = expr else {
-        return Ok(None);
-    };
-    if is_null_literal(expr) {
-        return Ok(None);
-    }
-    let Some(value) = literal_to_string(expr) else {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} argument '{}' must be a literal",
-            context.source_schema, context.function_name, arg_name
-        )));
-    };
-    Ok(Some(value))
-}
-
-fn is_null_literal(expr: &Expr) -> bool {
-    match expr {
-        Expr::Literal(value, _) => value.is_null(),
-        Expr::Cast(cast) => is_null_literal(cast.expr.as_ref()),
-        Expr::TryCast(cast) => is_null_literal(cast.expr.as_ref()),
-        _ => false,
-    }
-}
-
-fn ensure_call_arg_allowed_value(
-    context: &FunctionCallContext<'_>,
-    arg: &str,
-    value: &str,
-    allowed_values: &[String],
-) -> Result<()> {
-    if !allowed_values.is_empty() && !allowed_values.iter().any(|allowed| allowed == value) {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} argument '{arg}' has invalid value '{value}'; expected one of: {}",
-            context.source_schema,
-            context.function_name,
-            allowed_values.join(", ")
-        )));
-    }
-    Ok(())
+    bind_table_function_args(
+        &FunctionCallContext {
+            source_schema,
+            function_name: function.name.as_str(),
+        },
+        &function.args,
+        args,
+        literal_to_string,
+        Clone::clone,
+        |context, required_missing| {
+            DataFusionError::Plan(format!(
+                "{}.{} missing required argument(s): {}",
+                context.source_schema,
+                context.function_name,
+                required_missing.join(", ")
+            ))
+        },
+    )
 }

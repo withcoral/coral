@@ -6,6 +6,9 @@ use tracing::Instrument as _;
 use tracing::field;
 
 use crate::backends::http::request::RequestBody;
+use crate::backends::shared::trace::{
+    TraceBodyContent, TraceBodySpanKind, record_trace_body_span, trace_body_content,
+};
 pub(super) use crate::backends::shared::trace::{
     inject_trace_context, record_processing_error as record_http_processing_error,
     record_trace_http_endpoint, sanitize_trace_url, trace_http_endpoint,
@@ -13,33 +16,11 @@ pub(super) use crate::backends::shared::trace::{
 
 const HTTP_BODY_CAPTURE_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 const HTTP_BODY_CAPTURE_TOTAL_TIMEOUT: Duration = Duration::from_millis(200);
-const HTTP_BODY_TRACE_TARGET: &str = "coral.http.body";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TraceBodyContent {
-    body: String,
-    truncated: bool,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UnconsumedTraceBody {
     content: TraceBodyContent,
     complete_body_size: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HttpBodyDirection {
-    Request,
-    Response,
-}
-
-impl HttpBodyDirection {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Request => "request",
-            Self::Response => "response",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -68,17 +49,17 @@ impl HttpBodyCapture {
         let Some(content) = trace_request_body_content(body, max_bytes) else {
             return;
         };
-        Self::record(span, request_id, HttpBodyDirection::Request, &content);
+        record_trace_body_span(span, TraceBodySpanKind::HttpRequest, request_id, &content);
     }
 
     pub(super) fn record_response(&self, span: &tracing::Span, request_id: u64, body: &str) {
         let Some(max_bytes) = self.enabled_max_bytes() else {
             return;
         };
-        Self::record(
+        record_trace_body_span(
             span,
+            TraceBodySpanKind::HttpResponse,
             request_id,
-            HttpBodyDirection::Response,
             &trace_body_content(body, max_bytes),
         );
     }
@@ -102,45 +83,13 @@ impl HttpBodyCapture {
                     i64::try_from(body_size).unwrap_or(i64::MAX),
                 );
             }
-            Self::record(
+            record_trace_body_span(
                 response_span,
+                TraceBodySpanKind::HttpResponse,
                 request_id,
-                HttpBodyDirection::Response,
                 &body.content,
             );
         }
-    }
-
-    fn record(
-        span: &tracing::Span,
-        request_id: u64,
-        direction: HttpBodyDirection,
-        content: &TraceBodyContent,
-    ) {
-        span.in_scope(|| match direction {
-            HttpBodyDirection::Request => {
-                let body_span = tracing::trace_span!(
-                    target: HTTP_BODY_TRACE_TARGET,
-                    "coral.http.request.body",
-                    coral.http.request_id = request_id,
-                    coral.http.body.direction = direction.as_str(),
-                    coral.http.request.body = content.body.as_str(),
-                    coral.http.request.body.truncated = content.truncated,
-                );
-                body_span.in_scope(|| {});
-            }
-            HttpBodyDirection::Response => {
-                let body_span = tracing::trace_span!(
-                    target: HTTP_BODY_TRACE_TARGET,
-                    "coral.http.response.body",
-                    coral.http.request_id = request_id,
-                    coral.http.body.direction = direction.as_str(),
-                    coral.http.response.body = content.body.as_str(),
-                    coral.http.response.body.truncated = content.truncated,
-                );
-                body_span.in_scope(|| {});
-            }
-        });
     }
 }
 
@@ -197,27 +146,6 @@ fn trace_request_body_content(
         RequestBody::Text(text) => text.clone(),
     };
     Some(trace_body_content(&body, max_bytes))
-}
-
-fn trace_body_content(body: &str, max_bytes: usize) -> TraceBodyContent {
-    if body.len() <= max_bytes {
-        return TraceBodyContent {
-            body: body.to_string(),
-            truncated: false,
-        };
-    }
-
-    let mut end = max_bytes;
-    while !body.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    TraceBodyContent {
-        body: body
-            .get(..end)
-            .expect("trace body truncation end is a UTF-8 boundary")
-            .to_string(),
-        truncated: true,
-    }
 }
 
 async fn read_unconsumed_response_body(
@@ -298,14 +226,13 @@ fn trace_body_from_bytes(
 
 #[cfg(test)]
 mod tests {
-    use opentelemetry::Value as OtelValue;
-    use opentelemetry::trace::TracerProvider;
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
     use serde_json::json;
-    use tracing_subscriber::layer::SubscriberExt;
 
-    use super::{HttpBodyCapture, trace_body_content, trace_request_body_content};
+    use super::{HttpBodyCapture, trace_request_body_content};
     use crate::backends::http::request::RequestBody;
+    use crate::backends::shared::trace::test_support::{
+        TraceCapture, span_attr_bool as span_bool_attr, span_attr_string as span_string_attr,
+    };
 
     #[test]
     fn trace_request_body_content_records_compact_json() {
@@ -324,35 +251,16 @@ mod tests {
     }
 
     #[test]
-    fn trace_body_content_truncates_on_utf8_boundary() {
-        let content = trace_body_content("a💚b", 3);
-
-        assert_eq!(content.body, "a");
-        assert!(content.truncated);
-    }
-
-    #[test]
     fn body_capture_emits_child_span_with_preview_attributes() {
-        let memory = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(memory.clone())
-            .build();
-        let tracer = provider.tracer("body-capture-test");
-        let layer = tracing_opentelemetry::layer()
-            .with_tracer(tracer)
-            .with_target(true)
-            .with_level(true);
-        let subscriber = tracing_subscriber::Registry::default().with(layer);
-
-        tracing::subscriber::with_default(subscriber, || {
+        let capture = TraceCapture::install("body-capture-test");
+        {
             let parent = tracing::info_span!(target: "coral_engine::http", "http.request");
             let _entered = parent.enter();
             let capture = HttpBodyCapture::new(Some(4));
             capture.record_request(&parent, 7, Some(&RequestBody::Text("abcdef".to_string())));
-        });
-        provider.force_flush().expect("flush spans");
+        }
 
-        let spans = memory.get_finished_spans().expect("finished spans");
+        let spans = capture.finished_spans();
         let body = spans
             .iter()
             .find(|span| span.name == "coral.http.request.body")
@@ -377,27 +285,6 @@ mod tests {
             span_bool_attr(body, "coral.http.request.body.truncated"),
             Some(true)
         );
-        provider.shutdown().expect("provider shutdown");
-    }
-
-    fn span_string_attr(span: &SpanData, key: &str) -> Option<String> {
-        span.attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == key)
-            .and_then(|attribute| match &attribute.value {
-                OtelValue::String(value) => Some(value.to_string()),
-                OtelValue::I64(value) => Some(value.to_string()),
-                _ => None,
-            })
-    }
-
-    fn span_bool_attr(span: &SpanData, key: &str) -> Option<bool> {
-        span.attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == key)
-            .and_then(|attribute| match &attribute.value {
-                OtelValue::Bool(value) => Some(*value),
-                _ => None,
-            })
+        capture.shutdown();
     }
 }

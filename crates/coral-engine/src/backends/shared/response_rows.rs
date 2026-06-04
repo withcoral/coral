@@ -10,6 +10,47 @@ use coral_spec::{ResponseSpec, RowStrategy};
 
 use crate::backends::shared::json_path::get_path_value;
 
+#[derive(Clone, Copy)]
+pub(crate) enum ResponseErrorPolicy {
+    RequireOkPath(&'static str),
+    OkPathOrErrorPath(&'static str),
+}
+
+pub(crate) fn detect_response_error(
+    response: &ResponseSpec,
+    payload: &Value,
+    policy: ResponseErrorPolicy,
+) -> Option<String> {
+    match policy {
+        ResponseErrorPolicy::RequireOkPath(fallback_detail) => {
+            if response.ok_path.is_empty() {
+                return None;
+            }
+            let ok = get_path_value(payload, &response.ok_path)
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            (!ok).then(|| {
+                error_path_detail(response, payload, false)
+                    .unwrap_or_else(|| fallback_detail.to_string())
+            })
+        }
+        ResponseErrorPolicy::OkPathOrErrorPath(ok_path_fallback_detail) => {
+            if !response.ok_path.is_empty() {
+                let ok = get_path_value(payload, &response.ok_path)
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                return (!ok).then(|| {
+                    error_path_detail(response, payload, true)
+                        .unwrap_or_else(|| ok_path_fallback_detail.to_string())
+                });
+            }
+            (!response.error_path.is_empty())
+                .then(|| error_path_detail(response, payload, true))
+                .flatten()
+        }
+    }
+}
+
 /// Extracts the flat row list from `payload` according to `response`.
 pub(crate) fn extract_rows(response: &ResponseSpec, payload: &Value) -> Vec<Value> {
     match response.row_strategy {
@@ -125,6 +166,25 @@ fn response_root<'a>(response: &ResponseSpec, payload: &'a Value) -> &'a Value {
     }
 }
 
+fn error_path_detail(
+    response: &ResponseSpec,
+    payload: &Value,
+    stringify_non_string: bool,
+) -> Option<String> {
+    if response.error_path.is_empty() {
+        return None;
+    }
+    let value = get_path_value(payload, &response.error_path)?;
+    if value.is_null() {
+        return None;
+    }
+    match value {
+        Value::String(text) => Some(text.clone()),
+        other if stringify_non_string => Some(other.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::extract_rows;
@@ -140,50 +200,60 @@ mod tests {
     }
 
     #[test]
-    fn direct_returns_array_at_rows_path() {
-        let payload = json!({ "items": [{ "id": 1 }, { "id": 2 }] });
-        let rows = extract_rows(&response(&["items"], RowStrategy::Direct), &payload);
-        assert_eq!(rows.len(), 2);
-    }
-
-    #[test]
-    fn direct_wraps_scalar_in_single_row() {
-        let payload = json!({ "value": 42 });
-        let rows = extract_rows(&response(&["value"], RowStrategy::Direct), &payload);
-        assert_eq!(rows, vec![json!(42)]);
-    }
-
-    #[test]
-    fn direct_returns_empty_for_missing_path() {
-        let payload = json!({ "items": [] });
-        let rows = extract_rows(&response(&["missing"], RowStrategy::Direct), &payload);
-        assert!(rows.is_empty());
-    }
-
-    #[test]
-    fn dict_entries_flattens_objects_with_key() {
-        let payload = json!({
-            "result": {
-                "a": { "open": 1 },
-                "b": { "open": 2 }
-            }
-        });
-        let rows = extract_rows(&response(&["result"], RowStrategy::DictEntries), &payload);
-        assert_eq!(rows.len(), 2);
-        for row in &rows {
-            assert!(row.get("_key").is_some());
-            assert!(row.get("open").is_some());
+    fn direct_strategy_cases() {
+        for (case, rows_path, payload, expected) in [
+            (
+                "array at rows path",
+                &["items"][..],
+                json!({ "items": [{ "id": 1 }, { "id": 2 }] }),
+                vec![json!({ "id": 1 }), json!({ "id": 2 })],
+            ),
+            (
+                "scalar row",
+                &["value"][..],
+                json!({ "value": 42 }),
+                vec![json!(42)],
+            ),
+            (
+                "missing path",
+                &["missing"][..],
+                json!({ "items": [] }),
+                vec![],
+            ),
+        ] {
+            assert_eq!(
+                extract_rows(&response(rows_path, RowStrategy::Direct), &payload),
+                expected,
+                "{case}",
+            );
         }
     }
 
     #[test]
-    fn dict_entries_wraps_scalar_values_in_value_field() {
-        let payload = json!({ "result": { "a": 1.5, "b": 2.5 } });
-        let rows = extract_rows(&response(&["result"], RowStrategy::DictEntries), &payload);
-        assert_eq!(rows.len(), 2);
-        for row in &rows {
-            assert!(row.get("_key").is_some());
-            assert!(row.get("_value").is_some());
+    fn dict_entries_strategy_cases() {
+        for (case, payload, expected_field) in [
+            (
+                "object values",
+                json!({
+                    "result": {
+                        "a": { "open": 1 },
+                        "b": { "open": 2 }
+                    }
+                }),
+                "open",
+            ),
+            (
+                "scalar values",
+                json!({ "result": { "a": 1.5, "b": 2.5 } }),
+                "_value",
+            ),
+        ] {
+            let rows = extract_rows(&response(&["result"], RowStrategy::DictEntries), &payload);
+            assert_eq!(rows.len(), 2, "{case}");
+            for row in &rows {
+                assert!(row.get("_key").is_some(), "{case}");
+                assert!(row.get(expected_field).is_some(), "{case}");
+            }
         }
     }
 
@@ -221,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn series_point_list_honors_rows_path() {
+    fn series_point_list_accepts_supported_roots() {
         let payload = json!({
             "result": {
                 "series": [{
@@ -231,41 +301,18 @@ mod tests {
                 }]
             }
         });
-        let rows = extract_rows(
-            &response(&["result"], RowStrategy::SeriesPointList),
-            &payload,
-        );
-        assert_eq!(
-            rows,
-            vec![json!({
-                "metric": "cpu",
-                "scope": "host:demo",
-                "timestamp": 1_710_000_000_i64,
-                "value": 42.5
-            })]
-        );
-    }
-
-    #[test]
-    fn series_point_list_accepts_rows_path_to_series_array() {
-        let payload = json!({
-            "result": {
-                "series": [{
-                    "metric": "cpu",
-                    "scope": "host:demo",
-                    "pointlist": [[1_710_000_000, 42.5]]
-                }]
-            }
-        });
-        let rows = extract_rows(
-            &response(&["result", "series"], RowStrategy::SeriesPointList),
-            &payload,
-        );
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows.first().and_then(|row| row.get("metric")),
-            Some(&json!("cpu"))
-        );
+        let expected = vec![json!({
+            "metric": "cpu",
+            "scope": "host:demo",
+            "timestamp": 1_710_000_000_i64,
+            "value": 42.5
+        })];
+        for rows_path in [&["result"][..], &["result", "series"][..]] {
+            assert_eq!(
+                extract_rows(&response(rows_path, RowStrategy::SeriesPointList), &payload),
+                expected
+            );
+        }
     }
 
     #[test]

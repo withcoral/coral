@@ -1,6 +1,8 @@
 //! Shared backend helpers used by multiple concrete backends.
 
+pub(crate) mod error;
 pub(crate) mod filter_expr;
+pub(crate) mod function_args;
 pub(crate) mod json_exec;
 pub(crate) mod json_path;
 pub(crate) mod mapping;

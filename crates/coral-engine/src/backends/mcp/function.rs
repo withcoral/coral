@@ -14,12 +14,12 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use serde_json::Value;
 
-use super::client::McpSourceClient;
+use super::McpToolCaller;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
 use crate::backends::schema_from_columns;
-use crate::backends::shared::json_exec::JsonExec;
-use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::function_args::{FunctionCallContext, bind_table_function_args};
+use crate::backends::shared::json_exec::mapped_json_exec;
 
 #[derive(Clone)]
 pub(super) struct McpSourceTableFunction {
@@ -28,7 +28,7 @@ pub(super) struct McpSourceTableFunction {
 }
 
 struct McpFunctionState {
-    backend: McpSourceClient,
+    backend: Arc<dyn McpToolCaller>,
     source_schema: String,
     function_name: String,
     tool_name: String,
@@ -61,7 +61,7 @@ impl std::fmt::Debug for McpFunctionState {
 
 impl McpSourceTableFunction {
     pub(super) fn new(
-        backend: McpSourceClient,
+        backend: Arc<dyn McpToolCaller>,
         source_schema: String,
         function: McpTableFunctionSpec,
     ) -> Result<Self> {
@@ -164,29 +164,16 @@ impl TableProvider for McpFunctionCallTableProvider {
         });
         let arg_strings: Arc<HashMap<String, String>> =
             Arc::new(arg_values_as_strings(&self.arg_values));
-        let converter = {
-            let columns = Arc::clone(&self.state.columns);
-            let schema = self.state.schema.clone();
-            let args = Arc::clone(&arg_strings);
-            Arc::new(move |items: &[Value]| {
-                convert_items(&columns, schema.clone(), &HashMap::new(), &args, items)
-            })
-        };
-        let exec = JsonExec::new(
+        mapped_json_exec(
             &self.state.source_schema,
             &self.state.function_name,
             self.state.schema.clone(),
+            Arc::clone(&self.state.columns),
             fetcher,
-            converter,
+            (Arc::new(HashMap::new()), arg_strings),
             projection.cloned(),
-        )?;
-        Ok(Arc::new(exec))
+        )
     }
-}
-
-struct FunctionCallContext<'a> {
-    source_schema: &'a str,
-    function_name: &'a str,
 }
 
 fn bind_function_args(
@@ -194,81 +181,25 @@ fn bind_function_args(
     function: &McpTableFunctionSpec,
     args: &[Expr],
 ) -> Result<HashMap<String, Value>> {
-    let context = FunctionCallContext {
-        source_schema,
-        function_name: function.name(),
-    };
-    ensure_no_extra_args(&context, function.args().len(), args.len())?;
-
-    let mut required_missing = Vec::new();
-    let mut arg_values = HashMap::with_capacity(function.args().len());
-
-    for (index, spec) in function.args().iter().enumerate() {
-        let Some(value) = resolve_call_arg_literal(&context, spec.name.as_str(), args.get(index))?
-        else {
-            if spec.required {
-                required_missing.push(spec.name.as_str());
-            }
-            continue;
-        };
-        ensure_call_arg_allowed_value(&context, spec.name.as_str(), &value, &spec.values)?;
-        arg_values.insert(spec.bind.arg.clone(), value);
-    }
-
-    if !required_missing.is_empty() {
-        return Err(DataFusionError::External(Box::new(
-            McpProviderQueryError::MissingRequiredFunctionArg {
-                schema: context.source_schema.to_string(),
-                function: context.function_name.to_string(),
-                args: required_missing.iter().map(ToString::to_string).collect(),
-            },
-        )));
-    }
-
-    Ok(arg_values)
-}
-
-fn ensure_no_extra_args(
-    context: &FunctionCallContext<'_>,
-    expected: usize,
-    actual: usize,
-) -> Result<()> {
-    if actual > expected {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} expected at most {} arguments, got {}",
-            context.source_schema, context.function_name, expected, actual
-        )));
-    }
-    Ok(())
-}
-
-fn resolve_call_arg_literal(
-    context: &FunctionCallContext<'_>,
-    arg_name: &str,
-    expr: Option<&Expr>,
-) -> Result<Option<Value>> {
-    let Some(expr) = expr else {
-        return Ok(None);
-    };
-    if is_null_literal(expr) {
-        return Ok(None);
-    }
-    let Some(value) = literal_to_json_value(expr) else {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} argument '{}' must be a literal",
-            context.source_schema, context.function_name, arg_name
-        )));
-    };
-    Ok(Some(value))
-}
-
-fn is_null_literal(expr: &Expr) -> bool {
-    match expr {
-        Expr::Literal(value, _) => value.is_null(),
-        Expr::Cast(cast) => is_null_literal(cast.expr.as_ref()),
-        Expr::TryCast(cast) => is_null_literal(cast.expr.as_ref()),
-        _ => false,
-    }
+    bind_table_function_args(
+        &FunctionCallContext {
+            source_schema,
+            function_name: function.name(),
+        },
+        function.args(),
+        args,
+        literal_to_json_value,
+        value_for_allowed_value_check,
+        |context, args| {
+            DataFusionError::External(Box::new(
+                McpProviderQueryError::MissingRequiredFunctionArg {
+                    schema: context.source_schema.to_string(),
+                    function: context.function_name.to_string(),
+                    args,
+                },
+            ))
+        },
+    )
 }
 
 fn literal_to_json_value(expr: &Expr) -> Option<Value> {
@@ -319,28 +250,6 @@ fn scalar_value_to_json(value: &ScalarValue) -> Option<Value> {
         }
         _ => None,
     }
-}
-
-fn ensure_call_arg_allowed_value(
-    context: &FunctionCallContext<'_>,
-    arg: &str,
-    value: &Value,
-    allowed_values: &[String],
-) -> Result<()> {
-    let comparable_value = value_for_allowed_value_check(value);
-    if !allowed_values.is_empty()
-        && !allowed_values
-            .iter()
-            .any(|allowed| allowed == comparable_value.as_str())
-    {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} argument '{arg}' has invalid value '{value}'; expected one of: {}",
-            context.source_schema,
-            context.function_name,
-            allowed_values.join(", ")
-        )));
-    }
-    Ok(())
 }
 
 fn value_for_allowed_value_check(value: &Value) -> String {

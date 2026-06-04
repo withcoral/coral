@@ -3,7 +3,7 @@ use super::metadata::FileMetadataColumns;
 use super::partitions::{
     PartitionColumns, partition_filter_constraints, partition_values_for_path,
 };
-use super::provider::FileTableProvider;
+use super::provider;
 use crate::backends::compile_source_manifest;
 use crate::runtime::catalog;
 use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
@@ -19,6 +19,7 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::ScalarValue;
+use datafusion::datasource::TableProvider;
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext, col, lit};
@@ -28,6 +29,7 @@ use parquet::arrow::ArrowWriter;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -41,6 +43,10 @@ fn file_url_from_file_path(path: &std::path::Path) -> String {
     url::Url::from_file_path(path)
         .expect("path should convert to file URL")
         .to_string()
+}
+
+fn write_events_file(path: impl AsRef<std::path::Path>, contents: &str) {
+    fs::write(path, contents).expect("events fixture should be written");
 }
 
 fn compile_sources(manifests: Vec<ValidatedSourceManifest>) -> Vec<CompiledQuerySource> {
@@ -61,6 +67,54 @@ fn compile_sources(manifests: Vec<ValidatedSourceManifest>) -> Vec<CompiledQuery
             }
         })
         .collect()
+}
+
+fn register_file_source(ctx: &SessionContext, manifest: ValidatedSourceManifest) {
+    register_sources_blocking(ctx, compile_sources(vec![manifest]))
+        .expect("file source should register");
+}
+
+fn register_file_source_with_catalog(ctx: &SessionContext, manifest: ValidatedSourceManifest) {
+    let active_sources = register_sources_blocking(ctx, compile_sources(vec![manifest]))
+        .expect("file source should register");
+    catalog::register(ctx, &active_sources.active_sources)
+        .expect("metadata tables should register");
+}
+
+fn file_context(manifest: ValidatedSourceManifest) -> SessionContext {
+    let ctx = SessionContext::new();
+    register_file_source(&ctx, manifest);
+    ctx
+}
+
+async fn collect_query(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch> {
+    ctx.sql(sql)
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute")
+}
+
+async fn render_query(ctx: &SessionContext, sql: &str) -> String {
+    pretty_format_batches(&collect_query(ctx, sql).await)
+        .expect("batches should render")
+        .to_string()
+}
+
+async fn registered_provider(
+    ctx: &SessionContext,
+    schema: &str,
+    table: &str,
+) -> Arc<dyn TableProvider> {
+    ctx.catalog("datafusion")
+        .expect("catalog should exist")
+        .schema(schema)
+        .expect("schema should exist")
+        .table(table)
+        .await
+        .expect("table lookup should succeed")
+        .expect("table should exist")
 }
 
 #[test]
@@ -224,40 +278,19 @@ async fn parquet_provider_reads_local_files_with_partitions() {
     let fixture_dir = tempdir().expect("tempdir should be created");
     write_metrics_fixture(fixture_dir.path());
 
-    let ctx = SessionContext::new();
-    let location = file_url_from_directory_path(fixture_dir.path());
-    let manifest = parquet_manifest(&location);
+    let ctx = file_context(parquet_manifest_for_dir(
+        fixture_dir.path(),
+        "**/*.parquet",
+        &[parquet_partition("date")],
+    ));
 
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("file source should register");
+    let _provider = registered_provider(&ctx, "otel", "metrics").await;
 
-    let provider = ctx
-        .catalog("datafusion")
-        .expect("catalog should exist")
-        .schema("otel")
-        .expect("schema should exist")
-        .table("metrics")
-        .await
-        .expect("table lookup should succeed")
-        .expect("table should exist");
-    assert!(
-        provider
-            .as_any()
-            .downcast_ref::<FileTableProvider>()
-            .is_some()
-    );
-
-    let batches = ctx
-        .sql("SELECT metric, value, date FROM otel.metrics ORDER BY metric")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
+    let rendered = render_query(
+        &ctx,
+        "SELECT metric, value, date FROM otel.metrics ORDER BY metric",
+    )
+    .await;
 
     assert!(rendered.contains("cpu.usage"));
     assert!(rendered.contains("memory.usage"));
@@ -270,30 +303,23 @@ async fn parquet_provider_exposes_inferred_schema_in_coral_columns() {
     write_metrics_fixture(fixture_dir.path());
 
     let ctx = SessionContext::new();
-    let location = file_url_from_directory_path(fixture_dir.path());
-    let manifest = parquet_manifest(&location);
+    register_file_source_with_catalog(
+        &ctx,
+        parquet_manifest_for_dir(
+            fixture_dir.path(),
+            "**/*.parquet",
+            &[parquet_partition("date")],
+        ),
+    );
 
-    let active_sources = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("file source should register");
-    catalog::register(&ctx, &active_sources.active_sources)
-        .expect("metadata tables should register");
-
-    let batches = ctx
-        .sql(
-            "SELECT column_name, data_type \
-                 FROM coral.columns \
-                 WHERE schema_name = 'otel' AND table_name = 'metrics' \
-                 ORDER BY column_name",
-        )
-        .await
-        .expect("metadata query should plan")
-        .collect()
-        .await
-        .expect("metadata query should execute");
-
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
+    let rendered = render_query(
+        &ctx,
+        "SELECT column_name, data_type \
+         FROM coral.columns \
+         WHERE schema_name = 'otel' AND table_name = 'metrics' \
+         ORDER BY column_name",
+    )
+    .await;
 
     assert!(rendered.contains("date"));
     assert!(rendered.contains("Utf8"));
@@ -373,22 +399,16 @@ async fn parquet_provider_relists_files_within_same_context_when_cache_is_disabl
             .expect("runtime should build"),
     );
     let ctx = SessionContext::new_with_config_rt(SessionConfig::default(), runtime);
-    let location = file_url_from_directory_path(fixture_dir.path());
-    let manifest = parquet_manifest(&location);
+    register_file_source(
+        &ctx,
+        parquet_manifest_for_dir(
+            fixture_dir.path(),
+            "**/*.parquet",
+            &[parquet_partition("date")],
+        ),
+    );
 
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("parquet plugin should register");
-
-    let before = ctx
-        .sql("SELECT COUNT(*) AS count FROM otel.metrics")
-        .await
-        .expect("initial count should plan")
-        .collect()
-        .await
-        .expect("initial count should execute");
-    let before_rendered = pretty_format_batches(&before)
-        .expect("initial count should render")
-        .to_string();
+    let before_rendered = render_query(&ctx, "SELECT COUNT(*) AS count FROM otel.metrics").await;
     assert!(before_rendered.contains('2'));
 
     write_metrics_fixture_for_day(
@@ -398,117 +418,29 @@ async fn parquet_provider_relists_files_within_same_context_when_cache_is_disabl
         "export-2.parquet",
     );
 
-    let after = ctx
-        .sql("SELECT COUNT(*) AS count FROM otel.metrics")
-        .await
-        .expect("updated count should plan")
-        .collect()
-        .await
-        .expect("updated count should execute");
-    let after_rendered = pretty_format_batches(&after)
-        .expect("updated count should render")
-        .to_string();
+    let after_rendered = render_query(&ctx, "SELECT COUNT(*) AS count FROM otel.metrics").await;
     assert!(after_rendered.contains('4'));
-}
-
-#[tokio::test]
-async fn file_provider_reads_jsonl_with_listing_table() {
-    let fixture_dir = tempdir().expect("tempdir should be created");
-    fs::write(
-        fixture_dir.path().join("events.jsonl"),
-        r#"{"id":1,"kind":"user"}
-{"id":2,"kind":"assistant"}
-"#,
-    )
-    .expect("jsonl fixture should be written");
-
-    let ctx = SessionContext::new();
-    let location = file_url_from_directory_path(fixture_dir.path());
-    let manifest = file_manifest_with_columns(
-        "jsonl_demo",
-        "jsonl",
-        &location,
-        "**/*.jsonl",
-        &[
-            json!({ "name": "id", "type": "Int64" }),
-            json!({ "name": "kind", "type": "Utf8" }),
-        ],
-        None,
-    );
-
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("jsonl source should register");
-
-    let provider = ctx
-        .catalog("datafusion")
-        .expect("catalog should exist")
-        .schema("jsonl_demo")
-        .expect("schema should exist")
-        .table("events")
-        .await
-        .expect("table lookup should succeed")
-        .expect("table should exist");
-    assert!(
-        provider
-            .as_any()
-            .downcast_ref::<FileTableProvider>()
-            .is_some(),
-        "plain JSONL should use DataFusion's native listing-table provider"
-    );
-
-    let batches = ctx
-        .sql("SELECT id, kind FROM jsonl_demo.events ORDER BY id")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
-
-    assert!(rendered.contains("assistant"));
-    assert!(rendered.contains("user"));
 }
 
 #[tokio::test]
 async fn file_provider_honors_custom_glob_extension() {
     let fixture_dir = tempdir().expect("tempdir should be created");
-    fs::write(
+    write_events_file(
         fixture_dir.path().join("events.ndjson"),
         r#"{"id":1,"kind":"user"}
 {"id":2,"kind":"assistant"}
 "#,
-    )
-    .expect("jsonl fixture should be written");
-
-    let ctx = SessionContext::new();
-    let location = file_url_from_directory_path(fixture_dir.path());
-    let manifest = file_manifest_with_columns(
-        "custom_ext_demo",
-        "jsonl",
-        &location,
-        "**/*.ndjson",
-        &[
-            json!({ "name": "id", "type": "Int64" }),
-            json!({ "name": "kind", "type": "Utf8" }),
-        ],
-        None,
     );
 
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("jsonl source should register");
+    let ctx = file_context(events_manifest_for_dir(
+        "custom_ext_demo",
+        "jsonl",
+        fixture_dir.path(),
+        "**/*.ndjson",
+        None,
+    ));
 
-    let batches = ctx
-        .sql("SELECT COUNT(*) AS rows FROM custom_ext_demo.events")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
+    let rendered = render_query(&ctx, "SELECT COUNT(*) AS rows FROM custom_ext_demo.events").await;
 
     assert!(rendered.contains('2'));
 }
@@ -517,136 +449,52 @@ async fn file_provider_honors_custom_glob_extension() {
 async fn file_provider_honors_explicit_file_without_default_extension() {
     let fixture_dir = tempdir().expect("tempdir should be created");
     let file_path = fixture_dir.path().join("events.data");
-    fs::write(
+    write_events_file(
         &file_path,
         r#"{"id":1,"kind":"user"}
 {"id":2,"kind":"assistant"}
 "#,
-    )
-    .expect("jsonl fixture should be written");
+    );
 
-    let ctx = SessionContext::new();
     let location = file_url_from_file_path(&file_path);
-    let manifest = file_manifest_with_columns(
+    let ctx = file_context(events_manifest(
         "explicit_file_demo",
         "jsonl",
         &location,
         "**/*.jsonl",
-        &[
-            json!({ "name": "id", "type": "Int64" }),
-            json!({ "name": "kind", "type": "Utf8" }),
-        ],
         None,
-    );
+    ));
 
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("jsonl source should register");
-
-    let batches = ctx
-        .sql("SELECT kind FROM explicit_file_demo.events ORDER BY id")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
+    let rendered = render_query(
+        &ctx,
+        "SELECT kind FROM explicit_file_demo.events ORDER BY id",
+    )
+    .await;
 
     assert!(rendered.contains("assistant"));
     assert!(rendered.contains("user"));
-}
-
-#[tokio::test]
-async fn file_provider_reads_json_array_with_listing_table() {
-    let fixture_dir = tempdir().expect("tempdir should be created");
-    fs::write(
-        fixture_dir.path().join("events.json"),
-        r#"[{"id":1,"kind":"user"},{"id":2,"kind":"assistant"}]"#,
-    )
-    .expect("json fixture should be written");
-
-    let ctx = SessionContext::new();
-    let location = file_url_from_directory_path(fixture_dir.path());
-    let manifest = file_manifest_with_columns(
-        "json_demo",
-        "json",
-        &location,
-        "**/*.json",
-        &[
-            json!({ "name": "id", "type": "Int64" }),
-            json!({ "name": "kind", "type": "Utf8" }),
-        ],
-        None,
-    );
-
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("json source should register");
-
-    let batches = ctx
-        .sql("SELECT COUNT(*) AS rows FROM json_demo.events")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
-
-    assert!(rendered.contains('2'));
 }
 
 #[tokio::test]
 async fn file_provider_reads_csv_with_format_options() {
     let fixture_dir = tempdir().expect("tempdir should be created");
-    fs::write(
+    write_events_file(
         fixture_dir.path().join("events.csv"),
         "id|kind\n1|user\n2|assistant\n",
-    )
-    .expect("csv fixture should be written");
-
-    let ctx = SessionContext::new();
-    let location = file_url_from_directory_path(fixture_dir.path());
-    let manifest = file_manifest_with_columns(
-        "csv_demo",
-        "csv",
-        &location,
-        "**/*.csv",
-        &[
-            json!({ "name": "id", "type": "Int64" }),
-            json!({ "name": "kind", "type": "Utf8" }),
-        ],
-        Some(json!({ "has_header": true, "delimiter": "|" })),
     );
 
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("csv source should register");
+    let ctx = file_context(events_manifest_for_dir(
+        "csv_demo",
+        "csv",
+        fixture_dir.path(),
+        "**/*.csv",
+        Some(json!({ "has_header": true, "delimiter": "|" })),
+    ));
 
-    let batches = ctx
-        .sql("SELECT kind FROM csv_demo.events ORDER BY id")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
+    let rendered = render_query(&ctx, "SELECT kind FROM csv_demo.events ORDER BY id").await;
 
     assert!(rendered.contains("assistant"));
     assert!(rendered.contains("user"));
-}
-
-fn parquet_manifest(location: &str) -> ValidatedSourceManifest {
-    parquet_manifest_with_glob_and_partitions(
-        location,
-        "**/*.parquet",
-        &[json!({
-            "name": "date",
-            "type": "Utf8",
-        })],
-    )
 }
 
 // ── infer_schema_expand_dicts tests ──────────────────────────────────────
@@ -660,54 +508,12 @@ fn parquet_manifest(location: &str) -> ValidatedSourceManifest {
 async fn infer_schema_slow_path_merges_mixed_dictionary_and_plain_columns() {
     let dir = tempdir().expect("tempdir should be created");
 
-    // File 1: "val" column is Dictionary(UInt16, Int64).
-    {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "val",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64)),
-            false,
-        )]));
-        let keys = UInt16Array::from(vec![0u16]);
-        let values = Arc::new(Int64Array::from(vec![100i64]));
-        let col =
-            Arc::new(DictionaryArray::<UInt16Type>::try_new(keys, values).expect("dict array"));
-        let batch = RecordBatch::try_new(schema.clone(), vec![col]).expect("batch");
-        let file =
-            std::fs::File::create(dir.path().join("dict.parquet")).expect("create dict.parquet");
-        let mut w = ArrowWriter::try_new(file, schema, None).expect("writer");
-        w.write(&batch).expect("write");
-        w.close().expect("close");
-    }
+    write_dictionary_i64_parquet(dir.path(), "dict.parquet", 100);
+    write_plain_i64_parquet(dir.path(), "plain.parquet", 200);
 
-    // File 2: "val" column is plain Int64.
-    {
-        let schema = Arc::new(Schema::new(vec![Field::new("val", DataType::Int64, false)]));
-        let col = Arc::new(Int64Array::from(vec![200i64]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![col]).expect("batch");
-        let file =
-            std::fs::File::create(dir.path().join("plain.parquet")).expect("create plain.parquet");
-        let mut w = ArrowWriter::try_new(file, schema, None).expect("writer");
-        w.write(&batch).expect("write");
-        w.close().expect("close");
-    }
+    let ctx = file_context(parquet_manifest_for_dir(dir.path(), "**/*.parquet", &[]));
 
-    let location = file_url_from_directory_path(dir.path());
-    let manifest = parquet_manifest_no_partitions(&location);
-    let ctx = SessionContext::new();
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("mixed-encoding plugin should register via slow path");
-
-    let batches = ctx
-        .sql("SELECT val FROM otel.metrics ORDER BY val")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
+    let rendered = render_query(&ctx, "SELECT val FROM otel.metrics ORDER BY val").await;
     assert!(
         rendered.contains("100"),
         "dictionary-encoded row should be present"
@@ -722,55 +528,19 @@ async fn infer_schema_slow_path_merges_mixed_dictionary_and_plain_columns() {
 async fn infer_schema_slow_path_respects_table_glob() {
     let dir = tempdir().expect("tempdir should be created");
 
-    {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "val",
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64)),
-            false,
-        )]));
-        let keys = UInt16Array::from(vec![0u16]);
-        let values = Arc::new(Int64Array::from(vec![100i64]));
-        let col =
-            Arc::new(DictionaryArray::<UInt16Type>::try_new(keys, values).expect("dict array"));
-        let batch = RecordBatch::try_new(schema.clone(), vec![col]).expect("batch");
-        let file = std::fs::File::create(dir.path().join("matching-dict.parquet"))
-            .expect("create dict.parquet");
-        let mut writer = ArrowWriter::try_new(file, schema, None).expect("writer");
-        writer.write(&batch).expect("write");
-        writer.close().expect("close");
-    }
-
-    {
-        let schema = Arc::new(Schema::new(vec![Field::new("val", DataType::Int64, false)]));
-        let col = Arc::new(Int64Array::from(vec![200i64]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![col]).expect("batch");
-        let file = std::fs::File::create(dir.path().join("matching-plain.parquet"))
-            .expect("create plain.parquet");
-        let mut writer = ArrowWriter::try_new(file, schema, None).expect("writer");
-        writer.write(&batch).expect("write");
-        writer.close().expect("close");
-    }
+    write_dictionary_i64_parquet(dir.path(), "matching-dict.parquet", 100);
+    write_plain_i64_parquet(dir.path(), "matching-plain.parquet", 200);
 
     std::fs::write(dir.path().join("ignored.parquet"), b"not a parquet file")
         .expect("ignored file should be written");
 
-    let location = file_url_from_directory_path(dir.path());
-    let manifest = parquet_manifest_no_partitions_with_glob(&location, "matching-*.parquet");
-    let ctx = SessionContext::new();
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("glob should ignore non-matching parquet files during schema inference");
+    let ctx = file_context(parquet_manifest_for_dir(
+        dir.path(),
+        "matching-*.parquet",
+        &[],
+    ));
 
-    let batches = ctx
-        .sql("SELECT val FROM otel.metrics ORDER BY val")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
+    let rendered = render_query(&ctx, "SELECT val FROM otel.metrics ORDER BY val").await;
     assert!(
         rendered.contains("100"),
         "dictionary-encoded row should be present"
@@ -788,9 +558,9 @@ fn infer_schema_slow_path_returns_error_for_corrupt_parquet_footer() {
         .expect("write corrupt file");
 
     let ctx = SessionContext::new();
-    let location = file_url_from_directory_path(dir.path());
-    let table = parquet_table_spec(&location);
-    let result = FileTableProvider::try_new(&ctx, "otel", table, None, &BTreeMap::default());
+    let table = parquet_table_spec_for_dir(dir.path());
+    let result =
+        provider::FileTableProvider::try_new(&ctx, "otel", table, None, &BTreeMap::default());
     let error = result.expect_err("corrupt parquet should cause provider construction failure");
     assert!(
         error.to_string().contains("data.parquet"),
@@ -805,9 +575,9 @@ fn infer_schema_slow_path_returns_error_for_too_small_parquet_file() {
     std::fs::write(dir.path().join("tiny.parquet"), b"PAR1").expect("write too-small file");
 
     let ctx = SessionContext::new();
-    let location = file_url_from_directory_path(dir.path());
-    let table = parquet_table_spec(&location);
-    let result = FileTableProvider::try_new(&ctx, "otel", table, None, &BTreeMap::default());
+    let table = parquet_table_spec_for_dir(dir.path());
+    let result =
+        provider::FileTableProvider::try_new(&ctx, "otel", table, None, &BTreeMap::default());
     assert!(
         result.is_err(),
         "too-small parquet should cause provider construction failure"
@@ -856,22 +626,14 @@ async fn partition_column_in_file_schema_is_stripped_and_data_is_queryable() {
 
     // Use a manifest that declares `_part_id` as the partition column,
     // matching the hive directory written above.
-    let location = file_url_from_directory_path(dir.path());
-    let manifest = parquet_manifest_with_partition(&location, "_part_id");
-    let ctx = SessionContext::new();
-    register_sources_blocking(&ctx, compile_sources(vec![manifest]))
-        .expect("plugin should register even when file schema contains partition column");
+    let ctx = file_context(parquet_manifest_for_dir(
+        dir.path(),
+        "**/*.parquet",
+        &[parquet_partition("_part_id")],
+    ));
 
     // The provider schema must contain `_part_id` exactly once.
-    let provider = ctx
-        .catalog("datafusion")
-        .expect("catalog should exist")
-        .schema("otel")
-        .expect("schema should exist")
-        .table("metrics")
-        .await
-        .expect("table lookup should succeed")
-        .expect("table should exist");
+    let provider = registered_provider(&ctx, "otel", "metrics").await;
     let schema = provider.schema();
     let part_id_fields: Vec<_> = schema
         .fields()
@@ -896,16 +658,11 @@ async fn partition_column_in_file_schema_is_stripped_and_data_is_queryable() {
     );
 
     // The table must actually return rows when queried.
-    let batches = ctx
-        .sql("SELECT metric, value, _part_id FROM otel.metrics ORDER BY metric")
-        .await
-        .expect("query should plan")
-        .collect()
-        .await
-        .expect("query should execute");
-    let rendered = pretty_format_batches(&batches)
-        .expect("batches should render")
-        .to_string();
+    let rendered = render_query(
+        &ctx,
+        "SELECT metric, value, _part_id FROM otel.metrics ORDER BY metric",
+    )
+    .await;
     assert!(
         rendered.contains("cpu.usage"),
         "data row should be queryable after partition-strip fix"
@@ -916,36 +673,25 @@ async fn partition_column_in_file_schema_is_stripped_and_data_is_queryable() {
     );
 }
 
-fn parquet_table_spec(location: &str) -> FileTableSpec {
-    parquet_table_spec_with_glob(location, "**/*.parquet")
+fn parquet_table_spec_for_dir(root: &Path) -> FileTableSpec {
+    let location = file_url_from_directory_path(root);
+    parquet_table_spec(&location)
 }
 
-fn parquet_table_spec_with_glob(location: &str, glob: &str) -> FileTableSpec {
-    let source_manifest = parquet_manifest_with_glob_and_partitions(location, glob, &[]);
+fn parquet_table_spec(location: &str) -> FileTableSpec {
+    let source_manifest = parquet_manifest(location, "**/*.parquet", &[]);
     let manifest = source_manifest.as_file().expect("file manifest");
     manifest.tables.first().expect("parquet table").clone()
 }
 
-fn parquet_manifest_no_partitions(location: &str) -> ValidatedSourceManifest {
-    parquet_manifest_no_partitions_with_glob(location, "**/*.parquet")
+fn parquet_partition(name: &str) -> serde_json::Value {
+    json!({
+        "name": name,
+        "type": "Utf8",
+    })
 }
 
-fn parquet_manifest_no_partitions_with_glob(location: &str, glob: &str) -> ValidatedSourceManifest {
-    parquet_manifest_with_glob_and_partitions(location, glob, &[])
-}
-
-fn parquet_manifest_with_partition(location: &str, partition: &str) -> ValidatedSourceManifest {
-    parquet_manifest_with_glob_and_partitions(
-        location,
-        "**/*.parquet",
-        &[json!({
-            "name": partition,
-            "type": "Utf8",
-        })],
-    )
-}
-
-fn parquet_manifest_with_glob_and_partitions(
+fn parquet_manifest(
     location: &str,
     glob: &str,
     partitions: &[serde_json::Value],
@@ -968,6 +714,14 @@ fn parquet_manifest_with_glob_and_partitions(
         }]
     }))
     .expect("parquet manifest should parse")
+}
+
+fn parquet_manifest_for_dir(
+    root: &Path,
+    glob: &str,
+    partitions: &[serde_json::Value],
+) -> ValidatedSourceManifest {
+    parquet_manifest(&file_url_from_directory_path(root), glob, partitions)
 }
 
 fn file_manifest_with_columns(
@@ -1004,7 +758,43 @@ fn file_manifest_with_columns(
     .expect("file manifest should parse")
 }
 
-fn write_metrics_fixture(root: &std::path::Path) {
+fn events_manifest(
+    source_name: &str,
+    format: &str,
+    location: &str,
+    glob: &str,
+    format_options: Option<serde_json::Value>,
+) -> ValidatedSourceManifest {
+    file_manifest_with_columns(
+        source_name,
+        format,
+        location,
+        glob,
+        &[
+            json!({ "name": "id", "type": "Int64" }),
+            json!({ "name": "kind", "type": "Utf8" }),
+        ],
+        format_options,
+    )
+}
+
+fn events_manifest_for_dir(
+    source_name: &str,
+    format: &str,
+    root: &Path,
+    glob: &str,
+    format_options: Option<serde_json::Value>,
+) -> ValidatedSourceManifest {
+    events_manifest(
+        source_name,
+        format,
+        &file_url_from_directory_path(root),
+        glob,
+        format_options,
+    )
+}
+
+fn write_metrics_fixture(root: &Path) {
     write_metrics_fixture_for_day(
         root,
         "2026-03-10",
@@ -1013,12 +803,7 @@ fn write_metrics_fixture(root: &std::path::Path) {
     );
 }
 
-fn write_metrics_fixture_for_day(
-    root: &std::path::Path,
-    day: &str,
-    rows: &[(&str, f64)],
-    file_name: &str,
-) {
+fn write_metrics_fixture_for_day(root: &Path, day: &str, rows: &[(&str, f64)], file_name: &str) {
     let partition_dir = root.join(format!("date={day}"));
     std::fs::create_dir_all(&partition_dir).expect("partition dir should exist");
     let file = std::fs::File::create(partition_dir.join(file_name))
@@ -1044,6 +829,38 @@ fn write_metrics_fixture_for_day(
     let mut writer = ArrowWriter::try_new(file, schema, None).expect("writer should be created");
     writer.write(&batch).expect("batch should be written");
     writer.close().expect("writer should close");
+}
+
+fn write_dictionary_i64_parquet(root: &Path, file_name: &str, value: i64) {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "val",
+        DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64)),
+        false,
+    )]));
+    let keys = UInt16Array::from(vec![0_u16]);
+    let values = Arc::new(Int64Array::from(vec![value]));
+    let column =
+        Arc::new(DictionaryArray::<UInt16Type>::try_new(keys, values).expect("dict array"));
+    write_val_parquet(root, file_name, schema, column);
+}
+
+fn write_plain_i64_parquet(root: &Path, file_name: &str, value: i64) {
+    let schema = Arc::new(Schema::new(vec![Field::new("val", DataType::Int64, false)]));
+    let column = Arc::new(Int64Array::from(vec![value]));
+    write_val_parquet(root, file_name, schema, column);
+}
+
+fn write_val_parquet(
+    root: &Path,
+    file_name: &str,
+    schema: Arc<Schema>,
+    column: Arc<dyn datafusion::arrow::array::Array>,
+) {
+    let batch = RecordBatch::try_new(schema.clone(), vec![column]).expect("batch");
+    let file = std::fs::File::create(root.join(file_name)).expect("create parquet file");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("writer");
+    writer.write(&batch).expect("write");
+    writer.close().expect("close");
 }
 
 fn object_meta(path: &str) -> ObjectMeta {

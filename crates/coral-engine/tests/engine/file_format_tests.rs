@@ -5,12 +5,11 @@ use std::sync::Arc;
 use arrow::array::{BooleanArray, Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use coral_engine::CoralQuery;
 use parquet::arrow::ArrowWriter;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{build_source, dir_url, execution_to_rows, test_runtime};
+use crate::harness::{build_source, dir_url, query_rows};
 
 #[derive(Debug, Clone, Copy)]
 enum FixtureFormat {
@@ -85,19 +84,15 @@ async fn file_scoped_metadata_queryable_across_file_formats() {
         ))];
         let schema = format.schema_name();
 
-        let rows = execution_to_rows(
-            &CoralQuery::execute_sql(
-                &sources,
-                test_runtime(),
-                &format!(
-                    "SELECT DISTINCT sale_date, file_path, file_name, file_stem \
-                     FROM {schema}.orders \
-                     ORDER BY sale_date"
-                ),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{format:?} metadata query failed: {error:?}")),
-        );
+        let rows = query_rows(
+            &sources,
+            &format!(
+                "SELECT DISTINCT sale_date, file_path, file_name, file_stem \
+                 FROM {schema}.orders \
+                 ORDER BY sale_date"
+            ),
+        )
+        .await;
 
         let file_name = format.file_name();
         let expected = vec![
@@ -131,23 +126,19 @@ async fn realistic_partitioned_orders_query_consistently_across_file_formats() {
         let sources = vec![build_source(orders_manifest(format, temp.path()))];
         let schema = format.schema_name();
 
-        let gross_by_region = execution_to_rows(
-            &CoralQuery::execute_sql(
-                &sources,
-                test_runtime(),
-                &format!(
-                    "SELECT sale_date, region, COUNT(*) AS order_count, \
-                     ROUND(SUM(amount), 2) AS gross, \
-                     SUM(CASE WHEN refunded THEN 1 ELSE 0 END) AS refunded_count \
-                     FROM {schema}.orders \
-                     WHERE amount >= 80 \
-                     GROUP BY sale_date, region \
-                     ORDER BY sale_date, region"
-                ),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{format:?} aggregate query failed: {error:?}")),
-        );
+        let gross_by_region = query_rows(
+            &sources,
+            &format!(
+                "SELECT sale_date, region, COUNT(*) AS order_count, \
+                 ROUND(SUM(amount), 2) AS gross, \
+                 SUM(CASE WHEN refunded THEN 1 ELSE 0 END) AS refunded_count \
+                 FROM {schema}.orders \
+                 WHERE amount >= 80 \
+                 GROUP BY sale_date, region \
+                 ORDER BY sale_date, region"
+            ),
+        )
+        .await;
         assert_eq!(
             gross_by_region,
             vec![
@@ -176,20 +167,16 @@ async fn realistic_partitioned_orders_query_consistently_across_file_formats() {
             "{format:?} aggregate rows differed"
         );
 
-        let flagged_orders = execution_to_rows(
-            &CoralQuery::execute_sql(
-                &sources,
-                test_runtime(),
-                &format!(
-                    "SELECT order_id, customer, sale_date \
-                     FROM {schema}.orders \
-                     WHERE refunded OR channel = 'partner' \
-                     ORDER BY order_id"
-                ),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{format:?} predicate query failed: {error:?}")),
-        );
+        let flagged_orders = query_rows(
+            &sources,
+            &format!(
+                "SELECT order_id, customer, sale_date \
+                 FROM {schema}.orders \
+                 WHERE refunded OR channel = 'partner' \
+                 ORDER BY order_id"
+            ),
+        )
+        .await;
         assert_eq!(
             flagged_orders,
             vec![
@@ -253,19 +240,15 @@ async fn json_file_formats_preserve_nested_json_for_udfs() {
 
         let sources = vec![build_source(nested_events_manifest(format, temp.path()))];
         let schema = format.schema_name();
-        let actual = execution_to_rows(
-            &CoralQuery::execute_sql(
-                &sources,
-                test_runtime(),
-                &format!(
-                    "SELECT id, json_get_str(payload, 'role') AS payload_role \
-                     FROM {schema}.events \
-                     ORDER BY id"
-                ),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{format:?} nested JSON query failed: {error:?}")),
-        );
+        let actual = query_rows(
+            &sources,
+            &format!(
+                "SELECT id, json_get_str(payload, 'role') AS payload_role \
+                 FROM {schema}.events \
+                 ORDER BY id"
+            ),
+        )
+        .await;
 
         assert_eq!(
             actual,

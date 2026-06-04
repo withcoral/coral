@@ -4,7 +4,7 @@
 //! conventions (OpenTelemetry HTTP client semantic conventions for the
 //! endpoint and W3C trace-context propagation). These helpers keep the
 //! conventions consistent across backends; backend-specific extras (body
-//! capture, reqwest error classification, MCP error classification) live
+//! extraction, reqwest error classification, MCP error classification) live
 //! in each backend's own `trace` module.
 
 use opentelemetry::propagation::Injector;
@@ -120,6 +120,95 @@ pub(crate) fn record_trace_http_endpoint(span: &tracing::Span, endpoint: &TraceH
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TraceBodyContent {
+    pub(crate) body: String,
+    pub(crate) truncated: bool,
+}
+
+pub(crate) fn trace_body_content(body: &str, max_bytes: usize) -> TraceBodyContent {
+    if body.len() <= max_bytes {
+        return TraceBodyContent {
+            body: body.to_string(),
+            truncated: false,
+        };
+    }
+
+    let mut end = max_bytes;
+    while !body.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    TraceBodyContent {
+        body: body
+            .get(..end)
+            .expect("trace body truncation end is a UTF-8 boundary")
+            .to_string(),
+        truncated: true,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TraceBodySpanKind {
+    HttpRequest,
+    HttpResponse,
+    McpRequest,
+    McpResponse,
+}
+
+pub(crate) fn record_trace_body_span(
+    span: &tracing::Span,
+    kind: TraceBodySpanKind,
+    request_id: u64,
+    content: &TraceBodyContent,
+) {
+    span.in_scope(|| match kind {
+        TraceBodySpanKind::HttpRequest => {
+            let body_span = tracing::trace_span!(
+                target: "coral.http.body",
+                "coral.http.request.body",
+                coral.http.request_id = request_id,
+                coral.http.body.direction = "request",
+                coral.http.request.body = content.body.as_str(),
+                coral.http.request.body.truncated = content.truncated,
+            );
+            body_span.in_scope(|| {});
+        }
+        TraceBodySpanKind::HttpResponse => {
+            let body_span = tracing::trace_span!(
+                target: "coral.http.body",
+                "coral.http.response.body",
+                coral.http.request_id = request_id,
+                coral.http.body.direction = "response",
+                coral.http.response.body = content.body.as_str(),
+                coral.http.response.body.truncated = content.truncated,
+            );
+            body_span.in_scope(|| {});
+        }
+        TraceBodySpanKind::McpRequest => {
+            let body_span = tracing::trace_span!(
+                target: "coral.mcp.body",
+                "coral.mcp.request.body",
+                coral.mcp.request_id = request_id,
+                coral.mcp.body.direction = "request",
+                coral.mcp.request.body = content.body.as_str(),
+                coral.mcp.request.body.truncated = content.truncated,
+            );
+            body_span.in_scope(|| {});
+        }
+        TraceBodySpanKind::McpResponse => {
+            let body_span = tracing::trace_span!(
+                target: "coral.mcp.body",
+                "coral.mcp.response.body",
+                coral.mcp.request_id = request_id,
+                coral.mcp.body.direction = "response",
+                coral.mcp.response.body = content.body.as_str(),
+                coral.mcp.response.body.truncated = content.truncated,
+            );
+            body_span.in_scope(|| {});
+        }
+    });
+}
+
 struct HeaderMapInjector<'a>(&'a mut HeaderMap);
 
 impl Injector for HeaderMapInjector<'_> {
@@ -142,8 +231,74 @@ pub(crate) fn inject_trace_context(span: &tracing::Span, headers: &mut HeaderMap
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use opentelemetry::Value as OtelValue;
+    use opentelemetry::trace::TracerProvider;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use tracing::subscriber::DefaultGuard;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    pub(crate) struct TraceCapture {
+        memory: InMemorySpanExporter,
+        provider: SdkTracerProvider,
+        _guard: DefaultGuard,
+    }
+
+    impl TraceCapture {
+        pub(crate) fn install(tracer_name: &'static str) -> Self {
+            let memory = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(memory.clone())
+                .build();
+            let tracer = provider.tracer(tracer_name);
+            let layer = tracing_opentelemetry::layer()
+                .with_tracer(tracer)
+                .with_target(true)
+                .with_level(true);
+            let subscriber = tracing_subscriber::Registry::default().with(layer);
+            let guard = tracing::subscriber::set_default(subscriber);
+            Self {
+                memory,
+                provider,
+                _guard: guard,
+            }
+        }
+
+        pub(crate) fn finished_spans(&self) -> Vec<SpanData> {
+            self.provider.force_flush().expect("flush spans");
+            self.memory.get_finished_spans().expect("finished spans")
+        }
+
+        pub(crate) fn shutdown(self) {
+            self.provider.shutdown().expect("provider shutdown");
+        }
+    }
+
+    pub(crate) fn span_attr_string(span: &SpanData, key: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == key)
+            .and_then(|attribute| match &attribute.value {
+                OtelValue::String(value) => Some(value.to_string()),
+                OtelValue::I64(value) => Some(value.to_string()),
+                _ => None,
+            })
+    }
+
+    pub(crate) fn span_attr_bool(span: &SpanData, key: &str) -> Option<bool> {
+        span.attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == key)
+            .and_then(|attribute| match &attribute.value {
+                OtelValue::Bool(value) => Some(*value),
+                _ => None,
+            })
+    }
+}
+
+#[cfg(test)]
 mod tests {
-    use super::{sanitize_trace_url, trace_http_endpoint};
+    use super::{sanitize_trace_url, trace_body_content, trace_http_endpoint};
 
     #[test]
     fn sanitize_trace_url_removes_userinfo_when_url_parses() {
@@ -177,5 +332,13 @@ mod tests {
         let endpoint = trace_http_endpoint("/v1/items");
         assert!(endpoint.server_address.is_none());
         assert!(endpoint.server_port.is_none());
+    }
+
+    #[test]
+    fn trace_body_content_truncates_on_utf8_boundary() {
+        let content = trace_body_content("a💚b", 3);
+
+        assert_eq!(content.body, "a");
+        assert!(content.truncated);
     }
 }

@@ -1,10 +1,12 @@
 //! Shared execution-plan adapter for backends that materialize rows as JSON values.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use coral_spec::ColumnSpec;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::{DataFusionError, Result};
@@ -19,6 +21,8 @@ use datafusion::physical_plan::{
 use futures::{TryStreamExt, stream};
 use serde_json::Value;
 
+use crate::backends::shared::mapping::convert_items;
+
 /// Fetches raw JSON rows for one logical table scan.
 #[async_trait]
 pub(crate) trait RowFetcher: fmt::Debug + Send + Sync {
@@ -31,6 +35,7 @@ pub(crate) trait RowFetcher: fmt::Debug + Send + Sync {
 pub(crate) type Fetcher = Arc<dyn RowFetcher>;
 /// Converts fetched JSON rows into a projected `RecordBatch`.
 pub(crate) type Converter = Arc<dyn Fn(&[Value]) -> Result<RecordBatch> + Send + Sync>;
+type ValueBindings = (Arc<HashMap<String, String>>, Arc<HashMap<String, String>>);
 
 /// Execution-plan node for backends that fetch JSON rows and convert them into
 /// `Arrow` record batches.
@@ -91,6 +96,39 @@ impl JsonExec {
             projection,
         })
     }
+}
+
+pub(crate) fn mapped_json_exec(
+    source_name: &str,
+    table_name: &str,
+    schema: SchemaRef,
+    columns: Arc<[ColumnSpec]>,
+    fetcher: Fetcher,
+    value_bindings: ValueBindings,
+    projection: Option<Vec<usize>>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let (filter_values, arg_values) = value_bindings;
+    let converter = Arc::new({
+        let schema = schema.clone();
+        move |items: &[Value]| {
+            convert_items(
+                columns.as_ref(),
+                schema.clone(),
+                &filter_values,
+                &arg_values,
+                items,
+            )
+        }
+    });
+
+    Ok(Arc::new(JsonExec::new(
+        source_name,
+        table_name,
+        schema,
+        fetcher,
+        converter,
+        projection,
+    )?))
 }
 
 impl DisplayAs for JsonExec {

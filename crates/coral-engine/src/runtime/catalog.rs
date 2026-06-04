@@ -11,9 +11,6 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 use serde::Serialize;
 
-use crate::backends::common::{
-    RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
-};
 use crate::backends::{RegisteredSource, RegisteredTableFunction};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
@@ -87,8 +84,8 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
         .map(|row| table_function_result_columns_json(row))
         .collect::<Result<Vec<_>>>()?;
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
+    mem_table(
+        schema,
         vec![
             utf8_column(rows.iter().map(|row| Some(row.schema_name.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.function_name.as_str()))),
@@ -99,9 +96,6 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
             utf8_column(rows.iter().map(|row| row.search_limits_json.as_deref())),
         ],
     )
-    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
-
-    MemTable::try_new(schema, vec![vec![batch]])
 }
 
 fn table_function_arguments_json(row: &RegisteredTableFunction) -> Result<String> {
@@ -129,8 +123,8 @@ struct TableFunctionArgumentJson<'a> {
     values: &'a [String],
 }
 
-impl<'a> From<&'a RegisteredTableFunctionArgument> for TableFunctionArgumentJson<'a> {
-    fn from(argument: &'a RegisteredTableFunctionArgument) -> Self {
+impl<'a> From<&'a TableFunctionArgumentInfo> for TableFunctionArgumentJson<'a> {
+    fn from(argument: &'a TableFunctionArgumentInfo) -> Self {
         Self {
             name: &argument.name,
             required: argument.required,
@@ -148,8 +142,8 @@ struct TableFunctionResultColumnJson<'a> {
     description: &'a str,
 }
 
-impl<'a> From<&'a RegisteredTableFunctionResultColumn> for TableFunctionResultColumnJson<'a> {
-    fn from(column: &'a RegisteredTableFunctionResultColumn) -> Self {
+impl<'a> From<&'a TableFunctionResultColumnInfo> for TableFunctionResultColumnJson<'a> {
+    fn from(column: &'a TableFunctionResultColumnInfo) -> Self {
         Self {
             name: &column.name,
             data_type: &column.data_type,
@@ -480,6 +474,21 @@ fn system_table_infos() -> Vec<TableInfo> {
         .collect()
 }
 
+fn bool_column(values: impl IntoIterator<Item = Option<bool>>) -> ArrayRef {
+    Arc::new(values.into_iter().collect::<BooleanArray>())
+}
+
+fn i32_column(values: impl IntoIterator<Item = Option<i32>>) -> ArrayRef {
+    Arc::new(values.into_iter().collect::<Int32Array>())
+}
+
+fn mem_table(schema: Arc<Schema>, columns: Vec<ArrayRef>) -> Result<MemTable> {
+    let batch = RecordBatch::try_new(schema.clone(), columns)
+        .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
+
+    MemTable::try_new(schema, vec![vec![batch]])
+}
+
 /// Collect typed query-visible table metadata for the active source set.
 #[must_use]
 pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableInfo> {
@@ -528,25 +537,8 @@ pub(crate) fn collect_table_functions(
                     schema_name: function.schema_name.clone(),
                     function_name: function.function_name.clone(),
                     description: function.description.clone(),
-                    arguments: function
-                        .arguments
-                        .iter()
-                        .map(|argument| TableFunctionArgumentInfo {
-                            name: argument.name.clone(),
-                            required: argument.required,
-                            values: argument.values.clone(),
-                        })
-                        .collect(),
-                    result_columns: function
-                        .result_columns
-                        .iter()
-                        .map(|column| TableFunctionResultColumnInfo {
-                            name: column.name.clone(),
-                            data_type: column.data_type.clone(),
-                            nullable: column.nullable,
-                            description: column.description.clone(),
-                        })
-                        .collect(),
+                    arguments: function.arguments.clone(),
+                    result_columns: function.result_columns.clone(),
                 })
         })
         .collect::<Vec<_>>();
@@ -601,8 +593,8 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         (&left.schema_name, &left.table_name).cmp(&(&right.schema_name, &right.table_name))
     });
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
+    mem_table(
+        schema,
         vec![
             utf8_column(rows.iter().map(|row| Some(row.schema_name.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.table_name.as_str()))),
@@ -612,19 +604,6 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             utf8_column(rows.iter().map(|row| row.search_limits_json.as_deref())),
         ],
     )
-    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
-
-    MemTable::try_new(schema, vec![vec![batch]])
-}
-
-struct CatalogFilter {
-    schema_name: String,
-    table_name: String,
-    filter_name: String,
-    filter_mode: String,
-    is_required: bool,
-    data_type: String,
-    description: String,
 }
 
 fn build_filters_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
@@ -642,58 +621,35 @@ fn build_filters_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
         .iter()
         .flat_map(|source| {
             source.tables.iter().flat_map(move |table| {
-                table.filters.iter().map(move |filter| CatalogFilter {
-                    schema_name: source.schema_name.clone(),
-                    table_name: table.table_name.clone(),
-                    filter_name: filter.name.clone(),
-                    filter_mode: filter.mode.clone(),
-                    is_required: filter.required,
-                    data_type: filter.data_type.clone(),
-                    description: filter.description.clone(),
+                table.filters.iter().map(move |filter| {
+                    (
+                        source.schema_name.as_str(),
+                        table.table_name.as_str(),
+                        filter.name.as_str(),
+                        filter.mode.as_str(),
+                        filter.required,
+                        filter.data_type.as_str(),
+                        filter.description.as_str(),
+                    )
                 })
             })
         })
         .collect::<Vec<_>>();
 
-    rows.sort_by(|left, right| {
-        (&left.schema_name, &left.table_name, &left.filter_name).cmp(&(
-            &right.schema_name,
-            &right.table_name,
-            &right.filter_name,
-        ))
-    });
+    rows.sort_by(|left, right| (left.0, left.1, left.2).cmp(&(right.0, right.1, right.2)));
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
+    mem_table(
+        schema,
         vec![
-            utf8_column(rows.iter().map(|row| Some(row.schema_name.as_str()))),
-            utf8_column(rows.iter().map(|row| Some(row.table_name.as_str()))),
-            utf8_column(rows.iter().map(|row| Some(row.filter_name.as_str()))),
-            utf8_column(rows.iter().map(|row| Some(row.filter_mode.as_str()))),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.is_required))
-                    .collect::<BooleanArray>(),
-            ),
-            utf8_column(rows.iter().map(|row| Some(row.data_type.as_str()))),
-            utf8_column(rows.iter().map(|row| Some(row.description.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.0))),
+            utf8_column(rows.iter().map(|row| Some(row.1))),
+            utf8_column(rows.iter().map(|row| Some(row.2))),
+            utf8_column(rows.iter().map(|row| Some(row.3))),
+            bool_column(rows.iter().map(|row| Some(row.4))),
+            utf8_column(rows.iter().map(|row| Some(row.5))),
+            utf8_column(rows.iter().map(|row| Some(row.6))),
         ],
     )
-    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
-
-    MemTable::try_new(schema, vec![vec![batch]])
-}
-
-struct CatalogInput {
-    schema_name: String,
-    key: String,
-    kind: &'static str,
-    value: Option<String>,
-    /// Empty string (= "no default declared" in the spec) renders as SQL NULL.
-    default_value: String,
-    hint: Option<String>,
-    required: bool,
-    is_set: bool,
 }
 
 fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
@@ -708,83 +664,42 @@ fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         Field::new("is_set", DataType::Boolean, false),
     ]));
 
-    let mut rows: Vec<CatalogInput> = active_sources
+    let mut rows = active_sources
         .iter()
         .flat_map(|source| {
-            source.inputs.iter().map(move |input| CatalogInput {
-                schema_name: source.schema_name.clone(),
-                key: input.key.clone(),
-                kind: match input.kind {
-                    ManifestInputKind::Variable => "variable",
-                    ManifestInputKind::Secret => "secret",
-                },
-                value: input.resolved_value.clone(),
-                default_value: input.default_value.clone(),
-                hint: input.hint.clone(),
-                required: input.required,
-                is_set: input.is_set,
+            source.inputs.iter().map(move |input| {
+                (
+                    source.schema_name.as_str(),
+                    input.key.as_str(),
+                    match &input.kind {
+                        ManifestInputKind::Variable => "variable",
+                        ManifestInputKind::Secret => "secret",
+                    },
+                    input.resolved_value.as_deref(),
+                    (!input.default_value.is_empty()).then_some(input.default_value.as_str()),
+                    input.hint.as_deref(),
+                    input.required,
+                    input.is_set,
+                )
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
 
-    rows.sort_by(|left, right| {
-        (&left.schema_name, &left.key).cmp(&(&right.schema_name, &right.key))
-    });
+    rows.sort_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
+    mem_table(
+        schema,
         vec![
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.schema_name.as_str()))
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.key.as_str()))
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.kind))
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| row.value.as_deref())
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| {
-                        if row.default_value.is_empty() {
-                            None
-                        } else {
-                            Some(row.default_value.as_str())
-                        }
-                    })
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| row.hint.as_deref())
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.required))
-                    .collect::<BooleanArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.is_set))
-                    .collect::<BooleanArray>(),
-            ),
+            utf8_column(rows.iter().map(|row| Some(row.0))),
+            utf8_column(rows.iter().map(|row| Some(row.1))),
+            utf8_column(rows.iter().map(|row| Some(row.2))),
+            utf8_column(rows.iter().map(|row| row.3)),
+            utf8_column(rows.iter().map(|row| row.4)),
+            utf8_column(rows.iter().map(|row| row.5)),
+            bool_column(rows.iter().map(|row| Some(row.6))),
+            bool_column(rows.iter().map(|row| Some(row.7))),
         ],
     )
-    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
-
-    MemTable::try_new(schema, vec![vec![batch]])
 }
 
 struct CatalogColumn {
@@ -887,51 +802,18 @@ fn catalog_columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(
+            utf8_column(rows.iter().map(|row| Some(row.schema_name.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.table_name.as_str()))),
+            i32_column(
                 rows.iter()
-                    .map(|row| Some(row.schema_name.as_str()))
-                    .collect::<StringArray>(),
+                    .map(|row| Some(i32::try_from(row.ordinal_position).unwrap_or_default())),
             ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.table_name.as_str()))
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(i32::try_from(row.ordinal_position).unwrap_or_default()))
-                    .collect::<Int32Array>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.column_name.as_str()))
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.data_type.as_str()))
-                    .collect::<StringArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.is_nullable))
-                    .collect::<BooleanArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.is_virtual))
-                    .collect::<BooleanArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.is_required_filter))
-                    .collect::<BooleanArray>(),
-            ),
-            Arc::new(
-                rows.iter()
-                    .map(|row| Some(row.description.as_str()))
-                    .collect::<StringArray>(),
-            ),
+            utf8_column(rows.iter().map(|row| Some(row.column_name.as_str()))),
+            utf8_column(rows.iter().map(|row| Some(row.data_type.as_str()))),
+            bool_column(rows.iter().map(|row| Some(row.is_nullable))),
+            bool_column(rows.iter().map(|row| Some(row.is_virtual))),
+            bool_column(rows.iter().map(|row| Some(row.is_required_filter))),
+            utf8_column(rows.iter().map(|row| Some(row.description.as_str()))),
             utf8_column(rows.iter().map(|row| row.filter_mode.as_deref())),
         ],
     )

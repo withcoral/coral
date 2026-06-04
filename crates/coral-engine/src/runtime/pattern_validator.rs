@@ -119,59 +119,45 @@ mod tests {
     };
 
     #[test]
-    fn similar_to_with_percent_returns_error() {
-        let error = rewrite_err(similar_to_expr("(Slack|Weekly)%"));
-        assert!(error.contains("SIMILAR TO pattern '(Slack|Weekly)%'"));
-        assert!(error.contains("Use `.*` instead of `%`"));
+    fn similar_to_rejects_like_wildcards() {
+        for (pattern, expected_fragments) in [
+            (
+                "(Slack|Weekly)%",
+                &[
+                    "SIMILAR TO pattern '(Slack|Weekly)%'",
+                    "Use `.*` instead of `%`",
+                ][..],
+            ),
+            (
+                "Slack_Weekly",
+                &[
+                    "SIMILAR TO pattern 'Slack_Weekly'",
+                    "Use `.*` instead of `%`",
+                    "`.` instead of `_`",
+                ][..],
+            ),
+        ] {
+            let error = rewrite_err(similar_to_expr(pattern));
+            for fragment in expected_fragments {
+                assert!(error.contains(fragment));
+            }
+        }
     }
 
     #[test]
-    fn similar_to_with_underscore_returns_error() {
-        let error = rewrite_err(similar_to_expr("Slack_Weekly"));
-        assert!(error.contains("SIMILAR TO pattern 'Slack_Weekly'"));
-        assert!(error.contains("Use `.*` instead of `%`"));
-        assert!(error.contains("`.` instead of `_`"));
-    }
-
-    #[test]
-    fn similar_to_with_regex_syntax_passes() {
-        assert_rewrite_passes(&similar_to_expr("(Slack|Weekly).*"));
-    }
-
-    #[test]
-    fn similar_to_exact_match_passes() {
-        assert_rewrite_passes(&similar_to_expr("default"));
-    }
-
-    #[test]
-    fn similar_to_with_escaped_percent_passes() {
-        assert_rewrite_passes(&similar_to_expr(r"100\%"));
-    }
-
-    #[test]
-    fn similar_to_with_escaped_underscore_passes() {
-        assert_rewrite_passes(&similar_to_expr(r"incident\_io"));
-    }
-
-    #[test]
-    fn regex_match_with_percent_passes() {
-        // % is a valid literal character in regex — no error
-        assert_rewrite_passes(&regex_expr(Operator::RegexMatch, "(Slack|Weekly)%"));
-    }
-
-    #[test]
-    fn regex_match_with_underscore_passes() {
-        assert_rewrite_passes(&regex_expr(Operator::RegexMatch, "user_name"));
-    }
-
-    #[test]
-    fn like_with_percent_passes() {
-        assert_rewrite_passes(&like_expr("%Slack%", false));
-    }
-
-    #[test]
-    fn ilike_with_percent_passes() {
-        assert_rewrite_passes(&like_expr("%SLACK%", true));
+    fn non_like_wildcard_patterns_pass() {
+        for expr in [
+            similar_to_expr("(Slack|Weekly).*"),
+            similar_to_expr("default"),
+            similar_to_expr(r"100\%"),
+            similar_to_expr(r"incident\_io"),
+            regex_expr(Operator::RegexMatch, "(Slack|Weekly)%"),
+            regex_expr(Operator::RegexMatch, "user_name"),
+            like_expr("%Slack%", false),
+            like_expr("%SLACK%", true),
+        ] {
+            assert_rewrite_passes(&expr);
+        }
     }
 
     #[test]
@@ -198,15 +184,19 @@ mod tests {
 
     #[test]
     fn contains_unescaped_like_wildcards_only_flags_unescaped() {
-        assert!(contains_unescaped_like_wildcards("Slack%"));
-        assert!(contains_unescaped_like_wildcards("Slack_"));
-        assert!(!contains_unescaped_like_wildcards("Slack.*"));
-        assert!(!contains_unescaped_like_wildcards(r"Slack\%"));
-        assert!(!contains_unescaped_like_wildcards(r"Slack\_"));
-        assert!(!contains_unescaped_like_wildcards(r"incident\_io"));
-        assert!(contains_unescaped_like_wildcards(r"incident_io"));
-        assert!(!contains_unescaped_like_wildcards(r"100\%"));
-        assert!(contains_unescaped_like_wildcards(r"100%"));
+        for (pattern, expected) in [
+            ("Slack%", true),
+            ("Slack_", true),
+            ("Slack.*", false),
+            (r"Slack\%", false),
+            (r"Slack\_", false),
+            (r"incident\_io", false),
+            (r"incident_io", true),
+            (r"100\%", false),
+            (r"100%", true),
+        ] {
+            assert_eq!(contains_unescaped_like_wildcards(pattern), expected);
+        }
     }
 
     fn similar_to_expr(pattern: &str) -> Expr {

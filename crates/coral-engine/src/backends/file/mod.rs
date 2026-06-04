@@ -24,7 +24,7 @@ use datafusion::prelude::SessionContext;
 
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, RegisteredTable, build_registered_inputs, build_registered_table,
+    RegisteredTable, build_registered_source, build_registered_table,
     registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
 };
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
@@ -123,22 +123,19 @@ impl CompiledBackendSource for FileCompiledSource {
             table_infos.push(metadata);
         }
 
-        let secret_keys = self.source_secrets.keys().cloned().collect();
-        let inputs = build_registered_inputs(
+        let source = build_registered_source(
+            &self.manifest.common.name,
+            table_infos,
+            vec![],
             &self.manifest.declared_inputs,
             &self.source_variables,
-            &secret_keys,
+            &self.source_secrets,
         );
 
         Ok(BackendRegistration {
             tables,
             table_functions: HashMap::default(),
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: vec![],
-                inputs,
-            },
+            source,
         })
     }
 }

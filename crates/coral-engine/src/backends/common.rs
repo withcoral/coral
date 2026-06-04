@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::sync::{Arc, OnceLock};
 
-use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
+use crate::{
+    QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver,
+    TableFunctionArgumentInfo, TableFunctionResultColumnInfo,
+};
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
@@ -47,8 +50,8 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) internal_name: String,
     pub(crate) kind: String,
     pub(crate) description: String,
-    pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
-    pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
+    pub(crate) arguments: Vec<TableFunctionArgumentInfo>,
+    pub(crate) result_columns: Vec<TableFunctionResultColumnInfo>,
     pub(crate) arg_names: Vec<String>,
     pub(crate) search_limits_json: Option<String>,
 }
@@ -59,21 +62,6 @@ pub(crate) struct RegisteredFilter {
     pub(crate) mode: String,
     pub(crate) required: bool,
     pub(crate) data_type: String,
-    pub(crate) description: String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RegisteredTableFunctionArgument {
-    pub(crate) name: String,
-    pub(crate) required: bool,
-    pub(crate) values: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RegisteredTableFunctionResultColumn {
-    pub(crate) name: String,
-    pub(crate) data_type: String,
-    pub(crate) nullable: bool,
     pub(crate) description: String,
 }
 
@@ -292,6 +280,24 @@ pub(crate) fn build_registered_inputs(
         .collect()
 }
 
+pub(crate) fn build_registered_source(
+    schema_name: &str,
+    tables: Vec<RegisteredTable>,
+    table_functions: Vec<RegisteredTableFunction>,
+    declared_inputs: &[ManifestInputSpec],
+    variables: &BTreeMap<String, String>,
+    secrets: &BTreeMap<String, String>,
+) -> RegisteredSource {
+    let secret_keys = secrets.keys().cloned().collect();
+    let inputs = build_registered_inputs(declared_inputs, variables, &secret_keys);
+    RegisteredSource {
+        schema_name: schema_name.to_string(),
+        tables,
+        table_functions,
+        inputs,
+    }
+}
+
 pub(crate) fn build_registered_table(
     common: &TableCommon,
     columns: Vec<RegisteredColumn>,
@@ -316,7 +322,7 @@ pub(crate) fn build_registered_table_function(
     let arguments = function
         .args
         .iter()
-        .map(|arg| RegisteredTableFunctionArgument {
+        .map(|arg| TableFunctionArgumentInfo {
             name: arg.name.clone(),
             required: arg.required,
             values: arg.values.clone(),
@@ -324,7 +330,7 @@ pub(crate) fn build_registered_table_function(
         .collect::<Vec<_>>();
     let result_columns = registered_columns_from_specs(&function.columns, &[])
         .into_iter()
-        .map(|column| RegisteredTableFunctionResultColumn {
+        .map(|column| TableFunctionResultColumnInfo {
             name: column.name,
             data_type: column.data_type,
             nullable: column.nullable,

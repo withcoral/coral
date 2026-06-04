@@ -17,8 +17,7 @@ use crate::backends::http::ProviderQueryError;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{classify_filter_pushdown, extract_filter_values};
-use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
-use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::json_exec::{RowFetcher, mapped_json_exec};
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -109,6 +108,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         limit,
     } = request;
     let target = Arc::new(target);
+    let columns = Arc::from(target.columns().to_vec());
     let filter_values = Arc::new(filter_values);
     let arg_values = Arc::new(arg_values);
     let fetcher = Arc::new(HttpFetchPlan {
@@ -119,32 +119,15 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         limit,
     });
 
-    let converter = {
-        let target = target.clone();
-        let schema = schema.clone();
-        let filter_values = filter_values.clone();
-        let arg_values = arg_values.clone();
-        Arc::new(move |items: &[Value]| {
-            convert_items(
-                target.columns(),
-                schema.clone(),
-                &filter_values,
-                &arg_values,
-                items,
-            )
-        })
-    };
-
-    let exec = JsonExec::new(
+    mapped_json_exec(
         source_schema,
         target.name(),
         schema,
+        columns,
         fetcher,
-        converter,
+        (filter_values, arg_values),
         projection.cloned(),
-    )?;
-
-    Ok(Arc::new(exec))
+    )
 }
 
 #[async_trait]

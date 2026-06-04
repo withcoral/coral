@@ -200,18 +200,17 @@ fn link_param_matches(item: &str, name: &str, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use reqwest::header::{HeaderMap, HeaderValue};
-    use serde_json::json;
-
     use super::{
         PageState, apply_pagination_body_fields, apply_pagination_query_pairs,
         extract_next_link_url, page_is_exhausted,
     };
-    use crate::backends::http::test_support::{test_http_request_target, test_http_table_spec};
-    use coral_spec::{
-        BodySpec, HttpMethod, PaginationMode, PaginationSpec, ParsedTemplate, RequestSpec,
-        ValidatedPaginationMode, ValueSourceSpec,
+    use crate::backends::http::test_support::{
+        test_get_items_table_spec, test_http_request_target,
     };
+    use coral_spec::{
+        BodySpec, PaginationMode, PaginationSpec, ValidatedPaginationMode, ValueSourceSpec,
+    };
+    use reqwest::header::{HeaderMap, HeaderValue};
 
     #[test]
     fn extract_next_link_url_resolves_relative_links_on_same_origin() {
@@ -299,16 +298,7 @@ mod tests {
 
     #[test]
     fn apply_pagination_query_pairs_uses_typed_offset_param() {
-        let table = test_http_table_spec(
-            &json!([]),
-            &RequestSpec {
-                method: HttpMethod::GET,
-                path: ParsedTemplate::parse("/items").expect("template"),
-                query: vec![],
-                body: BodySpec::default(),
-                headers: vec![],
-            },
-        );
+        let table = test_get_items_table_spec();
         let pagination = PaginationSpec {
             mode: PaginationMode::Offset,
             page_size: Some(coral_spec::PageSizeSpec {
@@ -348,16 +338,7 @@ mod tests {
 
     #[test]
     fn apply_pagination_body_fields_rejects_declared_text_body_even_when_absent() {
-        let table = test_http_table_spec(
-            &json!([]),
-            &RequestSpec {
-                method: HttpMethod::GET,
-                path: ParsedTemplate::parse("/items").expect("template"),
-                query: vec![],
-                body: BodySpec::default(),
-                headers: vec![],
-            },
-        );
+        let table = test_get_items_table_spec();
         let body_spec = BodySpec::Text {
             content: ValueSourceSpec::Filter {
                 key: "sql".to_string(),

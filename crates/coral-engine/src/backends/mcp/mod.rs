@@ -1,6 +1,5 @@
 //! MCP-backed source runtime pieces.
 
-mod client;
 pub(crate) mod error;
 mod fetch;
 mod function;
@@ -19,14 +18,15 @@ use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest};
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
+use rmcp::model::JsonObject;
+use serde_json::Value;
 
-use self::client::{McpSourceClient, McpToolCaller};
 use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
 use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
+    SourceTableFunctions, build_registered_source, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names,
 };
@@ -37,7 +37,7 @@ struct McpCompiledSource {
     manifest: McpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
     source_inputs: Arc<McpSourceInputs>,
-    caller: McpSourceClient,
+    caller: Arc<dyn McpToolCaller>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,8 +132,18 @@ fn compile_source_with_caller(
         manifest,
         source_input_resolution,
         source_inputs,
-        caller: McpSourceClient::new(caller),
+        caller,
     })
+}
+
+#[async_trait]
+trait McpToolCaller: std::fmt::Debug + Send + Sync {
+    async fn call_tool(
+        &self,
+        relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value>;
 }
 
 #[async_trait]
@@ -190,27 +200,19 @@ impl CompiledBackendSource for McpCompiledSource {
             ));
         }
 
-        let secret_keys = self
-            .source_input_resolution
-            .secrets()
-            .keys()
-            .cloned()
-            .collect();
-        let inputs = build_registered_inputs(
+        let source = build_registered_source(
+            &self.manifest.common.name,
+            table_infos,
+            table_function_infos,
             self.source_input_resolution.declared_inputs(),
             self.source_input_resolution.variables(),
-            &secret_keys,
+            self.source_input_resolution.secrets(),
         );
 
         Ok(BackendRegistration {
             tables,
             table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
+            source,
         })
     }
 }

@@ -20,7 +20,7 @@ pub(crate) fn extract_filter_values(
     let mut filters = HashMap::new();
 
     for expr in exprs {
-        collect_filter_values(expr, &allowed, &filter_modes, &mut filters);
+        analyze_filter(expr, &allowed, &filter_modes, Some(&mut filters));
     }
 
     filters
@@ -50,52 +50,82 @@ fn classify_filter(
     allowed: &HashSet<&str>,
     filter_modes: &HashMap<&str, FilterMode>,
 ) -> TableProviderFilterPushDown {
+    analyze_filter(expr, allowed, filter_modes, None)
+}
+
+fn analyze_filter(
+    expr: &Expr,
+    allowed: &HashSet<&str>,
+    filter_modes: &HashMap<&str, FilterMode>,
+    mut filters: Option<&mut HashMap<String, String>>,
+) -> TableProviderFilterPushDown {
     if let Expr::BinaryExpr(binary) = expr
         && binary.op == Operator::And
     {
         return classify_filter_conjunction(
-            classify_filter(binary.left.as_ref(), allowed, filter_modes),
-            classify_filter(binary.right.as_ref(), allowed, filter_modes),
+            analyze_filter(
+                binary.left.as_ref(),
+                allowed,
+                filter_modes,
+                filters.as_deref_mut(),
+            ),
+            analyze_filter(binary.right.as_ref(), allowed, filter_modes, filters),
         );
     }
     if let Expr::Column(col) = expr
         && allowed.contains(col.name())
     {
+        insert_filter_value(filters, col.name().to_string(), true.to_string());
         return TableProviderFilterPushDown::Exact;
     }
     if let Expr::Not(inner) = expr
         && let Expr::Column(col) = inner.as_ref()
         && allowed.contains(col.name())
     {
+        insert_filter_value(filters, col.name().to_string(), false.to_string());
         return TableProviderFilterPushDown::Exact;
     }
     if let Expr::IsTrue(inner) | Expr::IsFalse(inner) = expr
         && let Expr::Column(col) = inner.as_ref()
         && allowed.contains(col.name())
     {
+        insert_filter_value(
+            filters,
+            col.name().to_string(),
+            matches!(expr, Expr::IsTrue(_)).to_string(),
+        );
         return TableProviderFilterPushDown::Exact;
     }
     if let Expr::BinaryExpr(binary) = expr
         && binary.op == Operator::Eq
-        && (extract_column_equality(binary.left.as_ref(), binary.right.as_ref(), allowed).is_some()
-            || extract_column_equality(binary.right.as_ref(), binary.left.as_ref(), allowed)
-                .is_some())
     {
-        return TableProviderFilterPushDown::Exact;
+        if let Some((col, val)) =
+            extract_column_equality(binary.left.as_ref(), binary.right.as_ref(), allowed)
+        {
+            insert_filter_value(filters, col, val);
+            return TableProviderFilterPushDown::Exact;
+        }
+
+        if let Some((col, val)) =
+            extract_column_equality(binary.right.as_ref(), binary.left.as_ref(), allowed)
+        {
+            insert_filter_value(filters, col, val);
+            return TableProviderFilterPushDown::Exact;
+        }
     }
     if let Expr::Like(like) = expr
         && !like.negated
-        && extract_column_like(
+        && let Some((col, val)) = extract_column_like(
             like.expr.as_ref(),
             like.pattern.as_ref(),
             allowed,
             filter_modes,
         )
-        .is_some()
     {
         // Inexact: the API receives the stripped search/contains term (performance
         // win) but DataFusion keeps a residual filter to enforce exact
         // LIKE/ILIKE semantics client-side (correctness win).
+        insert_filter_value(filters, col, val);
         return TableProviderFilterPushDown::Inexact;
     }
     if let Expr::InList(in_list) = expr
@@ -104,11 +134,22 @@ fn classify_filter(
         && let Expr::Column(col) = in_list.expr.as_ref()
         && allowed.contains(col.name())
         && let Some(literal) = in_list.list.first()
-        && literal_to_string(literal).is_some()
+        && let Some(value) = literal_to_string(literal)
     {
+        insert_filter_value(filters, col.name().to_string(), value);
         return TableProviderFilterPushDown::Exact;
     }
     TableProviderFilterPushDown::Unsupported
+}
+
+fn insert_filter_value(
+    filters: Option<&mut HashMap<String, String>>,
+    column: String,
+    value: String,
+) {
+    if let Some(filters) = filters {
+        filters.insert(column, value);
+    }
 }
 
 fn classify_filter_conjunction(
@@ -121,84 +162,6 @@ fn classify_filter_conjunction(
         (Unsupported, Unsupported) => Unsupported,
         (Exact, Exact) => Exact,
         _ => Inexact,
-    }
-}
-
-fn collect_filter_values(
-    expr: &Expr,
-    allowed: &HashSet<&str>,
-    filter_modes: &HashMap<&str, FilterMode>,
-    filters: &mut HashMap<String, String>,
-) {
-    match expr {
-        Expr::BinaryExpr(binary) if binary.op == Operator::And => {
-            collect_filter_values(binary.left.as_ref(), allowed, filter_modes, filters);
-            collect_filter_values(binary.right.as_ref(), allowed, filter_modes, filters);
-        }
-        Expr::Column(col) => {
-            insert_bool_filter(col.name(), true, allowed, filters);
-        }
-        Expr::Not(inner) | Expr::IsFalse(inner) => {
-            if let Expr::Column(col) = inner.as_ref() {
-                insert_bool_filter(col.name(), false, allowed, filters);
-            }
-        }
-        Expr::IsTrue(inner) => {
-            if let Expr::Column(col) = inner.as_ref() {
-                insert_bool_filter(col.name(), true, allowed, filters);
-            }
-        }
-        Expr::BinaryExpr(binary) if binary.op == Operator::Eq => {
-            if let Some((col, val)) =
-                extract_column_equality(binary.left.as_ref(), binary.right.as_ref(), allowed)
-            {
-                filters.insert(col, val);
-                return;
-            }
-
-            if let Some((col, val)) =
-                extract_column_equality(binary.right.as_ref(), binary.left.as_ref(), allowed)
-            {
-                filters.insert(col, val);
-            }
-        }
-        Expr::Like(like) if !like.negated => {
-            if let Some((col, val)) = extract_column_like(
-                like.expr.as_ref(),
-                like.pattern.as_ref(),
-                allowed,
-                filter_modes,
-            ) {
-                filters.insert(col, val);
-            }
-        }
-        Expr::InList(in_list) if !in_list.negated && in_list.list.len() == 1 => {
-            let Expr::Column(col) = in_list.expr.as_ref() else {
-                return;
-            };
-            let col_name = col.name().to_string();
-            if !allowed.contains(col_name.as_str()) {
-                return;
-            }
-            let Some(literal) = in_list.list.first() else {
-                return;
-            };
-            if let Some(value) = literal_to_string(literal) {
-                filters.insert(col_name, value);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn insert_bool_filter(
-    col_name: &str,
-    value: bool,
-    allowed: &HashSet<&str>,
-    filters: &mut HashMap<String, String>,
-) {
-    if allowed.contains(col_name) {
-        filters.insert(col_name.to_string(), value.to_string());
     }
 }
 
@@ -351,48 +314,21 @@ mod tests {
     }
 
     #[test]
-    fn extracts_like_value_for_contains_mode_filter() {
-        let filters = vec![filter("q", false, FilterMode::Contains)];
-
-        let expr = like_expr("q", "%deploy%");
-        let values = extract_filter_values(&[expr], &filters);
-
-        assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
+    fn extracts_like_value_for_searchable_filter_modes() {
+        for mode in [FilterMode::Contains, FilterMode::Search] {
+            let filters = vec![filter("q", false, mode)];
+            let values = extract_filter_values(&[like_expr("q", "%deploy%")], &filters);
+            assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
+        }
     }
 
     #[test]
-    fn extracts_like_value_for_legacy_search_mode_filter() {
-        let filters = vec![filter("q", false, FilterMode::Search)];
-
-        let expr = like_expr("q", "%deploy%");
-        let values = extract_filter_values(&[expr], &filters);
-
-        assert_eq!(values.get("q").map(String::as_str), Some("deploy"));
-    }
-
-    #[test]
-    fn extracts_boolean_true_from_bare_column_filter() {
-        let filters = vec![filter("descending", false, FilterMode::default())];
-
-        let values = extract_filter_values(&[col("descending")], &filters);
-
-        assert_eq!(values.get("descending").map(String::as_str), Some("true"));
-    }
-
-    #[test]
-    fn extracts_boolean_false_from_not_column_filter() {
-        let filters = vec![filter("descending", false, FilterMode::default())];
-
-        let values = extract_filter_values(&[col("descending").not()], &filters);
-
-        assert_eq!(values.get("descending").map(String::as_str), Some("false"));
-    }
-
-    #[test]
-    fn extracts_boolean_values_from_is_true_and_is_false_predicates() {
+    fn extracts_boolean_values_from_column_predicates() {
         let filters = vec![filter("descending", false, FilterMode::default())];
 
         let cases = [
+            (col("descending"), "true"),
+            (col("descending").not(), "false"),
             (Expr::IsTrue(Box::new(col("descending"))), "true"),
             (Expr::IsFalse(Box::new(col("descending"))), "false"),
         ];
@@ -422,11 +358,8 @@ mod pushdown_classification_tests {
     use super::classify_filter;
     use coral_spec::FilterMode;
     use datafusion::common::Column;
-    use datafusion::logical_expr::{
-        Expr, Operator, TableProviderFilterPushDown, binary_expr, expr::Like, lit,
-    };
+    use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, binary_expr, lit};
     use std::collections::{HashMap, HashSet};
-    use std::ops::Not;
 
     fn allowed<'a>(names: &'a [&'a str]) -> HashSet<&'a str> {
         names.iter().copied().collect()
@@ -436,48 +369,8 @@ mod pushdown_classification_tests {
         entries.iter().copied().collect()
     }
 
-    fn like_expr(col_name: &str, pattern: &str) -> Expr {
-        Expr::Like(Like::new(
-            false,
-            Box::new(col(col_name)),
-            Box::new(lit(pattern)),
-            None,
-            false,
-        ))
-    }
-
     fn col(name: &str) -> Expr {
         Expr::Column(Column::from_name(name))
-    }
-
-    #[test]
-    fn like_ignored_for_equality_mode_filter() {
-        let pushdown = classify_filter(
-            &like_expr("status", "%open%"),
-            &allowed(&["status"]),
-            &modes(&[("status", FilterMode::Equality)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Unsupported);
-    }
-
-    #[test]
-    fn strips_wildcards_from_like_pattern() {
-        let pushdown = classify_filter(
-            &like_expr("q", "%deploy runbook%"),
-            &allowed(&["q"]),
-            &modes(&[("q", FilterMode::Contains)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
-    }
-
-    #[test]
-    fn contains_filter_also_accepts_equality() {
-        let pushdown = classify_filter(
-            &binary_expr(col("query"), Operator::Eq, lit("deploy")),
-            &allowed(&["query"]),
-            &modes(&[("query", FilterMode::Contains)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
     }
 
     #[test]
@@ -526,53 +419,6 @@ mod pushdown_classification_tests {
             &modes(&[]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
-    }
-
-    #[test]
-    fn extracts_like_value_for_contains_mode_filter() {
-        let pushdown = classify_filter(
-            &like_expr("query", "%deploy%"),
-            &allowed(&["query"]),
-            &modes(&[("query", FilterMode::Contains)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
-    }
-
-    #[test]
-    fn extracts_like_value_for_legacy_search_mode_filter() {
-        let pushdown = classify_filter(
-            &like_expr("query", "%deploy%"),
-            &allowed(&["query"]),
-            &modes(&[("query", FilterMode::Search)]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
-    }
-
-    #[test]
-    fn boolean_column_filter_pushes_down_exactly() {
-        let pushdown = classify_filter(&col("descending"), &allowed(&["descending"]), &modes(&[]));
-        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
-    }
-
-    #[test]
-    fn negated_boolean_column_filter_pushes_down_exactly() {
-        let pushdown = classify_filter(
-            &col("descending").not(),
-            &allowed(&["descending"]),
-            &modes(&[]),
-        );
-        assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
-    }
-
-    #[test]
-    fn boolean_is_true_and_is_false_push_down_exactly() {
-        for expr in [
-            Expr::IsTrue(Box::new(col("descending"))),
-            Expr::IsFalse(Box::new(col("descending"))),
-        ] {
-            let pushdown = classify_filter(&expr, &allowed(&["descending"]), &modes(&[]));
-            assert_eq!(pushdown, TableProviderFilterPushDown::Exact);
-        }
     }
 
     #[test]

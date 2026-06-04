@@ -12,14 +12,13 @@
 //! custom HTTP headers so an instrumented MCP server can continue the
 //! trace.
 
-use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_spec::backends::mcp::McpServerSpec;
 use datafusion::error::{DataFusionError, Result};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::HeaderMap;
 use rmcp::model::{CallToolRequestParams, ClientInfo, Implementation, JsonObject};
 use rmcp::transport::ConfigureCommandExt;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -30,11 +29,10 @@ use tokio::process::Command;
 use tracing::Instrument as _;
 use tracing::field;
 
-use super::McpSourceInputs;
-use super::client::McpToolCaller;
 use super::error::McpProviderQueryError;
 use super::response::normalize_tool_result;
 use super::trace::{McpBodyCapture, mcp_error_type, next_mcp_request_id};
+use super::{McpSourceInputs, McpToolCaller};
 use crate::backends::shared::template::{RenderContext, resolve_value_source};
 use crate::backends::shared::trace::{
     inject_trace_context, record_processing_error, record_trace_http_endpoint, sanitize_trace_url,
@@ -51,11 +49,11 @@ pub(super) struct StdioMcpToolCaller {
 
 impl StdioMcpToolCaller {
     pub(super) async fn resolved_server_env(&self) -> Result<Vec<(String, String)>> {
-        let server_env = match &self.server {
-            McpServerSpec::Stdio { env, .. } => env,
-            McpServerSpec::StreamableHttp { .. } => {
-                return Ok(Vec::new());
-            }
+        let McpServerSpec::Stdio {
+            env: server_env, ..
+        } = &self.server
+        else {
+            return Ok(Vec::new());
         };
         if server_env.is_empty() {
             return Ok(Vec::new());
@@ -196,10 +194,10 @@ impl StreamableHttpMcpToolCaller {
     /// `tools/call`. Returns `None` when no auth is configured or when the
     /// `auth_token` value source resolves to an empty value.
     pub(super) async fn resolved_bearer_token(&self) -> Result<Option<String>> {
-        let McpServerSpec::StreamableHttp { auth, .. } = &self.server else {
-            return Ok(None);
-        };
-        let Some(auth) = auth else {
+        let McpServerSpec::StreamableHttp {
+            auth: Some(auth), ..
+        } = &self.server
+        else {
             return Ok(None);
         };
         let resolved_inputs = self.source_inputs.resolve_for_request().await?;
@@ -284,11 +282,12 @@ impl StreamableHttpMcpToolCaller {
         let mut header_map = HeaderMap::new();
         inject_trace_context(&span, &mut header_map);
         if !header_map.is_empty() {
-            let custom_headers: HashMap<HeaderName, HeaderValue> = header_map
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect();
-            config = config.custom_headers(custom_headers);
+            config = config.custom_headers(
+                header_map
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+            );
         }
 
         self.body_capture
@@ -299,8 +298,9 @@ impl StreamableHttpMcpToolCaller {
             .serve(transport)
             .await
             .map_err(|error| {
-                DataFusionError::External(Box::new(mcp_http_initialize_error(
+                DataFusionError::External(Box::new(classify_streamable_http_error(
                     &self.source_name,
+                    McpHttpOperation::Initialize,
                     &error,
                 )))
             })?;
@@ -308,10 +308,12 @@ impl StreamableHttpMcpToolCaller {
             .call_tool(CallToolRequestParams::new(tool_name.to_string()).with_arguments(arguments))
             .await
             .map_err(|error| {
-                DataFusionError::External(Box::new(mcp_http_tool_call_error(
+                DataFusionError::External(Box::new(classify_streamable_http_error(
                     &self.source_name,
-                    relation,
-                    tool_name,
+                    McpHttpOperation::ToolCall {
+                        relation,
+                        tool: tool_name,
+                    },
                     &error,
                 )))
             })?;
@@ -362,20 +364,10 @@ fn value_to_env_string(value: Value) -> String {
     }
 }
 
-fn mcp_http_initialize_error(
-    source_schema: &str,
-    error: &(dyn std::error::Error + 'static),
-) -> McpProviderQueryError {
-    classify_streamable_http_error(source_schema, None, error)
-}
-
-fn mcp_http_tool_call_error(
-    source_schema: &str,
-    relation: &str,
-    tool: &str,
-    error: &(dyn std::error::Error + 'static),
-) -> McpProviderQueryError {
-    classify_streamable_http_error(source_schema, Some((relation, tool)), error)
+#[derive(Clone, Copy)]
+enum McpHttpOperation<'a> {
+    Initialize,
+    ToolCall { relation: &'a str, tool: &'a str },
 }
 
 /// Classify an rmcp `ClientInitializeError` / `ServiceError` raised by the
@@ -387,7 +379,7 @@ fn mcp_http_tool_call_error(
 /// the generic `Initialize`/`ToolCall` variants.
 fn classify_streamable_http_error(
     source_schema: &str,
-    relation_and_tool: Option<(&str, &str)>,
+    operation: McpHttpOperation<'_>,
     error: &(dyn std::error::Error + 'static),
 ) -> McpProviderQueryError {
     let dyn_err = match error.downcast_ref::<rmcp::service::ClientInitializeError>() {
@@ -442,32 +434,27 @@ fn classify_streamable_http_error(
                 source_schema: source_schema.to_string(),
                 detail: full_detail,
             },
-            _ => match relation_and_tool {
-                Some((relation, tool)) => McpProviderQueryError::ToolCall {
-                    source_schema: source_schema.to_string(),
-                    relation: relation.to_string(),
-                    tool: tool.to_string(),
-                    detail: full_detail,
-                },
-                None => McpProviderQueryError::Initialize {
-                    source_schema: source_schema.to_string(),
-                    detail: full_detail,
-                },
-            },
+            _ => operation.fallback_error(source_schema, full_detail),
         };
     }
 
-    match relation_and_tool {
-        Some((relation, tool)) => McpProviderQueryError::ToolCall {
-            source_schema: source_schema.to_string(),
-            relation: relation.to_string(),
-            tool: tool.to_string(),
-            detail: full_detail,
-        },
-        None => McpProviderQueryError::Initialize {
-            source_schema: source_schema.to_string(),
-            detail: full_detail,
-        },
+    operation.fallback_error(source_schema, full_detail)
+}
+
+impl McpHttpOperation<'_> {
+    fn fallback_error(self, source_schema: &str, detail: String) -> McpProviderQueryError {
+        match self {
+            Self::Initialize => McpProviderQueryError::Initialize {
+                source_schema: source_schema.to_string(),
+                detail,
+            },
+            Self::ToolCall { relation, tool } => McpProviderQueryError::ToolCall {
+                source_schema: source_schema.to_string(),
+                relation: relation.to_string(),
+                tool: tool.to_string(),
+                detail,
+            },
+        }
     }
 }
 
@@ -481,18 +468,17 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use opentelemetry::Value as OtelValue;
-    use opentelemetry::trace::{SpanKind, Status, TracerProvider};
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use opentelemetry::trace::{SpanKind, Status};
+    use opentelemetry_sdk::trace::SpanData;
     use rmcp::model::JsonObject;
     use serde_json::{Value, json};
-    use tracing::subscriber::DefaultGuard;
-
-    use tracing_subscriber::layer::SubscriberExt;
     use wiremock::matchers::{body_partial_json, header, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::backends::shared::trace::test_support::{
+        TraceCapture, span_attr_bool, span_attr_string,
+    };
 
     fn unexpected_server_response_error(detail: &'static str) -> rmcp::service::ServiceError {
         let error = rmcp::transport::streamable_http_client::StreamableHttpError::<
@@ -508,81 +494,31 @@ mod tests {
     }
 
     #[test]
-    fn classify_unexpected_server_response_keeps_http_status_errors_specific() {
-        let error = unexpected_server_response_error("HTTP 502 Bad Gateway: bad gateway");
-        let classified =
-            classify_streamable_http_error("remote_mcp", Some(("issues", "list_issues")), &error);
+    fn classify_unexpected_server_response_cases() {
+        for (detail, is_http_status) in [
+            ("HTTP 502 Bad Gateway: bad gateway", true),
+            ("empty sse stream", false),
+        ] {
+            let error = unexpected_server_response_error(detail);
+            let classified = classify_streamable_http_error(
+                "remote_mcp",
+                McpHttpOperation::ToolCall {
+                    relation: "issues",
+                    tool: "list_issues",
+                },
+                &error,
+            );
 
-        assert!(matches!(
-            classified,
-            McpProviderQueryError::HttpStatusFailed { .. }
-        ));
-    }
-
-    #[test]
-    fn classify_unexpected_server_response_does_not_treat_protocol_errors_as_status_failures() {
-        let error = unexpected_server_response_error("empty sse stream");
-        let classified =
-            classify_streamable_http_error("remote_mcp", Some(("issues", "list_issues")), &error);
-
-        assert!(matches!(classified, McpProviderQueryError::ToolCall { .. }));
-    }
-
-    struct TraceCapture {
-        memory: InMemorySpanExporter,
-        provider: SdkTracerProvider,
-        _guard: DefaultGuard,
-    }
-
-    impl TraceCapture {
-        fn install() -> Self {
-            let memory = InMemorySpanExporter::default();
-            let provider = SdkTracerProvider::builder()
-                .with_simple_exporter(memory.clone())
-                .build();
-            let tracer = provider.tracer("mcp-telemetry-test");
-            let layer = tracing_opentelemetry::layer()
-                .with_tracer(tracer)
-                .with_target(true)
-                .with_level(true);
-            let subscriber = tracing_subscriber::Registry::default().with(layer);
-            let guard = tracing::subscriber::set_default(subscriber);
-            Self {
-                memory,
-                provider,
-                _guard: guard,
-            }
-        }
-
-        fn finished_spans(&self) -> Vec<SpanData> {
-            self.provider.force_flush().expect("flush spans");
-            self.memory.get_finished_spans().expect("finished spans")
+            assert_eq!(
+                matches!(classified, McpProviderQueryError::HttpStatusFailed { .. }),
+                is_http_status,
+                "{detail}"
+            );
         }
     }
 
-    fn span_attr_string(span: &SpanData, key: &str) -> Option<String> {
-        span.attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == key)
-            .and_then(|attribute| match &attribute.value {
-                OtelValue::String(value) => Some(value.to_string()),
-                OtelValue::I64(value) => Some(value.to_string()),
-                _ => None,
-            })
-    }
-
-    fn span_attr_bool(span: &SpanData, key: &str) -> Option<bool> {
-        span.attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == key)
-            .and_then(|attribute| match &attribute.value {
-                OtelValue::Bool(value) => Some(*value),
-                _ => None,
-            })
-    }
-
-    fn streamable_http_manifest(url: &str) -> coral_spec::McpSourceManifest {
-        let manifest = coral_spec::parse_source_manifest_value(json!({
+    fn validated_streamable_http_manifest(url: &str) -> coral_spec::ValidatedSourceManifest {
+        coral_spec::parse_source_manifest_value(json!({
             "dsl_version": 3,
             "name": "remote_mcp",
             "version": "0.1.0",
@@ -605,34 +541,50 @@ mod tests {
                 "columns": [{ "name": "title", "type": "Utf8" }]
             }]
         }))
-        .expect("manifest should parse");
-        manifest.as_mcp().expect("expected mcp manifest").clone()
+        .expect("manifest should parse")
+    }
+
+    fn streamable_http_manifest(url: &str) -> coral_spec::McpSourceManifest {
+        validated_streamable_http_manifest(url)
+            .as_mcp()
+            .expect("expected mcp manifest")
+            .clone()
     }
 
     fn initialize_response() -> ResponseTemplate {
-        ResponseTemplate::new(200)
-            .append_header("Content-Type", "application/json")
-            .set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": 0,
-                "result": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "serverInfo": {
-                        "name": "fixture",
-                        "version": "0.1.0"
-                    }
+        json_response(json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "result": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "serverInfo": {
+                    "name": "fixture",
+                    "version": "0.1.0"
                 }
-            }))
+            }
+        }))
     }
 
-    #[tokio::test]
-    async fn streamable_http_caller_sends_bearer_token_and_decodes_tool_result() {
+    fn json_response(body: serde_json::Value) -> ResponseTemplate {
+        ResponseTemplate::new(200)
+            .append_header("Content-Type", "application/json")
+            .set_body_json(body)
+    }
+
+    fn tool_result(structured_content: &serde_json::Value) -> serde_json::Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "structuredContent": structured_content }
+        })
+    }
+
+    async fn mock_server_with_tool_call(tool_mock: Mock) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(body_partial_json(json!({ "method": "initialize" })))
             .respond_with(initialize_response())
-            .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -640,50 +592,33 @@ mod tests {
                 json!({ "method": "notifications/initialized" }),
             ))
             .respond_with(ResponseTemplate::new(202))
-            .expect(1)
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(header("authorization", "Bearer secret-token"))
-            .and(body_partial_json(json!({
-                "method": "tools/call",
-                "params": {
-                    "name": "list_issues",
-                    "arguments": { "state": "open" }
-                }
-            })))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .append_header("Content-Type", "application/json")
-                    .set_body_json(json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {
-                            "structuredContent": {
-                                "issues": [{ "title": "Bug A" }]
-                            }
-                        }
-                    })),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
+        tool_mock.mount(&server).await;
+        server
+    }
+
+    #[tokio::test]
+    async fn streamable_http_caller_sends_bearer_token_and_decodes_tool_result() {
+        let server = mock_server_with_tool_call(
+            Mock::given(method("POST"))
+                .and(header("authorization", "Bearer secret-token"))
+                .and(body_partial_json(json!({
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_issues",
+                        "arguments": { "state": "open" }
+                    }
+                })))
+                .respond_with(json_response(tool_result(&json!({
+                    "issues": [{ "title": "Bug A" }]
+                }))))
+                .expect(1),
+        )
+        .await;
 
         let manifest = streamable_http_manifest(&server.uri());
-        let mut secrets = BTreeMap::new();
-        secrets.insert("MCP_ACCESS_TOKEN".to_string(), "secret-token".to_string());
-        let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
-            &manifest.declared_inputs,
-            &secrets,
-            &BTreeMap::new(),
-        ));
-        let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
-        let caller = StreamableHttpMcpToolCaller {
-            source_name: manifest.common.name,
-            server: manifest.server,
-            source_inputs,
-            body_capture: McpBodyCapture::default(),
-        };
+        let caller = make_caller_with_token(manifest, McpBodyCapture::default(), "secret-token");
         let mut arguments = JsonObject::new();
         arguments.insert("state".to_string(), Value::String("open".to_string()));
 
@@ -701,41 +636,29 @@ mod tests {
         assert_eq!(title, Some("Bug A"));
     }
 
-    /// Helper: wire up a wiremock server that successfully serves
-    /// initialize → notifications/initialized → tools/call with the
-    /// supplied tool-call body.
     async fn mock_success_server(tool_response: serde_json::Value) -> MockServer {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(body_partial_json(json!({ "method": "initialize" })))
-            .respond_with(initialize_response())
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(body_partial_json(
-                json!({ "method": "notifications/initialized" }),
-            ))
-            .respond_with(ResponseTemplate::new(202))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(body_partial_json(json!({ "method": "tools/call" })))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .append_header("Content-Type", "application/json")
-                    .set_body_json(tool_response),
-            )
-            .mount(&server)
-            .await;
-        server
+        mock_server_with_tool_call(
+            Mock::given(method("POST"))
+                .and(body_partial_json(json!({ "method": "tools/call" })))
+                .respond_with(json_response(tool_response)),
+        )
+        .await
     }
 
     fn make_caller(
         manifest: coral_spec::McpSourceManifest,
         body_capture: McpBodyCapture,
     ) -> StreamableHttpMcpToolCaller {
+        make_caller_with_token(manifest, body_capture, "token")
+    }
+
+    fn make_caller_with_token(
+        manifest: coral_spec::McpSourceManifest,
+        body_capture: McpBodyCapture,
+        token: &str,
+    ) -> StreamableHttpMcpToolCaller {
         let mut secrets = BTreeMap::new();
-        secrets.insert("MCP_ACCESS_TOKEN".to_string(), "token".to_string());
+        secrets.insert("MCP_ACCESS_TOKEN".to_string(), token.to_string());
         let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
             &manifest.declared_inputs,
             &secrets,
@@ -750,6 +673,34 @@ mod tests {
         }
     }
 
+    fn make_caller_with_resolver(
+        validated: coral_spec::ValidatedSourceManifest,
+        resolver_calls: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> StreamableHttpMcpToolCaller {
+        let manifest = validated.as_mcp().expect("mcp manifest").clone();
+        let variables = BTreeMap::new();
+        let secrets = BTreeMap::from([("MCP_ACCESS_TOKEN".to_string(), "stale-token".to_string())]);
+        let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
+            &manifest.declared_inputs,
+            &secrets,
+            &variables,
+        ));
+        let source = crate::QuerySource::new(validated, variables, secrets);
+        let source_inputs = Arc::new(McpSourceInputs::with_resolver(
+            resolved_inputs,
+            crate::SourceInputResolutionContext::from_query_source(&source),
+            Arc::new(RotatingResolver {
+                calls: resolver_calls,
+            }),
+        ));
+        StreamableHttpMcpToolCaller {
+            source_name: manifest.common.name,
+            server: manifest.server,
+            source_inputs,
+            body_capture: McpBodyCapture::default(),
+        }
+    }
+
     /// Find the `mcp.tool.call` span by `coral.source` attribute rather
     /// than name — `otel.name = tool_name` overrides the tracing-level
     /// span name in `OTel` exports (matches the HTTP backend's convention
@@ -760,15 +711,47 @@ mod tests {
             .find(|span| span_attr_string(span, "coral.source").as_deref() == Some(source))
     }
 
+    async fn assert_streamable_http_error_span(
+        response: ResponseTemplate,
+        expectation: &str,
+        message_needles: &[&str],
+        assert_span: impl FnOnce(&SpanData),
+    ) {
+        let capture = TraceCapture::install("mcp-telemetry-test");
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        let manifest = streamable_http_manifest(&server.uri());
+        let caller = make_caller(manifest, McpBodyCapture::default());
+
+        let error = caller
+            .call_tool("issues", "list_issues", JsonObject::new())
+            .await
+            .expect_err(expectation);
+        let message = error.to_string();
+        assert!(
+            message_needles
+                .iter()
+                .any(|needle| message.contains(needle)),
+            "expected error message containing one of {message_needles:?}, got: {message}"
+        );
+        drop(caller);
+        drop(server);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let spans = capture.finished_spans();
+        let parent = find_call_span(&spans, "remote_mcp").expect("parent span");
+        assert_span(parent);
+
+        capture.shutdown();
+    }
+
     #[tokio::test]
     async fn streamable_http_caller_emits_parent_span_with_otel_attributes() {
-        let capture = TraceCapture::install();
-        let server = mock_success_server(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": { "structuredContent": { "issues": [] } }
-        }))
-        .await;
+        let capture = TraceCapture::install("mcp-telemetry-test");
+        let server = mock_success_server(tool_result(&json!({ "issues": [] }))).await;
         let manifest = streamable_http_manifest(&server.uri());
         let caller = make_caller(manifest, McpBodyCapture::default());
 
@@ -822,18 +805,14 @@ mod tests {
         assert_eq!(span_attr_string(parent, "error.type"), None);
         assert!(matches!(parent.status, Status::Unset | Status::Ok));
 
-        capture.provider.shutdown().expect("shutdown");
+        capture.shutdown();
     }
 
     #[tokio::test]
     async fn streamable_http_caller_emits_body_capture_child_spans_when_enabled() {
-        let capture = TraceCapture::install();
-        let server = mock_success_server(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": { "structuredContent": { "issues": [{ "title": "x" }] } }
-        }))
-        .await;
+        let capture = TraceCapture::install("mcp-telemetry-test");
+        let server =
+            mock_success_server(tool_result(&json!({ "issues": [{ "title": "x" }] }))).await;
         let manifest = streamable_http_manifest(&server.uri());
         let caller = make_caller(manifest, McpBodyCapture::new(Some(1024)));
         let mut arguments = JsonObject::new();
@@ -871,124 +850,69 @@ mod tests {
             "response body preview should include the normalized payload"
         );
 
-        capture.provider.shutdown().expect("shutdown");
+        capture.shutdown();
     }
 
     #[tokio::test]
     async fn streamable_http_caller_records_auth_required_on_initialize_401() {
-        let capture = TraceCapture::install();
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(401).append_header("WWW-Authenticate", "Bearer"))
-            .mount(&server)
-            .await;
-        let manifest = streamable_http_manifest(&server.uri());
-        let caller = make_caller(manifest, McpBodyCapture::default());
-
-        let error = caller
-            .call_tool("issues", "list_issues", JsonObject::new())
-            .await
-            .expect_err("auth required should surface as error");
-        let message = error.to_string();
-        assert!(
-            message.contains("Auth required") || message.contains("authorization"),
-            "expected auth-required error message, got: {message}"
-        );
-        drop(caller);
-        drop(server);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let spans = capture.finished_spans();
-        let parent = find_call_span(&spans, "remote_mcp").expect("parent span");
-
-        assert_eq!(span_attr_bool(parent, "error"), Some(true));
-        assert_eq!(
-            span_attr_string(parent, "error.type").as_deref(),
-            Some("MCP_AUTH_REQUIRED")
-        );
-        assert!(
-            matches!(parent.status, Status::Error { .. }),
-            "expected Status::Error, got {:?}",
-            parent.status
-        );
-        assert!(
-            span_attr_string(parent, "exception.message")
-                .as_deref()
-                .is_some_and(|message| !message.is_empty()),
-            "exception.message should carry the underlying error"
-        );
-
-        capture.provider.shutdown().expect("shutdown");
+        assert_streamable_http_error_span(
+            ResponseTemplate::new(401).append_header("WWW-Authenticate", "Bearer"),
+            "auth required should surface as error",
+            &["Auth required", "authorization"],
+            |parent| {
+                assert_eq!(span_attr_bool(parent, "error"), Some(true));
+                assert_eq!(
+                    span_attr_string(parent, "error.type").as_deref(),
+                    Some("MCP_AUTH_REQUIRED")
+                );
+                assert!(
+                    matches!(parent.status, Status::Error { .. }),
+                    "expected Status::Error, got {:?}",
+                    parent.status
+                );
+                assert!(
+                    span_attr_string(parent, "exception.message")
+                        .as_deref()
+                        .is_some_and(|message| !message.is_empty()),
+                    "exception.message should carry the underlying error"
+                );
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn streamable_http_caller_classifies_non_auth_5xx_as_http_status_failed() {
-        let capture = TraceCapture::install();
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(502).set_body_string("bad gateway"))
-            .mount(&server)
-            .await;
-        let manifest = streamable_http_manifest(&server.uri());
-        let caller = make_caller(manifest, McpBodyCapture::default());
-
-        let error = caller
-            .call_tool("issues", "list_issues", JsonObject::new())
-            .await
-            .expect_err("5xx should surface as error");
-        assert!(
-            error.to_string().contains("unexpected status")
-                || error.to_string().contains("unexpected server response"),
-            "expected http-status-failed error message, got: {error}"
-        );
-        drop(caller);
-        drop(server);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let spans = capture.finished_spans();
-        let parent = find_call_span(&spans, "remote_mcp").expect("parent span");
-        assert_eq!(
-            span_attr_string(parent, "error.type").as_deref(),
-            Some("MCP_HTTP_STATUS_FAILED")
-        );
-        capture.provider.shutdown().expect("shutdown");
+        assert_streamable_http_error_span(
+            ResponseTemplate::new(502).set_body_string("bad gateway"),
+            "5xx should surface as error",
+            &["unexpected status", "unexpected server response"],
+            |parent| {
+                assert_eq!(
+                    span_attr_string(parent, "error.type").as_deref(),
+                    Some("MCP_HTTP_STATUS_FAILED")
+                );
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn streamable_http_caller_classifies_unexpected_content_type_as_sse_decode_failed() {
-        let capture = TraceCapture::install();
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .append_header("Content-Type", "text/plain")
-                    .set_body_string("hello"),
-            )
-            .mount(&server)
-            .await;
-        let manifest = streamable_http_manifest(&server.uri());
-        let caller = make_caller(manifest, McpBodyCapture::default());
-
-        let error = caller
-            .call_tool("issues", "list_issues", JsonObject::new())
-            .await
-            .expect_err("unexpected content type should surface as error");
-        assert!(
-            error.to_string().contains("undecodable SSE stream")
-                || error.to_string().contains("Unexpected content type"),
-            "expected sse-decode-failed error message, got: {error}"
-        );
-        drop(caller);
-        drop(server);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let spans = capture.finished_spans();
-        let parent = find_call_span(&spans, "remote_mcp").expect("parent span");
-        assert_eq!(
-            span_attr_string(parent, "error.type").as_deref(),
-            Some("MCP_HTTP_SSE_DECODE_FAILED")
-        );
-        capture.provider.shutdown().expect("shutdown");
+        assert_streamable_http_error_span(
+            ResponseTemplate::new(200)
+                .append_header("Content-Type", "text/plain")
+                .set_body_string("hello"),
+            "unexpected content type should surface as error",
+            &["undecodable SSE stream", "Unexpected content type"],
+            |parent| {
+                assert_eq!(
+                    span_attr_string(parent, "error.type").as_deref(),
+                    Some("MCP_HTTP_SSE_DECODE_FAILED")
+                );
+            },
+        )
+        .await;
     }
 
     #[derive(Debug)]
@@ -1030,15 +954,9 @@ mod tests {
             Mock::given(method("POST"))
                 .and(header("authorization", format!("Bearer {token}")))
                 .and(body_partial_json(json!({ "method": "tools/call" })))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .append_header("Content-Type", "application/json")
-                        .set_body_json(json!({
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "result": { "structuredContent": { "issues": [] } }
-                        })),
-                )
+                .respond_with(json_response(tool_result(&json!({
+                    "issues": []
+                }))))
                 .expect(1)
                 .mount(server)
                 .await;
@@ -1055,49 +973,9 @@ mod tests {
         let server = MockServer::start().await;
         mount_token_rotation_mocks(&server).await;
 
-        let validated = coral_spec::parse_source_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "inputs": { "MCP_ACCESS_TOKEN": { "kind": "secret" } },
-            "server": {
-                "transport": "streamable_http",
-                "url": server.uri(),
-                "auth": { "type": "bearer", "from": "input", "key": "MCP_ACCESS_TOKEN" }
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
-        }))
-        .expect("manifest should parse");
-        let manifest = validated.as_mcp().expect("mcp manifest").clone();
-        let variables = BTreeMap::new();
-        let secrets = BTreeMap::from([("MCP_ACCESS_TOKEN".to_string(), "stale-token".to_string())]);
-        let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
-            &manifest.declared_inputs,
-            &secrets,
-            &variables,
-        ));
+        let validated = validated_streamable_http_manifest(&server.uri());
         let resolver_calls = Arc::new(AtomicUsize::new(0));
-        let source = crate::QuerySource::new(validated, variables, secrets);
-        let source_input_resolution =
-            crate::SourceInputResolutionContext::from_query_source(&source);
-        let source_inputs = Arc::new(McpSourceInputs::with_resolver(
-            resolved_inputs,
-            source_input_resolution,
-            Arc::new(RotatingResolver {
-                calls: Arc::clone(&resolver_calls),
-            }),
-        ));
-        let caller = StreamableHttpMcpToolCaller {
-            source_name: manifest.common.name,
-            server: manifest.server,
-            source_inputs,
-            body_capture: McpBodyCapture::default(),
-        };
+        let caller = make_caller_with_resolver(validated, Arc::clone(&resolver_calls));
 
         caller
             .call_tool("issues", "list_issues", JsonObject::new())

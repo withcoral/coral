@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use arrow::datatypes::Schema;
@@ -9,7 +8,7 @@ use coral_engine::{
 };
 use serde_json::{Value, json};
 
-use crate::harness::{build_source, dir_url, execution_to_rows, users_rows, write_jsonl_file};
+use crate::harness::{batches_to_rows, execution_to_rows, users_jsonl_source};
 
 #[derive(Debug, Clone, PartialEq)]
 struct ObservedQuery {
@@ -87,9 +86,7 @@ impl QueryResultObserver for FailingObserver {
 
 #[tokio::test]
 async fn observer_called_after_successful_query_and_sees_final_batches() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest("observer_success", temp.path()));
+    let (_temp, source) = users_jsonl_source("observer_success");
     let observer = Arc::new(RecordingObserver::default());
     let runtime = runtime_with_observer(observer.clone());
     let sql = "SELECT id, name FROM observer_success.users WHERE id >= 2 ORDER BY id";
@@ -118,9 +115,7 @@ async fn observer_called_after_successful_query_and_sees_final_batches() {
 
 #[tokio::test]
 async fn observer_errors_fail_query_with_structured_core_error() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest("observer_error", temp.path()));
+    let (_temp, source) = users_jsonl_source("observer_error");
     let runtime = runtime_with_observer(Arc::new(FailingObserver));
 
     let error = CoralQuery::execute_sql(
@@ -145,9 +140,7 @@ async fn observer_errors_fail_query_with_structured_core_error() {
 
 #[tokio::test]
 async fn no_observer_keeps_existing_query_behavior_unchanged() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest("observer_none", temp.path()));
+    let (_temp, source) = users_jsonl_source("observer_none");
 
     let execution = CoralQuery::execute_sql(
         &[source],
@@ -169,9 +162,7 @@ async fn no_observer_keeps_existing_query_behavior_unchanged() {
 
 #[tokio::test]
 async fn observer_sees_filtered_projected_result_not_raw_source_rows() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest("observer_final", temp.path()));
+    let (_temp, source) = users_jsonl_source("observer_final");
     let observer = Arc::new(RecordingObserver::default());
     let sql = "SELECT name FROM observer_final.users WHERE id = 2";
 
@@ -202,39 +193,4 @@ fn runtime_with_observer(observer: Arc<dyn QueryResultObserver>) -> QueryRuntime
     let mut extensions = EngineExtensions::default();
     extensions.query_result_observers.push(observer);
     QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
-}
-
-fn jsonl_manifest(name: &str, dir: &Path) -> Value {
-    json!({
-        "name": name,
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "file",
-        "tables": [{
-            "name": "users",
-            "description": "Users fixture",
-            "format": "jsonl",
-            "source": {
-                "location": dir_url(dir),
-                "glob": "**/*.jsonl",
-            },
-            "columns": [
-                {"name": "id", "type": "Int64"},
-                {"name": "name", "type": "Utf8"},
-                {"name": "email", "type": "Utf8"},
-            ],
-        }],
-    })
-}
-
-fn batches_to_rows(batches: &[RecordBatch]) -> Vec<Value> {
-    let mut bytes = Vec::new();
-    {
-        let mut writer = arrow::json::ArrayWriter::new(&mut bytes);
-        for batch in batches {
-            writer.write(batch).expect("batch should encode to json");
-        }
-        writer.finish().expect("json writer should finish");
-    }
-    serde_json::from_slice(&bytes).expect("json rows should decode")
 }

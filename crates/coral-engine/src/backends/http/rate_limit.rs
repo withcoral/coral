@@ -193,78 +193,63 @@ mod tests {
         };
         let now = UNIX_EPOCH + Duration::from_mins(28_333_335);
 
-        // Bare 403 with no rate-limit signal is a regular auth error, not a rate limit.
-        let mut bare = HeaderMap::new();
-        bare.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000099"));
-        assert_eq!(
-            classify_rate_limit(reqwest::StatusCode::FORBIDDEN, &bare, &spec, now),
-            RateLimitSignal::None,
-        );
-
-        // Bare 429 with no retry hints falls back to the short default retry.
-        assert_eq!(
-            classify_rate_limit(
-                reqwest::StatusCode::TOO_MANY_REQUESTS,
-                &HeaderMap::new(),
-                &spec,
-                now
-            ),
-            RateLimitSignal::Throttle {
-                retry_after: Some(DEFAULT_FALLBACK_RETRY_AFTER),
-            },
-        );
-
-        // Remaining=0 with a past-epoch reset → Quota with a saturated-to-zero wait.
-        let mut quota = HeaderMap::new();
-        quota.insert("X-RateLimit-Remaining", HeaderValue::from_static("0"));
-        quota.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000099"));
-        assert_eq!(
-            classify_rate_limit(reqwest::StatusCode::TOO_MANY_REQUESTS, &quota, &spec, now),
-            RateLimitSignal::Quota {
-                reset_in: Some(Duration::ZERO),
-            },
-        );
-
-        // 403 with Retry-After but no Remaining=0 → Throttle.
-        let mut throttle = HeaderMap::new();
-        throttle.insert("Retry-After", HeaderValue::from_static("7"));
-        assert_eq!(
-            classify_rate_limit(reqwest::StatusCode::FORBIDDEN, &throttle, &spec, now),
-            RateLimitSignal::Throttle {
-                retry_after: Some(Duration::from_secs(7)),
-            },
-        );
-
-        // 403 with a future reset-header should also throttle for providers
-        // like GitHub that use 403 for rate limiting.
-        let mut reset_throttle_403 = HeaderMap::new();
-        reset_throttle_403.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000108"));
-        assert_eq!(
-            classify_rate_limit(
+        for (case, status, headers, expected) in [
+            (
+                "bare 403 remains regular auth error",
                 reqwest::StatusCode::FORBIDDEN,
-                &reset_throttle_403,
-                &spec,
-                now
+                headers(&[("X-RateLimit-Reset", "1700000099")]),
+                RateLimitSignal::None,
             ),
-            RateLimitSignal::Throttle {
-                retry_after: Some(Duration::from_secs(8)),
-            },
-        );
-
-        // 429 can also recover from reset-header timing without Remaining=0.
-        let mut reset_throttle = HeaderMap::new();
-        reset_throttle.insert("X-RateLimit-Reset", HeaderValue::from_static("1700000108"));
-        assert_eq!(
-            classify_rate_limit(
+            (
+                "bare 429 falls back to short default retry",
                 reqwest::StatusCode::TOO_MANY_REQUESTS,
-                &reset_throttle,
-                &spec,
-                now
+                HeaderMap::new(),
+                RateLimitSignal::Throttle {
+                    retry_after: Some(DEFAULT_FALLBACK_RETRY_AFTER),
+                },
             ),
-            RateLimitSignal::Throttle {
-                retry_after: Some(Duration::from_secs(8)),
-            },
-        );
+            (
+                "remaining zero with past reset saturates quota wait to zero",
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                headers(&[
+                    ("X-RateLimit-Remaining", "0"),
+                    ("X-RateLimit-Reset", "1700000099"),
+                ]),
+                RateLimitSignal::Quota {
+                    reset_in: Some(Duration::ZERO),
+                },
+            ),
+            (
+                "403 retry-after throttles",
+                reqwest::StatusCode::FORBIDDEN,
+                headers(&[("Retry-After", "7")]),
+                RateLimitSignal::Throttle {
+                    retry_after: Some(Duration::from_secs(7)),
+                },
+            ),
+            (
+                "403 future reset throttles for providers like GitHub",
+                reqwest::StatusCode::FORBIDDEN,
+                headers(&[("X-RateLimit-Reset", "1700000108")]),
+                RateLimitSignal::Throttle {
+                    retry_after: Some(Duration::from_secs(8)),
+                },
+            ),
+            (
+                "429 recovers from reset timing without remaining zero",
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                headers(&[("X-RateLimit-Reset", "1700000108")]),
+                RateLimitSignal::Throttle {
+                    retry_after: Some(Duration::from_secs(8)),
+                },
+            ),
+        ] {
+            assert_eq!(
+                classify_rate_limit(status, &headers, &spec, now),
+                expected,
+                "{case}"
+            );
+        }
     }
 
     #[test]
@@ -349,5 +334,13 @@ mod tests {
             manifest.rate_limit.remaining_header.as_deref(),
             Some("X-RateLimit-Remaining")
         );
+    }
+
+    fn headers(values: &[(&'static str, &'static str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in values {
+            headers.insert(*name, HeaderValue::from_static(value));
+        }
+        headers
     }
 }

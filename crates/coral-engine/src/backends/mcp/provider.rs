@@ -13,17 +13,15 @@ use datafusion::physical_plan::ExecutionPlan;
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
-use super::McpSourceInputs;
-use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
+use super::{McpSourceInputs, McpToolCaller};
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{classify_filter_pushdown, extract_filter_values};
-use crate::backends::shared::json_exec::JsonExec;
-use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::json_exec::mapped_json_exec;
 
 pub(super) struct McpTableProvider {
-    backend: McpSourceClient,
+    backend: Arc<dyn McpToolCaller>,
     source_schema: String,
     source_inputs: Arc<McpSourceInputs>,
     table: Arc<McpTableSpec>,
@@ -42,7 +40,7 @@ impl std::fmt::Debug for McpTableProvider {
 
 impl McpTableProvider {
     pub(super) fn new(
-        backend: McpSourceClient,
+        backend: Arc<dyn McpToolCaller>,
         source_schema: String,
         source_inputs: Arc<McpSourceInputs>,
         table: McpTableSpec,
@@ -150,29 +148,15 @@ impl TableProvider for McpTableProvider {
             pagination: self.table.pagination.clone(),
             limit: limits.truncate,
         });
-        let columns: Arc<[coral_spec::ColumnSpec]> = Arc::from(self.table.columns().to_vec());
-        let schema = self.schema.clone();
-        let filter_values_arc = Arc::new(filter_values);
-        let empty_args: Arc<HashMap<String, String>> = Arc::new(HashMap::new());
-        let converter = {
-            let columns = Arc::clone(&columns);
-            let schema = schema.clone();
-            let filter_values = Arc::clone(&filter_values_arc);
-            let args = Arc::clone(&empty_args);
-            Arc::new(move |items: &[Value]| {
-                convert_items(&columns, schema.clone(), &filter_values, &args, items)
-            })
-        };
-
-        let exec = JsonExec::new(
+        mapped_json_exec(
             &self.source_schema,
             self.table.name(),
-            schema,
+            self.schema.clone(),
+            Arc::from(self.table.columns().to_vec()),
             fetcher,
-            converter,
+            (Arc::new(filter_values), Arc::new(HashMap::new())),
             projection.cloned(),
-        )?;
-        Ok(Arc::new(exec))
+        )
     }
 }
 

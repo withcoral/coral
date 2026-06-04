@@ -17,7 +17,9 @@ use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::transport::{OutgoingHttpRequest, execute_request};
 use crate::backends::http::url::{join_url, normalize_base_url};
 use crate::backends::shared::json_path::get_path_value;
-use crate::backends::shared::response_rows::extract_rows;
+use crate::backends::shared::response_rows::{
+    ResponseErrorPolicy, detect_response_error, extract_rows,
+};
 use crate::backends::shared::template::{RenderContext, render_template};
 use coral_spec::ValidatedPaginationMode;
 
@@ -174,31 +176,22 @@ pub(super) async fn fetch_rows(
             break;
         };
 
-        if !target.response().ok_path.is_empty() {
-            let ok = get_path_value(&payload, &target.response().ok_path)
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if !ok {
-                let err = if target.response().error_path.is_empty() {
-                    "unknown source API error".to_string()
-                } else {
-                    get_path_value(&payload, &target.response().error_path)
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown source API error")
-                        .to_string()
-                };
-                return Err(DataFusionError::External(Box::new(
-                    ProviderQueryError::ApiRequest {
-                        source_schema: client.source_schema.clone(),
-                        table: target.name().to_string(),
-                        status: None,
-                        method: None,
-                        url: None,
-                        filters: filter_values.clone(),
-                        detail: err,
-                    },
-                )));
-            }
+        if let Some(detail) = detect_response_error(
+            target.response(),
+            &payload,
+            ResponseErrorPolicy::RequireOkPath("unknown source API error"),
+        ) {
+            return Err(DataFusionError::External(Box::new(
+                ProviderQueryError::ApiRequest {
+                    source_schema: client.source_schema.clone(),
+                    table: target.name().to_string(),
+                    status: None,
+                    method: None,
+                    url: None,
+                    filters: filter_values.clone(),
+                    detail,
+                },
+            )));
         }
 
         let mut rows = extract_rows(target.response(), &payload);

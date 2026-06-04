@@ -9,19 +9,20 @@ use datafusion::error::{DataFusionError, Result};
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
-use super::McpSourceInputs;
-use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
+use super::{McpSourceInputs, McpToolCaller};
 use crate::backends::shared::json_exec::RowFetcher;
 use crate::backends::shared::json_path::get_path_value;
-use crate::backends::shared::response_rows::extract_rows;
+use crate::backends::shared::response_rows::{
+    ResponseErrorPolicy, detect_response_error, extract_rows,
+};
 use crate::backends::shared::template::{RenderContext, resolve_value_source};
 
 const DEFAULT_MCP_MAX_PAGES: usize = 100;
 
 #[derive(Debug)]
 pub(super) struct McpFetchPlan {
-    pub(super) backend: McpSourceClient,
+    pub(super) backend: Arc<dyn McpToolCaller>,
     pub(super) source_schema: String,
     pub(super) relation: String,
     pub(super) tool_name: String,
@@ -63,7 +64,13 @@ impl RowFetcher for McpFetchPlan {
                 .backend
                 .call_tool(&self.relation, &self.tool_name, arguments)
                 .await?;
-            if let Some(detail) = detect_payload_error(&self.response, &payload) {
+            if let Some(detail) = detect_response_error(
+                &self.response,
+                &payload,
+                ResponseErrorPolicy::OkPathOrErrorPath(
+                    "tool reported failure via ok_path but no error_path detail was provided",
+                ),
+            ) {
                 return Err(DataFusionError::External(Box::new(
                     McpProviderQueryError::ToolReturnedError {
                         source_schema: self.source_schema.clone(),
@@ -118,57 +125,6 @@ impl McpFetchPlan {
         }
         Ok(arguments)
     }
-}
-
-/// Returns an error detail string when the payload signals failure.
-///
-/// Two manifest conventions are supported, matching the shared `ResponseSpec`
-/// shape used by HTTP sources:
-///
-/// 1. **`ok_path` discriminator** — when `ok_path` is set, its boolean value
-///    decides success/failure. The same semantics HTTP uses: a non-`true`
-///    value (including missing, non-bool, or `false`) triggers a failure,
-///    and `error_path` is read only to populate the detail. Manifests that
-///    declare both `ok_path` and a permanently-present `error_path` field
-///    therefore do not misclassify successful responses.
-/// 2. **`error_path`-only sentinel** — when `ok_path` is empty, the presence
-///    of a non-null value at `error_path` is itself the failure signal. This
-///    is the shape `ClickHouse`'s MCP server uses (`{ "result": { "status":
-///    "error", "message": "..." } }`), where `message` only appears on the
-///    error branch.
-fn detect_payload_error(response: &ResponseSpec, payload: &Value) -> Option<String> {
-    if !response.ok_path.is_empty() {
-        let ok = get_path_value(payload, &response.ok_path)
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if ok {
-            return None;
-        }
-        return Some(error_path_detail(response, payload).unwrap_or_else(|| {
-            "tool reported failure via ok_path but no error_path detail was provided".to_string()
-        }));
-    }
-    if response.error_path.is_empty() {
-        return None;
-    }
-    error_path_detail(response, payload)
-}
-
-/// Returns the value at `response.error_path` rendered as a string, if it is
-/// present and non-null. Returns `None` when `error_path` is empty, missing
-/// from the payload, or explicitly null.
-fn error_path_detail(response: &ResponseSpec, payload: &Value) -> Option<String> {
-    if response.error_path.is_empty() {
-        return None;
-    }
-    let value = get_path_value(payload, &response.error_path)?;
-    if value.is_null() {
-        return None;
-    }
-    Some(match value {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    })
 }
 
 fn next_page_cursor(pagination: &McpPaginationSpec, payload: &Value) -> Option<Value> {

@@ -332,11 +332,7 @@ fn eval_template(
 
 fn eval_join_array(row: &Value, path: &[String], separator: &str) -> Option<Value> {
     let values = get_path_value(row, path)?.as_array()?;
-    let joined = values
-        .iter()
-        .filter_map(value_to_string_for_join)
-        .collect::<Vec<_>>()
-        .join(separator);
+    let joined = join_values(values.iter(), separator);
     Some(Value::String(joined))
 }
 
@@ -347,13 +343,20 @@ fn eval_join_array_path(
     separator: &str,
 ) -> Option<Value> {
     let values = get_path_value(row, path)?.as_array()?;
-    let joined = values
-        .iter()
-        .filter_map(|item| get_path_value(item, item_path))
+    let joined = join_values(
+        values
+            .iter()
+            .filter_map(|item| get_path_value(item, item_path)),
+        separator,
+    );
+    Some(Value::String(joined))
+}
+
+fn join_values<'a>(values: impl Iterator<Item = &'a Value>, separator: &str) -> String {
+    values
         .filter_map(value_to_string_for_join)
         .collect::<Vec<_>>()
-        .join(separator);
-    Some(Value::String(joined))
+        .join(separator)
 }
 
 fn value_to_string_for_join(value: &Value) -> Option<String> {
@@ -437,140 +440,51 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 mod tests {
     use super::{convert_items, eval_template, parse_iso8601_micros};
     use crate::backends::schema_from_columns;
-    use coral_spec::backends::http::HttpTableSpec;
-    use coral_spec::{
-        ExprSpec, ParsedTemplate, RequestSpec, TimestampInput, parse_source_manifest_value,
-    };
+    use coral_spec::{ColumnSpec, ExprSpec, ParsedTemplate, TimestampInput};
     use datafusion::arrow::array::{
         Array, BooleanArray, Int64Array, StringArray, TimestampMicrosecondArray,
     };
+    use datafusion::arrow::record_batch::RecordBatch;
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
-    fn table_with_expr(name: &str, data_type: &str, expr: &ExprSpec) -> HttpTableSpec {
-        let source_manifest = parse_source_manifest_value(serde_json::json!({
-            "dsl_version": 3,
-            "name": "test",
-            "version": "0.1.0",
-            "backend": "http",
-            "base_url": "https://api.example.com",
-            "tables": [{
-                "name": "t",
-                "description": "test",
-                "request": request_json(&RequestSpec::default()),
-                "columns": [{
-                    "name": name,
-                    "type": data_type,
-                    "expr": expr_json(expr),
-                }]
-            }]
-        }))
-        .expect("manifest should parse");
-        let manifest = source_manifest.as_http().expect("http manifest");
-        manifest.tables.first().expect("HTTP table").clone()
+    fn convert_expr_items(data_type: &str, expr: ExprSpec, items: &[Value]) -> RecordBatch {
+        let columns = [ColumnSpec {
+            name: "value".into(),
+            data_type: data_type.into(),
+            nullable: true,
+            r#virtual: false,
+            description: String::new(),
+            expr: Some(expr),
+        }];
+        let schema = schema_from_columns(&columns, "test", "t").unwrap();
+        convert_items(&columns, schema, &HashMap::new(), &HashMap::new(), items).unwrap()
     }
 
-    fn request_json(request: &RequestSpec) -> Value {
-        let path = if request.path.is_empty() {
-            "/items"
-        } else {
-            request.path.raw()
-        };
-        json!({
-            "method": format!("{:?}", request.method),
-            "path": path,
-            "query": [],
-            "body": [],
-            "headers": [],
-        })
-    }
-
-    fn expr_json(expr: &ExprSpec) -> Value {
-        match expr {
-            ExprSpec::Path { path } => json!({ "kind": "path", "path": path }),
-            ExprSpec::FromArg { key } => json!({ "kind": "from_arg", "key": key }),
-            ExprSpec::IfPresent { check, then_value } => json!({
-                "kind": "if_present",
-                "check": expr_json(check),
-                "then_value": then_value,
-            }),
-            ExprSpec::Replace { expr, from, to } => json!({
-                "kind": "replace",
-                "expr": expr_json(expr),
-                "from": from,
-                "to": to,
-            }),
-            ExprSpec::Base64Decode { expr } => json!({
-                "kind": "base64_decode",
-                "expr": expr_json(expr),
-            }),
-            ExprSpec::JoinTagValues {
-                path,
-                key,
-                key_field,
-                value_field,
-                separator,
-            } => json!({
-                "kind": "join_tag_values",
-                "path": path,
-                "key": key,
-                "key_field": key_field,
-                "value_field": value_field,
-                "separator": separator,
-            }),
-            ExprSpec::FormatTimestamp { expr, input } => json!({
-                "kind": "format_timestamp",
-                "expr": expr_json(expr),
-                "input": match input {
-                    TimestampInput::Seconds => "seconds",
-                    TimestampInput::Milliseconds => "milliseconds",
-                    TimestampInput::Iso8601 => "iso8601",
-                },
-            }),
-            ExprSpec::JoinArrayPath {
-                path,
-                item_path,
-                separator,
-            } => json!({
-                "kind": "join_array_path",
-                "path": path,
-                "item_path": item_path,
-                "separator": separator,
-            }),
-            other => panic!("unsupported test expr: {other:?}"),
+    fn path(name: &str) -> ExprSpec {
+        ExprSpec::Path {
+            path: vec![name.into()],
         }
+    }
+
+    fn first_column<T: Array + 'static>(batch: &RecordBatch) -> &T {
+        batch.column(0).as_any().downcast_ref::<T>().unwrap()
     }
 
     #[test]
     fn format_timestamp_parses_iso8601_strings() {
-        let table = table_with_expr(
-            "created_time",
-            "Timestamp",
-            &ExprSpec::FormatTimestamp {
-                input: TimestampInput::Iso8601,
-                expr: Box::new(ExprSpec::Path {
-                    path: vec!["created_time".into()],
-                }),
-            },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![serde_json::json!({
             "created_time": "2026-03-11T12:34:56.123456Z"
         })];
-
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
+        let batch = convert_expr_items(
+            "Timestamp",
+            ExprSpec::FormatTimestamp {
+                input: TimestampInput::Iso8601,
+                expr: Box::new(path("created_time")),
+            },
             &items,
-        )
-        .unwrap();
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<TimestampMicrosecondArray>()
-            .unwrap();
+        );
+        let col = first_column::<TimestampMicrosecondArray>(&batch);
 
         assert_eq!(col.value(0), 1_773_232_496_123_456);
     }
@@ -585,83 +499,41 @@ mod tests {
 
     #[test]
     fn if_present_returns_value_when_check_succeeds() {
-        let table = table_with_expr(
-            "label",
-            "Utf8",
-            &ExprSpec::IfPresent {
-                check: Box::new(ExprSpec::Path {
-                    path: vec!["status".into()],
-                }),
-                then_value: "has_status".into(),
-            },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![
             serde_json::json!({"status": "ok"}),
             serde_json::json!({"other": "field"}),
         ];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
+        let batch = convert_expr_items(
+            "Utf8",
+            ExprSpec::IfPresent {
+                check: Box::new(path("status")),
+                then_value: "has_status".into(),
+            },
             &items,
-        )
-        .unwrap();
+        );
         assert_eq!(batch.num_rows(), 2);
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let col = first_column::<StringArray>(&batch);
         assert_eq!(col.value(0), "has_status");
         assert!(col.is_null(1));
     }
 
     #[test]
     fn if_present_treats_explicit_null_as_absent() {
-        let table = table_with_expr(
-            "label",
+        let items = vec![serde_json::json!({"status": null})];
+        let batch = convert_expr_items(
             "Utf8",
-            &ExprSpec::IfPresent {
-                check: Box::new(ExprSpec::Path {
-                    path: vec!["status".into()],
-                }),
+            ExprSpec::IfPresent {
+                check: Box::new(path("status")),
                 then_value: "present".into(),
             },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
-        let items = vec![serde_json::json!({"status": null})];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
             &items,
-        )
-        .unwrap();
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        );
+        let col = first_column::<StringArray>(&batch);
         assert!(col.is_null(0), "explicit null should not trigger IfPresent");
     }
 
     #[test]
     fn join_tag_values_concatenates_matching_items() {
-        let table = table_with_expr(
-            "texts",
-            "Utf8",
-            &ExprSpec::JoinTagValues {
-                path: vec!["content".into()],
-                key: "text".into(),
-                key_field: "type".into(),
-                value_field: "text".into(),
-                separator: "|".into(),
-            },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![
             serde_json::json!({
                 "content": [
@@ -673,20 +545,19 @@ mod tests {
             serde_json::json!({"content": [{"type": "tool_use", "name": "Read"}]}),
             serde_json::json!({"content": "plain string"}),
         ];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
+        let batch = convert_expr_items(
+            "Utf8",
+            ExprSpec::JoinTagValues {
+                path: vec!["content".into()],
+                key: "text".into(),
+                key_field: "type".into(),
+                value_field: "text".into(),
+                separator: "|".into(),
+            },
             &items,
-        )
-        .unwrap();
+        );
         assert_eq!(batch.num_rows(), 3);
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let col = first_column::<StringArray>(&batch);
         assert_eq!(col.value(0), "hello|world");
         assert!(col.is_null(1), "no matching tags should yield null");
         assert!(col.is_null(2), "non-array content should yield null");
@@ -694,50 +565,27 @@ mod tests {
 
     #[test]
     fn join_tag_values_single_match_no_separator() {
-        let table = table_with_expr(
-            "text",
+        let items = vec![serde_json::json!({
+            "content": [{"type": "text", "text": "only one"}]
+        })];
+        let batch = convert_expr_items(
             "Utf8",
-            &ExprSpec::JoinTagValues {
+            ExprSpec::JoinTagValues {
                 path: vec!["content".into()],
                 key: "text".into(),
                 key_field: "type".into(),
                 value_field: "text".into(),
                 separator: "|".into(),
             },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
-        let items = vec![serde_json::json!({
-            "content": [{"type": "text", "text": "only one"}]
-        })];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
             &items,
-        )
-        .unwrap();
+        );
         assert_eq!(batch.num_rows(), 1);
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let col = first_column::<StringArray>(&batch);
         assert_eq!(col.value(0), "only one");
     }
 
     #[test]
     fn join_array_path_concatenates_nested_scalar_values() {
-        let table = table_with_expr(
-            "label_names",
-            "Utf8",
-            &ExprSpec::JoinArrayPath {
-                path: vec!["labels".into(), "nodes".into()],
-                item_path: vec!["name".into()],
-                separator: ",".into(),
-            },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![
             serde_json::json!({
                 "labels": {
@@ -751,20 +599,17 @@ mod tests {
             serde_json::json!({"labels": {"nodes": []}}),
             serde_json::json!({"labels": {"nodes": [{"name": null}]}}),
         ];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
+        let batch = convert_expr_items(
+            "Utf8",
+            ExprSpec::JoinArrayPath {
+                path: vec!["labels".into(), "nodes".into()],
+                item_path: vec!["name".into()],
+                separator: ",".into(),
+            },
             &items,
-        )
-        .unwrap();
+        );
         assert_eq!(batch.num_rows(), 3);
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let col = first_column::<StringArray>(&batch);
         assert_eq!(col.value(0), "bug,customer");
         assert_eq!(col.value(1), "");
         assert_eq!(col.value(2), "");
@@ -772,14 +617,6 @@ mod tests {
 
     #[test]
     fn boolean_columns_preserve_nulls_and_false_values() {
-        let table = table_with_expr(
-            "enabled",
-            "Boolean",
-            &ExprSpec::Path {
-                path: vec!["enabled".into()],
-            },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![
             serde_json::json!({"enabled": true}),
             serde_json::json!({"enabled": false}),
@@ -787,20 +624,9 @@ mod tests {
             serde_json::json!({}),
             serde_json::json!({"enabled": "not-a-bool"}),
         ];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
-            &items,
-        )
-        .unwrap();
+        let batch = convert_expr_items("Boolean", path("enabled"), &items);
         assert_eq!(batch.num_rows(), 5);
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<BooleanArray>()
-            .unwrap();
+        let col = first_column::<BooleanArray>(&batch);
         assert!(col.value(0));
         assert!(!col.value(1));
         assert!(col.is_null(2));
@@ -810,14 +636,6 @@ mod tests {
 
     #[test]
     fn int64_columns_reject_lossy_json_numbers() {
-        let table = table_with_expr(
-            "id",
-            "Int64",
-            &ExprSpec::Path {
-                path: vec!["id".into()],
-            },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![
             serde_json::from_str(r#"{"id": 1.9}"#).unwrap(),
             serde_json::from_str(r#"{"id": -1.9}"#).unwrap(),
@@ -831,19 +649,8 @@ mod tests {
             json!({"id": "9223372036854775808"}),
         ];
 
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
-            &items,
-        )
-        .unwrap();
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap();
+        let batch = convert_expr_items("Int64", path("id"), &items);
+        let col = first_column::<Int64Array>(&batch);
 
         let expected = [
             None,
@@ -868,64 +675,34 @@ mod tests {
 
     #[test]
     fn replace_expr_rewrites_string_values() {
-        let table = table_with_expr(
-            "slug",
+        let items = vec![serde_json::json!({"title": "hello world"})];
+        let batch = convert_expr_items(
             "Utf8",
-            &ExprSpec::Replace {
-                expr: Box::new(ExprSpec::Path {
-                    path: vec!["title".into()],
-                }),
+            ExprSpec::Replace {
+                expr: Box::new(path("title")),
                 from: " ".into(),
                 to: "-".into(),
             },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
-        let items = vec![serde_json::json!({"title": "hello world"})];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
             &items,
-        )
-        .unwrap();
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        );
+        let col = first_column::<StringArray>(&batch);
         assert_eq!(col.value(0), "hello-world");
     }
 
     #[test]
     fn base64_decode_expr_decodes_wrapped_utf8_text() {
-        let table = table_with_expr(
-            "content_text",
-            "Utf8",
-            &ExprSpec::Base64Decode {
-                expr: Box::new(ExprSpec::Path {
-                    path: vec!["content".into()],
-                }),
-            },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![
             serde_json::json!({"content": "aGVs\nbG8="}),
             serde_json::json!({"content": "not base64"}),
         ];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
+        let batch = convert_expr_items(
+            "Utf8",
+            ExprSpec::Base64Decode {
+                expr: Box::new(path("content")),
+            },
             &items,
-        )
-        .unwrap();
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        );
+        let col = first_column::<StringArray>(&batch);
         assert_eq!(col.value(0), "hello");
         assert!(col.is_null(1));
     }
@@ -938,9 +715,7 @@ mod tests {
             &HashMap::from([(
                 "slug".to_string(),
                 ExprSpec::Replace {
-                    expr: Box::new(ExprSpec::Path {
-                        path: vec!["title".into()],
-                    }),
+                    expr: Box::new(path("title")),
                     from: " ".into(),
                     to: "-".into(),
                 },
@@ -960,12 +735,7 @@ mod tests {
     fn template_uses_default_for_missing_expr_value() {
         let rendered = eval_template(
             &ParsedTemplate::parse("{{expr.slug|untitled}}").expect("template"),
-            &HashMap::from([(
-                "slug".to_string(),
-                ExprSpec::Path {
-                    path: vec!["missing".into()],
-                },
-            )]),
+            &HashMap::from([("slug".to_string(), path("missing"))]),
             &json!({"title": "hello world"}),
             &HashMap::new(),
             &HashMap::new(),
@@ -976,14 +746,6 @@ mod tests {
 
     #[test]
     fn json_type_serializes_values_as_valid_json_strings() {
-        let table = table_with_expr(
-            "props",
-            "Json",
-            &ExprSpec::Path {
-                path: vec!["properties".into()],
-            },
-        );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
         let items = vec![
             json!({"properties": {"country": "US", "count": 3}}),
             json!({"properties": "hello"}),
@@ -993,20 +755,9 @@ mod tests {
             json!({"properties": null}),
             json!({}),
         ];
-        let batch = convert_items(
-            table.columns(),
-            schema,
-            &HashMap::new(),
-            &HashMap::new(),
-            &items,
-        )
-        .unwrap();
+        let batch = convert_expr_items("Json", path("properties"), &items);
 
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let col = first_column::<StringArray>(&batch);
         assert_eq!(
             serde_json::from_str::<Value>(col.value(0)).unwrap(),
             json!({"country": "US", "count": 3}),

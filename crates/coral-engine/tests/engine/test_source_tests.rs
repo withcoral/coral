@@ -4,46 +4,16 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
-use std::path::Path;
-
 use coral_engine::CoralQuery;
-use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{build_source, dir_url, test_runtime, users_rows, write_jsonl_file};
-
-fn jsonl_manifest(name: &str, dir: &Path, glob: &str) -> Value {
-    json!({
-        "name": name,
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "file",
-        "tables": [{
-            "name": "users",
-            "description": "Users fixture",
-            "format": "jsonl",
-            "source": {
-                "location": dir_url(dir),
-                "glob": glob
-            },
-            "columns": [
-                { "name": "id", "type": "Int64" },
-                { "name": "name", "type": "Utf8" },
-                { "name": "email", "type": "Utf8" }
-            ]
-        }]
-    })
-}
+use crate::harness::{
+    build_source, dir_url, test_runtime, users_jsonl_manifest, users_jsonl_source,
+};
 
 #[tokio::test]
 async fn test_source_lists_registered_tables() {
-    let temp = TempDir::new().expect("temp dir");
-    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest(
-        "jsonl_test_source",
-        temp.path(),
-        "**/*.jsonl",
-    ));
+    let (_temp, source) = users_jsonl_source("jsonl_test_source");
 
     let tables = CoralQuery::test_source(&source, test_runtime())
         .await
@@ -58,7 +28,7 @@ async fn test_source_lists_registered_tables() {
 async fn test_source_missing_directory_returns_error() {
     let temp = TempDir::new().expect("temp dir");
     let missing_dir = temp.path().join("missing");
-    let source = build_source(jsonl_manifest(
+    let source = build_source(users_jsonl_manifest(
         "jsonl_test_missing",
         &missing_dir,
         "**/*.jsonl",
@@ -85,7 +55,7 @@ async fn test_source_missing_directory_returns_error() {
 async fn validate_source_fails_when_source_never_registers() {
     let temp = TempDir::new().expect("temp dir");
     let missing_dir = temp.path().join("missing");
-    let source = build_source(jsonl_manifest(
+    let source = build_source(users_jsonl_manifest(
         "jsonl_test_missing",
         &missing_dir,
         "**/*.jsonl",
@@ -108,13 +78,7 @@ async fn validate_source_fails_when_source_never_registers() {
 
 #[tokio::test]
 async fn validate_source_reports_passing_and_failing_queries() {
-    let temp = TempDir::new().expect("temp dir");
-    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest(
-        "jsonl_test_source",
-        temp.path(),
-        "**/*.jsonl",
-    ));
+    let (_temp, source) = users_jsonl_source("jsonl_test_source");
     let queries = vec![
         "SELECT * FROM jsonl_test_source.users".to_string(),
         "SELECT * FROM jsonl_test_source.missing".to_string(),
@@ -147,13 +111,7 @@ async fn validate_source_reports_passing_and_failing_queries() {
 
 #[tokio::test]
 async fn validate_source_maps_non_read_only_queries_to_stable_error() {
-    let temp = TempDir::new().expect("temp dir");
-    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
-    let source = build_source(jsonl_manifest(
-        "jsonl_test_source",
-        temp.path(),
-        "**/*.jsonl",
-    ));
+    let (_temp, source) = users_jsonl_source("jsonl_test_source");
     let queries = vec!["SET datafusion.execution.batch_size = 1".to_string()];
 
     let report = CoralQuery::validate_source(&source, test_runtime(), &queries)
