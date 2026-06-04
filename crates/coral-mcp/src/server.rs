@@ -4,7 +4,7 @@ use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
     ListSourcesRequest, PaginationRequest, SearchRequest, Source, SubmitFeedbackRequest,
-    TableSummary as ProtoTableSummary, catalog_item,
+    TableFunctionKind as ProtoTableFunctionKind, TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient,
@@ -26,19 +26,20 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
-        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        required_string_argument, search_arguments, search_tool, search_value, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        CatalogToolKind, NativeSearchFunctionNames, ToolDescriptionContext, build_tool_result,
+        describe_table_arguments, describe_table_tool, describe_table_value, feedback_tool,
+        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
+        list_catalog_tool, list_catalog_value, list_columns_arguments, list_columns_tool,
+        list_columns_value, required_string_argument, search_arguments, search_tool, search_value,
+        sql_tool, status_to_error_data, tables_resource, tables_resource_content,
+        tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
 
 const LIST_CATALOG_UNBOUNDED_LIMIT: u32 = 0;
 const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
+const NATIVE_SEARCH_DESCRIPTION_FUNCTION_LIMIT: u32 = 200;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
@@ -199,6 +200,21 @@ impl CoralMcpServer {
             usize::try_from(counts.table_count).unwrap_or(usize::MAX),
             usize::try_from(counts.table_function_count).unwrap_or(usize::MAX),
         ))
+    }
+
+    async fn load_native_search_function_names(
+        &self,
+    ) -> Result<NativeSearchFunctionNames, tonic::Status> {
+        self.load_catalog(
+            None,
+            CATALOG_KIND_TABLE_FUNCTION,
+            PaginationRequest {
+                limit: NATIVE_SEARCH_DESCRIPTION_FUNCTION_LIMIT,
+                offset: 0,
+            },
+        )
+        .await
+        .map(native_search_function_names_from_response)
     }
 
     async fn load_sources_and_catalog_counts(
@@ -454,6 +470,17 @@ impl ServerHandler for CoralMcpServer {
                 .load_catalog_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
+            let native_search_function_names = match self.load_native_search_function_names().await
+            {
+                Ok(names) => Some(names),
+                Err(status) => {
+                    tracing::warn!(
+                        error = %status,
+                        "failed to load native search function names for MCP tool descriptions"
+                    );
+                    None
+                }
+            };
             let source_names = match self.load_sources().await {
                 Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
                 Err(status) => {
@@ -468,6 +495,7 @@ impl ServerHandler for CoralMcpServer {
                 visible_table_count,
                 visible_function_count,
                 source_names,
+                native_search_function_names,
             );
             let mut tools = vec![
                 sql_tool(&tool_context),
@@ -606,4 +634,34 @@ fn guide_catalog_from_response(
         }
     }
     (tables, table_function_schema_names)
+}
+
+fn native_search_function_names_from_response(
+    response: ListCatalogResponse,
+) -> NativeSearchFunctionNames {
+    let has_more = response
+        .pagination
+        .as_ref()
+        .is_some_and(|pagination| pagination.has_more);
+    let mut names = response
+        .items
+        .into_iter()
+        .filter_map(|item| {
+            let Some(catalog_item::Item::TableFunction(function)) = item.item else {
+                return None;
+            };
+            if function.kind != ProtoTableFunctionKind::Search as i32
+                || !function
+                    .universal_search
+                    .as_ref()
+                    .is_some_and(|config| config.execute)
+            {
+                return None;
+            }
+            Some(format!("{}.{}", function.schema_name, function.name))
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    NativeSearchFunctionNames::new(names, has_more)
 }

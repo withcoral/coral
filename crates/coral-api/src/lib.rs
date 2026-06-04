@@ -47,6 +47,7 @@ impl v1::SearchProvider {
         match self {
             Self::CatalogMetadata => "catalog_metadata",
             Self::ObservedValues => "observed_values",
+            Self::SourceNative => "source_native",
             Self::Unspecified => "unknown",
         }
     }
@@ -204,6 +205,7 @@ mod tests {
     #[test]
     fn search_enum_labels_are_stable() {
         assert_eq!(SearchProvider::CatalogMetadata.label(), "catalog_metadata");
+        assert_eq!(SearchProvider::SourceNative.label(), "source_native");
         assert_eq!(SearchProviderState::Partial.label(), "partial");
         assert_eq!(SearchSurfaceKind::TableFunction.label(), "table_function");
         assert_eq!(

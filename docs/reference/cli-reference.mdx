@@ -47,7 +47,7 @@ coral sql "DESCRIBE datadog.hosts"
 
 ## `coral search`
 
-Find likely Coral catalog items, columns, filters, observed values, and provider-native search paths.
+Find likely Coral catalog items, columns, filters, observed values, native search paths, and executed provider search rows.
 
 ```shellscript
 coral search "payments-api timeout"
@@ -55,7 +55,7 @@ coral search --limit 25 "payments-api timeout"
 coral search --json "payments-api timeout"
 ```
 
-The text output is compact and shows each result's type, name, and most useful payload detail. A table or column result points to a SQL surface to query, a native search path gives a table-function call shape, and an observed value shows data seen in earlier local SQL output. Run `coral sql` with the returned reference or example call when you need current source rows.
+The text output is compact and shows each result's type, name, and most useful payload detail. A table or column result points to a SQL surface to query, a native search path gives a table-function call shape, an observed value shows data seen in earlier local SQL output, and a provider search row contains executed provider-search data. Run `coral sql` with the returned reference or example call when you need current source rows.
 
 ### Options
 
@@ -269,7 +269,7 @@ By default, this server exposes:
 | -------- | ---------------- | -------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database |
 | Tool     | `list_catalog`   | List database tables and table functions |
-| Tool     | `search`         | Find likely catalog items, columns, filters, observed values, and native search paths |
+| Tool     | `search`         | Find likely catalog items, columns, filters, observed values, native search paths, and provider search rows |
 | Tool     | `describe_table` | Show compact database table metadata |
 | Tool     | `list_columns`   | List columns for one database table |
 | Resource | `coral://guide`  | Database workflow guide for agents |

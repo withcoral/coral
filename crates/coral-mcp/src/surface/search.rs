@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use coral_api::v1::provider_search_result_value;
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::{
-    CatalogMetadata, ColumnHint, NativeSearchPath, SearchFieldRole, SearchProvider,
-    SearchProviderState, SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind,
-    SearchTableColumnPreviewColumn,
+    CatalogMetadata, ColumnHint, NativeSearchPath, ProviderSearchResult, ProviderSearchResultValue,
+    SearchFieldRole, SearchProvider, SearchProviderState, SearchResponse, SearchResult,
+    SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreviewColumn,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -50,7 +51,7 @@ pub(crate) fn search_output_schema() -> Arc<Map<String, Value>> {
                         "properties": {
                             "provider": {
                                 "type": "string",
-                                "enum": ["catalog_metadata", "observed_values", "unknown"]
+                                "enum": ["catalog_metadata", "observed_values", "source_native", "unknown"]
                             },
                             "state": {
                                 "type": "string",
@@ -88,6 +89,7 @@ pub(crate) fn search_output_schema() -> Arc<Map<String, Value>> {
                             catalog_item_result_schema(),
                             column_hint_result_schema(),
                             native_search_path_result_schema(),
+                            provider_search_result_schema(),
                             observed_value_result_schema()
                         ]
                     }
@@ -179,6 +181,9 @@ fn search_result_value(result: &SearchResult) -> Option<Value> {
         })
         .ok(),
         Payload::NativeSearchPath(path) => native_search_path_value(path, provider),
+        Payload::ProviderSearchResult(result) => {
+            provider_search_result_json_value(result, provider)
+        }
     }
 }
 
@@ -267,6 +272,46 @@ fn native_search_path_value(path: &NativeSearchPath, provider: &'static str) -> 
     .ok()
 }
 
+fn provider_search_result_json_value(
+    result: &ProviderSearchResult,
+    provider: &'static str,
+) -> Option<Value> {
+    let function = result.table_function.as_ref()?;
+    let mut value = Map::from_iter([
+        ("provider".to_string(), json!(provider)),
+        ("type".to_string(), json!("provider_search_result")),
+        ("schema_name".to_string(), json!(function.schema_name)),
+        (
+            "name".to_string(),
+            json!(format!("{}.{}", function.schema_name, function.name)),
+        ),
+        (
+            "sql_reference".to_string(),
+            json!(format_schema_table_equivalent(
+                &function.schema_name,
+                &function.name
+            )),
+        ),
+        ("sql_call".to_string(), json!(result.sql_call)),
+        ("row_ordinal".to_string(), json!(result.row_ordinal)),
+        ("row".to_string(), provider_row_value(&result.row)),
+    ]);
+    insert_optional_provider_field(&mut value, "id", result.id.as_deref());
+    insert_optional_provider_field(&mut value, "title", result.title.as_deref());
+    insert_optional_provider_field(&mut value, "url", result.url.as_deref());
+    insert_optional_provider_field(&mut value, "snippet", result.snippet.as_deref());
+    if let Some(score) = result.score {
+        value.insert("score".to_string(), json!(score));
+    }
+    Some(Value::Object(value))
+}
+
+fn insert_optional_provider_field(value: &mut Map<String, Value>, key: &str, field: Option<&str>) {
+    if let Some(field) = field {
+        value.insert(key.to_string(), json!(field));
+    }
+}
+
 #[derive(Serialize)]
 struct ColumnHintResult<'a> {
     provider: &'static str,
@@ -336,6 +381,7 @@ struct FunctionArgumentValue<'a> {
     name: &'a str,
     required: bool,
     values: &'a [String],
+    default_json: &'a str,
 }
 
 impl<'a> From<&'a coral_api::v1::TableFunctionArgument> for FunctionArgumentValue<'a> {
@@ -344,7 +390,30 @@ impl<'a> From<&'a coral_api::v1::TableFunctionArgument> for FunctionArgumentValu
             name: &argument.name,
             required: argument.required,
             values: &argument.values,
+            default_json: &argument.default_json,
         }
+    }
+}
+
+fn provider_row_value(row: &std::collections::HashMap<String, ProviderSearchResultValue>) -> Value {
+    let mut object = Map::new();
+    for (key, value) in row {
+        object.insert(key.clone(), provider_scalar_value(value));
+    }
+    Value::Object(object)
+}
+
+fn provider_scalar_value(value: &ProviderSearchResultValue) -> Value {
+    match value.value.as_ref() {
+        Some(provider_search_result_value::Value::StringValue(value)) => {
+            Value::String(value.clone())
+        }
+        Some(provider_search_result_value::Value::NumberValue(value)) => json!(value),
+        Some(provider_search_result_value::Value::BoolValue(value)) => json!(value),
+        Some(provider_search_result_value::Value::JsonValue(value)) => {
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.clone()))
+        }
+        Some(provider_search_result_value::Value::NullValue(_)) | None => Value::Null,
     }
 }
 
@@ -630,17 +699,52 @@ fn observed_value_result_schema() -> Value {
     })
 }
 
+fn provider_search_result_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": [
+            "provider",
+            "type",
+            "schema_name",
+            "name",
+            "sql_reference",
+            "sql_call",
+            "row_ordinal",
+            "row"
+        ],
+        "additionalProperties": false,
+        "properties": {
+            "provider": result_provider_schema(),
+            "type": { "enum": ["provider_search_result"] },
+            "schema_name": { "type": "string" },
+            "name": { "type": "string" },
+            "sql_reference": { "type": "string" },
+            "sql_call": { "type": "string" },
+            "row_ordinal": { "type": "integer", "minimum": 0 },
+            "id": { "type": "string" },
+            "title": { "type": "string" },
+            "url": { "type": "string" },
+            "snippet": { "type": "string" },
+            "score": { "type": "number" },
+            "row": {
+                "type": "object",
+                "additionalProperties": true
+            }
+        }
+    })
+}
+
 fn result_provider_schema() -> Value {
     json!({
         "type": "string",
-        "enum": ["catalog_metadata", "observed_values", "unknown"]
+        "enum": ["catalog_metadata", "observed_values", "source_native", "unknown"]
     })
 }
 
 fn function_argument_schema() -> Value {
     json!({
         "type": "object",
-        "required": ["name", "required", "values"],
+        "required": ["name", "required", "values", "default_json"],
         "additionalProperties": false,
         "properties": {
             "name": { "type": "string" },
@@ -648,7 +752,8 @@ fn function_argument_schema() -> Value {
             "values": {
                 "type": "array",
                 "items": { "type": "string" }
-            }
+            },
+            "default_json": { "type": "string" }
         }
     })
 }
@@ -669,12 +774,17 @@ fn result_column_schema() -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use coral_api::v1::catalog_item;
+    use coral_api::v1::provider_search_result_value;
     use coral_api::v1::search_result::Payload;
     use coral_api::v1::{
-        CatalogItem, CatalogMetadata, ObservedValue, SearchProvider, SearchProviderState,
-        SearchProviderStatus, SearchResponse, SearchResult, SearchResultTruncation,
-        SearchSurfaceKind, SearchTableColumnPreview, SearchTableColumnPreviewColumn, TableSummary,
+        CatalogItem, CatalogMetadata, ObservedValue, ProviderSearchResult,
+        ProviderSearchResultValue, SearchProvider, SearchProviderState, SearchProviderStatus,
+        SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind,
+        SearchTableColumnPreview, SearchTableColumnPreviewColumn, TableFunction,
+        TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
         Workspace,
     };
     use serde_json::Value;
@@ -843,5 +953,150 @@ mod tests {
             result.pointer("/last_observed_at").and_then(Value::as_str),
             Some("2026-06-04T10:00:00.000Z")
         );
+    }
+
+    fn provider_row_value(value: provider_search_result_value::Value) -> ProviderSearchResultValue {
+        ProviderSearchResultValue { value: Some(value) }
+    }
+
+    fn provider_search_result_row() -> HashMap<String, ProviderSearchResultValue> {
+        let mut row = HashMap::new();
+        row.insert(
+            "title".to_string(),
+            provider_row_value(provider_search_result_value::Value::StringValue(
+                "Fix search".to_string(),
+            )),
+        );
+        row.insert(
+            "rank".to_string(),
+            provider_row_value(provider_search_result_value::Value::NumberValue(3.0)),
+        );
+        row.insert(
+            "labels".to_string(),
+            provider_row_value(provider_search_result_value::Value::JsonValue(
+                r#"["search","bug"]"#.to_string(),
+            )),
+        );
+        row.insert(
+            "archived".to_string(),
+            provider_row_value(provider_search_result_value::Value::BoolValue(false)),
+        );
+        row.insert(
+            "milestone".to_string(),
+            provider_row_value(provider_search_result_value::Value::NullValue(true)),
+        );
+        row
+    }
+
+    fn provider_search_table_function() -> TableFunction {
+        TableFunction {
+            workspace: Some(Workspace {
+                name: "default".to_string(),
+            }),
+            schema_name: "github".to_string(),
+            name: "search_issues".to_string(),
+            description: "Search GitHub issues".to_string(),
+            arguments: vec![TableFunctionArgument {
+                name: "q".to_string(),
+                required: true,
+                values: Vec::new(),
+                default_json: String::new(),
+            }],
+            result_columns: vec![TableFunctionResultColumn {
+                name: "title".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: false,
+                description: "Issue title".to_string(),
+            }],
+            kind: TableFunctionKind::Search as i32,
+            search_limits: None,
+            universal_search: None,
+        }
+    }
+
+    fn provider_search_response() -> SearchResponse {
+        SearchResponse {
+            results: vec![SearchResult {
+                provider: SearchProvider::SourceNative as i32,
+                payload: Some(Payload::ProviderSearchResult(ProviderSearchResult {
+                    table_function: Some(provider_search_table_function()),
+                    sql_call: r#"SELECT * FROM "github"."search_issues"("q" => 'search') LIMIT 10"#
+                        .to_string(),
+                    row_ordinal: 2,
+                    row: provider_search_result_row(),
+                    id: Some("123".to_string()),
+                    title: Some("Fix search".to_string()),
+                    url: None,
+                    snippet: Some("Search result snippet".to_string()),
+                    score: Some(0.75),
+                })),
+            }],
+            provider_statuses: vec![SearchProviderStatus {
+                provider: SearchProvider::SourceNative as i32,
+                state: SearchProviderState::ResultsFound as i32,
+                note: "Source-native search returned 1 provider-ranked rows".to_string(),
+            }],
+            truncation: None,
+        }
+    }
+
+    #[test]
+    fn search_value_renders_provider_search_result_metadata() {
+        let value = search_value(&provider_search_response());
+
+        let status = value
+            .pointer("/provider_statuses/0/provider")
+            .and_then(Value::as_str);
+        assert_eq!(status, Some("source_native"));
+
+        let result = value.pointer("/results/0").expect("first result");
+        assert_eq!(
+            result.pointer("/provider").and_then(Value::as_str),
+            Some("source_native")
+        );
+        assert_eq!(
+            result.pointer("/type").and_then(Value::as_str),
+            Some("provider_search_result")
+        );
+        assert_eq!(
+            result.pointer("/name").and_then(Value::as_str),
+            Some("github.search_issues")
+        );
+        assert_eq!(
+            result.pointer("/sql_reference").and_then(Value::as_str),
+            Some("\"github\".\"search_issues\"")
+        );
+        assert_eq!(
+            result.pointer("/row_ordinal").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(result.pointer("/id").and_then(Value::as_str), Some("123"));
+        assert_eq!(
+            result.pointer("/title").and_then(Value::as_str),
+            Some("Fix search")
+        );
+        assert_eq!(result.pointer("/url"), None);
+        assert_eq!(
+            result.pointer("/snippet").and_then(Value::as_str),
+            Some("Search result snippet")
+        );
+        assert_eq!(result.pointer("/score").and_then(Value::as_f64), Some(0.75));
+        assert_eq!(
+            result.pointer("/row/title").and_then(Value::as_str),
+            Some("Fix search")
+        );
+        assert_eq!(
+            result.pointer("/row/rank").and_then(Value::as_f64),
+            Some(3.0)
+        );
+        assert_eq!(
+            result.pointer("/row/labels/0").and_then(Value::as_str),
+            Some("search")
+        );
+        assert_eq!(
+            result.pointer("/row/archived").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(result.pointer("/row/milestone"), Some(&Value::Null));
     }
 }

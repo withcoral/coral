@@ -11,15 +11,17 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, FunctionArgBinding, ManifestError,
-    ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
-    TableCommon, TableFunctionArgSpec, ValueSourceSpec,
+    ColumnSpec, DeclaredRelation, DetailHintSpec, FilterMode, FilterSpec, FunctionArgBinding,
+    ManifestError, ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec,
+    Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionKind,
+    SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec, UniversalSearchSpec,
+    ValueSourceSpec,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
-    validate_identifier, validate_test_queries, validate_unique_values,
+    validate_identifier, validate_search_metadata, validate_test_queries, validate_unique_values,
+    validate_universal_search_execution,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -117,9 +119,17 @@ struct RawMcpTableFunctionSpec {
     name: String,
     tool: String,
     #[serde(default)]
+    kind: SourceTableFunctionKind,
+    #[serde(default)]
     description: String,
     #[serde(default)]
     fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    search_limits: Option<SearchLimitsSpec>,
+    #[serde(default)]
+    universal_search: Option<UniversalSearchSpec>,
+    #[serde(default)]
+    detail_hints: Vec<DetailHintSpec>,
     #[serde(default)]
     args: Vec<TableFunctionArgSpec>,
     #[serde(default)]
@@ -303,23 +313,41 @@ impl McpTableFilterSpec {
 
 impl RawMcpTableFunctionSpec {
     fn into_validated(self, source_name: &str) -> Result<McpTableFunctionSpec> {
-        validate_mcp_function(source_name, &self)?;
+        let Self {
+            name,
+            tool,
+            kind,
+            description,
+            fetch_limit_default,
+            search_limits,
+            universal_search,
+            detail_hints,
+            args,
+            pagination,
+            response,
+            columns,
+        } = self;
+
+        let common = SourceTableFunctionSpec {
+            name,
+            kind,
+            description,
+            fetch_limit_default,
+            search_limits,
+            universal_search,
+            detail_hints,
+            args,
+            request: RequestSpec::default(),
+            response,
+            pagination: PaginationSpec::default(),
+            columns,
+        };
+
+        validate_mcp_function(source_name, &tool, pagination.as_ref(), &common)?;
         Ok(McpTableFunctionSpec {
-            tool: self.tool,
-            pagination: self.pagination,
-            common: SourceTableFunctionSpec {
-                name: self.name,
-                kind: SourceTableFunctionKind::default(),
-                description: self.description,
-                fetch_limit_default: self.fetch_limit_default,
-                search_limits: None,
-                detail_hints: Vec::new(),
-                args: self.args,
-                request: RequestSpec::default(),
-                response: self.response,
-                pagination: PaginationSpec::default(),
-                columns: self.columns,
-            },
+            common,
+            tool,
+            pagination,
         })
     }
 }
@@ -567,8 +595,17 @@ fn validate_server_env_value_source(source_name: &str, env: &McpEnvSpec) -> Resu
     )
 }
 
-fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) -> Result<()> {
-    if function.tool.trim().is_empty() {
+fn validate_mcp_function(
+    source_name: &str,
+    tool: &str,
+    pagination: Option<&McpPaginationSpec>,
+    function: &SourceTableFunctionSpec,
+) -> Result<()> {
+    validate_identifier(
+        &function.name,
+        &format!("source '{source_name}' function name"),
+    )?;
+    if tool.trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' function '{}' must define a non-empty tool",
             function.name
@@ -611,16 +648,6 @@ fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) 
             &mut request_arg_names,
         )?;
     }
-    if let Some(pagination) = &function.pagination {
-        validate_pagination(
-            source_name,
-            "function",
-            &function.name,
-            pagination,
-            &mut request_arg_names,
-        )?;
-    }
-
     validate_columns(
         &function.columns,
         source_name,
@@ -632,6 +659,24 @@ fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) 
         source_name,
         &format!("function '{}'", function.name),
     )?;
+    validate_search_metadata(
+        source_name,
+        &format!("function '{}'", function.name),
+        function.kind == SourceTableFunctionKind::Search,
+        function.search_limits.as_ref(),
+        &function.detail_hints,
+        &function.columns,
+    )?;
+    validate_universal_search_execution(source_name, function)?;
+    if let Some(pagination) = pagination {
+        validate_pagination(
+            source_name,
+            "function",
+            &function.name,
+            pagination,
+            &mut request_arg_names,
+        )?;
+    }
     Ok(())
 }
 
@@ -931,6 +976,8 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::SourceTableFunctionKind;
+
     use super::{McpServerSpec, McpSourceManifest};
 
     #[test]
@@ -976,6 +1023,121 @@ mod tests {
         assert_eq!(
             manifest.required_secret_names(),
             BTreeSet::from(["GITHUB_TOKEN".to_string()])
+        );
+    }
+
+    #[test]
+    fn parses_mcp_function_universal_search_execution_metadata() {
+        let manifest = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "github_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "github-mcp-server"
+            },
+            "functions": [{
+                "name": "search_issues",
+                "tool": "search_issues",
+                "kind": "search",
+                "search_limits": {
+                    "default_top_k": 10,
+                    "max_top_k": 100,
+                    "max_calls_per_query": 1
+                },
+                "universal_search": {
+                    "execute": true,
+                    "query_arg": "query"
+                },
+                "args": [
+                    {
+                        "name": "query",
+                        "required": true,
+                        "bind": { "arg": "query" }
+                    },
+                    {
+                        "name": "mode",
+                        "values": ["lexical"],
+                        "default": "lexical",
+                        "bind": { "arg": "mode" }
+                    }
+                ],
+                "columns": [{ "name": "title", "type": "Utf8" }]
+            }]
+        }))
+        .expect("mcp search function should parse");
+
+        let function = manifest.functions.first().expect("function should parse");
+        assert_eq!(function.common.kind, SourceTableFunctionKind::Search);
+        assert_eq!(
+            function
+                .common
+                .search_limits
+                .as_ref()
+                .expect("search limits")
+                .default_top_k,
+            10
+        );
+        assert_eq!(
+            function
+                .common
+                .universal_search
+                .as_ref()
+                .expect("universal search")
+                .query_arg
+                .as_deref(),
+            Some("query")
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_function_universal_search_default_outside_declared_values() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "github_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "github-mcp-server"
+            },
+            "functions": [{
+                "name": "search_issues",
+                "tool": "search_issues",
+                "kind": "search",
+                "search_limits": {
+                    "default_top_k": 10,
+                    "max_top_k": 100,
+                    "max_calls_per_query": 1
+                },
+                "universal_search": {
+                    "execute": true,
+                    "query_arg": "query"
+                },
+                "args": [
+                    {
+                        "name": "query",
+                        "required": true,
+                        "bind": { "arg": "query" }
+                    },
+                    {
+                        "name": "mode",
+                        "values": ["lexical"],
+                        "default": "semantic",
+                        "bind": { "arg": "mode" }
+                    }
+                ],
+                "columns": [{ "name": "title", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("bad MCP executable default should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("default 'semantic' to be one of its declared values"),
+            "unexpected error: {error}"
         );
     }
 

@@ -676,6 +676,7 @@ mod tests {
             result_columns: vec![],
             kind: "table".to_string(),
             search_limits_json: None,
+            universal_search_json: None,
         }
     }
 

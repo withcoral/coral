@@ -13,6 +13,7 @@ use coral_client::{
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tonic::Request;
 
 pub(crate) struct GrpcHarness {
@@ -23,6 +24,11 @@ pub(crate) struct GrpcHarness {
 }
 
 pub(crate) struct FailingHttpFixture {
+    base_url: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+pub(crate) struct SearchHttpFixture {
     base_url: String,
     task: tokio::task::JoinHandle<()>,
 }
@@ -238,6 +244,99 @@ impl FailingHttpFixture {
 }
 
 impl Drop for FailingHttpFixture {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl SearchHttpFixture {
+    pub(crate) async fn new() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind search http fixture");
+        let addr = listener.local_addr().expect("fixture local addr");
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.expect("accept fixture connection");
+                tokio::spawn(async move {
+                    let mut request = [0_u8; 2048];
+                    let _bytes_read = socket.read(&mut request).await.expect("read request");
+                    let body = r#"{"items":[{"id":"ISSUE-1","title":"Fix auth regression","url":"https://example.test/issues/1","score":0.99},{"id":"ISSUE-2","title":"Auth retry cleanup","url":"https://example.test/issues/2","score":0.7}]}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write response");
+                });
+            }
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            task,
+        }
+    }
+
+    pub(crate) fn manifest_yaml(&self) -> String {
+        manifest_yaml(&json!({
+            "name": "searchy",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": self.base_url,
+            "functions": [{
+                "name": "search_issues",
+                "kind": "search",
+                "description": "Provider-native issue search",
+                "search_limits": {
+                    "default_top_k": 2,
+                    "max_top_k": 10,
+                    "max_calls_per_query": 1,
+                },
+                "universal_search": {
+                    "execute": true,
+                    "query_arg": "q",
+                },
+                "args": [
+                    {
+                        "name": "q",
+                        "required": true,
+                        "bind": { "arg": "q" },
+                    },
+                    {
+                        "name": "mode",
+                        "values": ["lexical", "semantic"],
+                        "default": "lexical",
+                        "bind": { "arg": "search_type" },
+                    },
+                ],
+                "request": {
+                    "method": "GET",
+                    "path": "/search/issues",
+                    "query": [
+                        { "name": "q", "from": "arg", "key": "q" },
+                        { "name": "search_type", "from": "arg", "key": "search_type" },
+                    ],
+                },
+                "response": {
+                    "rows_path": ["items"],
+                },
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "title", "type": "Utf8", "description": "Issue title" },
+                    { "name": "url", "type": "Utf8" },
+                    { "name": "score", "type": "Float64" },
+                ],
+            }],
+        }))
+    }
+}
+
+impl Drop for SearchHttpFixture {
     fn drop(&mut self) {
         self.task.abort();
     }

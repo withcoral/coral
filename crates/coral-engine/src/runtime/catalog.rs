@@ -68,6 +68,7 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
         Field::new("result_columns_json", DataType::Utf8, false),
         Field::new("kind", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
+        Field::new("universal_search_json", DataType::Utf8, true),
     ]));
 
     let mut rows = active_sources
@@ -97,6 +98,7 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
             utf8_column(result_columns_json.iter().map(|value| Some(value.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
             utf8_column(rows.iter().map(|row| row.search_limits_json.as_deref())),
+            utf8_column(rows.iter().map(|row| row.universal_search_json.as_deref())),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -127,6 +129,8 @@ struct TableFunctionArgumentJson<'a> {
     name: &'a str,
     required: bool,
     values: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<serde_json::Value>,
 }
 
 impl<'a> From<&'a RegisteredTableFunctionArgument> for TableFunctionArgumentJson<'a> {
@@ -135,6 +139,10 @@ impl<'a> From<&'a RegisteredTableFunctionArgument> for TableFunctionArgumentJson
             name: &argument.name,
             required: argument.required,
             values: &argument.values,
+            default: argument
+                .default_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str(value).ok()),
         }
     }
 }
@@ -547,6 +555,7 @@ pub(crate) fn collect_table_functions(
                             name: argument.name.clone(),
                             required: argument.required,
                             values: argument.values.clone(),
+                            default_json: argument.default_json.clone(),
                         })
                         .collect(),
                     result_columns: function
@@ -561,6 +570,7 @@ pub(crate) fn collect_table_functions(
                         .collect(),
                     kind: function.kind.clone(),
                     search_limits_json: function.search_limits_json.clone(),
+                    universal_search_json: function.universal_search_json.clone(),
                 })
         })
         .collect::<Vec<_>>();
@@ -973,6 +983,7 @@ mod tests {
                 result_columns: Vec::new(),
                 arg_names: Vec::new(),
                 search_limits_json: None,
+                universal_search_json: None,
             }],
             inputs: Vec::new(),
         }]);

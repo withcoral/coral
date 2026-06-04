@@ -80,6 +80,8 @@ pub struct TableFunctionArgumentInfo {
     pub required: bool,
     /// Allowed values, if the source declares an enum-like value set.
     pub values: Vec<String>,
+    /// JSON-encoded default argument value, when declared by the source.
+    pub default_json: Option<String>,
 }
 
 /// Describes one result column returned by a source-scoped table function.
@@ -112,4 +114,6 @@ pub struct TableFunctionInfo {
     pub kind: String,
     /// JSON-encoded provider search limit metadata, when declared by the source.
     pub search_limits_json: Option<String>,
+    /// JSON-encoded Universal Search execution metadata, when declared by the source.
+    pub universal_search_json: Option<String>,
 }

@@ -88,6 +88,8 @@ message TableFunctionArgument {
   bool required = 2;
   // Allowed values, if the source declares an enum-like value set.
   repeated string values = 3;
+  // JSON-encoded default argument value, when declared by the source.
+  string default_json = 4;
 }
 
 // A result column returned by a query-visible table function.
@@ -122,6 +124,14 @@ message SearchLimits {
   uint32 max_calls_per_query = 3;
 }
 
+// Universal Search execution metadata for a provider-native search function.
+message UniversalSearchExecution {
+  // Whether Universal Search may execute this function directly.
+  bool execute = 1;
+  // Function argument that receives the Universal Search query string.
+  string query_arg = 2;
+}
+
 // A query-visible table function in one workspace.
 message TableFunction {
   // Workspace whose query catalog makes this function visible.
@@ -140,6 +150,8 @@ message TableFunction {
   TableFunctionKind kind = 7;
   // Provider search limit metadata, when declared by the source.
   SearchLimits search_limits = 8;
+  // Provider-native Universal Search execution metadata, when declared.
+  UniversalSearchExecution universal_search = 9;
 }
 
 // Catalog item kind filter for unified discovery.

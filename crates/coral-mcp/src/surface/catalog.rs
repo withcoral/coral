@@ -279,6 +279,7 @@ struct TableFunctionArgumentValue<'a> {
     name: &'a str,
     required: bool,
     values: &'a [String],
+    default_json: &'a str,
 }
 
 impl<'a> From<&'a ProtoTableFunctionArgument> for TableFunctionArgumentValue<'a> {
@@ -287,6 +288,7 @@ impl<'a> From<&'a ProtoTableFunctionArgument> for TableFunctionArgumentValue<'a>
             name: &argument.name,
             required: argument.required,
             values: &argument.values,
+            default_json: &argument.default_json,
         }
     }
 }

@@ -14,6 +14,21 @@ pub(crate) struct ToolDescriptionContext {
     pub(crate) visible_table_count: usize,
     pub(crate) visible_function_count: usize,
     connected_source_names: Vec<String>,
+    native_search_function_names: Option<NativeSearchFunctionNames>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeSearchFunctionNames {
+    names: Vec<String>,
+    has_more: bool,
+}
+
+impl NativeSearchFunctionNames {
+    pub(crate) fn new(mut names: Vec<String>, has_more: bool) -> Self {
+        names.sort();
+        names.dedup();
+        Self { names, has_more }
+    }
 }
 
 impl ToolDescriptionContext {
@@ -21,6 +36,7 @@ impl ToolDescriptionContext {
         visible_table_count: usize,
         visible_function_count: usize,
         mut connected_source_names: Vec<String>,
+        native_search_function_names: Option<NativeSearchFunctionNames>,
     ) -> Self {
         connected_source_names.sort();
         connected_source_names.dedup();
@@ -28,6 +44,7 @@ impl ToolDescriptionContext {
             visible_table_count,
             visible_function_count,
             connected_source_names,
+            native_search_function_names,
         }
     }
 
@@ -36,6 +53,32 @@ impl ToolDescriptionContext {
             || "No connected user sources are currently configured.".to_string(),
             |names| format!("Connected sources/schemas include: {names}."),
         )
+    }
+
+    fn native_search_execution_sentence(&self) -> String {
+        match self.native_search_function_names.as_ref() {
+            Some(functions) if functions.names.is_empty() && !functions.has_more => {
+                "No provider-native search functions are currently configured for automatic Universal Search execution.".to_string()
+            }
+            Some(functions) if functions.names.is_empty() => {
+                "No provider-native search functions were found in the first catalog page; more table functions may exist, so search may still execute source-native searches authorized by configured source manifests.".to_string()
+            }
+            Some(functions) => {
+                let names = connected_source_names_text(&functions.names)
+                    .expect("non-empty native search names");
+                let suffix = if functions.has_more {
+                    " More provider-native search functions may exist; this list is capped for MCP tool discovery."
+                } else {
+                    ""
+                };
+                format!(
+                    "For each search call, Coral will attempt these provider-native search functions with the same query through configured source credentials: {names}.{suffix}"
+                )
+            }
+            None => {
+                "Provider-native search function names are currently unavailable; search may still execute source-native searches authorized by configured source manifests.".to_string()
+            }
+        }
     }
 }
 
@@ -152,7 +195,8 @@ pub(crate) fn search_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "search",
         format!(
-            "Search Coral with one plain-text keyword/identifier query. Use it before SQL when you know a domain concept, source name, table/function name, column/filter name, native provider-search target, or previously seen value but not the exact Coral surface. Good queries combine salient terms such as source, entity, action, and identifier names, for example `github deployment sha`, `notion page updated`, `acme/repo pull author`, or `datadog timeout service`. The search engine tokenizes common technical identifiers, including dotted, slashed, hyphenated, underscored, @, and # terms. Catalog matches cover schema names, table names, function names, qualified names, descriptions, guide text, required filters, column names/types/descriptions, table-function kind, arguments, allowed argument values, result columns, and native provider-search table functions. Observed-value matches can also return values and field paths from successful prior SQL results when the local observed-value index has data. It is not SQL, regex, wildcard, boolean, or structured provider/type/scope filtering syntax; this tool accepts only `query` and has no pagination. Provider statuses are informational coverage/error metadata from each provider before final ranking and truncation; `results_found` can mean candidates existed below the returned window. If results are truncated or a provider reports matches without returned rows, retry with a more targeted query. {} {} table(s) and {} table function(s) are currently visible. Results are ranked hints; verify them with list_catalog, describe_table, list_columns, and ordinary Coral SQL.",
+            "Search Coral with one plain-text keyword/identifier query. Use it before SQL when you know a domain concept, source name, table/function name, column/filter name, native provider-search target, or previously seen value but not the exact Coral surface. Good queries combine salient terms such as source, entity, action, and identifier names, for example `github deployment sha`, `notion page updated`, `acme/repo pull author`, or `datadog timeout service`. The search engine tokenizes common technical identifiers, including dotted, slashed, hyphenated, underscored, @, and # terms. Catalog matches cover schema names, table names, function names, qualified names, descriptions, guide text, required filters, column names/types/descriptions, table-function kind, arguments, allowed argument values, result columns, and native provider-search table functions. {} Provider-native rows are returned as `provider_search_result` results containing source/function provenance, the executed SQL call, row ordinal, common id/title/url/snippet/score fields when available, and the full structured row payload. Observed-value matches can also return values and field paths from successful prior SQL results when the local observed-value index has data. It is not SQL, regex, wildcard, boolean, or structured provider/type/scope filtering syntax; this tool accepts only `query` and has no pagination. Provider statuses are informational coverage/error metadata from each provider before final ranking and truncation; `results_found` can mean candidates existed below the returned window. If results are truncated or a provider reports matches without returned rows, retry with a more targeted query. {} {} table(s) and {} table function(s) are currently visible. Results are ranked hints; verify them with list_catalog, describe_table, list_columns, and ordinary Coral SQL.",
+            context.native_search_execution_sentence(),
             context.connected_sources_sentence(),
             context.visible_table_count,
             context.visible_function_count
@@ -175,7 +219,7 @@ pub(crate) fn search_tool(context: &ToolDescriptionContext) -> Tool {
             .read_only(true)
             .destructive(false)
             .idempotent(true)
-            .open_world(false),
+            .open_world(true),
     )
 }
 
@@ -490,7 +534,7 @@ fn catalog_table_function_item_output_schema() -> Value {
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "required": ["name", "required", "values"],
+                            "required": ["name", "required", "values", "default_json"],
                             "additionalProperties": false,
                             "properties": {
                                 "name": { "type": "string" },
@@ -498,7 +542,8 @@ fn catalog_table_function_item_output_schema() -> Value {
                                 "values": {
                                     "type": "array",
                                     "items": { "type": "string" }
-                                }
+                                },
+                                "default_json": { "type": "string" }
                             }
                         }
                     },
@@ -731,8 +776,8 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     use super::{
-        ToolDescriptionContext, build_tool_result, connected_source_names_text,
-        list_catalog_arguments, search_tool, sql_tool,
+        NativeSearchFunctionNames, ToolDescriptionContext, build_tool_result,
+        connected_source_names_text, list_catalog_arguments, search_tool, sql_tool,
     };
 
     #[test]
@@ -777,8 +822,18 @@ mod tests {
 
     #[test]
     fn tool_descriptions_include_connected_sources() {
-        let context =
-            ToolDescriptionContext::new(42, 3, vec!["github".to_string(), "linear".to_string()]);
+        let context = ToolDescriptionContext::new(
+            42,
+            3,
+            vec!["github".to_string(), "linear".to_string()],
+            Some(NativeSearchFunctionNames::new(
+                vec![
+                    "github.search_issues".to_string(),
+                    "notion.search_objects".to_string(),
+                ],
+                false,
+            )),
+        );
 
         let sql_tool = sql_tool(&context);
         let sql_description = sql_tool.description.as_deref().expect("sql description");
@@ -800,6 +855,10 @@ mod tests {
             .description
             .expect("search description");
         assert!(search_description.contains("Connected sources/schemas include: github, linear"));
+        assert!(search_description.contains(
+            "Coral will attempt these provider-native search functions with the same query"
+        ));
+        assert!(search_description.contains("github.search_issues, notion.search_objects"));
         assert!(search_description.contains("42 table(s) and 3 table function(s)"));
     }
 
@@ -815,5 +874,28 @@ mod tests {
         assert!(text.contains("source_12"));
         assert!(text.contains("source_13"));
         assert!(!text.contains("and 2 more"));
+    }
+
+    #[test]
+    fn search_description_discloses_capped_native_search_names() {
+        let context = ToolDescriptionContext::new(
+            42,
+            201,
+            vec!["github".to_string()],
+            Some(NativeSearchFunctionNames::new(
+                vec!["github.search_issues".to_string()],
+                true,
+            )),
+        );
+
+        let search_description = search_tool(&context)
+            .description
+            .expect("search description");
+
+        assert!(search_description.contains("github.search_issues"));
+        assert!(
+            search_description
+                .contains("More provider-native search functions may exist; this list is capped")
+        );
     }
 }

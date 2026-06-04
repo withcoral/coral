@@ -139,6 +139,7 @@ fn mock_search_function() -> TableFunction {
             name: "q".to_string(),
             required: true,
             values: Vec::new(),
+            default_json: String::new(),
         }],
         result_columns: vec![TableFunctionResultColumn {
             name: "title".to_string(),
@@ -152,6 +153,7 @@ fn mock_search_function() -> TableFunction {
             max_top_k: 100,
             max_calls_per_query: 1,
         }),
+        universal_search: None,
     }
 }
 

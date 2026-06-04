@@ -9,7 +9,8 @@ use coral_api::{
         DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
         QueryTestResult, QueryTestSuccess, SearchLimits, Source, Table, TableFunction,
         TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
-        ValidateSourceResponse, Workspace, catalog_item, query_test_result,
+        UniversalSearchExecution, ValidateSourceResponse, Workspace, catalog_item,
+        query_test_result,
     },
 };
 use opentelemetry::propagation::Extractor;
@@ -35,6 +36,12 @@ struct SearchLimitsDocument {
     default_top_k: u32,
     max_top_k: u32,
     max_calls_per_query: u32,
+}
+
+#[derive(serde::Deserialize)]
+struct UniversalSearchDocument {
+    execute: bool,
+    query_arg: Option<String>,
 }
 
 impl Extractor for MetadataExtractor<'_> {
@@ -334,6 +341,7 @@ pub(crate) fn table_function_to_proto(
     let function_name = function.function_name;
     let search_limits =
         search_limits_json_to_proto(&schema_name, &function_name, function.search_limits_json)?;
+    let universal_search = universal_search_json_to_proto(function.universal_search_json);
 
     Ok(TableFunction {
         workspace: Some(workspace_to_proto(workspace_name)),
@@ -347,6 +355,7 @@ pub(crate) fn table_function_to_proto(
                 name: argument.name,
                 required: argument.required,
                 values: argument.values,
+                default_json: argument.default_json.unwrap_or_default(),
             })
             .collect(),
         result_columns: function
@@ -361,6 +370,7 @@ pub(crate) fn table_function_to_proto(
             .collect(),
         kind: table_function_kind_to_proto(&function.kind) as i32,
         search_limits,
+        universal_search,
     })
 }
 
@@ -414,6 +424,26 @@ pub(crate) fn validate_source_response_to_proto(
             .into_iter()
             .map(|function| table_function_to_proto(workspace_name, function))
             .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn universal_search_json_to_proto(
+    universal_search_json: Option<String>,
+) -> Option<UniversalSearchExecution> {
+    universal_search_json.and_then(|json| {
+        match serde_json::from_str::<UniversalSearchDocument>(&json) {
+            Ok(document) => Some(UniversalSearchExecution {
+                execute: document.execute,
+                query_arg: document.query_arg.unwrap_or_default(),
+            }),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to decode table function universal search metadata"
+                );
+                None
+            }
+        }
     })
 }
 
@@ -718,6 +748,7 @@ mod tests {
                 name: "q".to_string(),
                 required: true,
                 values: Vec::new(),
+                default_json: None,
             }],
             result_columns: vec![TableFunctionResultColumnInfo {
                 name: "title".to_string(),
@@ -726,6 +757,7 @@ mod tests {
                 description: "Issue title".to_string(),
             }],
             search_limits_json: None,
+            universal_search_json: None,
         };
 
         let proto = table_function_to_proto(&workspace_name, function.clone()).expect("proto");
@@ -755,9 +787,11 @@ mod tests {
                 name: "q".to_string(),
                 required: true,
                 values: Vec::new(),
+                default_json: None,
             }],
             result_columns: Vec::new(),
             search_limits_json: Some("{not-json".to_string()),
+            universal_search_json: None,
         };
 
         let status = table_function_to_proto(&workspace_name, function).expect_err("invalid JSON");
@@ -768,6 +802,35 @@ mod tests {
                 .message()
                 .contains("invalid search limits JSON for table function github.search_issues")
         );
+    }
+
+    #[test]
+    fn table_function_to_proto_ignores_malformed_universal_search_metadata() {
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let mut function = TableFunctionInfo {
+            schema_name: "github".to_string(),
+            function_name: "search_issues".to_string(),
+            description: "Search issues".to_string(),
+            kind: "search".to_string(),
+            arguments: vec![TableFunctionArgumentInfo {
+                name: "q".to_string(),
+                required: true,
+                values: Vec::new(),
+                default_json: None,
+            }],
+            result_columns: Vec::new(),
+            search_limits_json: None,
+            universal_search_json: Some("{not json".to_string()),
+        };
+
+        let proto = table_function_to_proto(&workspace_name, function.clone()).expect("proto");
+        assert_eq!(proto.universal_search, None);
+
+        function.universal_search_json = Some(r#"{"execute":true,"query_arg":"q"}"#.to_string());
+        let proto = table_function_to_proto(&workspace_name, function).expect("proto");
+        let universal_search = proto.universal_search.expect("universal search metadata");
+        assert!(universal_search.execute);
+        assert_eq!(universal_search.query_arg, "q");
     }
 
     #[test]

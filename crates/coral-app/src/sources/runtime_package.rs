@@ -102,11 +102,7 @@ fn http_manifest_for_surface(
                     },
                     request,
                     requests: Vec::new(),
-                    response: match &operation.execution {
-                        coral_spec::v4::IrExecutionAttachment::Rest(rest) => {
-                            rest.response.response.clone()
-                        }
-                    },
+                    response: response_spec_for_operation(operation),
                     pagination: projection.pagination.clone(),
                 });
             }
@@ -117,14 +113,11 @@ fn http_manifest_for_surface(
                     description: projection.description.clone(),
                     fetch_limit_default: None,
                     search_limits: projection.search_limits.clone(),
+                    universal_search: None,
                     detail_hints: projection.detail_hints.clone(),
                     args: projection_arg_specs(projection),
                     request,
-                    response: match &operation.execution {
-                        coral_spec::v4::IrExecutionAttachment::Rest(rest) => {
-                            rest.response.response.clone()
-                        }
-                    },
+                    response: response_spec_for_operation(operation),
                     pagination: projection.pagination.clone(),
                     columns,
                 });
@@ -147,6 +140,14 @@ fn http_manifest_for_surface(
         functions,
         declared_inputs: manifest.declared_inputs.clone(),
     })
+}
+
+fn response_spec_for_operation(
+    operation: &coral_spec::v4::IrOperation,
+) -> coral_spec::ResponseSpec {
+    match &operation.execution {
+        coral_spec::v4::IrExecutionAttachment::Rest(rest) => rest.response.response.clone(),
+    }
 }
 
 fn surface_base_url(

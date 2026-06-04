@@ -8,7 +8,7 @@ use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputR
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon, UniversalSearchSpec,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::TableFunctionImpl;
@@ -51,6 +51,7 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
     pub(crate) arg_names: Vec<String>,
     pub(crate) search_limits_json: Option<String>,
+    pub(crate) universal_search_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +68,7 @@ pub(crate) struct RegisteredTableFunctionArgument {
     pub(crate) name: String,
     pub(crate) required: bool,
     pub(crate) values: Vec<String>,
+    pub(crate) default_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -345,6 +347,7 @@ pub(crate) fn build_registered_table_function(
             name: arg.name.clone(),
             required: arg.required,
             values: arg.values.clone(),
+            default_json: arg.default.as_ref().map(serialize_value_default),
         })
         .collect::<Vec<_>>();
     let result_columns = registered_columns_from_specs(&function.columns, &[])
@@ -367,11 +370,23 @@ pub(crate) fn build_registered_table_function(
         result_columns,
         arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
         search_limits_json: function.search_limits.as_ref().map(serialize_search_limits),
+        universal_search_json: function
+            .universal_search
+            .as_ref()
+            .map(serialize_universal_search),
     }
 }
 
 fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {
     serde_json::to_string(limits).expect("search limits json")
+}
+
+fn serialize_universal_search(universal_search: &UniversalSearchSpec) -> String {
+    serde_json::to_string(universal_search).expect("universal search json")
+}
+
+fn serialize_value_default(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).expect("argument default json")
 }
 
 pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataType {

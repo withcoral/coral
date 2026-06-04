@@ -614,8 +614,44 @@ filtering on list/detail tables.
 For `kind: search` functions, `search_limits` is required. `default_top_k` is
 used when SQL does not specify a `LIMIT`, `max_top_k` caps candidates requested
 per provider call, and `max_calls_per_query` caps provider calls for one SQL
-query. Values must be positive. `default_top_k` and `max_top_k` are capped at
-1000, `max_calls_per_query` is capped at 100, and
+query.
+
+To let Universal Search execute a provider-native search function directly from
+`coral search` or the MCP `search` tool, add an explicit `universal_search`
+block. Execution is never inferred from `kind: search` alone. Exactly one
+function argument must receive the search query, and every other argument must
+declare a `default` value. If that argument declares a `values` enum, the
+default must be one of those values:
+
+```yaml
+functions:
+  - name: search_issues
+    kind: search
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    universal_search:
+      execute: true
+      query_arg: q
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: mode
+        values: [lexical, semantic]
+        default: lexical
+        bind:
+          arg: search_type
+```
+
+Functions that need extra arguments without defaults should stay callable from
+SQL and may still appear as native search paths, but Universal Search will not
+execute them automatically.
+
+`search_limits` values must be positive. `default_top_k` and `max_top_k` are
+capped at 1000, `max_calls_per_query` is capped at 100, and
 `max_top_k * max_calls_per_query` cannot exceed 10000 candidates.
 
 ### MCP sources

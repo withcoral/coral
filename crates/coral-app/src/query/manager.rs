@@ -155,11 +155,31 @@ impl QueryManager {
         sql: &str,
         attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
+        self.execute_sql_inner(workspace_name, sql, true, attribution.episode_id.as_ref())
+            .await
+    }
+
+    pub(crate) async fn execute_sql_without_foreground_queue_drain(
+        &self,
+        workspace_name: &WorkspaceName,
+        sql: &str,
+    ) -> Result<QueryExecution, QueryManagerError> {
+        self.execute_sql_inner(workspace_name, sql, false, None)
+            .await
+    }
+
+    async fn execute_sql_inner(
+        &self,
+        workspace_name: &WorkspaceName,
+        sql: &str,
+        drain_observed_queue: bool,
+        episode_id: Option<&EpisodeId>,
+    ) -> Result<QueryExecution, QueryManagerError> {
         let result = run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
-            attribution.episode_id.as_ref(),
+            episode_id,
             async {
                 let config = self
                     .config_store
@@ -178,7 +198,7 @@ impl QueryManager {
             |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
         )
         .await;
-        if result.is_ok() {
+        if drain_observed_queue && result.is_ok() {
             self.drain_observed_value_queue_with_foreground_budget(workspace_name);
         }
         result

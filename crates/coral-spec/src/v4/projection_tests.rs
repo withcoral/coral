@@ -209,6 +209,15 @@ paths:
     assert_eq!(id_input.sql_exposure, SqlInputExposure::FunctionArg);
     assert!(id_input.required);
     assert_eq!(id_input.default_value.as_deref(), Some("public"));
+
+    let id_arg = projection_arg_specs(projection)
+        .into_iter()
+        .find(|arg| arg.name == "id")
+        .expect("id table function arg");
+    assert_eq!(
+        id_arg.default.as_ref().and_then(|value| value.as_str()),
+        Some("public")
+    );
 }
 
 #[test]

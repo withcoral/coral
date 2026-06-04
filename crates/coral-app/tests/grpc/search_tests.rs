@@ -3,6 +3,9 @@
     reason = "Proto regression assertions intentionally fail loudly in tests."
 )]
 
+use std::sync::OnceLock;
+
+use coral_api::v1::provider_search_result_value;
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::{
     DeleteSourceRequest, SearchFieldRole, SearchProvider, SearchProviderState, SearchRequest,
@@ -16,14 +19,20 @@ use tantivy::{Index, Term};
 use tonic::Request;
 
 use super::harness::{
-    GrpcHarness, fixture_manifest_with_canonical_table_ranking_yaml,
+    GrpcHarness, SearchHttpFixture, fixture_manifest_with_canonical_table_ranking_yaml,
     fixture_manifest_with_column_preview_yaml, fixture_manifest_with_functions_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_many_matching_columns_yaml,
     fixture_manifest_with_test_queries_yaml, source_dir,
 };
 
+fn search_test_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 #[tokio::test]
 async fn search_returns_typed_metadata_and_native_search_results() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -101,7 +110,81 @@ async fn search_returns_typed_metadata_and_native_search_results() {
 }
 
 #[tokio::test]
+async fn search_executes_opted_in_provider_native_search_function() {
+    let _guard = search_test_lock().lock().await;
+    let harness = GrpcHarness::new().await;
+    let fixture = SearchHttpFixture::new().await;
+    harness
+        .import_source(fixture.manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "auth".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert_provider_state(
+        &response,
+        SearchProvider::SourceNative,
+        SearchProviderState::ResultsFound,
+    );
+    let provider_result = response
+        .results
+        .iter()
+        .find_map(|result| match result.payload.as_ref() {
+            Some(Payload::ProviderSearchResult(result)) => Some(result),
+            _ => None,
+        })
+        .expect("provider-native search result");
+    assert_eq!(provider_result.row_ordinal, 0);
+    assert_eq!(
+        provider_result.title.as_deref(),
+        Some("Fix auth regression")
+    );
+    assert_eq!(provider_result.id.as_deref(), Some("ISSUE-1"));
+    assert_eq!(
+        provider_result.url.as_deref(),
+        Some("https://example.test/issues/1")
+    );
+    assert!(
+        provider_result
+            .sql_call
+            .contains("\"searchy\".\"search_issues\"")
+    );
+    assert!(provider_result.sql_call.contains("\"q\" => 'auth'"));
+    assert!(provider_result.sql_call.contains("\"mode\" => 'lexical'"));
+    assert!(provider_result.sql_call.ends_with("LIMIT 2"));
+    assert!(
+        provider_result
+            .table_function
+            .as_ref()
+            .is_some_and(|function| {
+                function.name == "search_issues"
+                    && function
+                        .universal_search
+                        .as_ref()
+                        .is_some_and(|search| search.execute && search.query_arg == "q")
+            })
+    );
+    assert!(matches!(
+        provider_result
+            .row
+            .get("title")
+            .and_then(|value| value.value.as_ref()),
+        Some(provider_search_result_value::Value::StringValue(title))
+            if title == "Fix auth regression"
+    ));
+}
+
+#[tokio::test]
 async fn search_catalog_metadata_includes_compact_table_column_preview() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -169,6 +252,7 @@ async fn search_catalog_metadata_includes_compact_table_column_preview() {
 
 #[tokio::test]
 async fn search_marks_catalog_partial_without_response_truncation_for_raw_index_overflow() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -201,6 +285,7 @@ async fn search_marks_catalog_partial_without_response_truncation_for_raw_index_
 
 #[tokio::test]
 async fn search_catalog_metadata_loads_sources_with_stored_secrets() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -240,6 +325,7 @@ async fn search_catalog_metadata_loads_sources_with_stored_secrets() {
 
 #[tokio::test]
 async fn search_fails_when_a_stored_source_cannot_load() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -271,6 +357,7 @@ async fn search_fails_when_a_stored_source_cannot_load() {
 
 #[tokio::test]
 async fn search_ranks_canonical_same_source_table_before_incidental_matches() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -302,6 +389,7 @@ async fn search_ranks_canonical_same_source_table_before_incidental_matches() {
 
 #[tokio::test]
 async fn search_rejects_empty_and_too_large_queries() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
 
     let empty = harness
@@ -331,6 +419,7 @@ async fn search_rejects_empty_and_too_large_queries() {
 
 #[tokio::test]
 async fn search_returns_observed_values_after_successful_sql() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -379,6 +468,7 @@ async fn search_returns_observed_values_after_successful_sql() {
 
 #[tokio::test]
 async fn search_does_not_mark_observed_values_partial_for_pending_queue_work() {
+    let _guard = search_test_lock().lock().await;
     let temp = tempfile::tempdir().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
@@ -480,6 +570,7 @@ async fn search_reports_observed_storage_budget_exhaustion() {
 
 #[tokio::test]
 async fn search_applies_limit_and_reports_truncation() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -509,6 +600,7 @@ async fn search_applies_limit_and_reports_truncation() {
 
 #[tokio::test]
 async fn search_uses_default_limit_when_request_limit_is_zero() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -535,6 +627,7 @@ async fn search_uses_default_limit_when_request_limit_is_zero() {
 
 #[tokio::test]
 async fn search_rejects_limits_above_maximum() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
 
     let error = harness
@@ -553,6 +646,7 @@ async fn search_rejects_limits_above_maximum() {
 
 #[tokio::test]
 async fn source_mutations_mark_catalog_search_index_dirty() {
+    let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
     let manifest_yaml = fixture_manifest_with_functions_yaml();
     harness
@@ -613,7 +707,11 @@ fn assert_provider_state(
         .iter()
         .find(|status| status.provider == provider as i32)
         .expect("provider status");
-    assert_eq!(status.state, state as i32);
+    assert_eq!(
+        status.state, state as i32,
+        "unexpected provider state for {provider:?}: {}",
+        status.note
+    );
 }
 
 fn catalog_metadata_table(

@@ -3514,6 +3514,7 @@ mod tests {
                     name: "q".to_string(),
                     required: true,
                     values: Vec::new(),
+                    default_json: None,
                 }],
                 result_columns: vec![TableFunctionResultColumnInfo {
                     name: "sha".to_string(),
@@ -3523,6 +3524,7 @@ mod tests {
                 }],
                 kind: "search".to_string(),
                 search_limits_json: None,
+                universal_search_json: None,
             }],
         }
     }
@@ -3538,6 +3540,7 @@ mod tests {
                     name: "Q".to_string(),
                     required: true,
                     values: Vec::new(),
+                    default_json: None,
                 }],
                 result_columns: vec![TableFunctionResultColumnInfo {
                     name: "ID".to_string(),
@@ -3547,6 +3550,7 @@ mod tests {
                 }],
                 kind: "search".to_string(),
                 search_limits_json: None,
+                universal_search_json: None,
             }],
         }
     }

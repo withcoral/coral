@@ -131,6 +131,9 @@ functions:
       default_top_k: 10
       max_top_k: 100
       max_calls_per_query: 1
+    universal_search:
+      execute: true
+      query_arg: q
     description: Search issues
     args:
       - name: q
@@ -139,6 +142,7 @@ functions:
           arg: q
       - name: mode
         values: [lexical, semantic, hybrid]
+        default: lexical
         bind:
           arg: search_type
     request:
@@ -409,7 +413,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("search description")
-            .contains("Results are ranked hints")
+            .contains("Results are ranked")
     );
     let search_tool_description = tool_by_name(&initial_tools, "search")
         .description
@@ -419,6 +423,11 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert!(search_tool_description.contains("not SQL, regex, wildcard, boolean"));
     assert!(search_tool_description.contains("Catalog matches cover schema names"));
     assert!(search_tool_description.contains("Observed-value matches can also return values"));
+    let search_annotations = tool_by_name(&initial_tools, "search")
+        .annotations
+        .as_ref()
+        .expect("search annotations");
+    assert_eq!(search_annotations.open_world_hint, Some(true));
     for tool in &initial_tools {
         let Some(output_schema) = &tool.output_schema else {
             continue;
@@ -873,6 +882,13 @@ async fn list_catalog_surfaces_table_functions() {
             .as_deref()
             .expect("search description")
             .contains("Connected sources/schemas include: searchy")
+    );
+    assert!(
+        tool_by_name(&tools, "search")
+            .description
+            .as_deref()
+            .expect("search description")
+            .contains("searchy.search_issues")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));

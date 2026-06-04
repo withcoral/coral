@@ -5,9 +5,9 @@ use std::fmt::Write as _;
 use coral_api::v1::catalog_item;
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::{
-    CatalogMetadata, NativeSearchPath, ObservedValue, SearchFieldRole, SearchProvider,
-    SearchProviderState, SearchResponse, SearchResult, SearchSurfaceKind, SearchTableColumnPreview,
-    TableSummary,
+    CatalogMetadata, NativeSearchPath, ObservedValue, ProviderSearchResult, SearchFieldRole,
+    SearchProvider, SearchProviderState, SearchResponse, SearchResult, SearchSurfaceKind,
+    SearchTableColumnPreview, TableSummary,
 };
 use coral_client::format_sql_reference;
 
@@ -87,6 +87,7 @@ fn search_result_row(result: &SearchResult) -> Option<[String; 4]> {
             observed_value_details(value),
         ]),
         Payload::NativeSearchPath(path) => native_search_path_row(path),
+        Payload::ProviderSearchResult(result) => provider_search_result_row(result),
     }
 }
 
@@ -118,6 +119,25 @@ fn native_search_path_row(path: &NativeSearchPath) -> Option<[String; 4]> {
         } else {
             path.sql_call_example.clone()
         },
+    ])
+}
+
+fn provider_search_result_row(result: &ProviderSearchResult) -> Option<[String; 4]> {
+    let function = result.table_function.as_ref()?;
+    let label = if let Some(title) = result.title.as_deref().filter(|value| !value.is_empty()) {
+        title.to_string()
+    } else if let Some(id) = result.id.as_deref().filter(|value| !value.is_empty()) {
+        id.to_string()
+    } else if let Some(url) = result.url.as_deref().filter(|value| !value.is_empty()) {
+        url.to_string()
+    } else {
+        format!("row {}", result.row_ordinal)
+    };
+    Some([
+        "provider_search_result".to_string(),
+        qualified_name(&function.schema_name, &function.name),
+        format_sql_reference(&function.schema_name, &function.name),
+        compact_details("provider_row", &label),
     ])
 }
 
@@ -208,9 +228,9 @@ mod tests {
     use coral_api::v1::catalog_item;
     use coral_api::v1::search_result::Payload;
     use coral_api::v1::{
-        CatalogItem, CatalogMetadata, ColumnHint, ObservedValue, SearchFieldRole, SearchProvider,
-        SearchProviderState, SearchProviderStatus, SearchResponse, SearchResult,
-        SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
+        CatalogItem, CatalogMetadata, ColumnHint, ObservedValue, ProviderSearchResult,
+        SearchFieldRole, SearchProvider, SearchProviderState, SearchProviderStatus, SearchResponse,
+        SearchResult, SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
         SearchTableColumnPreviewColumn, TableFunction, TableFunctionArgument, TableFunctionKind,
         TableFunctionResultColumn, TableSummary, Workspace,
     };
@@ -391,6 +411,7 @@ mod tests {
                                 name: "q".to_string(),
                                 required: true,
                                 values: Vec::new(),
+                                default_json: String::new(),
                             }],
                             result_columns: vec![TableFunctionResultColumn {
                                 name: "title".to_string(),
@@ -399,6 +420,7 @@ mod tests {
                                 description: "Issue title".to_string(),
                             }],
                             search_limits: None,
+                            universal_search: None,
                         })),
                     }),
                     matched_fields: vec!["description".to_string()],
@@ -435,6 +457,64 @@ mod tests {
             json.pointer("/results/0/table_function/kind").is_none(),
             "shared MCP table_function payload should not expose a nested kind"
         );
+    }
+
+    #[test]
+    fn search_output_omits_absent_provider_common_fields() {
+        let response = SearchResponse {
+            results: vec![SearchResult {
+                provider: SearchProvider::SourceNative as i32,
+                payload: Some(Payload::ProviderSearchResult(ProviderSearchResult {
+                    table_function: Some(TableFunction {
+                        workspace: None,
+                        schema_name: "github".to_string(),
+                        name: "search_issues".to_string(),
+                        description: "Search issues".to_string(),
+                        arguments: Vec::new(),
+                        result_columns: Vec::new(),
+                        kind: TableFunctionKind::Search as i32,
+                        search_limits: None,
+                        universal_search: None,
+                    }),
+                    sql_call: "SELECT * FROM github.search_issues(\"q\" => 'auth') LIMIT 10"
+                        .to_string(),
+                    row_ordinal: 0,
+                    row: std::collections::HashMap::default(),
+                    id: None,
+                    title: Some("Fix auth regression".to_string()),
+                    url: None,
+                    snippet: None,
+                    score: None,
+                })),
+            }],
+            provider_statuses: Vec::new(),
+            truncation: None,
+        };
+
+        assert_eq!(
+            search_rows(&response),
+            vec![[
+                "provider_search_result".to_string(),
+                "github.search_issues".to_string(),
+                "\"github\".\"search_issues\"".to_string(),
+                "provider_row; Fix auth regression".to_string()
+            ]]
+        );
+
+        let json: Value =
+            serde_json::from_str(&search_json(&response).expect("json")).expect("parse json");
+        let result = json
+            .pointer("/results/0")
+            .and_then(Value::as_object)
+            .expect("first result");
+        assert_eq!(
+            result.get("title").and_then(Value::as_str),
+            Some("Fix auth regression")
+        );
+        assert!(!result.contains_key("id"));
+        assert!(!result.contains_key("url"));
+        assert!(!result.contains_key("snippet"));
+        assert!(!result.contains_key("score"));
     }
 
     #[test]

@@ -252,6 +252,8 @@ pub struct SourceTableFunctionSpec {
     #[serde(default)]
     pub search_limits: Option<SearchLimitsSpec>,
     #[serde(default)]
+    pub universal_search: Option<UniversalSearchSpec>,
+    #[serde(default)]
     pub detail_hints: Vec<DetailHintSpec>,
     #[serde(default)]
     pub args: Vec<TableFunctionArgSpec>,
@@ -273,7 +275,19 @@ pub struct TableFunctionArgSpec {
     pub required: bool,
     #[serde(default)]
     pub values: Vec<String>,
+    #[serde(default)]
+    pub default: Option<Value>,
     pub bind: FunctionArgBinding,
+}
+
+/// Universal Search execution metadata for provider-native search functions.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UniversalSearchSpec {
+    #[serde(default)]
+    pub execute: bool,
+    #[serde(default)]
+    pub query_arg: Option<String>,
 }
 
 /// How a table function argument contributes to the provider request.

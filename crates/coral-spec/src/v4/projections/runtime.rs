@@ -40,6 +40,10 @@ pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec
             name: input.name.clone(),
             required: input.required,
             values: Vec::new(),
+            default: input
+                .default_value
+                .as_ref()
+                .map(|value| Value::String(value.clone())),
             bind: FunctionArgBinding {
                 arg: input.name.clone(),
             },

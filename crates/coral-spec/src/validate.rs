@@ -9,6 +9,7 @@ use crate::common::{
     SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeclaredRelationKind {
@@ -228,6 +229,7 @@ pub(crate) fn validate_http_function(
         &function.detail_hints,
         &function.columns,
     )?;
+    validate_universal_search_execution(source_name, function)?;
     validate_function_request_bindings(source_name, function, &request_arg_names)?;
     function
         .pagination
@@ -359,7 +361,7 @@ fn resolve_detail_hint_target<'a>(
     targets.iter().find(|target| target.name == unqualified)
 }
 
-fn validate_search_metadata(
+pub(crate) fn validate_search_metadata(
     schema: &str,
     table: &str,
     require_search_limits: bool,
@@ -440,6 +442,103 @@ fn validate_lookup_key_filters_compatible_with_search_limits(
         return Err(ManifestError::validation(format!(
             "{schema}.{table} filter '{}': lookup_key filters require complete filtered result sets, but this table declares search_limits",
             filter.name
+        )));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_universal_search_execution(
+    source_name: &str,
+    function: &SourceTableFunctionSpec,
+) -> Result<()> {
+    let Some(universal_search) = function.universal_search.as_ref() else {
+        return Ok(());
+    };
+    let context = format!("source '{source_name}' function '{}'", function.name);
+
+    if !universal_search.execute {
+        if universal_search.query_arg.is_some() {
+            return Err(ManifestError::validation(format!(
+                "{context} universal_search.query_arg requires universal_search.execute: true"
+            )));
+        }
+        return Ok(());
+    }
+
+    if function.kind != SourceTableFunctionKind::Search {
+        return Err(ManifestError::validation(format!(
+            "{context} enables universal_search.execute but is not kind: search"
+        )));
+    }
+    if function.search_limits.is_none() {
+        return Err(ManifestError::validation(format!(
+            "{context} enables universal_search.execute and must define search_limits"
+        )));
+    }
+
+    let Some(query_arg) = universal_search.query_arg.as_deref() else {
+        return Err(ManifestError::validation(format!(
+            "{context} enables universal_search.execute and must define universal_search.query_arg"
+        )));
+    };
+    if query_arg.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "{context} universal_search.query_arg must not be empty"
+        )));
+    }
+
+    let query_arg_count = function
+        .args
+        .iter()
+        .filter(|argument| argument.name == query_arg)
+        .count();
+    if query_arg_count != 1 {
+        return Err(ManifestError::validation(format!(
+            "{context} universal_search.query_arg '{query_arg}' must match exactly one function argument"
+        )));
+    }
+
+    for argument in function
+        .args
+        .iter()
+        .filter(|argument| argument.name != query_arg)
+    {
+        let Some(default) = argument.default.as_ref() else {
+            return Err(ManifestError::validation(format!(
+                "{context} universal_search execution requires argument '{}' to declare default",
+                argument.name
+            )));
+        };
+        validate_universal_search_default_value(
+            &context,
+            &argument.name,
+            default,
+            &argument.values,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_universal_search_default_value(
+    context: &str,
+    argument_name: &str,
+    default: &Value,
+    values: &[String],
+) -> Result<()> {
+    if values.is_empty() {
+        return Ok(());
+    }
+
+    let Some(default) = default.as_str() else {
+        return Err(ManifestError::validation(format!(
+            "{context} universal_search execution requires argument '{argument_name}' default to be a string when values are declared"
+        )));
+    };
+    if !values.iter().any(|value| value == default) {
+        return Err(ManifestError::validation(format!(
+            "{context} universal_search execution requires argument '{argument_name}' default '{default}' to be one of its declared values"
         )));
     }
 
@@ -978,7 +1077,7 @@ mod tests {
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
         MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec, QueryParamSpec,
         RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
-        SourceTableFunctionSpec, TableFunctionArgSpec, ValueSourceSpec,
+        SourceTableFunctionSpec, TableFunctionArgSpec, UniversalSearchSpec, ValueSourceSpec,
     };
     use crate::parse_source_manifest_value;
     use crate::template::ParsedTemplate;
@@ -1151,11 +1250,13 @@ mod tests {
             description: String::new(),
             fetch_limit_default: None,
             search_limits: None,
+            universal_search: None,
             detail_hints: Vec::new(),
             args: vec![TableFunctionArgSpec {
                 name: "query".to_string(),
                 required: true,
                 values: vec![],
+                default: None,
                 bind: FunctionArgBinding {
                     arg: "q".to_string(),
                 },
@@ -1900,6 +2001,113 @@ mod tests {
             error.to_string().contains(&format!(
                 "max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
             )),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_universal_search_execution_accepts_query_arg_and_defaults() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.search_limits = Some(SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        });
+        function.universal_search = Some(UniversalSearchSpec {
+            execute: true,
+            query_arg: Some("query".to_string()),
+        });
+        function.args.push(TableFunctionArgSpec {
+            name: "mode".to_string(),
+            required: false,
+            values: vec!["lexical".to_string(), "semantic".to_string()],
+            default: Some(json!("lexical")),
+            bind: FunctionArgBinding {
+                arg: "search_type".to_string(),
+            },
+        });
+        function.columns = vec![test_column()];
+
+        validate_http_function("demo", &function)
+            .expect("complete Universal Search execution metadata should validate");
+    }
+
+    #[test]
+    fn validate_universal_search_execution_rejects_non_query_arg_without_default() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.search_limits = Some(SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        });
+        function.universal_search = Some(UniversalSearchSpec {
+            execute: true,
+            query_arg: Some("query".to_string()),
+        });
+        function.args.push(TableFunctionArgSpec {
+            name: "mode".to_string(),
+            required: false,
+            values: Vec::new(),
+            default: None,
+            bind: FunctionArgBinding {
+                arg: "search_type".to_string(),
+            },
+        });
+        function.columns = vec![test_column()];
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("execution should require defaults for non-query args");
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires argument 'mode' to declare default"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_universal_search_execution_rejects_default_outside_declared_values() {
+        let mut function = function_with_request_value(ValueSourceSpec::Arg {
+            key: "q".to_string(),
+            default: None,
+        });
+        function.kind = SourceTableFunctionKind::Search;
+        function.search_limits = Some(SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        });
+        function.universal_search = Some(UniversalSearchSpec {
+            execute: true,
+            query_arg: Some("query".to_string()),
+        });
+        function.args.push(TableFunctionArgSpec {
+            name: "mode".to_string(),
+            required: false,
+            values: vec!["lexical".to_string()],
+            default: Some(json!("semantic")),
+            bind: FunctionArgBinding {
+                arg: "search_type".to_string(),
+            },
+        });
+        function.columns = vec![test_column()];
+
+        let error = validate_http_function("demo", &function)
+            .expect_err("execution should reject defaults outside declared values");
+
+        assert!(
+            error
+                .to_string()
+                .contains("default 'semantic' to be one of its declared values"),
             "unexpected error: {error}"
         );
     }

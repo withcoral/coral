@@ -55,6 +55,8 @@ enum SearchProvider {
   SEARCH_PROVIDER_CATALOG_METADATA = 1;
   // Local observed-value provider.
   SEARCH_PROVIDER_OBSERVED_VALUES = 2;
+  // Provider-native search functions executed during Universal Search.
+  SEARCH_PROVIDER_SOURCE_NATIVE = 3;
 }
 
 // Provider state for one request.
@@ -89,6 +91,8 @@ message SearchResult {
     ObservedValue observed_value = 12;
     // Registered provider-native search function the agent can call explicitly.
     NativeSearchPath native_search_path = 13;
+    // Row returned by an executed provider-native search function.
+    ProviderSearchResult provider_search_result = 14;
   }
 }
 
@@ -204,6 +208,45 @@ message NativeSearchPath {
   string sql_call_example = 2;
   // Metadata fields that matched the query.
   repeated string matched_fields = 3;
+}
+
+// One row returned by an executed provider-native search function.
+message ProviderSearchResult {
+  // Source-scoped table function that produced the row.
+  TableFunction table_function = 1;
+  // SQL call Coral executed to retrieve this provider-ranked row.
+  string sql_call = 2;
+  // Zero-based row ordinal in the provider-native result set.
+  uint32 row_ordinal = 3;
+  // Provider-specific row payload keyed by returned column name.
+  map<string, ProviderSearchResultValue> row = 4;
+  // Best-effort stable row identifier, when a common id column is present.
+  optional string id = 5;
+  // Best-effort title/name field, when present.
+  optional string title = 6;
+  // Best-effort URL field, when present.
+  optional string url = 7;
+  // Best-effort snippet/summary/body field, when present.
+  optional string snippet = 8;
+  // Best-effort provider score, when present.
+  optional double score = 9;
+}
+
+// Typed scalar or JSON value in a provider-native search result row.
+message ProviderSearchResultValue {
+  // Typed value variant.
+  oneof value {
+    // String value.
+    string string_value = 1;
+    // Numeric value.
+    double number_value = 2;
+    // Boolean value.
+    bool bool_value = 3;
+    // JSON object or array encoded as JSON.
+    string json_value = 4;
+    // Null value marker.
+    bool null_value = 5;
+  }
 }
 
 // Universal Search APIs.

@@ -1,23 +1,28 @@
 //! Implements the gRPC `SearchService`.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 
-use chrono::{Duration, SecondsFormat, Utc};
+use arrow::json::writer::{JsonArray, WriterBuilder};
+use chrono::{Duration as ChronoDuration, SecondsFormat, Utc};
+use coral_api::v1::provider_search_result_value;
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::search_service_server::SearchService as SearchServiceApi;
 use coral_api::v1::{
-    CatalogMetadata, ColumnHint, NativeSearchPath, ObservedValue, SearchFieldRole, SearchProvider,
-    SearchProviderState, SearchProviderStatus, SearchRequest, SearchResponse, SearchResult,
-    SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn,
+    CatalogMetadata, ColumnHint, NativeSearchPath, ObservedValue, ProviderSearchResult,
+    ProviderSearchResultValue, SearchFieldRole, SearchProvider, SearchProviderState,
+    SearchProviderStatus, SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchSurfaceKind, SearchTableColumnPreview, SearchTableColumnPreviewColumn,
 };
 use coral_engine::{
-    CatalogInfo, ColumnInfo, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo,
+    CatalogInfo, ColumnInfo, QueryExecution, TableFilterInfo, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
+use serde::Deserialize;
+use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -41,6 +46,8 @@ use crate::transport::{
 };
 use crate::workspaces::WorkspaceName;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
+use tokio::time::timeout;
 
 const DEFAULT_SEARCH_LIMIT: u32 = 50;
 const MAX_SEARCH_LIMIT: u32 = 100;
@@ -60,6 +67,14 @@ const FIELD_PATH_SUBSTRING_BOOST: u32 = 500;
 const VALUE_EXACT_MATCH_BOOST: u32 = 1_000;
 const VALUE_TOKEN_MATCH_BOOST: u32 = 750;
 const OBSERVED_CHILD_PATH_BOOST: u32 = 1_000;
+// Provider-native rows are already provider-ranked results, not just routing
+// hints, so they get a base score above ordinary catalog/observed candidates.
+const SOURCE_NATIVE_BASE_SCORE: u32 = 2_500;
+// Keep provider fanout bounded so slow sources cannot serialize all local
+// catalog/observed retrieval before a search response is returned.
+const SOURCE_NATIVE_SEARCH_MAX_CONCURRENCY: usize = 4;
+// Per-call wall clock budget for opted-in provider-native search functions.
+const SOURCE_NATIVE_SEARCH_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const OBSERVED_VALUES_PER_FIELD_LIMIT: usize = 3;
 const CATALOG_FINGERPRINT_FILE_NAME: &str = "catalog.sha256";
 const CATALOG_DIRTY_FILE_NAME: &str = "catalog.dirty";
@@ -258,7 +273,7 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<SearchResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
-        instrument_grpc(span, async move {
+        Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let limit = search_limit(request.limit).map_err(app_status)?;
@@ -267,7 +282,7 @@ impl SearchServiceApi for SearchService {
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(response))
-        })
+        }))
         .await
     }
 }
@@ -297,67 +312,58 @@ impl UniversalSearch {
             .queries
             .list_stored_catalog(workspace_name, None)
             .await?;
-        let (mut candidates, catalog_status) = self
-            .catalog_metadata_candidates(workspace_name, &catalog, &terms, limit)
+        let provider_results = self
+            .fan_out_providers(workspace_name, &catalog, query, &terms, limit)
+            .await;
+        Ok(assemble_search_response(provider_results, limit))
+    }
+
+    async fn fan_out_providers(
+        &self,
+        workspace_name: &WorkspaceName,
+        catalog: &CatalogInfo,
+        query: &str,
+        terms: &QueryTerms,
+        limit: u32,
+    ) -> Vec<ProviderResults> {
+        let catalog_results = self
+            .catalog_metadata_provider(workspace_name, catalog, terms, limit)
             .await;
         let observed_queue_drain =
             self.drain_observed_value_queue_with_foreground_budget(workspace_name);
-        let (observed_candidates, observed_status) = self.observed_value_candidates(
+        let observed_results = self.observed_value_provider(
             workspace_name,
-            &catalog,
-            &terms,
+            catalog,
+            terms,
             limit,
             observed_queue_drain,
         );
-        candidates.extend(observed_candidates);
-        candidates.sort();
-
-        let total_count = candidates.len();
-        let max_results = usize::try_from(limit).unwrap_or(usize::MAX);
-        let truncated = total_count > max_results;
-        let results = candidates
-            .into_iter()
-            .take(max_results)
-            .map(|candidate| candidate.result)
-            .collect::<Vec<_>>();
-        let returned_count = u32::try_from(results.len()).unwrap_or(u32::MAX);
-        Ok(SearchResponse {
-            results,
-            provider_statuses: vec![
-                SearchProviderStatus {
-                    provider: SearchProvider::CatalogMetadata as i32,
-                    state: catalog_status.state as i32,
-                    note: catalog_status.note,
-                },
-                SearchProviderStatus {
-                    provider: SearchProvider::ObservedValues as i32,
-                    state: observed_status.state as i32,
-                    note: observed_status.note,
-                },
-            ],
-            truncation: Some(SearchResultTruncation {
-                truncated,
-                returned_count,
-                max_results: limit,
-                note: truncation_note(truncated, total_count, max_results),
-            }),
-        })
+        let source_native_results = self
+            .provider_native_search_provider(workspace_name, catalog, query, terms)
+            .await;
+        vec![catalog_results, observed_results, source_native_results]
     }
 
-    async fn catalog_metadata_candidates(
+    async fn catalog_metadata_provider(
         &self,
         workspace_name: &WorkspaceName,
         catalog: &CatalogInfo,
         terms: &QueryTerms,
         limit: u32,
-    ) -> (Vec<Candidate>, CatalogProviderStatus) {
+    ) -> ProviderResults {
         let index = match self
             .indexes
             .refresh_catalog_if_needed(workspace_name, catalog)
             .await
         {
             Ok(index) => index,
-            Err(error) => return (Vec::new(), catalog_index_error_status(&error)),
+            Err(error) => {
+                return ProviderResults::new(
+                    SearchProvider::CatalogMetadata,
+                    Vec::new(),
+                    catalog_index_error_status(&error),
+                );
+            }
         };
         let capabilities = index.capabilities();
         tracing::debug!(
@@ -372,7 +378,13 @@ impl UniversalSearch {
             .max(25);
         let page = match index.search_catalog_page(workspace_name, &terms.terms, search_limit) {
             Ok(page) => page,
-            Err(error) => return (Vec::new(), catalog_index_error_status(&error)),
+            Err(error) => {
+                return ProviderResults::new(
+                    SearchProvider::CatalogMetadata,
+                    Vec::new(),
+                    catalog_index_error_status(&error),
+                );
+            }
         };
         let candidates = dedupe_candidates(catalog_candidates_from_hits(
             workspace_name,
@@ -388,34 +400,42 @@ impl UniversalSearch {
             SearchProviderState::ResultsFound
         };
         let note = catalog_provider_note(state, candidates.len(), page.has_more);
-        (candidates, CatalogProviderStatus { state, note })
+        ProviderResults::new(
+            SearchProvider::CatalogMetadata,
+            candidates,
+            ProviderRunStatus { state, note },
+        )
     }
 
-    fn observed_value_candidates(
+    fn observed_value_provider(
         &self,
         workspace_name: &WorkspaceName,
         catalog: &CatalogInfo,
         terms: &QueryTerms,
         limit: u32,
         queue_drain: Option<ObservedQueueDrain>,
-    ) -> (Vec<Candidate>, ObservedProviderStatus) {
+    ) -> ProviderResults {
         let index =
             match SearchIndexStore::open_existing_workspace(&self.indexes.layout, workspace_name) {
                 Ok(Some(index)) => index,
                 Ok(None) => {
-                    return (
+                    let state = SearchProviderState::Empty;
+                    return ProviderResults::new(
+                        SearchProvider::ObservedValues,
                         Vec::new(),
-                        ObservedProviderStatus {
-                            state: SearchProviderState::Empty,
-                            note: observed_provider_note(
-                                SearchProviderState::Empty,
-                                0,
-                                queue_drain,
-                            ),
+                        ProviderRunStatus {
+                            state,
+                            note: observed_provider_note(state, 0, queue_drain),
                         },
                     );
                 }
-                Err(error) => return (Vec::new(), observed_index_error_status(&error)),
+                Err(error) => {
+                    return ProviderResults::new(
+                        SearchProvider::ObservedValues,
+                        Vec::new(),
+                        observed_index_error_status(&error),
+                    );
+                }
             };
         let retention_cutoff = observed_value_retention_cutoff();
         let live_sources = catalog_source_names(catalog);
@@ -431,7 +451,13 @@ impl UniversalSearch {
             &retention_cutoff,
         ) {
             Ok(hits) => hits,
-            Err(error) => return (Vec::new(), observed_index_error_status(&error)),
+            Err(error) => {
+                return ProviderResults::new(
+                    SearchProvider::ObservedValues,
+                    Vec::new(),
+                    observed_index_error_status(&error),
+                );
+            }
         };
         let candidates = observed_value_candidates_from_hits(
             workspace_name,
@@ -446,7 +472,84 @@ impl UniversalSearch {
             SearchProviderState::ResultsFound
         };
         let note = observed_provider_note(state, candidates.len(), queue_drain);
-        (candidates, ObservedProviderStatus { state, note })
+        ProviderResults::new(
+            SearchProvider::ObservedValues,
+            candidates,
+            ProviderRunStatus { state, note },
+        )
+    }
+
+    async fn provider_native_search_provider(
+        &self,
+        workspace_name: &WorkspaceName,
+        catalog: &CatalogInfo,
+        query: &str,
+        terms: &QueryTerms,
+    ) -> ProviderResults {
+        let mut eligible_functions = catalog
+            .table_functions
+            .iter()
+            .filter_map(executable_native_search_function)
+            .collect::<VecDeque<_>>();
+        if eligible_functions.is_empty() {
+            return ProviderResults::new(
+                SearchProvider::SourceNative,
+                Vec::new(),
+                ProviderRunStatus {
+                    state: SearchProviderState::Skipped,
+                    note: "No provider-native search functions are opted in for Universal Search execution".to_string(),
+                },
+            );
+        }
+
+        let mut candidates = Vec::new();
+        let mut failed_calls = Vec::new();
+        let mut join_set = JoinSet::new();
+        start_provider_native_search_tasks(
+            &mut join_set,
+            &mut eligible_functions,
+            &self.queries,
+            workspace_name,
+            query,
+            terms,
+        );
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok(mut call_result) => {
+                    candidates.append(&mut call_result.candidates);
+                    if let Some(error) = call_result.error {
+                        failed_calls.push(error);
+                    }
+                }
+                Err(error) => {
+                    failed_calls.push(format!("provider-native search task failed: {error}"));
+                }
+            }
+            start_provider_native_search_tasks(
+                &mut join_set,
+                &mut eligible_functions,
+                &self.queries,
+                workspace_name,
+                query,
+                terms,
+            );
+        }
+
+        let state = if !failed_calls.is_empty() && candidates.is_empty() {
+            SearchProviderState::Error
+        } else if !failed_calls.is_empty() {
+            SearchProviderState::Partial
+        } else if candidates.is_empty() {
+            SearchProviderState::Empty
+        } else {
+            SearchProviderState::ResultsFound
+        };
+        let note = source_native_provider_note(state, candidates.len(), &failed_calls);
+        ProviderResults::new(
+            SearchProvider::SourceNative,
+            dedupe_candidates(candidates),
+            ProviderRunStatus { state, note },
+        )
     }
 
     fn drain_observed_value_queue_with_foreground_budget(
@@ -508,14 +611,141 @@ impl UniversalSearch {
     }
 }
 
-struct CatalogProviderStatus {
+struct ProviderResults {
+    provider: SearchProvider,
+    candidates: Vec<Candidate>,
+    status: ProviderRunStatus,
+}
+
+impl ProviderResults {
+    fn new(
+        provider: SearchProvider,
+        candidates: Vec<Candidate>,
+        status: ProviderRunStatus,
+    ) -> Self {
+        Self {
+            provider,
+            candidates,
+            status,
+        }
+    }
+
+    fn provider_status(&self) -> SearchProviderStatus {
+        SearchProviderStatus {
+            provider: self.provider as i32,
+            state: self.status.state as i32,
+            note: self.status.note.clone(),
+        }
+    }
+}
+
+struct ProviderRunStatus {
     state: SearchProviderState,
     note: String,
 }
 
-struct ObservedProviderStatus {
-    state: SearchProviderState,
-    note: String,
+struct ProviderNativeSearchCallResult {
+    candidates: Vec<Candidate>,
+    error: Option<String>,
+}
+
+fn start_provider_native_search_tasks(
+    join_set: &mut JoinSet<ProviderNativeSearchCallResult>,
+    pending: &mut VecDeque<ExecutableNativeSearchFunction>,
+    queries: &QueryManager,
+    workspace_name: &WorkspaceName,
+    query: &str,
+    terms: &QueryTerms,
+) {
+    while join_set.len() < SOURCE_NATIVE_SEARCH_MAX_CONCURRENCY {
+        let Some(executable) = pending.pop_front() else {
+            break;
+        };
+        let queries = queries.clone();
+        let workspace_name = workspace_name.clone();
+        let query = query.to_string();
+        let terms = terms.clone();
+        join_set.spawn(async move {
+            let sql = executable.sql_call(&query);
+            match timeout(
+                SOURCE_NATIVE_SEARCH_TIMEOUT,
+                queries.execute_sql_without_foreground_queue_drain(&workspace_name, &sql),
+            )
+            .await
+            {
+                Ok(Ok(execution)) => match provider_search_candidates_from_execution(
+                    &workspace_name,
+                    &executable,
+                    &sql,
+                    &terms,
+                    &execution,
+                ) {
+                    Ok(candidates) => ProviderNativeSearchCallResult {
+                        candidates,
+                        error: None,
+                    },
+                    Err(error) => ProviderNativeSearchCallResult {
+                        candidates: Vec::new(),
+                        error: Some(format!(
+                            "{}.{}: {error}",
+                            executable.function.schema_name, executable.function.function_name
+                        )),
+                    },
+                },
+                Ok(Err(error)) => ProviderNativeSearchCallResult {
+                    candidates: Vec::new(),
+                    error: Some(format!(
+                        "{}.{}: {}",
+                        executable.function.schema_name,
+                        executable.function.function_name,
+                        query_manager_error_message(&error)
+                    )),
+                },
+                Err(_) => ProviderNativeSearchCallResult {
+                    candidates: Vec::new(),
+                    error: Some(format!(
+                        "{}.{}: provider-native search exceeded {}ms timeout",
+                        executable.function.schema_name,
+                        executable.function.function_name,
+                        SOURCE_NATIVE_SEARCH_TIMEOUT.as_millis()
+                    )),
+                },
+            }
+        });
+    }
+}
+
+fn assemble_search_response(provider_results: Vec<ProviderResults>, limit: u32) -> SearchResponse {
+    let provider_statuses = provider_results
+        .iter()
+        .map(ProviderResults::provider_status)
+        .collect::<Vec<_>>();
+    let mut candidates = provider_results
+        .into_iter()
+        .flat_map(|results| results.candidates)
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    let total_count = candidates.len();
+    let max_results = usize::try_from(limit).unwrap_or(usize::MAX);
+    let truncated = total_count > max_results;
+    let results = candidates
+        .into_iter()
+        .take(max_results)
+        .map(|candidate| candidate.result)
+        .collect::<Vec<_>>();
+    let returned_count = u32::try_from(results.len()).unwrap_or(u32::MAX);
+
+    SearchResponse {
+        results,
+        provider_statuses,
+        truncation: Some(SearchResultTruncation {
+            truncated,
+            returned_count,
+            max_results: limit,
+            note: truncation_note(truncated, total_count, max_results),
+        }),
+    }
 }
 
 #[derive(Clone)]
@@ -568,6 +798,55 @@ fn dedupe_candidates(candidates: Vec<Candidate>) -> Vec<Candidate> {
 #[derive(Clone, Debug)]
 struct QueryTerms {
     terms: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchLimitsDocument {
+    default_top_k: u32,
+    max_top_k: u32,
+    #[serde(rename = "max_calls_per_query")]
+    _max_calls_per_query: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct UniversalSearchDocument {
+    execute: bool,
+    query_arg: Option<String>,
+}
+
+#[derive(Clone)]
+struct ExecutableNativeSearchFunction {
+    function: TableFunctionInfo,
+    query_arg: String,
+    defaults: BTreeMap<String, Value>,
+    limit: u32,
+}
+
+impl ExecutableNativeSearchFunction {
+    fn sql_call(&self, query: &str) -> String {
+        let args = self
+            .function
+            .arguments
+            .iter()
+            .map(|argument| {
+                let value = if argument.name == self.query_arg {
+                    sql_string_literal(query)
+                } else {
+                    self.defaults
+                        .get(&argument.name)
+                        .map_or_else(|| "NULL".to_string(), sql_literal)
+                };
+                format!("{} => {value}", quote_sql_identifier(&argument.name))
+            })
+            .collect::<Vec<_>>();
+        format!(
+            "SELECT * FROM {}.{}({}) LIMIT {}",
+            quote_sql_identifier(&self.function.schema_name),
+            quote_sql_identifier(&self.function.function_name),
+            args.join(", "),
+            self.limit
+        )
+    }
 }
 
 fn search_limit(limit: u32) -> Result<u32, AppError> {
@@ -700,6 +979,7 @@ fn hash_table_function(hasher: &mut Sha256, function: &TableFunctionInfo) {
     hash_str(hasher, &function.description);
     hash_str(hasher, &function.kind);
     hash_option_str(hasher, function.search_limits_json.as_deref());
+    hash_option_str(hasher, function.universal_search_json.as_deref());
 
     let mut arguments = function.arguments.iter().collect::<Vec<_>>();
     arguments.sort_by(|left, right| left.name.cmp(&right.name));
@@ -720,6 +1000,7 @@ fn hash_table_function_argument(hasher: &mut Sha256, argument: &TableFunctionArg
     hash_str(hasher, "argument");
     hash_str(hasher, &argument.name);
     hash_bool(hasher, argument.required);
+    hash_option_str(hasher, argument.default_json.as_deref());
 
     let mut values = argument.values.iter().collect::<Vec<_>>();
     values.sort();
@@ -1307,6 +1588,231 @@ fn native_search_path_candidate(
     })
 }
 
+fn executable_native_search_function(
+    function: &TableFunctionInfo,
+) -> Option<ExecutableNativeSearchFunction> {
+    if function.kind != "search" {
+        return None;
+    }
+    let universal_search_json = function.universal_search_json.as_deref()?;
+    let universal_search =
+        serde_json::from_str::<UniversalSearchDocument>(universal_search_json).ok()?;
+    if !universal_search.execute {
+        return None;
+    }
+
+    let query_arg = universal_search.query_arg?;
+    if function
+        .arguments
+        .iter()
+        .filter(|argument| argument.name == query_arg)
+        .count()
+        != 1
+    {
+        return None;
+    }
+    let limits = function
+        .search_limits_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<SearchLimitsDocument>(json).ok())?;
+    let mut defaults = BTreeMap::new();
+    for argument in function
+        .arguments
+        .iter()
+        .filter(|argument| argument.name != query_arg)
+    {
+        let default = argument
+            .default_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())?;
+        defaults.insert(argument.name.clone(), default);
+    }
+
+    Some(ExecutableNativeSearchFunction {
+        function: function.clone(),
+        query_arg,
+        defaults,
+        limit: limits.default_top_k.min(limits.max_top_k),
+    })
+}
+
+fn provider_search_candidates_from_execution(
+    workspace_name: &WorkspaceName,
+    executable: &ExecutableNativeSearchFunction,
+    sql_call: &str,
+    terms: &QueryTerms,
+    execution: &QueryExecution,
+) -> Result<Vec<Candidate>, String> {
+    let rows = query_execution_json_rows(execution)?;
+    let total_rows = rows.len();
+    rows.into_iter()
+        .enumerate()
+        .filter_map(|(row_ordinal, row)| match row {
+            Value::Object(row) => Some(provider_search_candidate(
+                workspace_name,
+                executable,
+                sql_call,
+                terms,
+                row_ordinal,
+                total_rows,
+                &row,
+            )),
+            _ => None,
+        })
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn provider_search_candidate(
+    workspace_name: &WorkspaceName,
+    executable: &ExecutableNativeSearchFunction,
+    sql_call: &str,
+    terms: &QueryTerms,
+    row_ordinal: usize,
+    total_rows: usize,
+    row: &Map<String, Value>,
+) -> Result<Candidate, String> {
+    let id = best_effort_string_field(
+        row,
+        &["id", "identifier", "key", "number", "node_id", "global_id"],
+    );
+    let title = best_effort_string_field(row, &["title", "name", "summary", "subject"]);
+    let url = best_effort_string_field(row, &["url", "html_url", "web_url", "public_url", "link"]);
+    let snippet = best_effort_string_field(
+        row,
+        &[
+            "snippet",
+            "description",
+            "body",
+            "text",
+            "content",
+            "summary",
+        ],
+    );
+    let provider_score = row.get("score").and_then(Value::as_f64);
+    let row_values = provider_search_row_values(row)?;
+    let score = provider_search_score(&executable.function, row_ordinal, total_rows, terms);
+    let key = provider_search_result_key(
+        &executable.function,
+        row_ordinal,
+        id.as_deref(),
+        title.as_deref(),
+        url.as_deref(),
+    );
+    Ok(Candidate {
+        key,
+        score,
+        type_order: 0,
+        result: SearchResult {
+            provider: SearchProvider::SourceNative as i32,
+            payload: Some(Payload::ProviderSearchResult(ProviderSearchResult {
+                table_function: Some(
+                    table_function_to_proto(workspace_name, executable.function.clone())
+                        .map_err(|status| status.message().to_string())?,
+                ),
+                sql_call: sql_call.to_string(),
+                row_ordinal: u32::try_from(row_ordinal).unwrap_or(u32::MAX),
+                row: row_values,
+                id,
+                title,
+                url,
+                snippet,
+                score: provider_score,
+            })),
+        },
+    })
+}
+
+fn query_execution_json_rows(execution: &QueryExecution) -> Result<Vec<Value>, String> {
+    let mut bytes = Vec::new();
+    {
+        let mut writer = WriterBuilder::new()
+            .with_explicit_nulls(true)
+            .build::<_, JsonArray>(&mut bytes);
+        for batch in execution.batches() {
+            writer
+                .write(batch)
+                .map_err(|error| format!("failed to encode provider search row: {error}"))?;
+        }
+        writer
+            .finish()
+            .map_err(|error| format!("failed to finish provider search row encoding: {error}"))?;
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("failed to decode provider search rows: {error}"))
+}
+
+fn provider_search_row_values(
+    row: &Map<String, Value>,
+) -> Result<HashMap<String, ProviderSearchResultValue>, String> {
+    row.iter()
+        .map(|(key, value)| Ok((key.clone(), provider_search_row_value(value)?)))
+        .collect()
+}
+
+fn provider_search_row_value(value: &Value) -> Result<ProviderSearchResultValue, String> {
+    let value = match value {
+        Value::Null => provider_search_result_value::Value::NullValue(true),
+        Value::Bool(value) => provider_search_result_value::Value::BoolValue(*value),
+        Value::Number(value) => {
+            let Some(value) = value.as_f64() else {
+                return Ok(ProviderSearchResultValue {
+                    value: Some(provider_search_result_value::Value::StringValue(
+                        value.to_string(),
+                    )),
+                });
+            };
+            provider_search_result_value::Value::NumberValue(value)
+        }
+        Value::String(value) => provider_search_result_value::Value::StringValue(value.clone()),
+        Value::Array(_) | Value::Object(_) => provider_search_result_value::Value::JsonValue(
+            serde_json::to_string(value)
+                .map_err(|error| format!("failed to encode JSON row value: {error}"))?,
+        ),
+    };
+    Ok(ProviderSearchResultValue { value: Some(value) })
+}
+
+fn best_effort_string_field(row: &Map<String, Value>, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| row.get(*name).and_then(Value::as_str))
+        .map(ToString::to_string)
+}
+
+fn provider_search_score(
+    function: &TableFunctionInfo,
+    row_ordinal: usize,
+    total_rows: usize,
+    terms: &QueryTerms,
+) -> u32 {
+    let ordinal_score = u32::try_from(total_rows.saturating_sub(row_ordinal)).unwrap_or(u32::MAX);
+    SOURCE_NATIVE_BASE_SCORE
+        .saturating_add(ordinal_score)
+        .saturating_add(source_name_exact_match_boost(&function.schema_name, terms))
+        .saturating_add(surface_name_match_boost(&function.function_name, terms))
+}
+
+fn provider_search_result_key(
+    function: &TableFunctionInfo,
+    row_ordinal: usize,
+    id: Option<&str>,
+    title: Option<&str>,
+    url: Option<&str>,
+) -> String {
+    for value in [id, url, title] {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            return format!(
+                "provider_search:{}:{}:{}",
+                function.schema_name, function.function_name, value
+            );
+        }
+    }
+    format!(
+        "provider_search:{}:{}:{row_ordinal}",
+        function.schema_name, function.function_name
+    )
+}
+
 fn observed_value_candidates_from_hits(
     workspace_name: &WorkspaceName,
     terms: &QueryTerms,
@@ -1545,6 +2051,26 @@ fn quote_sql_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+fn sql_literal(value: &Value) -> String {
+    match value {
+        Value::Null => "NULL".to_string(),
+        Value::Bool(value) => {
+            if *value {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            }
+        }
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => sql_string_literal(value),
+        Value::Array(_) | Value::Object(_) => sql_string_literal(&value.to_string()),
+    }
+}
+
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn find_table<'a>(
     catalog: &'a CatalogInfo,
     schema_name: &str,
@@ -1632,15 +2158,56 @@ fn append_observed_queue_note(mut note: String, queue_drain: Option<ObservedQueu
     note
 }
 
-fn catalog_index_error_status(error: &SearchIndexError) -> CatalogProviderStatus {
-    CatalogProviderStatus {
+fn source_native_provider_note(
+    state: SearchProviderState,
+    total_count: usize,
+    failed_calls: &[String],
+) -> String {
+    match state {
+        SearchProviderState::ResultsFound => {
+            format!("Source-native search returned {total_count} provider-ranked rows")
+        }
+        SearchProviderState::Empty => {
+            "Source-native search functions executed and returned no rows".to_string()
+        }
+        SearchProviderState::Partial => {
+            format!(
+                "Source-native search returned {total_count} provider-ranked rows; {} call(s) failed: {}",
+                failed_calls.len(),
+                failed_calls.join("; ")
+            )
+        }
+        SearchProviderState::Error => {
+            format!(
+                "Source-native search execution failed for {} call(s): {}",
+                failed_calls.len(),
+                failed_calls.join("; ")
+            )
+        }
+        SearchProviderState::Skipped => {
+            "No provider-native search functions are opted in for Universal Search execution"
+                .to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+fn query_manager_error_message(error: &QueryManagerError) -> String {
+    match error {
+        QueryManagerError::App(error) => error.to_string(),
+        QueryManagerError::Core(error) => error.to_string(),
+    }
+}
+
+fn catalog_index_error_status(error: &SearchIndexError) -> ProviderRunStatus {
+    ProviderRunStatus {
         state: SearchProviderState::Error,
         note: format!("Catalog metadata search index is unavailable: {error}"),
     }
 }
 
-fn observed_index_error_status(error: &SearchIndexError) -> ObservedProviderStatus {
-    ObservedProviderStatus {
+fn observed_index_error_status(error: &SearchIndexError) -> ProviderRunStatus {
+    ProviderRunStatus {
         state: SearchProviderState::Error,
         note: format!("Observed-value search index is unavailable: {error}"),
     }
@@ -1661,7 +2228,7 @@ fn catalog_source_names(catalog: &CatalogInfo) -> BTreeSet<String> {
 }
 
 fn observed_value_retention_cutoff() -> String {
-    (Utc::now() - Duration::days(OBSERVED_VALUE_RETENTION_DAYS))
+    (Utc::now() - ChronoDuration::days(OBSERVED_VALUE_RETENTION_DAYS))
         .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
@@ -1676,15 +2243,16 @@ fn truncation_note(truncated: bool, total_count: usize, max_results: usize) -> S
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::SearchSurfaceKind;
+    use coral_api::v1::{SearchProvider, SearchProviderState, SearchResult, SearchSurfaceKind};
     use coral_engine::{CatalogInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo};
     use tantivy::Index;
     use tantivy::schema::{STORED, STRING, Schema};
     use tempfile::tempdir;
 
     use super::{
-        FIELD_PATH_EXACT_BOOST, SOURCE_EXACT_MATCH_BOOST, SURFACE_NAME_EXACT_BOOST,
-        SearchIndexRefresher, VALUE_EXACT_MATCH_BOOST, VALUE_TOKEN_MATCH_BOOST,
+        Candidate, FIELD_PATH_EXACT_BOOST, ProviderResults, ProviderRunStatus,
+        SOURCE_EXACT_MATCH_BOOST, SURFACE_NAME_EXACT_BOOST, SearchIndexRefresher,
+        VALUE_EXACT_MATCH_BOOST, VALUE_TOKEN_MATCH_BOOST, assemble_search_response,
         catalog_fingerprint, observed_value_match_boost, observed_value_score, query_terms,
         sql_call_example,
     };
@@ -1719,10 +2287,12 @@ mod tests {
                 name: "Q".to_string(),
                 required: true,
                 values: Vec::new(),
+                default_json: None,
             }],
             result_columns: Vec::new(),
             kind: "search".to_string(),
             search_limits_json: None,
+            universal_search_json: None,
         };
 
         assert_eq!(
@@ -1802,6 +2372,63 @@ mod tests {
                     &terms,
                 )
         );
+    }
+
+    #[test]
+    fn assemble_search_response_fans_out_provider_results() {
+        let response = assemble_search_response(
+            vec![
+                ProviderResults::new(
+                    SearchProvider::CatalogMetadata,
+                    vec![test_candidate(
+                        "catalog",
+                        10,
+                        1,
+                        SearchProvider::CatalogMetadata,
+                    )],
+                    ProviderRunStatus {
+                        state: SearchProviderState::ResultsFound,
+                        note: "catalog ok".to_string(),
+                    },
+                ),
+                ProviderResults::new(
+                    SearchProvider::ObservedValues,
+                    vec![test_candidate(
+                        "observed",
+                        20,
+                        0,
+                        SearchProvider::ObservedValues,
+                    )],
+                    ProviderRunStatus {
+                        state: SearchProviderState::ResultsFound,
+                        note: "observed ok".to_string(),
+                    },
+                ),
+            ],
+            1,
+        );
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results.first().map(|result| result.provider),
+            Some(SearchProvider::ObservedValues as i32)
+        );
+        assert_eq!(
+            response
+                .provider_statuses
+                .iter()
+                .map(|status| status.provider)
+                .collect::<Vec<_>>(),
+            vec![
+                SearchProvider::CatalogMetadata as i32,
+                SearchProvider::ObservedValues as i32,
+            ]
+        );
+        let truncation = response.truncation.expect("truncation");
+        assert!(truncation.truncated);
+        assert_eq!(truncation.returned_count, 1);
+        assert_eq!(truncation.max_results, 1);
+        assert!(truncation.note.contains("1 of 2"));
     }
 
     #[tokio::test]
@@ -1909,6 +2536,23 @@ mod tests {
             last_observed_at: "2026-06-04T10:00:00.000Z".to_string(),
             observed_count: 1,
             score,
+        }
+    }
+
+    fn test_candidate(
+        key: &str,
+        score: u32,
+        type_order: u8,
+        provider: SearchProvider,
+    ) -> Candidate {
+        Candidate {
+            key: key.to_string(),
+            score,
+            type_order,
+            result: SearchResult {
+                provider: provider as i32,
+                payload: None,
+            },
         }
     }
 }

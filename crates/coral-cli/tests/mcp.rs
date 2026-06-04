@@ -291,15 +291,25 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
     );
     let catalog_requests = server.list_catalog_requests();
     let count_request = catalog_requests
-        .last()
+        .iter()
+        .find(|request| request.kind == 0)
         .expect("tools/list should request catalog counts");
-    assert_eq!(count_request.kind, 0);
     let count_pagination = count_request
         .pagination
         .as_ref()
         .expect("count request pagination");
     assert_eq!(count_pagination.limit, 1);
     assert_eq!(count_pagination.offset, 0);
+    let native_search_request = catalog_requests
+        .iter()
+        .find(|request| request.kind == 2)
+        .expect("tools/list should request table functions for native search descriptions");
+    let native_search_pagination = native_search_request
+        .pagination
+        .as_ref()
+        .expect("native search request pagination");
+    assert_eq!(native_search_pagination.limit, 200);
+    assert_eq!(native_search_pagination.offset, 0);
 
     let resources = client.list_all_resources().await?;
     assert_eq!(

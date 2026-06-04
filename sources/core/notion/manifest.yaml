@@ -50,6 +50,9 @@ functions:
       default_top_k: 10
       max_top_k: 100
       max_calls_per_query: 1
+    universal_search:
+      execute: true
+      query_arg: query
     args:
       - name: query
         required: true
@@ -59,6 +62,7 @@ functions:
         values:
           - page
           - data_source
+        default: page
         bind:
           arg: object
     request:
