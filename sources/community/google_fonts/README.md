@@ -25,7 +25,7 @@ Supported metadata includes:
 Add the source:
 
 ```bash
-coral source add --file sources/community/google_fonts/manifest.yaml
+coral source add --interactive --file sources/community/google_fonts/manifest.yaml
 ```
 
 When prompted, provide:

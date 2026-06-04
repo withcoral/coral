@@ -103,6 +103,10 @@ tables:
       - WOFF2
       - VF
       - FAMILY_TAGS
+      
+      Notes:
+        - The API accepts repeated `capability` query parameters and supports combining them
+          (for example: `?capability=WOFF2&capability=VF`).
 
     fetch_limit_default: 100
 
@@ -118,6 +122,7 @@ tables:
 
       - name: capability
         required: false
+        repeated: true
 
     request:
       method: GET
@@ -211,7 +216,7 @@ tables:
         expr:
           kind: path
           path:
-            - color_capabilities
+            - colorCapabilities
 
       - name: tags
         type: Json
@@ -287,6 +292,7 @@ tables:
 
       - name: capability
         required: false
+        repeated: true
 
     request:
       method: GET
@@ -393,3 +399,4 @@ tables:
 
         expr:
           kind: current_row
+          
