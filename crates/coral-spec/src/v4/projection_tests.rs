@@ -211,8 +211,164 @@ paths:
         .find(|input| input.wire_name == "id")
         .expect("id input");
     assert_eq!(id_input.sql_exposure, SqlInputExposure::FunctionArg);
-    assert!(id_input.required);
+    assert!(!id_input.required);
     assert_eq!(id_input.default_value.as_deref(), Some("public"));
+
+    let id_arg = projection_arg_specs(projection)
+        .into_iter()
+        .find(|arg| arg.name == "id")
+        .expect("id arg");
+    assert!(!id_arg.required);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The fixture keeps related path default escaping cases together."
+)]
+fn request_paths_preserve_path_parameter_defaults() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /tenants/{tenant}/items:
+    get:
+      operationId: list-items
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema:
+            type: string
+            default: '|public}}'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+  /search/{tenant}/items:
+    get:
+      operationId: search-items
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema:
+            type: string
+            default: '..'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+  /namespaces/{namespace}/items:
+    get:
+      operationId: list-namespace-items
+      parameters:
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+            default: '.'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {type: integer}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let table_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_items")
+        .expect("table projection");
+    let table_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == table_projection.operation_id)
+        .expect("table operation");
+    let table_request =
+        request_spec_for_projection(table_projection, table_operation).expect("table request");
+    assert_eq!(
+        table_request.path.raw(),
+        "/tenants/{{filter.tenant|%7Cpublic%7D%7D}}/items"
+    );
+    let table_filter = projection_filter_specs(table_projection)
+        .into_iter()
+        .find(|filter| filter.name == "tenant")
+        .expect("tenant filter");
+    assert!(!table_filter.required);
+
+    let search_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "search_items")
+        .expect("search projection");
+    let search_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == search_projection.operation_id)
+        .expect("search operation");
+    let search_request =
+        request_spec_for_projection(search_projection, search_operation).expect("search request");
+    assert_eq!(
+        search_request.path.raw(),
+        "/search/{{arg.tenant|%252E%252E}}/items"
+    );
+    let search_arg = projection_arg_specs(search_projection)
+        .into_iter()
+        .find(|arg| arg.name == "tenant")
+        .expect("tenant arg");
+    assert!(!search_arg.required);
+
+    let namespace_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_namespace_items")
+        .expect("namespace projection");
+    let namespace_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == namespace_projection.operation_id)
+        .expect("namespace operation");
+    let namespace_request = request_spec_for_projection(namespace_projection, namespace_operation)
+        .expect("namespace request");
+    assert_eq!(
+        namespace_request.path.raw(),
+        "/namespaces/{{filter.namespace|%252E}}/items"
+    );
 }
 
 #[test]

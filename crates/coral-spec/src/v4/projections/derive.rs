@@ -215,11 +215,7 @@ fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String
 }
 
 fn projection_input_required(input: &IrOperationInput) -> bool {
-    input.required
-        && (matches!(
-            input.location,
-            IrInputLocation::Path | IrInputLocation::ToolArg
-        ) || input.default_value.is_none())
+    input.required && (input.default_value.is_none() || input.location == IrInputLocation::ToolArg)
 }
 
 fn projection_input_sql_exposure(

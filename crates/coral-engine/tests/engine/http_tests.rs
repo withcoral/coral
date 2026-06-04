@@ -14,6 +14,8 @@ use coral_engine::{
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use wiremock::matchers::{
     body_json, body_string, header, method, path, query_param, query_param_is_missing,
 };
@@ -103,6 +105,61 @@ fn function_only_search_manifest(name: &str, base_url: &str) -> Value {
         .expect("manifest is an object")
         .remove("tables");
     manifest
+}
+
+async fn spawn_raw_http_path_recorder(
+    response_body: &str,
+) -> (String, tokio::task::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("raw HTTP listener should bind");
+    let base_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("raw HTTP listener should have a local address")
+    );
+    let response_body = response_body.to_string();
+    let handle = tokio::spawn(async move {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("raw HTTP listener should accept one request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream
+                .read(&mut buffer)
+                .await
+                .expect("raw HTTP listener should read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request_text = String::from_utf8_lossy(&request);
+        let request_target = request_text
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .expect("request line should include a target")
+            .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("raw HTTP listener should write response");
+        request_target
+    });
+
+    (base_url, handle)
 }
 
 fn split_function_manifest(name: &str, base_url: &str) -> Value {
@@ -1753,6 +1810,97 @@ async fn table_function_treats_typed_null_as_omitted_optional_argument() {
             "title": "Flaky workspace cleanup",
             "score": 9.5
         })]
+    );
+}
+
+#[tokio::test]
+async fn path_template_default_filter_sends_encoded_dot_segment() {
+    let (base_url, request_target) = spawn_raw_http_path_recorder(r#"{"data":[{"id":1}]}"#).await;
+
+    let manifest = json!({
+        "name": "http_path_default_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "items",
+            "description": "Items",
+            "filters": [{ "name": "tenant" }],
+            "request": {
+                "method": "GET",
+                "path": "/api/tenants/{{filter.tenant|%252E%252E}}/items"
+            },
+            "response": { "rows_path": ["data"] },
+            "columns": [{ "name": "id", "type": "Int64" }]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id FROM http_path_default_filter.items",
+        )
+        .await
+        .expect("omitted optional filter should use template default"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1 })]);
+    assert_eq!(
+        request_target
+            .await
+            .expect("raw HTTP listener should finish"),
+        "/api/tenants/%252E%252E/items"
+    );
+}
+
+#[tokio::test]
+async fn path_template_default_arg_sends_encoded_dot_segment() {
+    let (base_url, request_target) =
+        spawn_raw_http_path_recorder(r#"{"items":[{"title":"default namespace"}]}"#).await;
+
+    let manifest = json!({
+        "name": "http_path_default_arg",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "functions": [{
+            "name": "search_items",
+            "description": "Search items",
+            "args": [{
+                "name": "tenant",
+                "required": false,
+                "bind": { "arg": "tenant" }
+            }],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/{{arg.tenant|%252E}}/items"
+            },
+            "response": { "rows_path": ["items"] },
+            "columns": [{ "name": "title", "type": "Utf8" }]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM http_path_default_arg.search_items()",
+        )
+        .await
+        .expect("omitted optional argument should use template default"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "default namespace" })]);
+    assert_eq!(
+        request_target
+            .await
+            .expect("raw HTTP listener should finish"),
+        "/api/search/%252E/items"
     );
 }
 
