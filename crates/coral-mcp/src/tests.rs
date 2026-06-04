@@ -1027,14 +1027,30 @@ async fn mcp_tool_error_does_not_end_session() {
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT text FROM local_messages.messages ORDER BY text"
+                "sql": "SELECT type, text FROM local_messages.messages ORDER BY text"
             }))),
         )
         .await
         .expect("sql");
     assert_eq!(
-        sql.structured_content.expect("structured content")["rows"][0]["text"],
-        "hello"
+        sql.content[0].as_text().expect("text content").text,
+        r#"{"columns":["type","text"],"rows":[["user","hello"],["assistant","world"]],"row_count":2}"#
+    );
+    let rows = &sql.structured_content.expect("structured content")["rows"];
+    assert_eq!(rows[0]["type"], "user");
+    assert_eq!(rows[0]["text"], "hello");
+    assert_eq!(
+        rows,
+        &json!([
+            {
+                "type": "user",
+                "text": "hello"
+            },
+            {
+                "type": "assistant",
+                "text": "world"
+            }
+        ])
     );
     assert_eq!(sql.is_error, Some(false));
 

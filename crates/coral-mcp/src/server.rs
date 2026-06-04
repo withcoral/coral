@@ -26,13 +26,13 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
-        describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, list_catalog_arguments, list_catalog_tool, list_catalog_value,
-        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
-        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        CatalogToolKind, build_tool_result, build_tool_result_with_text, describe_table_arguments,
+        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
+        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
+        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
+        required_string_argument, search_catalog_arguments, search_catalog_tool,
+        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -44,7 +44,10 @@ const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 
 enum ToolCallOutcome {
-    Success(Value),
+    Success {
+        value: Value,
+        text: Option<String>,
+    },
     ToolError {
         operation: &'static str,
         status: tonic::Status,
@@ -54,6 +57,13 @@ enum ToolCallOutcome {
 #[derive(Serialize)]
 struct SqlRowsValue {
     rows: Vec<Value>,
+}
+
+#[derive(Serialize)]
+struct CompactSqlRowsText {
+    columns: Vec<String>,
+    rows: Vec<Vec<Value>>,
+    row_count: usize,
 }
 
 #[derive(Serialize)]
@@ -67,10 +77,61 @@ fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
 }
 
+fn serialize_tool_text(value: impl Serialize) -> Result<String, tonic::Status> {
+    serde_json::to_string(&value).map_err(|error| tonic::Status::internal(error.to_string()))
+}
+
+fn compact_sql_rows_text(rows: &[Value]) -> Result<String, tonic::Status> {
+    let Some(columns) = sql_row_columns(rows) else {
+        return serialize_tool_text(SqlRowsValue {
+            rows: rows.to_vec(),
+        });
+    };
+    let mut compact_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let object = row.as_object().expect("columns require object rows");
+        compact_rows.push(
+            columns
+                .iter()
+                .map(|column| object.get(column).cloned().unwrap_or(Value::Null))
+                .collect(),
+        );
+    }
+    serialize_tool_text(CompactSqlRowsText {
+        columns,
+        rows: compact_rows,
+        row_count: rows.len(),
+    })
+}
+
+fn sql_row_columns(rows: &[Value]) -> Option<Vec<String>> {
+    let mut columns = Vec::new();
+    for row in rows {
+        let object = row.as_object()?;
+        for column in object.keys() {
+            if !columns.iter().any(|existing| existing == column) {
+                columns.push(column.clone());
+            }
+        }
+    }
+    Some(columns)
+}
+
 impl ToolCallOutcome {
+    fn success(value: Value) -> Self {
+        Self::Success { value, text: None }
+    }
+
+    fn success_with_text(value: Value, text: String) -> Self {
+        Self::Success {
+            value,
+            text: Some(text),
+        }
+    }
+
     fn from_value_result(operation: &'static str, result: Result<Value, tonic::Status>) -> Self {
         match result {
-            Ok(value) => Self::Success(value),
+            Ok(value) => Self::success(value),
             Err(status) => Self::ToolError { operation, status },
         }
     }
@@ -230,10 +291,11 @@ impl CoralMcpServer {
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
-    async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
-        serialize_tool_value(SqlRowsValue {
-            rows: self.query_rows(sql).await?,
-        })
+    async fn execute_sql_tool_outcome(&self, sql: &str) -> Result<ToolCallOutcome, tonic::Status> {
+        let rows = self.query_rows(sql).await?;
+        let text = compact_sql_rows_text(&rows)?;
+        let value = serialize_tool_value(SqlRowsValue { rows })?;
+        Ok(ToolCallOutcome::success_with_text(value, text))
     }
 
     async fn submit_feedback_value(
@@ -283,7 +345,7 @@ impl CoralMcpServer {
             .await
             .map(|response| search_catalog_value(&response.into_inner()))
         {
-            Ok(value) => Ok(ToolCallOutcome::Success(value)),
+            Ok(value) => Ok(ToolCallOutcome::success(value)),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
@@ -327,7 +389,7 @@ impl CoralMcpServer {
             .load_table_description(&arguments.schema, &arguments.table)
             .await
         {
-            Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
+            Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
                 &arguments.schema,
                 &arguments.table,
                 &response,
@@ -346,10 +408,13 @@ impl CoralMcpServer {
         match request.name.as_ref() {
             "sql" => {
                 let sql = required_string_argument(request.arguments.as_ref(), "sql")?;
-                Ok(ToolCallOutcome::from_value_result(
-                    "Query",
-                    self.execute_sql_value(&sql).await,
-                ))
+                match self.execute_sql_tool_outcome(&sql).await {
+                    Ok(outcome) => Ok(outcome),
+                    Err(status) => Ok(ToolCallOutcome::ToolError {
+                        operation: "Query",
+                        status,
+                    }),
+                }
             }
             "list_catalog" => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
@@ -406,7 +471,7 @@ impl CoralMcpServer {
             }))
             .await
         {
-            Ok(response) => Ok(ToolCallOutcome::Success(list_columns_value(
+            Ok(response) => Ok(ToolCallOutcome::success(list_columns_value(
                 &arguments.schema,
                 &arguments.table,
                 &response.into_inner(),
@@ -419,7 +484,7 @@ impl CoralMcpServer {
                     .load_table_description(&arguments.schema, &arguments.table)
                     .await
                 {
-                    Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
+                    Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
                         &arguments.schema,
                         &arguments.table,
                         &response,
@@ -557,8 +622,11 @@ fn finish_tool_call(
     outcome: Result<ToolCallOutcome, ErrorData>,
 ) -> Result<CallToolResult, ErrorData> {
     match outcome {
-        Ok(ToolCallOutcome::Success(value)) => {
-            let result = build_tool_result(value);
+        Ok(ToolCallOutcome::Success { value, text }) => {
+            let result = match text {
+                Some(text) => Ok(build_tool_result_with_text(value, text)),
+                None => build_tool_result(value),
+            };
             telemetry::record_protocol_result(span, &result);
             result
         }

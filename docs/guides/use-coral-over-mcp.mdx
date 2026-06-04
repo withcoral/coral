@@ -60,7 +60,27 @@ Some sources expose native search endpoints (for example, GitHub issue search) a
 
 ## Query result format
 
-The `sql` tool returns rows as a JSON array of objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
+The `sql` tool returns full row objects in MCP `structuredContent`:
+
+```json
+{
+  "rows": [{ "name": "github", "table_count": 42 }]
+}
+```
+
+The duplicate text content uses a compact column-array view to save tokens:
+
+```json
+{
+  "columns": ["name", "table_count"],
+  "rows": [["github", 42]],
+  "row_count": 1
+}
+```
+
+The two views contain the same values. Use `structuredContent.rows` when your client needs the object-shaped contract; use the text content when your client is feeding the result directly to a model.
+
+To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
 
 - `Int64` (`BIGINT`) and `UInt64`
 - `Decimal32`, `Decimal64`, `Decimal128`, and `Decimal256`

@@ -373,9 +373,13 @@ pub(crate) fn list_columns_arguments(
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
     let compact = serde_json::to_string(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    Ok(build_tool_result_with_text(value, compact))
+}
+
+pub(crate) fn build_tool_result_with_text(value: Value, text: String) -> CallToolResult {
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(compact)];
-    Ok(result)
+    result.content = vec![Content::text(text)];
+    result
 }
 
 fn sql_tool_description(visible_table_count: usize) -> String {
