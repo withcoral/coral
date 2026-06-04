@@ -31,8 +31,9 @@ use crate::{
         feedback_tool, guide_resource, guide_resource_content, initial_instructions,
         list_catalog_arguments, list_catalog_tool, list_catalog_value, list_columns_arguments,
         list_columns_tool, list_columns_value, required_string_argument, search_catalog_arguments,
-        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        search_catalog_tool, search_catalog_value, sql_result_toon_text, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -377,10 +378,16 @@ impl CoralMcpServer {
         match request.name.as_ref() {
             "sql" => {
                 let sql = required_string_argument(request.arguments.as_ref(), "sql")?;
-                Ok(ToolCallOutcome::from_value_result(
-                    "Query",
-                    self.execute_sql_value(&sql).await,
-                ))
+                Ok(match self.execute_sql_value(&sql).await {
+                    Ok(value) => {
+                        let text = sql_result_toon_text(&value);
+                        ToolCallOutcome::success_with_text_if_smaller(value, text)
+                    }
+                    Err(status) => ToolCallOutcome::ToolError {
+                        operation: "Query",
+                        status,
+                    },
+                })
             }
             "list_catalog" => {
                 self.list_catalog_tool_result(request.arguments.as_ref())

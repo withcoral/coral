@@ -94,6 +94,7 @@ strsim = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+toon-format = { version = "0.5.0", default-features = false }
 toml = "0.9"
 toml_edit = "0.25.10"
 tonic = "0.14.2"

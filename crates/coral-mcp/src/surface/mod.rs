@@ -21,5 +21,5 @@ pub(crate) use tools::{
     CatalogToolKind, build_tool_result, build_tool_result_with_text, describe_table_arguments,
     describe_table_tool, feedback_tool, list_catalog_arguments, list_catalog_tool,
     list_columns_arguments, list_columns_tool, required_string_argument, search_catalog_arguments,
-    search_catalog_tool, sql_tool,
+    search_catalog_tool, sql_result_toon_text, sql_tool,
 };

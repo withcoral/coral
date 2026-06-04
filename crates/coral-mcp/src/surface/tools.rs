@@ -5,6 +5,7 @@ use rmcp::{
     model::{CallToolResult, Content, Tool, ToolAnnotations},
 };
 use serde_json::{Map, Value, json};
+use toon_format::{Delimiter, EncodeOptions};
 
 use super::{Pagination, parse_pagination, parse_pagination_with_limits};
 
@@ -374,6 +375,34 @@ pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorDat
     let compact = serde_json::to_string(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     Ok(build_tool_result_with_text(value, compact))
+}
+
+pub(crate) fn sql_result_toon_text(value: &Value) -> Option<String> {
+    let rows = value.get("rows")?.as_array()?;
+    if rows.is_empty() {
+        return None;
+    }
+    if value.as_object()?.len() != 1 {
+        return None;
+    }
+
+    let compact_json = serde_json::to_string(value).ok()?;
+    shortest_strict_toon(value).filter(|text| text.len() < compact_json.len())
+}
+
+fn shortest_strict_toon(value: &Value) -> Option<String> {
+    let delimiters = [Delimiter::Comma, Delimiter::Tab, Delimiter::Pipe];
+    delimiters
+        .into_iter()
+        .filter_map(|delimiter| strict_toon(value, delimiter))
+        .min_by_key(String::len)
+}
+
+fn strict_toon(value: &Value, delimiter: Delimiter) -> Option<String> {
+    let options = EncodeOptions::new().with_delimiter(delimiter);
+    let text = toon_format::encode(value, &options).ok()?;
+    let decoded: Value = toon_format::decode_strict(&text).ok()?;
+    if decoded == *value { Some(text) } else { None }
 }
 
 pub(crate) fn build_tool_result_with_text(value: Value, text: String) -> CallToolResult {
@@ -805,7 +834,9 @@ fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
 mod tests {
     use serde_json::{Map, Value, json};
 
-    use super::{build_tool_result, list_catalog_arguments, search_catalog_arguments};
+    use super::{
+        build_tool_result, list_catalog_arguments, search_catalog_arguments, sql_result_toon_text,
+    };
 
     #[test]
     fn success_tool_result_text_uses_compact_json() {
@@ -837,6 +868,35 @@ mod tests {
             result.structured_content.expect("structured content"),
             value
         );
+    }
+
+    #[test]
+    fn sql_result_text_uses_toon_when_shorter() {
+        let value = json!({
+            "rows": [
+                {
+                    "id": 1,
+                    "text": "hello"
+                },
+                {
+                    "id": 2,
+                    "text": "world"
+                }
+            ]
+        });
+
+        let text = sql_result_toon_text(&value).expect("TOON text");
+
+        assert_eq!(text, "rows[2]{id,text}:\n  1,hello\n  2,world");
+        let decoded: Value = toon_format::decode_strict(&text).expect("TOON decodes");
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn sql_result_text_keeps_empty_rows_as_json() {
+        let value = json!({ "rows": [] });
+
+        assert_eq!(sql_result_toon_text(&value), None);
     }
 
     #[test]

@@ -26,7 +26,7 @@ Clients see the same database catalog and query results as `coral sql`. You set 
 
 Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
 
-Successful tool responses include complete MCP `structuredContent`. The text fallback is compact for model context: general results use compact JSON, and catalog discovery pages may use tab-separated rows when that is shorter. Clients that need a stable machine-readable shape should read `structuredContent`, not parse the fallback text.
+Successful tool responses include complete MCP `structuredContent`. The text fallback is compact for model context: general results use compact JSON, `sql` results may use TOON when that is shorter, and catalog discovery pages may use tab-separated rows when that is shorter. Clients that need a stable machine-readable shape should read `structuredContent`, not parse the fallback text.
 
 ### Discovery tools
 
@@ -62,7 +62,7 @@ Some sources expose native search endpoints (for example, GitHub issue search) a
 
 ## Query result format
 
-The `sql` tool returns rows as a JSON array of objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
+In `structuredContent`, the `sql` tool returns rows as a JSON array of objects. Its text fallback may use TOON for model-token efficiency, but clients should treat `structuredContent` as the stable machine-readable contract. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
 
 - `Int64` (`BIGINT`) and `UInt64`
 - `Decimal32`, `Decimal64`, `Decimal128`, and `Decimal256`
