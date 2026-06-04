@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.2](https://github.com/withcoral/coral/compare/v0.4.1...v0.4.2) (2026-06-03)
+
+
+### Features
+
+* **app:** refresh oauth access tokens ([#764](https://github.com/withcoral/coral/issues/764)) ([a05c753](https://github.com/withcoral/coral/commit/a05c7532c0a53f7098607004ab5cb1f3349cc704))
+* implement DSL v4 materialization and runtime ([#934](https://github.com/withcoral/coral/issues/934)) ([d4b4bd0](https://github.com/withcoral/coral/commit/d4b4bd0a0fd9637af34f8b18725d9ef3692016ff))
+* **mcp:** native Streamable HTTP transport + OAuth for MCP sources ([#871](https://github.com/withcoral/coral/issues/871)) ([92219d1](https://github.com/withcoral/coral/commit/92219d1d1d79fbc77c5ceda854df59fa26e504c5))
+* **sources/core/gmail:** add Gmail source ([#407](https://github.com/withcoral/coral/issues/407)) ([4f1ef6f](https://github.com/withcoral/coral/commit/4f1ef6fa7faa352aad9d5c6fcd7a77466246c11c))
+* **sources/sentry:** add OAuth device flow ([#435](https://github.com/withcoral/coral/issues/435)) ([cb4c000](https://github.com/withcoral/coral/commit/cb4c000799279d55dd062488ec52b504c8205423))
+* **sources:** per-method credential hints ([#1116](https://github.com/withcoral/coral/issues/1116)) ([28615ff](https://github.com/withcoral/coral/commit/28615ff204daf60a500422da67cb50f1b6e465c7))
+* **spec:** add typed auth fallback sources ([#370](https://github.com/withcoral/coral/issues/370)) ([a6febf3](https://github.com/withcoral/coral/commit/a6febf34e494c8ee18715d631a5885fce9573ef9))
+* **spec:** support OAuth endpoint input templates ([#932](https://github.com/withcoral/coral/issues/932)) ([4881ebe](https://github.com/withcoral/coral/commit/4881ebe740b347ee70c9849e8421871f7490757a))
+
+
+### Bug Fixes
+
+* **cli:** support pasted OAuth redirects ([#874](https://github.com/withcoral/coral/issues/874)) ([67741c6](https://github.com/withcoral/coral/commit/67741c662c8f93819f8a5eafd5a980f5e43d7316))
+* **deps:** clear aws-lc advisories ([#1127](https://github.com/withcoral/coral/issues/1127)) ([de5c269](https://github.com/withcoral/coral/commit/de5c269bec68e04604a80ce7621786d8ef9d8799))
+* **engine:** reject lossy JSON Int64 coercion ([#1102](https://github.com/withcoral/coral/issues/1102)) ([9572b03](https://github.com/withcoral/coral/commit/9572b03567f0cd63d64518bb68ef130c175c092c))
+* **engine:** retry truncated HTTP JSON responses ([#825](https://github.com/withcoral/coral/issues/825)) ([624f984](https://github.com/withcoral/coral/commit/624f98454100a0a43919dffcdbf131d3db0cf8a9))
+* **mcp:** serialize int64/uint64 and decimal columns as JSON strings ([#930](https://github.com/withcoral/coral/issues/930)) ([6f0a144](https://github.com/withcoral/coral/commit/6f0a1444f381a0fba7b960167579f97e30fedd20))
+* **plugin:** stop enabling feedback at startup ([#1061](https://github.com/withcoral/coral/issues/1061)) ([c9ee6a1](https://github.com/withcoral/coral/commit/c9ee6a1877547b114e9605d8c606edc7de1fc9b0))
+* **sources/cloudwatch_metrics:** send metric statistic times as numbers ([#1100](https://github.com/withcoral/coral/issues/1100)) ([adfe52d](https://github.com/withcoral/coral/commit/adfe52d3ba94b540c4dad47aa41e8b7e918bf2fa))
+* **sources/core/github:** address manifest follow-up gaps ([#1113](https://github.com/withcoral/coral/issues/1113)) ([49eaecd](https://github.com/withcoral/coral/commit/49eaecdf5ccf98bef33b0d04b70a3486db0e8fe3))
+* **sources/core/github:** improve issue search and workflow filters ([#1103](https://github.com/withcoral/coral/issues/1103)) ([4480c03](https://github.com/withcoral/coral/commit/4480c0382bf81ab2e29f3675e009288fe51aa1e9))
+* **sources/core/linear:** expose cycle and roadmap links ([#1108](https://github.com/withcoral/coral/issues/1108)) ([1dc36ef](https://github.com/withcoral/coral/commit/1dc36efdc8abe775a506ffb49c5e4b653e4a522f))
+* **spec:** centralize relation namespace validation ([#1131](https://github.com/withcoral/coral/issues/1131)) ([3b64c6c](https://github.com/withcoral/coral/commit/3b64c6cedfb9e0f56d4ac42eb564fd21c76ec58c))
+
+
+### Performance Improvements
+
+* **catalog:** reduce startup catalog/runtime work ([#967](https://github.com/withcoral/coral/issues/967)) ([b387275](https://github.com/withcoral/coral/commit/b387275d9a3c6cee7ff9cb47b779b0d1d9da4b43))
+* **engine:** narrow request input context ([#962](https://github.com/withcoral/coral/issues/962)) ([4e30419](https://github.com/withcoral/coral/commit/4e304196ba6b6e478a7c448b7864886a175664c8))
+* **engine:** reuse default HTTP source client ([#945](https://github.com/withcoral/coral/issues/945)) ([36c0269](https://github.com/withcoral/coral/commit/36c02690df92f8ee8b43cfda7f43b87993b33710))
+* **engine:** stream HTTP/MCP scans into bounded RecordBatches ([#1126](https://github.com/withcoral/coral/issues/1126)) ([d491ade](https://github.com/withcoral/coral/commit/d491ade347fb37fc0901e87a36d25344667a39a0))
+* **ui/traces:** Make UI feel snappy ([#822](https://github.com/withcoral/coral/issues/822)) ([16087f2](https://github.com/withcoral/coral/commit/16087f2c0b7052d62882923fadeb481b12d413b6))
+* **ui:** speed up trace list loading ([#1130](https://github.com/withcoral/coral/issues/1130)) ([4e1bf3f](https://github.com/withcoral/coral/commit/4e1bf3fbc21394657bf4d78afed13904d76718c8))
+
 ## [0.4.1](https://github.com/withcoral/coral/compare/v0.4.0...v0.4.1) (2026-05-27)
 
 

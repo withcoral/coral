@@ -85,6 +85,7 @@ pub(super) async fn execute_request(
     } = request;
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
+    let mut decode_retries = 0usize;
     loop {
         let method_label = http_method_label(method);
         let mut request = build_http_request(http, method, url);
@@ -119,7 +120,7 @@ pub(super) async fn execute_request(
         let logged_url = build_logged_url(url, query_pairs);
 
         let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let attempt = server_error_retries + throttle_retries + 1;
+        let attempt = server_error_retries + throttle_retries + decode_retries + 1;
         let traced_url = sanitize_trace_url(&logged_url);
         let trace_endpoint = trace_http_endpoint(&traced_url);
         let request_span = tracing::info_span!(
@@ -309,7 +310,7 @@ pub(super) async fn execute_request(
                 Err(error) => break 'response ResponseOutcome::Done(Err(error)),
             };
 
-            let payload = decode_response_body(
+            match decode_response_body(
                 response,
                 response_format,
                 ResponseDecodeContext {
@@ -324,11 +325,38 @@ pub(super) async fn execute_request(
             )
             .instrument(request_span.clone())
             .await
-            .inspect_err(|error| {
-                record_http_processing_error(&request_span, "DECODE", error);
-            })
-            .map(|payload| Some((payload, next_url)));
-            ResponseOutcome::Done(payload)
+            {
+                Ok(payload) => ResponseOutcome::Done(Ok(Some((payload, next_url)))),
+                Err(mut error) => {
+                    // `Decode { retryable }` marks a transient (truncated/EOF) body. Only
+                    // idempotent GET requests may be retried or surfaced as retryable.
+                    let is_get = matches!(method, HttpMethod::GET);
+                    let retry = is_get
+                        && matches!(
+                            error,
+                            ProviderQueryError::Decode {
+                                retryable: true,
+                                ..
+                            }
+                        );
+                    if retry && decode_retries < 2 {
+                        record_http_processing_error(
+                            &request_span,
+                            "DECODE_RETRY",
+                            provider_error(error),
+                        );
+                        decode_retries += 1;
+                        ResponseOutcome::Retry(Duration::from_secs(2))
+                    } else {
+                        if let ProviderQueryError::Decode { retryable, .. } = &mut error {
+                            *retryable &= is_get;
+                        }
+                        let error = provider_error(error);
+                        record_http_processing_error(&request_span, "DECODE", &error);
+                        ResponseOutcome::Done(Err(error))
+                    }
+                }
+            }
         };
 
         drop(request_span);
