@@ -1150,4 +1150,3 @@ test_queries:
   - SELECT * FROM zoho_books.invoices LIMIT 1
   - SELECT * FROM zoho_books.items LIMIT 1
 
-
