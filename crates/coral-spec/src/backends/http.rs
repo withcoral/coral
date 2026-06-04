@@ -11,6 +11,7 @@
 //! live in this crate.
 
 use std::collections::{BTreeSet, HashSet};
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -88,6 +89,159 @@ pub struct RateLimitSpec {
     pub reset_header: Option<String>,
 }
 
+/// Cache mode declared in the table manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HttpCacheMode {
+    /// Caching is disabled for this table (default).
+    #[default]
+    Disabled,
+    /// Cache entries expire after a fixed TTL.
+    Ttl,
+}
+
+/// Validated table-level HTTP cache policy from the manifest.
+#[derive(Debug, Clone)]
+pub struct HttpCachePolicySpec {
+    /// Whether and how to cache responses for this table.
+    pub mode: HttpCacheMode,
+    /// Time-to-live for cache entries.
+    pub ttl: Duration,
+    /// Request headers whose values affect response identity and must be
+    /// included in the cache key.
+    pub vary_headers: Vec<String>,
+    /// Maximum pages to serve from or write to cache per fetch.
+    pub max_pages: Option<usize>,
+    /// Skip caching entries whose decoded payload exceeds this byte estimate.
+    pub max_entry_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHttpCachePolicySpec {
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    ttl: Option<String>,
+    #[serde(default)]
+    vary: Option<RawHttpCacheVarySpec>,
+    #[serde(default)]
+    max_pages: Option<usize>,
+    #[serde(default)]
+    max_entry_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawHttpCacheVarySpec {
+    #[serde(default)]
+    headers: Vec<String>,
+}
+
+fn parse_ttl_duration(s: &str) -> std::result::Result<Duration, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("cache ttl must not be empty".to_string());
+    }
+    let mut total_secs = 0u64;
+    let mut current_number: Option<u64> = None;
+
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            let digit = u64::from(
+                ch.to_digit(10)
+                    .ok_or_else(|| format!("invalid cache ttl '{s}': unexpected '{ch}'"))?,
+            );
+            let base = current_number.unwrap_or(0u64);
+            current_number = Some(
+                base.checked_mul(10)
+                    .and_then(|value| value.checked_add(digit))
+                    .ok_or_else(|| format!("cache ttl '{s}' overflows u64 seconds"))?,
+            );
+        } else {
+            let n = current_number
+                .take()
+                .ok_or_else(|| format!("invalid cache ttl '{s}': unexpected '{ch}'"))?;
+            let multiplier = match ch {
+                'h' => 3600u64,
+                'm' => 60u64,
+                's' => 1u64,
+                other => {
+                    return Err(format!(
+                        "invalid cache ttl '{s}': unknown unit '{other}'; use h, m, or s"
+                    ));
+                }
+            };
+            total_secs = total_secs
+                .checked_add(
+                    n.checked_mul(multiplier)
+                        .ok_or_else(|| format!("cache ttl '{s}' overflows u64 seconds"))?,
+                )
+                .ok_or_else(|| format!("cache ttl '{s}' overflows u64 seconds"))?;
+        }
+    }
+
+    if current_number.is_some() {
+        return Err(format!(
+            "invalid cache ttl '{s}': trailing digits without a unit (h, m, or s)"
+        ));
+    }
+
+    if total_secs == 0 {
+        return Err(format!("cache ttl '{s}' must be positive"));
+    }
+
+    Ok(Duration::from_secs(total_secs))
+}
+
+fn validate_cache_policy(
+    raw: Option<RawHttpCachePolicySpec>,
+) -> crate::Result<Option<HttpCachePolicySpec>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    let mode = match raw.mode.as_deref().unwrap_or("disabled") {
+        "disabled" => HttpCacheMode::Disabled,
+        "ttl" => HttpCacheMode::Ttl,
+        other => {
+            return Err(crate::ManifestError::validation(format!(
+                "unknown cache mode '{other}'; use 'disabled' or 'ttl'"
+            )));
+        }
+    };
+
+    let ttl = if mode == HttpCacheMode::Ttl {
+        let raw_ttl = raw.ttl.as_deref().ok_or_else(|| {
+            crate::ManifestError::validation("cache mode 'ttl' requires a 'ttl' field".to_string())
+        })?;
+        parse_ttl_duration(raw_ttl).map_err(crate::ManifestError::validation)?
+    } else {
+        Duration::ZERO
+    };
+
+    let vary_headers = raw.vary.unwrap_or_default().headers;
+    for header in &vary_headers {
+        validate_cache_vary_header_name(header)?;
+    }
+
+    Ok(Some(HttpCachePolicySpec {
+        mode,
+        ttl,
+        vary_headers,
+        max_pages: raw.max_pages,
+        max_entry_bytes: raw.max_entry_bytes,
+    }))
+}
+
+fn validate_cache_vary_header_name(header: &str) -> crate::Result<()> {
+    http::header::HeaderName::from_bytes(header.as_bytes()).map_err(|error| {
+        crate::ManifestError::validation(format!(
+            "invalid cache vary header name '{header}': {error}"
+        ))
+    })?;
+    Ok(())
+}
+
 /// Validated top-level manifest for an HTTP-backed source.
 #[derive(Debug, Clone)]
 pub struct HttpSourceManifest {
@@ -153,6 +307,8 @@ struct RawHttpTableSpec {
     pagination: PaginationSpec,
     #[serde(default)]
     columns: Vec<ColumnSpec>,
+    #[serde(default)]
+    cache: Option<RawHttpCachePolicySpec>,
 }
 
 /// One validated HTTP table declaration.
@@ -163,6 +319,10 @@ pub struct HttpTableSpec {
     pub requests: Vec<RequestRouteSpec>,
     pub response: ResponseSpec,
     pub pagination: PaginationSpec,
+    /// Opt-in cache policy for this table. `None` means no cache block was
+    /// configured; `Some` callers must check `mode` to determine whether caching
+    /// is enabled.
+    pub cache: Option<HttpCachePolicySpec>,
 }
 
 impl HttpTableSpec {
@@ -244,6 +404,8 @@ impl RawHttpTableSpec {
             &self.detail_hints,
         )?;
 
+        let cache = validate_cache_policy(self.cache)?;
+
         Ok(HttpTableSpec {
             common: TableCommon::new(
                 self.name,
@@ -259,6 +421,7 @@ impl RawHttpTableSpec {
             requests: self.requests,
             response: self.response,
             pagination: self.pagination,
+            cache,
         })
     }
 }
@@ -392,5 +555,6 @@ pub(crate) fn test_http_table_spec(
         requests: vec![],
         response: ResponseSpec::default(),
         pagination: PaginationSpec::default(),
+        cache: None,
     }
 }

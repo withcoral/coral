@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, HttpCacheRegistry, QueryExecution,
+    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
     SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -48,6 +48,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    http_cache_registry: Option<Arc<HttpCacheRegistry>>,
 }
 
 impl QueryManager {
@@ -57,14 +58,23 @@ impl QueryManager {
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, AppError> {
+        let cache_config = crate::http_cache::HttpCacheConfig::load(&layout)?;
+        let http_cache_registry = cache_config.enabled.then(|| {
+            Arc::new(HttpCacheRegistry::with_policy(
+                cache_config.default_max_bytes_per_source,
+                cache_config.total_max_bytes,
+                cache_config.per_source_max_bytes,
+            ))
+        });
+        Ok(Self {
             config_store,
             credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
-        }
+            http_cache_registry,
+        })
     }
 
     pub(crate) async fn list_tables(
@@ -308,6 +318,8 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
+        extensions.cache_namespace = Some(workspace_name.as_str().to_string());
+        extensions.http_cache_registry = self.http_cache_registry.as_ref().map(Arc::clone);
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
     }
 }
@@ -506,6 +518,20 @@ mod tests {
         manager: QueryManager,
     }
 
+    struct CacheOverrideProvider {
+        registry: Arc<HttpCacheRegistry>,
+    }
+
+    impl EngineExtensionsProvider for CacheOverrideProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            EngineExtensions {
+                cache_namespace: Some("provider-namespace".to_string()),
+                http_cache_registry: Some(Arc::clone(&self.registry)),
+                ..EngineExtensions::default()
+            }
+        }
+    }
+
     fn query_manager_with(
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
@@ -519,7 +545,8 @@ mod tests {
             runtime_context,
             layout,
             providers,
-        );
+        )
+        .expect("query manager should build");
         QueryManagerFixture {
             _temp: temp,
             manager,
@@ -554,6 +581,71 @@ mod tests {
             .body_capture_max_bytes
             .expect("body capture config");
         assert_eq!(config, 42);
+        assert_eq!(
+            runtime.extensions.cache_namespace.as_deref(),
+            Some(WorkspaceName::default().as_str())
+        );
+    }
+
+    #[test]
+    fn runtime_config_uses_app_owned_cache_extensions() {
+        let provider_registry = Arc::new(HttpCacheRegistry::new());
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default(),
+            vec![Arc::new(CacheOverrideProvider {
+                registry: Arc::clone(&provider_registry),
+            })],
+        );
+
+        let runtime = fixture
+            .manager
+            .runtime_config(&WorkspaceName::default(), &[]);
+
+        assert_eq!(
+            runtime.extensions.cache_namespace.as_deref(),
+            Some(WorkspaceName::default().as_str())
+        );
+        let runtime_registry = runtime
+            .extensions
+            .http_cache_registry
+            .as_ref()
+            .expect("app registry should be installed");
+        assert!(!Arc::ptr_eq(runtime_registry, &provider_registry));
+    }
+
+    #[test]
+    fn runtime_config_cache_disabled_overrides_provider_registry() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout should be created");
+        std::fs::write(
+            layout.config_file(),
+            r"
+[http_cache]
+enabled = false
+",
+        )
+        .expect("config should be written");
+        let provider_registry = Arc::new(HttpCacheRegistry::new());
+        let manager = QueryManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            QueryRuntimeContext::default(),
+            layout,
+            vec![Arc::new(CacheOverrideProvider {
+                registry: provider_registry,
+            })],
+        )
+        .expect("query manager should build");
+
+        let runtime = manager.runtime_config(&WorkspaceName::default(), &[]);
+
+        assert_eq!(
+            runtime.extensions.cache_namespace.as_deref(),
+            Some(WorkspaceName::default().as_str())
+        );
+        assert!(runtime.extensions.http_cache_registry.is_none());
     }
 
     #[test]
@@ -811,7 +903,8 @@ surfaces:
             QueryRuntimeContext::default(),
             layout,
             Vec::new(),
-        );
+        )
+        .expect("query manager should build");
 
         let error = manager
             .load_query_sources(&workspace_name)

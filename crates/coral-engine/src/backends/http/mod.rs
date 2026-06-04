@@ -18,6 +18,7 @@ use crate::backends::{
 use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
+pub(crate) mod cache;
 pub(crate) mod client;
 pub(crate) mod error;
 mod fetch;
@@ -46,35 +47,23 @@ struct HttpCompiledSource {
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-}
-
-pub(crate) fn compile_source(
-    manifest: HttpSourceManifest,
-    source_input_resolution: SourceInputResolutionContext,
-    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
-    body_capture_max_bytes: Option<usize>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-) -> Box<dyn CompiledBackendSource> {
-    Box::new(HttpCompiledSource {
-        manifest,
-        source_input_resolution,
-        request_authenticators,
-        body_capture_max_bytes,
-        source_input_resolver,
-    })
+    cache_namespace: Option<String>,
+    http_cache_registry: Option<Arc<crate::HttpCacheRegistry>>,
 }
 
 pub(crate) fn compile_manifest(
     manifest: &HttpSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
-    compile_source(
-        manifest.clone(),
-        SourceInputResolutionContext::from_query_source(request.source),
-        request.request_authenticators.clone(),
-        request.runtime_context.body_capture_max_bytes,
-        request.source_input_resolver.clone(),
-    )
+    Box::new(HttpCompiledSource {
+        manifest: manifest.clone(),
+        source_input_resolution: SourceInputResolutionContext::from_query_source(request.source),
+        request_authenticators: request.request_authenticators.clone(),
+        body_capture_max_bytes: request.runtime_context.body_capture_max_bytes,
+        source_input_resolver: request.source_input_resolver.clone(),
+        cache_namespace: request.cache_namespace.clone(),
+        http_cache_registry: request.http_cache_registry.clone(),
+    })
 }
 
 #[async_trait]
@@ -93,11 +82,24 @@ impl CompiledBackendSource for HttpCompiledSource {
         registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
         let http = client::default_http_client(registration, &self.manifest.common.name)?;
+        let cache = match (&self.http_cache_registry, &self.cache_namespace) {
+            (Some(registry), Some(namespace)) => Some(
+                registry
+                    .get_or_create(
+                        namespace,
+                        &self.manifest.common.name,
+                        &self.manifest.common.version,
+                    )
+                    .await,
+            ),
+            _ => None,
+        };
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
             self.body_capture_max_bytes,
             http,
+            cache,
         );
         let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
             &self.manifest,

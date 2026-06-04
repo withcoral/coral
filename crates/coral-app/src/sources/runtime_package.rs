@@ -5,11 +5,14 @@ use std::collections::HashMap;
 use coral_engine::RuntimeSourceComponent;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::v4::{
-    ProjectionKind, ProjectionVisibility, V4MaterializedSource, V4SourceManifest,
-    openapi_document_metadata, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection,
+    IrExecutionAttachment, IrOperation, Projection, ProjectionKind, ProjectionVisibility,
+    V4MaterializedSource, V4SourceManifest, openapi_document_metadata, projection_arg_specs,
+    projection_column_specs, projection_filter_specs, request_spec_for_projection,
 };
-use coral_spec::{ParsedTemplate, SourceManifestCommon, SourceTableFunctionSpec, TableCommon};
+use coral_spec::{
+    ParsedTemplate, RequestSpec, ResponseSpec, SourceManifestCommon, SourceTableFunctionSpec,
+    TableCommon,
+};
 
 use crate::bootstrap::AppError;
 
@@ -84,52 +87,7 @@ fn http_manifest_for_surface(
                     projection.name, projection.operation_id
                 ))
             })?;
-        let request = request_spec_for_projection(projection, operation)
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-        let columns = projection_column_specs(projection);
-        match &projection.kind {
-            ProjectionKind::Table => {
-                tables.push(HttpTableSpec {
-                    common: TableCommon {
-                        name: projection.name.clone(),
-                        description: projection.description.clone(),
-                        guide: projection.guide.clone(),
-                        filters: projection_filter_specs(projection),
-                        fetch_limit_default: None,
-                        search_limits: projection.search_limits.clone(),
-                        detail_hints: projection.detail_hints.clone(),
-                        columns,
-                    },
-                    request,
-                    requests: Vec::new(),
-                    response: match &operation.execution {
-                        coral_spec::v4::IrExecutionAttachment::Rest(rest) => {
-                            rest.response.response.clone()
-                        }
-                    },
-                    pagination: projection.pagination.clone(),
-                });
-            }
-            ProjectionKind::TableFunction { function_kind } => {
-                functions.push(SourceTableFunctionSpec {
-                    name: projection.name.clone(),
-                    kind: *function_kind,
-                    description: projection.description.clone(),
-                    fetch_limit_default: None,
-                    search_limits: projection.search_limits.clone(),
-                    detail_hints: projection.detail_hints.clone(),
-                    args: projection_arg_specs(projection),
-                    request,
-                    response: match &operation.execution {
-                        coral_spec::v4::IrExecutionAttachment::Rest(rest) => {
-                            rest.response.response.clone()
-                        }
-                    },
-                    pagination: projection.pagination.clone(),
-                    columns,
-                });
-            }
-        }
+        push_projection_runtime_spec(&mut tables, &mut functions, projection, operation)?;
     }
     Ok(HttpSourceManifest {
         common: SourceManifestCommon {
@@ -147,6 +105,69 @@ fn http_manifest_for_surface(
         functions,
         declared_inputs: manifest.declared_inputs.clone(),
     })
+}
+
+fn push_projection_runtime_spec(
+    tables: &mut Vec<HttpTableSpec>,
+    functions: &mut Vec<SourceTableFunctionSpec>,
+    projection: &Projection,
+    operation: &IrOperation,
+) -> Result<(), AppError> {
+    let request = request_spec_for_projection(projection, operation)
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let response = response_spec_for_operation(operation);
+    let columns = projection_column_specs(projection);
+    match &projection.kind {
+        ProjectionKind::Table => tables.push(http_table_spec_for_projection(
+            projection, request, response, columns,
+        )),
+        ProjectionKind::TableFunction { function_kind } => {
+            functions.push(SourceTableFunctionSpec {
+                name: projection.name.clone(),
+                kind: *function_kind,
+                description: projection.description.clone(),
+                fetch_limit_default: None,
+                search_limits: projection.search_limits.clone(),
+                detail_hints: projection.detail_hints.clone(),
+                args: projection_arg_specs(projection),
+                request,
+                response,
+                pagination: projection.pagination.clone(),
+                columns,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn http_table_spec_for_projection(
+    projection: &Projection,
+    request: RequestSpec,
+    response: ResponseSpec,
+    columns: Vec<coral_spec::ColumnSpec>,
+) -> HttpTableSpec {
+    HttpTableSpec {
+        common: TableCommon {
+            name: projection.name.clone(),
+            description: projection.description.clone(),
+            guide: projection.guide.clone(),
+            filters: projection_filter_specs(projection),
+            fetch_limit_default: None,
+            search_limits: projection.search_limits.clone(),
+            detail_hints: projection.detail_hints.clone(),
+            columns,
+        },
+        request,
+        requests: Vec::new(),
+        response,
+        pagination: projection.pagination.clone(),
+        cache: None,
+    }
+}
+
+fn response_spec_for_operation(operation: &IrOperation) -> ResponseSpec {
+    let IrExecutionAttachment::Rest(rest) = &operation.execution;
+    rest.response.response.clone()
 }
 
 fn surface_base_url(

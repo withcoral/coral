@@ -39,6 +39,7 @@ mod catalog;
 mod credentials;
 pub mod features;
 mod feedback;
+mod http_cache;
 mod identity;
 mod query;
 mod sources;

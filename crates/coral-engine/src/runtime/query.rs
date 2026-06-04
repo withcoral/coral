@@ -90,6 +90,8 @@ async fn build_runtime_inner(
             &runtime_context,
             &extensions.request_authenticators,
             extensions.source_input_resolver.clone(),
+            extensions.cache_namespace.clone(),
+            extensions.http_cache_registry.clone(),
         ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(

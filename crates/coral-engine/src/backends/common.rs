@@ -133,6 +133,8 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    pub(crate) cache_namespace: Option<String>,
+    pub(crate) http_cache_registry: Option<Arc<crate::HttpCacheRegistry>>,
 }
 
 /// Shared resources available while registering one batch of compiled sources.

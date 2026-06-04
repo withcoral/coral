@@ -282,7 +282,7 @@ impl ServerBuilder {
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
-        );
+        )?;
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
         } else {
@@ -714,7 +714,8 @@ enabled = false
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
+        )
+        .expect("query manager should build");
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
@@ -1095,7 +1096,8 @@ tables:
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
+        )
+        .expect("query manager should build");
         let running = start_server(
             source_manager,
             query_manager,
@@ -1194,7 +1196,8 @@ tables:
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
+        )
+        .expect("query manager should build");
         let running = start_server(
             source_manager,
             query_manager,
@@ -1293,7 +1296,8 @@ tables:
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
+        )
+        .expect("query manager should build");
         let running = start_server(
             source_manager,
             query_manager,

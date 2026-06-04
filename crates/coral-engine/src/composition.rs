@@ -10,11 +10,73 @@ use datafusion::datasource::TableProvider;
 use reqwest::header::{HeaderName, HeaderValue};
 
 use crate::CoreError;
+use crate::backends::http::cache::HttpCacheRegistry as HttpBackendCacheRegistry;
 use crate::contracts::QuerySource;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
 /// One source's table providers keyed by manifest table name.
 pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
+
+/// Caller-owned registry for opt-in HTTP response cache buckets.
+///
+/// This is part of the engine composition surface; the backend-specific storage
+/// details remain internal to the engine.
+#[derive(Clone)]
+pub struct HttpCacheRegistry {
+    inner: HttpBackendCacheRegistry,
+}
+
+impl HttpCacheRegistry {
+    /// Build a registry with default per-source capacity and no cross-source
+    /// ceiling.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: HttpBackendCacheRegistry::new(),
+        }
+    }
+
+    /// Build a registry with explicit policy.
+    #[must_use]
+    pub fn with_policy(
+        default_max_bytes: u64,
+        total_max_bytes: Option<u64>,
+        per_source_max_bytes: HashMap<String, u64>,
+    ) -> Self {
+        Self {
+            inner: HttpBackendCacheRegistry::with_policy(
+                default_max_bytes,
+                total_max_bytes,
+                per_source_max_bytes,
+            ),
+        }
+    }
+
+    pub(crate) async fn get_or_create(
+        &self,
+        namespace: &str,
+        source_name: &str,
+        source_version: &str,
+    ) -> crate::backends::http::cache::HttpResponseCache {
+        self.inner
+            .get_or_create(namespace, source_name, source_version)
+            .await
+    }
+}
+
+impl std::fmt::Debug for HttpCacheRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HttpCacheRegistry")
+            .field(&self.inner)
+            .finish()
+    }
+}
+
+impl Default for HttpCacheRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Neutral bundle of optional engine extensions for one runtime build.
 #[derive(Default)]
@@ -27,6 +89,12 @@ pub struct EngineExtensions {
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
     pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    /// App-owned namespace for backend caches. Apps should scope this to the
+    /// workspace or tenant boundary; backend caching stays disabled when a
+    /// registry is supplied without a namespace.
+    pub cache_namespace: Option<String>,
+    /// Caller-owned HTTP cache registry; `None` disables HTTP response caching.
+    pub http_cache_registry: Option<Arc<HttpCacheRegistry>>,
 }
 
 /// Neutral policy decision for one source registration failure.

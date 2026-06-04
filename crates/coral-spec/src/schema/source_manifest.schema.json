@@ -398,6 +398,7 @@
         },
         "response": { "$ref": "#/$defs/response" },
         "pagination": { "$ref": "#/$defs/pagination" },
+        "cache": { "$ref": "#/$defs/cache_policy" },
         "columns": {
           "type": "array",
           "items": { "$ref": "#/$defs/column" }
@@ -457,6 +458,35 @@
           "items": { "$ref": "#/$defs/column" }
         }
       }
+    },
+    "cache_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["disabled", "ttl"] },
+        "ttl": { "type": "string", "minLength": 1 },
+        "vary": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "headers": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "max_pages": { "type": "integer", "minimum": 1 },
+        "max_entry_bytes": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "mode": { "const": "ttl" } },
+            "required": ["mode"]
+          },
+          "then": { "required": ["ttl"] }
+        }
+      ]
     },
     "source": {
       "type": "object",

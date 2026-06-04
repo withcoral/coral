@@ -217,6 +217,34 @@ tables:
     }
 
     #[test]
+    fn validate_manifest_schema_requires_ttl_for_ttl_cache_mode() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    cache:
+      mode: ttl
+",
+        );
+
+        let error = validate_manifest_schema(&manifest)
+            .expect_err("ttl cache mode without ttl should fail schema validation");
+        assert!(
+            error.to_string().contains("\"ttl\" is a required property"),
+            "unexpected schema error: {error}"
+        );
+    }
+
+    #[test]
     fn parse_source_manifest_yaml_accepts_http_table_search_metadata() {
         parse_source_manifest_yaml(
             r"
