@@ -13,6 +13,12 @@ use crate::state::{
 /// Runtime feature keys recognized by Coral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Expose the optional MCP Code Mode `exec` and `wait` tools when supported by the binary.
+    #[cfg(feature = "code-mode")]
+    CodeMode,
+    /// Expose only the optional MCP Code Mode `exec` and `wait` tools when supported by the binary.
+    #[cfg(feature = "code-mode")]
+    CodeModeOnly,
     /// Expose the optional MCP `feedback` tool.
     Feedback,
 }
@@ -65,14 +71,34 @@ struct FeatureSpec {
     disable_flag: &'static str,
 }
 
-const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
-    feature: Feature::Feedback,
-    key: "feedback",
-    default_enabled: false,
-    description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
-    enable_flag: "enable-feedback",
-    disable_flag: "disable-feedback",
-}];
+const FEATURE_SPECS: &[FeatureSpec] = &[
+    #[cfg(feature = "code-mode")]
+    FeatureSpec {
+        feature: Feature::CodeMode,
+        key: "code_mode",
+        default_enabled: false,
+        description: "Exposes MCP Code Mode exec/wait tools when enabled and supported by the binary.",
+        enable_flag: "enable-code-mode",
+        disable_flag: "disable-code-mode",
+    },
+    #[cfg(feature = "code-mode")]
+    FeatureSpec {
+        feature: Feature::CodeModeOnly,
+        key: "code_mode_only",
+        default_enabled: false,
+        description: "Exposes only MCP Code Mode exec/wait tools when enabled and supported by the binary. Hidden Coral tools remain callable inside exec.",
+        enable_flag: "enable-code-mode-only",
+        disable_flag: "disable-code-mode-only",
+    },
+    FeatureSpec {
+        feature: Feature::Feedback,
+        key: "feedback",
+        default_enabled: false,
+        description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
+        enable_flag: "enable-feedback",
+        disable_flag: "disable-feedback",
+    },
+];
 
 /// How a feature's value is configured in Coral's local config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,10 +352,14 @@ mod tests {
     }
 
     #[test]
-    fn defaults_disable_feedback() {
+    fn defaults_disable_experimental_features() {
         let features = Features::default();
 
         assert!(!features.enabled(Feature::Feedback));
+        #[cfg(feature = "code-mode")]
+        assert!(!features.enabled(Feature::CodeMode));
+        #[cfg(feature = "code-mode")]
+        assert!(!features.enabled(Feature::CodeModeOnly));
     }
 
     #[test]
@@ -396,7 +426,10 @@ mod tests {
             .iter()
             .map(|spec| status_from_raw(spec, &raw, &features))
             .collect::<Vec<_>>();
-        let status = statuses.first().expect("feedback status");
+        let status = statuses
+            .iter()
+            .find(|status| status.feature == Feature::Feedback)
+            .expect("feedback status");
 
         assert_eq!(status.key, "feedback");
         assert_eq!(status.configured, FeatureConfiguredState::InvalidValue);
@@ -408,6 +441,16 @@ mod tests {
         let error = unknown_feature_error("nope");
 
         assert!(error.to_string().contains("unknown feature 'nope'"));
+        #[cfg(feature = "code-mode")]
+        {
+            assert!(error.to_string().contains("code_mode"));
+            assert!(error.to_string().contains("code_mode_only"));
+        }
+        #[cfg(not(feature = "code-mode"))]
+        {
+            assert!(!error.to_string().contains("code_mode"));
+            assert!(!error.to_string().contains("code_mode_only"));
+        }
         assert!(error.to_string().contains("feedback"));
     }
 }

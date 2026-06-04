@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
+use coral_engine::{CatalogInfo, ColumnInfo, SYSTEM_SCHEMA_NAME, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
@@ -170,12 +170,13 @@ impl CatalogDiscovery {
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
     ) -> Result<CatalogPage, QueryManagerError> {
+        let include_system_tables = schema_name == Some(SYSTEM_SCHEMA_NAME);
         let catalog = self
             .queries
             .list_catalog(workspace_name, schema_name)
             .await?;
-        let counts = catalog_counts(&catalog);
-        let items = catalog_items(catalog, kind);
+        let counts = catalog_counts(&catalog, include_system_tables);
+        let items = catalog_items(catalog, kind, include_system_tables);
         Ok(CatalogPage {
             items: page_items(items, pagination),
             counts,
@@ -192,7 +193,11 @@ impl CatalogDiscovery {
             .queries
             .list_catalog(workspace_name, schema_name)
             .await?;
-        Ok(catalog_items(catalog, kind))
+        Ok(catalog_items(
+            catalog,
+            kind,
+            schema_name == Some(SYSTEM_SCHEMA_NAME),
+        ))
     }
 
     pub(crate) async fn describe_table(
@@ -208,7 +213,14 @@ impl CatalogDiscovery {
             return Ok(DescribeTableResult::Found(table));
         }
 
-        let tables = table_lookup.missing_context_tables;
+        let tables = table_lookup
+            .missing_context_tables
+            .into_iter()
+            .filter(|table| {
+                table_ref.schema_name == SYSTEM_SCHEMA_NAME
+                    || table.schema_name != SYSTEM_SCHEMA_NAME
+            })
+            .collect::<Vec<_>>();
         let available_schemas = tables
             .iter()
             .map(|table| table.schema_name.clone())
@@ -230,13 +242,23 @@ impl CatalogDiscovery {
     }
 }
 
-fn catalog_items(catalog: CatalogInfo, kind: Option<CatalogItemKind>) -> Vec<CatalogItem> {
+fn catalog_items(
+    catalog: CatalogInfo,
+    kind: Option<CatalogItemKind>,
+    include_system_tables: bool,
+) -> Vec<CatalogItem> {
     let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
     if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
-        items.extend(catalog.tables.into_iter().map(|mut table| {
-            table.columns.clear();
-            CatalogItem::Table(table)
-        }));
+        items.extend(
+            catalog
+                .tables
+                .into_iter()
+                .filter(|table| include_system_tables || table.schema_name != SYSTEM_SCHEMA_NAME)
+                .map(|mut table| {
+                    table.columns.clear();
+                    CatalogItem::Table(table)
+                }),
+        );
     }
     if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
         items.extend(
@@ -250,9 +272,16 @@ fn catalog_items(catalog: CatalogInfo, kind: Option<CatalogItemKind>) -> Vec<Cat
     items
 }
 
-fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
+fn catalog_counts(catalog: &CatalogInfo, include_system_tables: bool) -> CatalogCounts {
     CatalogCounts {
-        table_count: u32::try_from(catalog.tables.len()).unwrap_or(u32::MAX),
+        table_count: u32::try_from(
+            catalog
+                .tables
+                .iter()
+                .filter(|table| include_system_tables || table.schema_name != SYSTEM_SCHEMA_NAME)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
         table_function_count: u32::try_from(catalog.table_functions.len()).unwrap_or(u32::MAX),
     }
 }

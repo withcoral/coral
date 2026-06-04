@@ -9,13 +9,24 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+default = []
+code-mode = [
+    "dep:async-trait",
+    "dep:coral-code-mode",
+    "dep:tokio-util",
+    "coral-code-mode/code-mode",
+]
+
 [dependencies]
+async-trait = { workspace = true, optional = true }
 regex.workspace = true
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util = { workspace = true, optional = true }
 tonic.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
@@ -23,9 +34,12 @@ opentelemetry.workspace = true
 
 coral-api.workspace = true
 coral-client.workspace = true
+coral-code-mode = { workspace = true, optional = true }
 
 [dev-dependencies]
 coral-app.workspace = true
 jsonschema.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tonic-types.workspace = true
+tracing-subscriber.workspace = true

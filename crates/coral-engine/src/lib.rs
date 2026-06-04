@@ -68,9 +68,9 @@ pub use composition::{
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult,
-    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo,
+    QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage, SYSTEM_SCHEMA_NAME,
+    SourceValidationReport, SqlParameterValue, SqlParameters, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -152,13 +152,29 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         sql: &str,
     ) -> Result<QueryExecution, CoreError> {
+        Self::execute_sql_with_params(sources, runtime, sql, None).await
+    }
+
+    /// Executes one parameterized `SQL` statement over the provided source set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// if parameter binding fails, or if the runtime cannot execute the
+    /// statement.
+    pub async fn execute_sql_with_params(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+        params: Option<&SqlParameters>,
+    ) -> Result<QueryExecution, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
 
         runtime::query::build_runtime(sources, runtime)
             .await?
-            .execute_sql(sql)
+            .execute_sql(sql, params)
             .await
     }
 
@@ -214,11 +230,11 @@ impl CoralQuery {
         let query_runtime =
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
         let source_name = source.source_name();
+        if let Some(failure) = query_runtime.registration_failure(source_name) {
+            return Err(CoreError::FailedPrecondition(failure.detail.clone()));
+        }
         let catalog = query_runtime.catalog_info(Some(source_name));
         if catalog.tables.is_empty() && catalog.table_functions.is_empty() {
-            if let Some(failure) = query_runtime.registration_failure(source_name) {
-                return Err(CoreError::FailedPrecondition(failure.detail.clone()));
-            }
             return Err(CoreError::FailedPrecondition(format!(
                 "source '{source_name}' did not become queryable during validation"
             )));
@@ -226,7 +242,7 @@ impl CoralQuery {
 
         let mut query_tests = Vec::with_capacity(test_queries.len());
         for sql in test_queries {
-            match query_runtime.execute_sql(sql).await {
+            match query_runtime.execute_sql(sql, None).await {
                 Ok(execution) => query_tests.push(QueryTestResult::success(
                     sql.clone(),
                     execution.row_count() as u64,

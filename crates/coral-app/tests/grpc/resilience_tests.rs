@@ -67,6 +67,7 @@ async fn broken_source_does_not_block_healthy_sources() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
+            parameters: None,
         }))
         .await
         .expect("healthy source query should succeed")
@@ -84,6 +85,7 @@ async fn broken_source_does_not_block_healthy_sources() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT * FROM secured_messages.messages".to_string(),
+            parameters: None,
         }))
         .await
         .expect_err("broken source query should fail");

@@ -27,7 +27,7 @@ use std::io::{Cursor, Write};
 use std::sync::Arc;
 
 use arrow::array::Array;
-use arrow::datatypes::{DataType, FieldRef, SchemaRef};
+use arrow::datatypes::{DataType, FieldRef, SchemaRef, TimeUnit};
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use arrow::json::writer::{
@@ -246,19 +246,136 @@ impl Encoder for QuotedFormatterEncoder<'_> {
     }
 }
 
+/// Converts an Arrow schema into the SQL column metadata shape used by MCP.
+#[must_use]
+pub fn schema_to_json_columns(schema: &SchemaRef) -> Vec<Value> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| {
+            serde_json::json!({
+                "name": field.name(),
+                "data_type": arrow_data_type_json(field.data_type()),
+                "nullable": field.is_nullable(),
+            })
+        })
+        .collect()
+}
+
+fn arrow_data_type_json(data_type: &DataType) -> Value {
+    match data_type {
+        DataType::Null => serde_json::json!({ "kind": "null" }),
+        DataType::Boolean => serde_json::json!({ "kind": "boolean" }),
+        DataType::Int8 => integer_type_json(true, 8),
+        DataType::Int16 => integer_type_json(true, 16),
+        DataType::Int32 => integer_type_json(true, 32),
+        DataType::Int64 => integer_type_json(true, 64),
+        DataType::UInt8 => integer_type_json(false, 8),
+        DataType::UInt16 => integer_type_json(false, 16),
+        DataType::UInt32 => integer_type_json(false, 32),
+        DataType::UInt64 => integer_type_json(false, 64),
+        DataType::Float16 => float_type_json(16),
+        DataType::Float32 => float_type_json(32),
+        DataType::Float64 => float_type_json(64),
+        DataType::Decimal32(precision, scale)
+        | DataType::Decimal64(precision, scale)
+        | DataType::Decimal128(precision, scale)
+        | DataType::Decimal256(precision, scale) => serde_json::json!({
+            "kind": "decimal",
+            "precision": precision,
+            "scale": scale,
+        }),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+            serde_json::json!({ "kind": "string" })
+        }
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => {
+            serde_json::json!({ "kind": "binary" })
+        }
+        DataType::Date32 => serde_json::json!({ "kind": "date", "unit": "day" }),
+        DataType::Date64 => serde_json::json!({ "kind": "date", "unit": "millisecond" }),
+        DataType::Time32(unit) | DataType::Time64(unit) => {
+            serde_json::json!({ "kind": "time", "unit": time_unit_json(*unit) })
+        }
+        DataType::Timestamp(unit, timezone) => {
+            let mut value = serde_json::json!({
+                "kind": "timestamp",
+                "unit": time_unit_json(*unit),
+            });
+            if let Some(timezone) = timezone
+                && let Some(object) = value.as_object_mut()
+            {
+                object.insert("timezone".to_string(), Value::String(timezone.to_string()));
+            }
+            value
+        }
+        DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
+            serde_json::json!({
+                "kind": "list",
+                "item": arrow_data_type_json(field.data_type()),
+            })
+        }
+        DataType::Struct(fields) => serde_json::json!({
+            "kind": "struct",
+            "fields": fields
+                .iter()
+                .map(|field| {
+                    serde_json::json!({
+                        "name": field.name(),
+                        "data_type": arrow_data_type_json(field.data_type()),
+                        "nullable": field.is_nullable(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }),
+        DataType::Dictionary(_, value_type) => arrow_data_type_json(value_type),
+        other => serde_json::json!({
+            "kind": "unknown",
+            "data_type": other.to_string(),
+        }),
+    }
+}
+
+fn integer_type_json(signed: bool, bit_width: u8) -> Value {
+    serde_json::json!({
+        "kind": "integer",
+        "signed": signed,
+        "bit_width": bit_width,
+    })
+}
+
+fn float_type_json(bit_width: u8) -> Value {
+    serde_json::json!({
+        "kind": "float",
+        "bit_width": bit_width,
+    })
+}
+
+fn time_unit_json(unit: TimeUnit) -> &'static str {
+    match unit {
+        TimeUnit::Second => "second",
+        TimeUnit::Millisecond => "millisecond",
+        TimeUnit::Microsecond => "microsecond",
+        TimeUnit::Nanosecond => "nanosecond",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use arrow::array::{Int64Array, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
     use arrow::record_batch::RecordBatch;
     use coral_api::v1::ExecuteSqlResponse;
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
     use super::{
         CollectedQueryResult, batches_to_json_rows, batches_to_json_rows_json_safe_numbers,
         decode_execute_sql_response, format_batches_json, format_batches_table,
+        schema_to_json_columns,
     };
 
     fn response() -> ExecuteSqlResponse {
@@ -571,5 +688,68 @@ mod tests {
             panic!("expected invalid response");
         };
         assert!(detail.contains("row_count mismatch"));
+    }
+
+    #[test]
+    fn schema_to_json_columns_renders_structured_arrow_types() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("ratio", DataType::Float64, true),
+            Field::new("amount", DataType::Decimal64(12, 2), true),
+            Field::new(
+                "created_at",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
+                true,
+            ),
+            Field::new("payload", DataType::Utf8, true),
+        ]));
+
+        assert_eq!(
+            schema_to_json_columns(&schema),
+            vec![
+                json!({
+                    "name": "id",
+                    "data_type": {
+                        "kind": "integer",
+                        "signed": true,
+                        "bit_width": 64
+                    },
+                    "nullable": false
+                }),
+                json!({
+                    "name": "ratio",
+                    "data_type": {
+                        "kind": "float",
+                        "bit_width": 64
+                    },
+                    "nullable": true
+                }),
+                json!({
+                    "name": "amount",
+                    "data_type": {
+                        "kind": "decimal",
+                        "precision": 12,
+                        "scale": 2
+                    },
+                    "nullable": true
+                }),
+                json!({
+                    "name": "created_at",
+                    "data_type": {
+                        "kind": "timestamp",
+                        "unit": "microsecond",
+                        "timezone": "+00:00"
+                    },
+                    "nullable": true
+                }),
+                json!({
+                    "name": "payload",
+                    "data_type": {
+                        "kind": "string"
+                    },
+                    "nullable": true
+                }),
+            ]
+        );
     }
 }

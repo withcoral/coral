@@ -1,5 +1,8 @@
 //! Typed query-visible catalog metadata.
 
+/// Reserved SQL schema containing Coral system metadata tables.
+pub const SYSTEM_SCHEMA_NAME: &str = "coral";
+
 /// Describes one queryable column.
 #[derive(Debug, Clone)]
 pub struct ColumnInfo {

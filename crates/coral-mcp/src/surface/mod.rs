@@ -17,8 +17,13 @@ pub(crate) use resources::{
     tables_resource_content,
 };
 pub(crate) use tools::{
-    CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
-    feedback_tool, list_catalog_arguments, list_catalog_tool, list_columns_arguments,
-    list_columns_tool, required_string_argument, search_catalog_arguments, search_catalog_tool,
-    sql_tool,
+    CatalogToolKind, SqlParameterArgument, SqlParametersArgument, build_tool_result,
+    describe_table_arguments, describe_table_tool, feedback_tool, list_catalog_arguments,
+    list_catalog_tool, list_columns_arguments, list_columns_tool, required_string_argument,
+    search_catalog_arguments, search_catalog_tool, sql_arguments, sql_tool,
+};
+#[cfg(feature = "code-mode")]
+pub(crate) use tools::{
+    ExecArguments, MAX_CODE_MODE_YIELD_TIME_MS, WaitArguments, exec_arguments, exec_tool,
+    wait_arguments, wait_tool,
 };

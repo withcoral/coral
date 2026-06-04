@@ -224,7 +224,7 @@ coral ui --no-open
 Expose the local Coral runtime as an MCP stdio server.
 
 ```shellscript
-coral mcp-stdio
+coral mcp-stdio [--enable-feedback]
 ```
 
 This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
@@ -238,8 +238,11 @@ This server exposes:
 | Tool     | `search_catalog` | Search database catalog metadata by regex |
 | Tool     | `describe_table` | Show compact database table metadata |
 | Tool     | `list_columns`   | List columns for one database table |
+| Tool     | `feedback`       | Store blocked-agent feedback when `--enable-feedback` is set |
 | Resource | `coral://guide`  | Database workflow guide for agents |
 | Resource | `coral://tables` | Database table summaries         |
+
+`sql` returns structured `{ columns, rows, row_count }` results and accepts optional bound `params` as either an array for `$1` placeholders or an object for named placeholders.
 
 ## `coral completion <SHELL>`
 

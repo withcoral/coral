@@ -97,7 +97,8 @@ async fn coral_tables_lists_installed_sources() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, table_name FROM coral.tables ORDER BY schema_name, table_name",
+            "SELECT schema_name, table_name FROM coral.tables \
+             WHERE schema_name IN ('alpha', 'beta') ORDER BY schema_name, table_name",
         )
         .await
         .expect("catalog query should succeed"),
@@ -108,6 +109,58 @@ async fn coral_tables_lists_installed_sources() {
         vec![
             json!({"schema_name": "alpha", "table_name": "users"}),
             json!({"schema_name": "beta", "table_name": "teams"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_tables_lists_system_metadata_tables() {
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[],
+            test_runtime(),
+            "SELECT schema_name, table_name FROM coral.tables \
+             WHERE schema_name = 'coral' ORDER BY table_name",
+        )
+        .await
+        .expect("system catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"schema_name": "coral", "table_name": "columns"}),
+            json!({"schema_name": "coral", "table_name": "filters"}),
+            json!({"schema_name": "coral", "table_name": "inputs"}),
+            json!({"schema_name": "coral", "table_name": "table_functions"}),
+            json!({"schema_name": "coral", "table_name": "tables"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn coral_columns_includes_system_table_columns() {
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[],
+            test_runtime(),
+            "SELECT column_name, data_type, is_nullable \
+             FROM coral.columns WHERE schema_name = 'coral' AND table_name = 'tables' \
+             ORDER BY ordinal_position",
+        )
+        .await
+        .expect("system column catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"column_name": "schema_name", "data_type": "Utf8", "is_nullable": false}),
+            json!({"column_name": "table_name", "data_type": "Utf8", "is_nullable": false}),
+            json!({"column_name": "description", "data_type": "Utf8", "is_nullable": false}),
+            json!({"column_name": "guide", "data_type": "Utf8", "is_nullable": false}),
+            json!({"column_name": "required_filters", "data_type": "Utf8", "is_nullable": false}),
+            json!({"column_name": "search_limits_json", "data_type": "Utf8", "is_nullable": true}),
         ]
     );
 }
@@ -199,12 +252,18 @@ async fn list_tables_matches_catalog() {
 }
 
 #[tokio::test]
-async fn list_tables_empty_when_no_sources() {
+async fn list_tables_includes_system_tables_when_no_sources() {
     let tables = CoralQuery::list_tables(&[], test_runtime(), None, None)
         .await
         .expect("empty source list should succeed");
 
-    assert!(tables.is_empty());
+    assert_eq!(
+        tables
+            .iter()
+            .map(|table| table.table_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["columns", "filters", "inputs", "table_functions", "tables"]
+    );
 }
 
 #[tokio::test]
@@ -754,6 +813,42 @@ async fn list_catalog_collects_tables_and_functions_together() {
     );
     assert_eq!(catalog.table_functions.len(), 1);
     assert_eq!(catalog.table_functions[0].function_name, "search_issues");
+}
+
+#[tokio::test]
+async fn list_catalog_surfaces_system_metadata_schema_when_requested() {
+    let catalog = CoralQuery::list_catalog(&[], test_runtime(), Some("coral"))
+        .await
+        .expect("list_catalog should succeed");
+
+    assert_eq!(
+        catalog
+            .tables
+            .iter()
+            .map(|table| table.table_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["columns", "filters", "inputs", "table_functions", "tables"]
+    );
+    assert_eq!(
+        catalog.tables[0]
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "schema_name",
+            "table_name",
+            "ordinal_position",
+            "column_name",
+            "data_type",
+            "is_nullable",
+            "is_virtual",
+            "is_required_filter",
+            "description",
+            "filter_mode",
+        ]
+    );
+    assert!(catalog.table_functions.is_empty());
 }
 
 #[tokio::test]

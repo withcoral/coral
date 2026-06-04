@@ -11,7 +11,9 @@
 //!
 //! The exposed MCP surface is intentionally small:
 //!
-//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally `feedback`
+//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, optionally `feedback`, and feature-gated Code Mode `exec` / `wait`
+//!   Code Mode-only mode advertises only `exec` / `wait`; the finite Coral
+//!   tools remain callable inside `exec`.
 //! - resources: `coral://guide`, `coral://tables`
 //!
 //! Protocol lifecycle, initialization, and stdio transport behavior should stay
@@ -22,6 +24,9 @@
     reason = "Library test targets inherit package dependencies that are consumed by sibling targets."
 )]
 
+mod bridge;
+#[cfg(feature = "code-mode")]
+mod code_mode;
 mod error;
 mod server;
 mod surface;
@@ -41,6 +46,12 @@ pub(crate) use server::CoralMcpServer;
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
+    /// Expose the Code Mode `exec` and `wait` tools.
+    #[cfg(feature = "code-mode")]
+    pub code_mode_enabled: bool,
+    /// Expose only the Code Mode `exec` and `wait` tools.
+    #[cfg(feature = "code-mode")]
+    pub code_mode_only_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
 }

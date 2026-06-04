@@ -8,7 +8,7 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, TableInfo,
+    SourceValidationReport, SqlParameters, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
@@ -115,6 +115,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
+        params: Option<&SqlParameters>,
     ) -> Result<QueryExecution, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExecuteSql,
@@ -125,7 +126,7 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self.runtime_config(workspace_name, &sources);
-                CoralQuery::execute_sql(&sources, runtime, sql)
+                CoralQuery::execute_sql_with_params(&sources, runtime, sql, params)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -715,6 +716,7 @@ surfaces:
             .execute_sql(
                 &workspace_name,
                 "SELECT id, title FROM github_v4_query.issues",
+                None,
             )
             .await
             .expect("query executes");

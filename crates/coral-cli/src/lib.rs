@@ -539,6 +539,7 @@ async fn run_app_command(
                 .execute_sql(Request::new(ExecuteSqlRequest {
                     workspace: Some(default_workspace()),
                     sql: args.sql,
+                    parameters: None,
                 }))
                 .await
             {
@@ -566,6 +567,11 @@ async fn run_app_command(
                 app,
                 coral_mcp::McpOptions {
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+                    #[cfg(feature = "code-mode")]
+                    code_mode_enabled: features.enabled(coral_app::features::Feature::CodeMode),
+                    #[cfg(feature = "code-mode")]
+                    code_mode_only_enabled: features
+                        .enabled(coral_app::features::Feature::CodeModeOnly),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                 },
             ))

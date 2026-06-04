@@ -7,6 +7,7 @@ use coral_api::grpc_response_status_code;
 use coral_client::{DecodedStatusError, decode_status_error};
 use opentelemetry::{propagation::Extractor, trace::Status as OtelStatus};
 use rmcp::{ErrorData, model::ErrorCode};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -62,6 +63,8 @@ pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tra
         "coral.mcp.call_tool",
         error.type = field::Empty,
         exception.message = field::Empty,
+        code_mode.cell_id = field::Empty,
+        code_mode.source_length = field::Empty,
         mcp.method = "tools/call",
         mcp.tool.name = tool_name,
         otel.kind = "server",
@@ -70,6 +73,32 @@ pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tra
     );
     apply_trace_parent(&span, trace_parent);
     span
+}
+
+pub(crate) fn record_tool_request_details(
+    span: &tracing::Span,
+    tool_name: &str,
+    arguments: Option<&JsonMap<String, JsonValue>>,
+    code_mode_enabled: bool,
+) {
+    if tool_name != "exec" || !code_mode_enabled {
+        return;
+    }
+    let Some(source) = arguments
+        .and_then(|arguments| arguments.get("source"))
+        .and_then(JsonValue::as_str)
+    else {
+        return;
+    };
+    span.record(
+        "code_mode.source_length",
+        i64::try_from(source.len()).unwrap_or(i64::MAX),
+    );
+}
+
+#[cfg(feature = "code-mode")]
+pub(crate) fn record_code_mode_cell_id(span: &tracing::Span, cell_id: &str) {
+    span.record("code_mode.cell_id", cell_id);
 }
 
 pub(crate) fn list_resources_span(trace_parent: Option<&str>) -> tracing::Span {
@@ -159,5 +188,118 @@ fn mcp_error_type(code: ErrorCode) -> &'static str {
         ErrorCode::PARSE_ERROR => "PARSE_ERROR",
         ErrorCode::URL_ELICITATION_REQUIRED => "URL_ELICITATION_REQUIRED",
         _ => "MCP_PROTOCOL",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry::{KeyValue, Value as OtelValue};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use serde_json::json;
+    use tracing_subscriber::prelude::*;
+
+    #[cfg(feature = "code-mode")]
+    use super::record_code_mode_cell_id;
+    use super::{call_tool_span, record_tool_request_details};
+
+    #[cfg(feature = "code-mode")]
+    #[test]
+    fn call_tool_exec_span_records_source_length_and_cell_id() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("coral-mcp-test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let source = "return { ok: true };";
+        let arguments = json!({ "source": source });
+        let arguments = arguments.as_object().expect("object arguments");
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = call_tool_span("exec", None);
+            record_tool_request_details(&span, "exec", Some(arguments), true);
+            record_code_mode_cell_id(&span, "1");
+            let _entered = span.enter();
+        });
+
+        provider.force_flush().expect("spans should flush");
+        let spans = exporter
+            .get_finished_spans()
+            .expect("finished spans should be readable");
+        let span = spans
+            .iter()
+            .find(|span| span.name == "coral.mcp.call_tool")
+            .expect("call tool span should export");
+
+        assert_eq!(string_attr(&span.attributes, "mcp.tool.name"), Some("exec"));
+        assert_eq!(string_attr(&span.attributes, "code_mode.source"), None);
+        assert_eq!(
+            i64_attr(&span.attributes, "code_mode.source_length"),
+            i64::try_from(source.len()).ok()
+        );
+        assert_eq!(
+            string_attr(&span.attributes, "code_mode.cell_id"),
+            Some("1")
+        );
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn call_tool_exec_span_omits_source_when_code_mode_runtime_disabled() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("coral-mcp-test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let arguments = json!({ "source": "return { ok: true };" });
+        let arguments = arguments.as_object().expect("object arguments");
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = call_tool_span("exec", None);
+            record_tool_request_details(&span, "exec", Some(arguments), false);
+            let _entered = span.enter();
+        });
+
+        provider.force_flush().expect("spans should flush");
+        let spans = exporter
+            .get_finished_spans()
+            .expect("finished spans should be readable");
+        let span = spans
+            .iter()
+            .find(|span| span.name == "coral.mcp.call_tool")
+            .expect("call tool span should export");
+
+        assert_eq!(string_attr(&span.attributes, "mcp.tool.name"), Some("exec"));
+        assert_eq!(string_attr(&span.attributes, "code_mode.source"), None);
+        assert_eq!(i64_attr(&span.attributes, "code_mode.source_length"), None);
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    fn i64_attr(attributes: &[KeyValue], key: &str) -> Option<i64> {
+        attributes.iter().find_map(|attribute| {
+            if attribute.key.as_str() == key
+                && let OtelValue::I64(value) = &attribute.value
+            {
+                Some(*value)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn string_attr<'a>(attributes: &'a [KeyValue], key: &str) -> Option<&'a str> {
+        attributes.iter().find_map(|attribute| {
+            if attribute.key.as_str() == key
+                && let OtelValue::String(value) = &attribute.value
+            {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
     }
 }

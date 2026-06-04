@@ -15,6 +15,7 @@ workspace = true
 [features]
 default = ["embedded-ui"]
 cli-test-server = []
+code-mode = ["coral-app/code-mode", "coral-mcp/code-mode"]
 embedded-ui = ["dep:rust-embed"]
 
 [dependencies]

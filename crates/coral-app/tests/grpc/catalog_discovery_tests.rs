@@ -76,6 +76,53 @@ async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
 }
 
 #[tokio::test]
+async fn search_catalog_hides_system_tables_unless_coral_schema_is_requested() {
+    let harness = GrpcHarness::new().await;
+
+    let default_response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "metadata".to_string(),
+            ignore_case: true,
+            schema_name: String::new(),
+            kind: 1,
+            pagination: None,
+        }))
+        .await
+        .expect("search catalog without schema")
+        .into_inner();
+    assert!(
+        default_response.items.is_empty(),
+        "default search should hide system tables"
+    );
+
+    let coral_response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "metadata".to_string(),
+            ignore_case: true,
+            schema_name: "coral".to_string(),
+            kind: 1,
+            pagination: None,
+        }))
+        .await
+        .expect("search catalog with coral schema")
+        .into_inner();
+    assert!(
+        !coral_response.items.is_empty(),
+        "explicit coral schema search should return system tables"
+    );
+    assert!(coral_response.items.iter().all(|result| {
+        matches!(
+            result.item.as_ref().and_then(|item| item.item.as_ref()),
+            Some(catalog_item::Item::Table(table)) if table.schema_name == "coral"
+        )
+    }));
+}
+
+#[tokio::test]
 async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagination() {
     let harness = GrpcHarness::new().await;
     harness

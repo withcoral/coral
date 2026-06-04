@@ -107,6 +107,28 @@ async fn validate_source_fails_when_source_never_registers() {
 }
 
 #[tokio::test]
+async fn validate_source_fails_when_reserved_coral_source_cannot_register() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
+    let source = build_source(jsonl_manifest("coral", temp.path(), "**/*.jsonl"));
+
+    let error = CoralQuery::validate_source(&source, test_runtime(), &[])
+        .await
+        .expect_err("reserved coral source should fail validation");
+
+    assert_eq!(
+        error.status_code(),
+        coral_engine::StatusCode::FailedPrecondition
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("source schema 'coral' is reserved"),
+        "expected reserved-schema detail in error, got: {error}"
+    );
+}
+
+#[tokio::test]
 async fn validate_source_reports_passing_and_failing_queries() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());

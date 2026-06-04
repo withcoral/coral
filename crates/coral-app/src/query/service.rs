@@ -6,8 +6,11 @@ use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    QueryPlan as QueryPlanProto,
+    QueryPlan as QueryPlanProto, SqlNamedParameters, SqlParameterValue as ProtoSqlParameterValue,
+    SqlPositionalParameters, execute_sql_request, sql_parameter_value,
 };
+use coral_engine::{SqlParameterValue, SqlParameters};
+use std::collections::BTreeMap;
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::core_status;
@@ -38,8 +41,9 @@ impl QueryServiceApi for QueryService {
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            let params = sql_parameters_from_proto(inner.parameters)?;
             let execution = queries
-                .execute_sql(&workspace_name, &inner.sql)
+                .execute_sql(&workspace_name, &inner.sql, params.as_ref())
                 .await
                 .map_err(query_status)?;
             let response = ExecuteSqlResponse {
@@ -74,6 +78,76 @@ impl QueryServiceApi for QueryService {
             }))
         }))
         .await
+    }
+}
+
+fn sql_parameters_from_proto(
+    params: Option<execute_sql_request::Parameters>,
+) -> Result<Option<SqlParameters>, Status> {
+    params
+        .map(|params| match params {
+            execute_sql_request::Parameters::PositionalParams(params) => {
+                positional_sql_parameters_from_proto(params).map(SqlParameters::Positional)
+            }
+            execute_sql_request::Parameters::NamedParams(params) => {
+                named_sql_parameters_from_proto(params).map(SqlParameters::Named)
+            }
+        })
+        .transpose()
+}
+
+fn positional_sql_parameters_from_proto(
+    params: SqlPositionalParameters,
+) -> Result<Vec<SqlParameterValue>, Status> {
+    params
+        .values
+        .into_iter()
+        .map(sql_parameter_value_from_proto)
+        .collect()
+}
+
+fn named_sql_parameters_from_proto(
+    params: SqlNamedParameters,
+) -> Result<BTreeMap<String, SqlParameterValue>, Status> {
+    params
+        .values
+        .into_iter()
+        .map(|(name, value)| {
+            if name.is_empty() {
+                return Err(Status::invalid_argument(
+                    "named SQL parameter names must not be empty",
+                ));
+            }
+            if name.starts_with('$') {
+                return Err(Status::invalid_argument(
+                    "named SQL parameter names must not include the leading '$'",
+                ));
+            }
+            sql_parameter_value_from_proto(value).map(|value| (name, value))
+        })
+        .collect()
+}
+
+fn sql_parameter_value_from_proto(
+    value: ProtoSqlParameterValue,
+) -> Result<SqlParameterValue, Status> {
+    match value.kind {
+        Some(sql_parameter_value::Kind::NullValue(_)) => Ok(SqlParameterValue::Null),
+        Some(sql_parameter_value::Kind::BoolValue(value)) => Ok(SqlParameterValue::Boolean(value)),
+        Some(sql_parameter_value::Kind::Int64Value(value)) => Ok(SqlParameterValue::Int64(value)),
+        Some(sql_parameter_value::Kind::Float64Value(value)) => {
+            if value.is_finite() {
+                Ok(SqlParameterValue::Float64(value))
+            } else {
+                Err(Status::invalid_argument(
+                    "float64 SQL parameters must be finite",
+                ))
+            }
+        }
+        Some(sql_parameter_value::Kind::StringValue(value)) => Ok(SqlParameterValue::Utf8(value)),
+        None => Err(Status::invalid_argument(
+            "SQL parameter value must specify a kind",
+        )),
     }
 }
 

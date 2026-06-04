@@ -197,6 +197,7 @@ async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+            parameters: None,
         }))
         .await
         .expect_err("query should surface refresh failure");
@@ -236,6 +237,7 @@ async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnec
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+            parameters: None,
         }))
         .await
         .expect_err("query should ask the user to reconnect");
@@ -379,6 +381,7 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+                parameters: None,
             }))
             .await
             .expect("execute sql")
@@ -500,6 +503,7 @@ SECOND_TOKEN=expired-secondary-token
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT id FROM multi_oauth_messages.messages".to_string(),
+            parameters: None,
         }))
         .await
         .expect_err("second OAuth refresh should fail query");

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
-    RequestAuthenticator, RequestAuthenticatorError, StatusCode,
+    RequestAuthenticator, RequestAuthenticatorError, SqlParameterValue, SqlParameters, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -438,6 +438,48 @@ async fn source_scoped_table_function_builds_http_search_request() {
          FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')",
     )
     .await;
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_binds_sql_parameters_before_planning() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("search", &server.uri()));
+    let params = SqlParameters::Positional(vec![
+        SqlParameterValue::Utf8("flaky cleanup repo:withcoral/coral".to_string()),
+        SqlParameterValue::Utf8("hybrid".to_string()),
+    ]);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[source],
+            test_runtime(),
+            "SELECT title, score FROM search.search_issues(q => $1, mode => $2)",
+            Some(&params),
+        )
+        .await
+        .expect("parameterized table-function query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
 }
 
 #[tokio::test]

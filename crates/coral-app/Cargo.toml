@@ -9,6 +9,10 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+default = []
+code-mode = []
+
 [dependencies]
 arrow.workspace = true
 axum.workspace = true

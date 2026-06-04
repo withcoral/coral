@@ -21,6 +21,7 @@
 //!         name: "default".to_string(),
 //!     }),
 //!     sql: "select 1".to_string(),
+//!     parameters: None,
 //! };
 //! assert_eq!(request.sql, "select 1");
 //! ```

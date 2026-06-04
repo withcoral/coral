@@ -300,7 +300,7 @@ async fn show_next_steps_screen(
         });
         match action {
             Some(NextStepAction::RunExampleQuery) => {
-                let sql = "SELECT schema_name, COUNT(*) AS table_count FROM coral.tables GROUP BY schema_name ORDER BY 1";
+                let sql = "SELECT schema_name, COUNT(*) AS table_count FROM coral.tables WHERE schema_name <> 'coral' GROUP BY schema_name ORDER BY 1";
                 match run_first_query(app, sql).await {
                     Ok(output) => {
                         println!();
@@ -333,6 +333,7 @@ async fn run_first_query(app: &AppClient, sql: &str) -> Result<String, anyhow::E
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: sql.to_string(),
+            parameters: None,
         }))
         .await?
         .into_inner();

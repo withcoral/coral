@@ -1,12 +1,21 @@
 //! Concrete `DataFusion` runtime assembly for the data plane.
 
+use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::common::{ParamValues, ScalarValue};
 use datafusion::dataframe::DataFrame;
+use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::logical_expr::sqlparser::ast::{
+    Expr as SqlExpr, Ident, ObjectName, TableFactor, Value as SqlValue, ValueWithSpan, VisitMut,
+    VisitorMut, visit_expressions_mut,
+};
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
+use datafusion::sql::parser::Statement as DataFusionStatement;
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 use tracing::{Instrument as _, info_span};
 
@@ -24,7 +33,8 @@ use crate::runtime::registry::{
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     CatalogInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan, QueryResultObserver,
-    QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
+    QueryResultObserverError, QueryRuntimeConfig, QuerySource, SqlParameterValue, SqlParameters,
+    TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -210,8 +220,21 @@ impl QueryRuntimeAdapter {
             .find(|failure| failure.schema_name == source_name)
     }
 
-    pub(crate) async fn execute_sql(&self, sql: &str) -> Result<QueryExecution, CoreError> {
-        let df = self.sql_dataframe(sql).await?;
+    pub(crate) async fn execute_sql(
+        &self,
+        sql: &str,
+        params: Option<&SqlParameters>,
+    ) -> Result<QueryExecution, CoreError> {
+        if let Some(params) = params {
+            params.validate().map_err(CoreError::InvalidInput)?;
+        }
+        let df = self.sql_dataframe(sql, params).await?;
+        let df = match params {
+            Some(params) => df
+                .with_param_values(datafusion_params(params))
+                .map_err(|err| self.datafusion_sql_error(&err, sql))?,
+            None => df,
+        };
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
         let batches = df
             .collect()
@@ -236,7 +259,7 @@ impl QueryRuntimeAdapter {
     }
 
     pub(crate) async fn explain_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
-        let df = self.sql_dataframe(sql).await?;
+        let df = self.sql_dataframe(sql, None).await?;
         let unoptimized_logical_plan = df.logical_plan().display_indent_schema().to_string();
         let (session_state, logical_plan) = df.into_parts();
         let optimized_logical_plan = session_state
@@ -261,18 +284,221 @@ impl QueryRuntimeAdapter {
         ))
     }
 
-    async fn sql_dataframe(&self, sql: &str) -> Result<DataFrame, CoreError> {
-        self.ctx
-            .sql_with_options(sql, read_only_sql_options())
+    async fn sql_dataframe(
+        &self,
+        sql: &str,
+        params: Option<&SqlParameters>,
+    ) -> Result<DataFrame, CoreError> {
+        match params {
+            Some(params) => self.sql_dataframe_with_params(sql, params).await,
+            None => self
+                .ctx
+                .sql_with_options(sql, read_only_sql_options())
+                .await
+                .map_err(|err| self.datafusion_sql_error(&err, sql)),
+        }
+    }
+
+    async fn sql_dataframe_with_params(
+        &self,
+        sql: &str,
+        params: &SqlParameters,
+    ) -> Result<DataFrame, CoreError> {
+        let state = self.ctx.state();
+        let dialect = state.config().options().sql_parser.dialect;
+        let mut statement = state
+            .sql_to_statement(sql, &dialect)
+            .map_err(|err| self.datafusion_sql_error(&err, sql))?;
+        bind_source_function_params(
+            &mut statement,
+            params,
+            &source_function_names(&self.table_functions),
+        )
+        .map_err(|err| self.datafusion_sql_error(&err, sql))?;
+        let plan = state
+            .statement_to_plan(statement)
             .await
-            .map_err(|err| {
-                datafusion_to_core_with_sql_and_table_functions(
-                    &err,
-                    &self.tables,
-                    &self.table_functions,
-                    Some(sql),
-                )
-            })
+            .map_err(|err| self.datafusion_sql_error(&err, sql))?;
+        read_only_sql_options()
+            .verify_plan(&plan)
+            .map_err(|err| self.datafusion_sql_error(&err, sql))?;
+        self.ctx
+            .execute_logical_plan(plan)
+            .await
+            .map_err(|err| self.datafusion_sql_error(&err, sql))
+    }
+
+    fn datafusion_sql_error(&self, error: &DataFusionError, sql: &str) -> CoreError {
+        datafusion_to_core_with_sql_and_table_functions(
+            error,
+            &self.tables,
+            &self.table_functions,
+            Some(sql),
+        )
+    }
+}
+
+fn bind_source_function_params(
+    statement: &mut DataFusionStatement,
+    params: &SqlParameters,
+    source_functions: &HashSet<(String, String)>,
+) -> DataFusionResult<()> {
+    let param_values = datafusion_params(params);
+    let DataFusionStatement::Statement(statement) = statement else {
+        return Ok(());
+    };
+    let mut visitor = SourceFunctionParamBinder {
+        param_values: &param_values,
+        source_functions,
+    };
+    match statement.visit(&mut visitor) {
+        ControlFlow::Continue(()) => Ok(()),
+        ControlFlow::Break(error) => Err(error),
+    }
+}
+
+struct SourceFunctionParamBinder<'a> {
+    param_values: &'a ParamValues,
+    source_functions: &'a HashSet<(String, String)>,
+}
+
+impl VisitorMut for SourceFunctionParamBinder<'_> {
+    type Break = DataFusionError;
+
+    fn pre_visit_table_factor(
+        &mut self,
+        table_factor: &mut TableFactor,
+    ) -> ControlFlow<Self::Break> {
+        let TableFactor::Table {
+            name,
+            args: Some(args),
+            ..
+        } = table_factor
+        else {
+            return ControlFlow::Continue(());
+        };
+        if !self.is_source_function(name) {
+            return ControlFlow::Continue(());
+        }
+        bind_table_function_arg_params(args, self.param_values)
+    }
+}
+
+impl SourceFunctionParamBinder<'_> {
+    fn is_source_function(&self, name: &ObjectName) -> bool {
+        let [schema, function] = name.0.as_slice() else {
+            return false;
+        };
+        let Some(schema) = schema.as_ident() else {
+            return false;
+        };
+        let Some(function) = function.as_ident() else {
+            return false;
+        };
+        self.source_functions
+            .contains(&(normalized_sql_ident(schema), normalized_sql_ident(function)))
+    }
+}
+
+fn bind_table_function_arg_params(
+    args: &mut impl VisitMut,
+    param_values: &ParamValues,
+) -> ControlFlow<DataFusionError> {
+    match visit_expressions_mut(args, |expr| {
+        let SqlExpr::Value(value) = expr else {
+            return ControlFlow::Continue(());
+        };
+        let SqlValue::Placeholder(id) = &value.value else {
+            return ControlFlow::Continue(());
+        };
+        match bound_placeholder_value(param_values, id) {
+            Ok(value) => {
+                *expr = SqlExpr::Value(value);
+                ControlFlow::Continue(())
+            }
+            Err(error) => ControlFlow::Break(error),
+        }
+    }) {
+        ControlFlow::Continue(()) => ControlFlow::Continue(()),
+        ControlFlow::Break(error) => ControlFlow::Break(error),
+    }
+}
+
+fn source_function_names(table_functions: &[TableFunctionInfo]) -> HashSet<(String, String)> {
+    table_functions
+        .iter()
+        .map(|function| (function.schema_name.clone(), function.function_name.clone()))
+        .collect()
+}
+
+fn normalized_sql_ident(ident: &Ident) -> String {
+    if ident.quote_style.is_some() {
+        ident.value.clone()
+    } else {
+        ident.value.to_ascii_lowercase()
+    }
+}
+
+fn bound_placeholder_value(
+    param_values: &ParamValues,
+    placeholder_id: &str,
+) -> DataFusionResult<ValueWithSpan> {
+    let value = param_values.get_placeholders_with_values(placeholder_id)?;
+    Ok(sql_literal_value(&value.value).into())
+}
+
+fn datafusion_params(params: &SqlParameters) -> ParamValues {
+    match params {
+        SqlParameters::Positional(values) => ParamValues::from(
+            values
+                .iter()
+                .map(datafusion_scalar)
+                .collect::<Vec<ScalarValue>>(),
+        ),
+        SqlParameters::Named(values) => ParamValues::from(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), datafusion_scalar(value)))
+                .collect::<HashMap<String, ScalarValue>>(),
+        ),
+    }
+}
+
+fn sql_literal_value(value: &ScalarValue) -> SqlValue {
+    match value {
+        ScalarValue::Null => SqlValue::Null,
+        ScalarValue::Boolean(value) => value.map_or(SqlValue::Null, SqlValue::Boolean),
+        ScalarValue::Int64(value) => value.map_or(SqlValue::Null, |value| {
+            SqlValue::Number(value.to_string(), false)
+        }),
+        ScalarValue::Float64(value) => value.map_or(SqlValue::Null, |value| {
+            SqlValue::Number(float_sql_number(value), false)
+        }),
+        ScalarValue::Utf8(value) => value.as_ref().map_or(SqlValue::Null, |value| {
+            SqlValue::SingleQuotedString(value.clone())
+        }),
+        _ => {
+            unreachable!("Coral SQL parameters only use scalar values defined by datafusion_scalar")
+        }
+    }
+}
+
+fn float_sql_number(value: f64) -> String {
+    let formatted = value.to_string();
+    if formatted.contains(['.', 'e', 'E']) {
+        formatted
+    } else {
+        format!("{formatted}.0")
+    }
+}
+
+fn datafusion_scalar(value: &SqlParameterValue) -> ScalarValue {
+    match value {
+        SqlParameterValue::Null => ScalarValue::Null,
+        SqlParameterValue::Boolean(value) => ScalarValue::Boolean(Some(*value)),
+        SqlParameterValue::Int64(value) => ScalarValue::Int64(Some(*value)),
+        SqlParameterValue::Float64(value) => ScalarValue::Float64(Some(*value)),
+        SqlParameterValue::Utf8(value) => ScalarValue::Utf8(Some(value.clone())),
     }
 }
 

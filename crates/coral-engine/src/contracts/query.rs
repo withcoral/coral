@@ -14,6 +14,69 @@ use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use super::ColumnInfo;
 use crate::EngineExtensions;
 
+/// One supported SQL parameter value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SqlParameterValue {
+    /// SQL NULL.
+    Null,
+    /// Boolean parameter.
+    Boolean(bool),
+    /// Signed 64-bit integer parameter.
+    Int64(i64),
+    /// 64-bit floating point parameter.
+    Float64(f64),
+    /// UTF-8 string parameter.
+    Utf8(String),
+}
+
+/// SQL parameter values for one query.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SqlParameters {
+    /// Positional values bound to `$1`, `$2`, and so on.
+    Positional(Vec<SqlParameterValue>),
+    /// Named values bound to `$name` placeholders. Keys must not include `$`.
+    Named(BTreeMap<String, SqlParameterValue>),
+}
+
+impl SqlParameters {
+    /// Validates the engine-owned SQL parameter contract.
+    ///
+    /// Adapters may reject invalid values earlier, but the engine keeps this
+    /// check so direct in-process callers cannot bypass the contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message when a named parameter key is empty or starts
+    /// with `$`, or when a parameter value is not supported by the contract.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Positional(values) => values.iter().try_for_each(SqlParameterValue::validate),
+            Self::Named(values) => values.iter().try_for_each(|(name, value)| {
+                if name.is_empty() {
+                    return Err("named SQL parameter names must not be empty".to_string());
+                }
+                if name.starts_with('$') {
+                    return Err(
+                        "named SQL parameter names must not include the leading '$'".to_string()
+                    );
+                }
+                value.validate()
+            }),
+        }
+    }
+}
+
+impl SqlParameterValue {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Float64(value) if !value.is_finite() => {
+                Err("float64 SQL parameters must be finite".to_string())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
 pub struct QuerySource {

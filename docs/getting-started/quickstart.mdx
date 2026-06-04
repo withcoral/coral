@@ -38,10 +38,10 @@ Once connected, the source's data is available as SQL tables. To update a source
 
 You can now query any connected source using SQL.
 
-Use `coral.tables` to see all available tables:
+Use `coral.tables` to see connected source tables:
 
 ```shellscript
-coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
+coral sql "SELECT schema_name, table_name FROM coral.tables WHERE schema_name <> 'coral' ORDER BY 1, 2"
 ```
 
 Assuming you've connected GitHub, try listing open issues for a repo:

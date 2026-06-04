@@ -4,12 +4,51 @@ package coral.v1;
 
 import "coral/v1/resources.proto";
 
+// Explicit SQL NULL parameter value.
+message SqlNullParameterValue {}
+
+// One SQL parameter value.
+message SqlParameterValue {
+  // Supported first-version parameter value kinds.
+  oneof kind {
+    // SQL NULL.
+    SqlNullParameterValue null_value = 1;
+    // Boolean parameter.
+    bool bool_value = 2;
+    // Signed 64-bit integer parameter.
+    int64 int64_value = 3;
+    // 64-bit floating point parameter.
+    double float64_value = 4;
+    // UTF-8 string parameter.
+    string string_value = 5;
+  }
+}
+
+// Positional SQL parameter values, bound to `$1`, `$2`, and so on.
+message SqlPositionalParameters {
+  // Parameter values in placeholder order.
+  repeated SqlParameterValue values = 1;
+}
+
+// Named SQL parameter values, bound to `$name` placeholders.
+message SqlNamedParameters {
+  // Parameter values keyed by placeholder name without the leading `$`.
+  map<string, SqlParameterValue> values = 1;
+}
+
 // Executes one SQL statement against the sources registered in one workspace.
 message ExecuteSqlRequest {
   // Workspace that scopes the queryable source set.
   Workspace workspace = 1;
   // One read-only SQL statement.
   string sql = 2;
+  // Optional SQL parameter values.
+  oneof parameters {
+    // Positional parameter values for `$1`, `$2`, and so on.
+    SqlPositionalParameters positional_params = 3;
+    // Named parameter values for `$name` placeholders.
+    SqlNamedParameters named_params = 4;
+  }
 }
 
 // Fully materialized query result encoded as Arrow IPC bytes.
