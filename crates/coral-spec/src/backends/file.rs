@@ -575,13 +575,7 @@ impl RawFileTableSpec {
 
         self.source.validate_for_file(schema, &self.name, format)?;
         validate_columns(&self.columns, schema, &self.name)?;
-        validate_native_file_table_features(
-            schema,
-            &self.name,
-            format,
-            &self.filters,
-            &self.columns,
-        )?;
+        validate_native_file_table_features(schema, &self.name, &self.filters, &self.columns)?;
         validate_derived_column_overlap(schema, &self.name, &self.source, &self.columns)?;
         self.format_options
             .validate_for_format(format, schema, &self.name)?;
@@ -607,7 +601,6 @@ impl RawFileTableSpec {
 fn validate_native_file_table_features(
     schema: &str,
     table: &str,
-    _format: FileFormat,
     filters: &[FilterSpec],
     columns: &[ColumnSpec],
 ) -> Result<()> {
@@ -723,30 +716,79 @@ impl FileSourceManifest {
 mod tests {
     use super::{FileFormat, FileSourceManifest};
     use crate::ManifestInputKind;
-    use serde_json::json;
+    use crate::test_support::{assert_error_contains, insert_field};
+    use serde::Serialize;
+    use serde_json::{Value, json};
+
+    fn manifest_with_tables(name: &str, tables: impl Serialize) -> Value {
+        json!({
+            "dsl_version": 3,
+            "name": name,
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": tables,
+        })
+    }
+
+    fn parse_manifest(name: &str, tables: Vec<Value>) -> crate::Result<FileSourceManifest> {
+        FileSourceManifest::parse_manifest_value(manifest_with_tables(name, tables))
+    }
+
+    fn file_table(name: &str, format: &str, columns: Value) -> Value {
+        file_table_with_source(
+            name,
+            format,
+            json!({ "location": "file:///tmp/local/" }),
+            columns,
+        )
+    }
+
+    fn file_table_with_source(
+        name: &str,
+        format: &str,
+        source: impl Serialize,
+        columns: impl Serialize,
+    ) -> Value {
+        json!({
+            "name": name,
+            "description": "Test table",
+            "format": format,
+            "source": source,
+            "columns": columns,
+        })
+    }
+
+    fn id_column() -> Value {
+        json!({ "name": "id", "type": "Int64" })
+    }
+
+    fn kind_column() -> Value {
+        json!({ "name": "kind", "type": "Utf8" })
+    }
 
     #[test]
     fn file_manifest_surfaces_declared_secret_inputs() {
-        let manifest = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "warehouse",
-            "version": "0.1.0",
-            "backend": "file",
-            "inputs": {
+        let mut raw = manifest_with_tables(
+            "warehouse",
+            vec![file_table_with_source(
+                "events",
+                "parquet",
+                json!({ "location": "file:///tmp/warehouse/" }),
+                json!([id_column()]),
+            )],
+        );
+        insert_field(
+            &mut raw,
+            "inputs",
+            json!({
                 "api_token": { "kind": "secret" },
                 "signing_key": { "kind": "secret" },
                 "optional_token": { "kind": "secret", "required": false },
                 "region": { "kind": "variable", "default": "us-east-1" },
-            },
-            "tables": [{
-                "name": "events",
-                "description": "Warehouse events",
-                "format": "parquet",
-                "source": { "location": "file:///tmp/warehouse/" },
-                "columns": [{ "name": "id", "type": "Int64" }],
-            }],
-        }))
-        .expect("file manifest with inputs should parse");
+            }),
+        );
+        let manifest = FileSourceManifest::parse_manifest_value(raw)
+            .expect("file manifest with inputs should parse");
 
         let required = manifest.required_secret_names();
         assert!(required.contains("api_token"));
@@ -765,20 +807,8 @@ mod tests {
 
     #[test]
     fn file_manifest_without_inputs_block_has_no_required_secrets() {
-        let manifest = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "local",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "events",
-                "description": "Local events",
-                "format": "parquet",
-                "source": { "location": "file:///tmp/local/" },
-                "columns": [],
-            }],
-        }))
-        .expect("file manifest without inputs should parse");
+        let manifest = parse_manifest("local", vec![file_table("events", "parquet", json!([]))])
+            .expect("file manifest without inputs should parse");
 
         assert!(manifest.required_secret_names().is_empty());
         assert!(manifest.declared_inputs.is_empty());
@@ -786,28 +816,13 @@ mod tests {
 
     #[test]
     fn file_manifest_allows_per_table_formats() {
-        let manifest = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "local",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [
-                {
-                    "name": "events_jsonl",
-                    "description": "JSONL events",
-                    "format": "jsonl",
-                    "source": { "location": "file:///tmp/local/" },
-                    "columns": [{ "name": "id", "type": "Int64" }],
-                },
-                {
-                    "name": "events_csv",
-                    "description": "CSV events",
-                    "format": "csv",
-                    "source": { "location": "file:///tmp/local/" },
-                    "columns": [{ "name": "id", "type": "Int64" }],
-                },
+        let manifest = parse_manifest(
+            "local",
+            vec![
+                file_table("events_jsonl", "jsonl", json!([id_column()])),
+                file_table("events_csv", "csv", json!([id_column()])),
             ],
-        }))
+        )
         .expect("mixed file formats should parse");
 
         let formats = manifest
@@ -820,140 +835,71 @@ mod tests {
 
     #[test]
     fn jsonl_file_manifest_requires_columns() {
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "logs",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "messages",
-                "description": "JSONL messages",
-                "format": "jsonl",
-                "source": { "location": "file:///tmp/logs/" },
-                "columns": [],
-            }],
-        }))
-        .expect_err("jsonl manifest without columns should fail");
+        let error = parse_manifest("logs", vec![file_table("messages", "jsonl", json!([]))])
+            .expect_err("jsonl manifest without columns should fail");
 
-        assert!(
-            error
-                .to_string()
-                .contains("uses format=jsonl and must define columns")
-        );
+        assert_error_contains(&error, "uses format=jsonl and must define columns");
     }
 
     #[test]
     fn file_manifest_rejects_filters() {
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "logs",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "messages",
-                "description": "JSONL messages",
-                "format": "jsonl",
-                "filters": [{ "name": "kind" }],
-                "source": { "location": "file:///tmp/logs/" },
-                "columns": [{ "name": "kind", "type": "Utf8" }],
-            }],
-        }))
-        .expect_err("file filters should fail");
+        let mut table = file_table("messages", "jsonl", json!([kind_column()]));
+        insert_field(&mut table, "filters", json!([{ "name": "kind" }]));
+        let error = parse_manifest("logs", vec![table]).expect_err("file filters should fail");
 
-        assert!(
-            error
-                .to_string()
-                .contains("does not support declared filters")
-        );
+        assert_error_contains(&error, "does not support declared filters");
     }
 
     #[test]
     fn file_manifest_rejects_json_column_exprs() {
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "logs",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "messages",
-                "description": "JSONL messages",
-                "format": "jsonl",
-                "source": { "location": "file:///tmp/logs/" },
-                "columns": [{
-                    "name": "kind",
-                    "type": "Utf8",
-                    "expr": { "kind": "path", "path": ["payload", "kind"] }
-                }],
-            }],
-        }))
-        .expect_err("jsonl file expr should fail");
-
-        assert!(error.to_string().contains("uses expr"));
-
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "logs",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "messages",
-                "description": "JSON messages",
-                "format": "json",
-                "source": { "location": "file:///tmp/logs/" },
-                "columns": [{
-                    "name": "kind",
-                    "type": "Utf8",
-                    "expr": { "kind": "path", "path": ["payload", "kind"] }
-                }],
-            }],
-        }))
-        .expect_err("json file expr should fail");
-
-        assert!(error.to_string().contains("uses expr"));
+        let expr_column = json!({
+            "name": "kind",
+            "type": "Utf8",
+            "expr": { "kind": "path", "path": ["payload", "kind"] }
+        });
+        for format in ["jsonl", "json"] {
+            let error = parse_manifest(
+                "logs",
+                vec![file_table("messages", format, json!([expr_column.clone()]))],
+            )
+            .expect_err("json file expr should fail");
+            assert_error_contains(&error, "uses expr");
+        }
     }
 
     #[test]
     fn native_file_manifest_rejects_column_exprs() {
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "logs",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "messages",
-                "description": "CSV messages",
-                "format": "csv",
-                "source": { "location": "file:///tmp/logs/" },
-                "columns": [{
+        let error = parse_manifest(
+            "logs",
+            vec![file_table(
+                "messages",
+                "csv",
+                json!([{
                     "name": "kind",
                     "type": "Utf8",
                     "expr": { "kind": "path", "path": ["payload", "kind"] }
-                }],
-            }],
-        }))
+                }]),
+            )],
+        )
         .expect_err("file expr should fail");
 
-        assert!(error.to_string().contains("uses expr"));
+        assert_error_contains(&error, "uses expr");
     }
 
     #[test]
     fn file_manifest_defaults_partitions_to_hive_path() {
-        let manifest = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "logs",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "messages",
-                "description": "JSONL messages",
-                "format": "jsonl",
-                "source": {
+        let manifest = parse_manifest(
+            "logs",
+            vec![file_table_with_source(
+                "messages",
+                "jsonl",
+                json!({
                     "location": "file:///tmp/logs/",
                     "partitions": [{ "name": "year", "type": "Int64" }]
-                },
-                "columns": [{ "name": "kind", "type": "Utf8" }],
-            }],
-        }))
+                }),
+                json!([kind_column()]),
+            )],
+        )
         .expect("hive partition manifest should parse");
 
         let partition = manifest
@@ -966,26 +912,22 @@ mod tests {
 
     #[test]
     fn json_file_manifest_accepts_segment_partitions() {
-        FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "logs",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "messages",
-                "description": "JSONL messages",
-                "format": "jsonl",
-                "source": {
+        parse_manifest(
+            "logs",
+            vec![file_table_with_source(
+                "messages",
+                "jsonl",
+                json!({
                     "location": "file:///tmp/logs/",
                     "partitions": [{
                         "name": "year",
                         "type": "Int64",
                         "path": { "kind": "segment", "index": 0 }
                     }]
-                },
-                "columns": [{ "name": "kind", "type": "Utf8" }],
-            }],
-        }))
+                }),
+                json!([kind_column()]),
+            )],
+        )
         .expect("jsonl segment partition manifest should parse");
     }
 
@@ -1169,72 +1111,51 @@ mod tests {
 
     #[test]
     fn listing_file_manifest_rejects_segment_partitions() {
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "warehouse",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "events",
-                "description": "Warehouse events",
-                "format": "parquet",
-                "source": {
+        let error = parse_manifest(
+            "warehouse",
+            vec![file_table_with_source(
+                "events",
+                "parquet",
+                json!({
                     "location": "file:///tmp/warehouse/",
                     "partitions": [{
                         "name": "year",
                         "type": "Int64",
                         "path": { "kind": "segment", "index": 0 }
                     }]
-                },
-                "columns": [],
-            }],
-        }))
+                }),
+                json!([]),
+            )],
+        )
         .expect_err("parquet segment partitions should fail");
 
-        assert!(error.to_string().contains("DataFusion hive partitioning"));
+        assert_error_contains(&error, "DataFusion hive partitioning");
     }
 
     #[test]
     fn s3_file_manifest_requires_object_store_config() {
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "warehouse",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "events",
-                "description": "Warehouse events",
-                "format": "parquet",
-                "source": { "location": "s3://example/warehouse/" },
-                "columns": [],
-            }],
-        }))
+        let error = parse_manifest(
+            "warehouse",
+            vec![file_table_with_source(
+                "events",
+                "parquet",
+                json!({ "location": "s3://example/warehouse/" }),
+                json!([]),
+            )],
+        )
         .expect_err("s3 file manifest without object_store should fail");
 
-        assert!(
-            error
-                .to_string()
-                .contains("must declare source.object_store")
-        );
+        assert_error_contains(&error, "must declare source.object_store");
     }
 
     #[test]
     fn s3_file_manifest_accepts_typed_object_store_config() {
-        FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "warehouse",
-            "version": "0.1.0",
-            "backend": "file",
-            "inputs": {
-                "AWS_REGION": { "kind": "variable", "default": "us-east-1" },
-                "AWS_ACCESS_KEY_ID": { "kind": "secret" },
-                "AWS_SECRET_ACCESS_KEY": { "kind": "secret" },
-            },
-            "tables": [{
-                "name": "events",
-                "description": "Warehouse events",
-                "format": "jsonl",
-                "source": {
+        let mut raw = manifest_with_tables(
+            "warehouse",
+            vec![file_table_with_source(
+                "events",
+                "jsonl",
+                json!({
                     "location": "s3://example/warehouse/",
                     "object_store": {
                         "type": "s3",
@@ -1245,70 +1166,56 @@ mod tests {
                             "secret_access_key": "{{input.AWS_SECRET_ACCESS_KEY}}"
                         }
                     }
-                },
-                "columns": [{ "name": "id", "type": "Int64" }],
-            }],
-        }))
-        .expect("typed s3 object-store config should parse");
+                }),
+                json!([id_column()]),
+            )],
+        );
+        insert_field(
+            &mut raw,
+            "inputs",
+            json!({
+                "AWS_REGION": { "kind": "variable", "default": "us-east-1" },
+                "AWS_ACCESS_KEY_ID": { "kind": "secret" },
+                "AWS_SECRET_ACCESS_KEY": { "kind": "secret" },
+            }),
+        );
+        FileSourceManifest::parse_manifest_value(raw)
+            .expect("typed s3 object-store config should parse");
     }
 
     #[test]
     fn file_manifest_rejects_timestamp_partitions() {
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "logs",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "messages",
-                "description": "JSONL messages",
-                "format": "jsonl",
-                "source": {
+        let error = parse_manifest(
+            "logs",
+            vec![file_table_with_source(
+                "messages",
+                "jsonl",
+                json!({
                     "location": "file:///tmp/logs/",
                     "partitions": [{ "name": "created_at", "type": "Timestamp" }]
-                },
-                "columns": [{ "name": "kind", "type": "Utf8" }],
-            }],
-        }))
+                }),
+                json!([kind_column()]),
+            )],
+        )
         .expect_err("timestamp partitions should fail");
 
-        assert!(error.to_string().contains("type=Timestamp"));
+        assert_error_contains(&error, "type=Timestamp");
     }
 
     #[test]
     fn csv_options_validate_per_format() {
-        FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "local",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "events",
-                "description": "Local events",
-                "format": "csv",
-                "source": { "location": "file:///tmp/local/" },
-                "format_options": { "has_header": false, "delimiter": "|" },
-                "columns": [{ "name": "id", "type": "Int64" }],
-            }],
-        }))
-        .expect("csv options should parse");
+        let mut table = file_table("events", "csv", json!([id_column()]));
+        insert_field(
+            &mut table,
+            "format_options",
+            json!({ "has_header": false, "delimiter": "|" }),
+        );
+        parse_manifest("local", vec![table]).expect("csv options should parse");
 
-        let error = FileSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "local",
-            "version": "0.1.0",
-            "backend": "file",
-            "tables": [{
-                "name": "events",
-                "description": "Local events",
-                "format": "jsonl",
-                "source": { "location": "file:///tmp/local/" },
-                "format_options": { "has_header": false },
-                "columns": [{ "name": "id", "type": "Int64" }],
-            }],
-        }))
-        .expect_err("non-csv option should fail");
+        let mut table = file_table("events", "jsonl", json!([id_column()]));
+        insert_field(&mut table, "format_options", json!({ "has_header": false }));
+        let error = parse_manifest("local", vec![table]).expect_err("non-csv option should fail");
 
-        assert!(error.to_string().contains("only supported for format=csv"));
+        assert_error_contains(&error, "only supported for format=csv");
     }
 }

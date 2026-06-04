@@ -84,6 +84,8 @@ mod loader;
 mod parser;
 mod schema;
 mod template;
+#[cfg(test)]
+mod test_support;
 pub mod v4;
 mod validate;
 
@@ -119,5 +121,5 @@ pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, validate_columns,
     validate_declared_relation_namespace, validate_detail_hint_references,
     validate_filters_and_column_exprs, validate_http_function, validate_http_table,
-    validate_identifier, validate_unique_values,
+    validate_table_function_args,
 };

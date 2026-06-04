@@ -87,10 +87,35 @@ tables:
         serde_yaml::from_str(raw).expect("test manifest should parse as yaml")
     }
 
+    fn schema_error(raw: &str) -> String {
+        let manifest = manifest_json(raw);
+        let message = validate_manifest_schema(&manifest)
+            .expect_err("schema validation should fail")
+            .to_string();
+        assert!(
+            message.starts_with("source manifest failed schema validation:"),
+            "{message}"
+        );
+        message
+    }
+
+    fn assert_schema_ok(raw: &str, expectation: &str) {
+        validate_manifest_schema(&manifest_json(raw)).expect(expectation);
+    }
+
+    fn assert_schema_error_contains(case: &str, raw: &str, expected: &[&str]) {
+        let message = schema_error(raw);
+        for expected in expected {
+            assert!(message.contains(expected), "{case}: {message}");
+        }
+    }
+
     #[test]
     fn validate_manifest_schema_accepts_valid_http_manifest() {
-        let manifest = manifest_json(valid_http_manifest());
-        validate_manifest_schema(&manifest).expect("valid manifest should pass schema validation");
+        assert_schema_ok(
+            valid_http_manifest(),
+            "valid manifest should pass schema validation",
+        );
     }
 
     #[test]
@@ -163,7 +188,7 @@ surfaces:
 
     #[test]
     fn validate_manifest_schema_accepts_one_of_bearer_auth_headers() {
-        let manifest = manifest_json(
+        assert_schema_ok(
             r"
 name: demo
 version: 1.0.0
@@ -187,14 +212,13 @@ tables:
       method: GET
       path: /messages
 ",
+            "one_of bearer auth header should pass schema validation",
         );
-        validate_manifest_schema(&manifest)
-            .expect("one_of bearer auth header should pass schema validation");
     }
 
     #[test]
     fn validate_manifest_schema_accepts_legacy_search_filter_mode() {
-        let manifest = manifest_json(
+        assert_schema_ok(
             r"
 name: demo
 version: 1.0.0
@@ -211,9 +235,8 @@ tables:
       method: GET
       path: /messages
 ",
+            "legacy search filter mode should pass schema validation",
         );
-        validate_manifest_schema(&manifest)
-            .expect("legacy search filter mode should pass schema validation");
     }
 
     #[test]
@@ -252,9 +275,11 @@ tables:
     }
 
     #[test]
-    fn validate_manifest_schema_rejects_search_function_without_search_limits() {
-        let manifest = manifest_json(
-            r"
+    fn validate_manifest_schema_rejects_invalid_search_structures() {
+        for (case, raw, expected) in [
+            (
+                "search function without search limits",
+                r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -267,21 +292,11 @@ functions:
       method: GET
       path: /messages/search
 ",
-        );
-        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
-        let message = error.to_string();
-        assert!(
-            message.starts_with("source manifest failed schema validation:"),
-            "{message}"
-        );
-        assert!(message.contains("/functions/0"), "{message}");
-        assert!(message.contains("search_limits"), "{message}");
-    }
-
-    #[test]
-    fn validate_manifest_schema_rejects_unknown_filter_type() {
-        let manifest = manifest_json(
-            r"
+                &["/functions/0", "search_limits"][..],
+            ),
+            (
+                "unknown filter type",
+                r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -297,20 +312,40 @@ tables:
       method: GET
       path: /messages
 ",
-        );
-        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
-        let message = error.to_string();
-        assert!(
-            message.starts_with("source manifest failed schema validation:"),
-            "{message}"
-        );
-        assert!(message.contains("/tables/0/filters/0/type"), "{message}");
+                &["/tables/0/filters/0/type"][..],
+            ),
+            (
+                "search limits above cap",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    search_limits:
+      default_top_k: 5
+      max_top_k: 1001
+      max_calls_per_query: 1
+    request:
+      method: GET
+      path: /messages
+",
+                &["/tables/0/search_limits/max_top_k"][..],
+            ),
+        ] {
+            assert_schema_error_contains(case, raw, expected);
+        }
     }
 
     #[test]
-    fn validate_manifest_schema_rejects_file_table_search_metadata() {
-        let manifest = manifest_json(
-            r"
+    fn validate_manifest_schema_rejects_backend_specific_table_fields() {
+        for (case, raw, expected) in [
+            (
+                "file table search metadata",
+                r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -327,16 +362,30 @@ tables:
       max_calls_per_query: 2
     detail_hints: []
 ",
-        );
-        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
-        let message = error.to_string();
-        assert!(
-            message.starts_with("source manifest failed schema validation:"),
-            "{message}"
-        );
-        assert!(message.contains("/tables/0"), "{message}");
-        assert!(message.contains("search_limits"), "{message}");
-        assert!(message.contains("detail_hints"), "{message}");
+                &["/tables/0", "search_limits", "detail_hints"][..],
+            ),
+            (
+                "http table source",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    source:
+      location: file:///tmp/messages.jsonl
+    request:
+      method: GET
+      path: /messages
+",
+                &["/tables/0", "source"][..],
+            ),
+        ] {
+            assert_schema_error_contains(case, raw, expected);
+        }
     }
 
     #[test]
@@ -370,9 +419,11 @@ tables:
     }
 
     #[test]
-    fn validate_manifest_schema_accepts_empty_file_metadata_for_non_jsonl_tables() {
-        let manifest = manifest_json(
-            r"
+    fn validate_manifest_schema_accepts_non_jsonl_file_metadata_cases() {
+        for (case, raw) in [
+            (
+                "empty metadata",
+                r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -385,15 +436,10 @@ tables:
       location: file:///tmp/events/
       metadata: []
 ",
-        );
-        validate_manifest_schema(&manifest)
-            .expect("empty non-JSONL metadata should match Rust parsing");
-    }
-
-    #[test]
-    fn validate_manifest_schema_accepts_file_scoped_metadata_for_non_jsonl_tables() {
-        let manifest = manifest_json(
-            r"
+            ),
+            (
+                "file-scoped metadata",
+                r"
 name: demo
 version: 1.0.0
 dsl_version: 3
@@ -408,14 +454,16 @@ tables:
         - name: file_path
           kind: relative_path
 ",
-        );
-        validate_manifest_schema(&manifest)
-            .expect("file-scoped metadata should be valid for non-JSONL file tables");
+            ),
+        ] {
+            assert_schema_ok(raw, case);
+        }
     }
 
     #[test]
-    fn validate_manifest_schema_rejects_line_number_metadata_for_non_jsonl_tables() {
-        let manifest = manifest_json(
+    fn validate_manifest_schema_rejects_file_metadata_cases() {
+        assert_schema_error_contains(
+            "line_number metadata on non-JSONL table",
             r"
 name: demo
 version: 1.0.0
@@ -431,80 +479,7 @@ tables:
         - name: event_index
           kind: line_number
 ",
-        );
-        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
-        let message = error.to_string();
-        assert!(
-            message.starts_with("source manifest failed schema validation:"),
-            "{message}"
-        );
-        assert!(message.contains("/tables/0/source"), "{message}");
-        assert!(message.contains("metadata"), "{message}");
-        assert!(
-            message.contains("line_number"),
-            "schema error should reject non-JSONL line_number metadata: {message}"
-        );
-    }
-
-    #[test]
-    fn validate_manifest_schema_rejects_http_table_source() {
-        let manifest = manifest_json(
-            r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: https://example.com
-tables:
-  - name: messages
-    description: Demo messages
-    source:
-      location: file:///tmp/messages.jsonl
-    request:
-      method: GET
-      path: /messages
-",
-        );
-        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
-        let message = error.to_string();
-        assert!(
-            message.starts_with("source manifest failed schema validation:"),
-            "{message}"
-        );
-        assert!(message.contains("/tables/0"), "{message}");
-        assert!(message.contains("source"), "{message}");
-    }
-
-    #[test]
-    fn validate_manifest_schema_rejects_search_limits_above_cap() {
-        let manifest = manifest_json(
-            r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: https://example.com
-tables:
-  - name: messages
-    description: Demo messages
-    search_limits:
-      default_top_k: 5
-      max_top_k: 1001
-      max_calls_per_query: 1
-    request:
-      method: GET
-      path: /messages
-",
-        );
-        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
-        let message = error.to_string();
-        assert!(
-            message.starts_with("source manifest failed schema validation:"),
-            "{message}"
-        );
-        assert!(
-            message.contains("/tables/0/search_limits/max_top_k"),
-            "{message}"
+            &["/tables/0/source", "metadata", "line_number"],
         );
     }
 
@@ -592,11 +567,12 @@ tables:
 
     #[test]
     fn validate_manifest_schema_accepts_mcp_streamable_http_bearer_auth_from_input() {
-        let manifest = manifest_json(&mcp_streamable_http_manifest(
-            "    type: bearer\n    from: input\n    key: MCP_TOKEN\n",
-        ));
-        validate_manifest_schema(&manifest)
-            .expect("MCP bearer auth from a declared input must pass schema validation");
+        assert_schema_ok(
+            &mcp_streamable_http_manifest(
+                "    type: bearer\n    from: input\n    key: MCP_TOKEN\n",
+            ),
+            "MCP bearer auth from a declared input must pass schema validation",
+        );
     }
 
     #[test]

@@ -107,33 +107,13 @@ impl ValidatedSourceManifest {
     /// the source spec.
     #[must_use]
     pub fn required_secret_names(&self) -> BTreeSet<String> {
-        match &self.inner {
-            ValidatedManifestKind::Http(manifest) => manifest.required_secret_names(),
-            ValidatedManifestKind::File(manifest) => manifest.required_secret_names(),
-            ValidatedManifestKind::Mcp(manifest) => manifest.required_secret_names(),
-            ValidatedManifestKind::V4(manifest) => manifest
-                .declared_inputs
-                .iter()
-                .filter(|input| input.kind == crate::ManifestInputKind::Secret && input.required)
-                .map(|input| input.key.clone())
-                .collect(),
-        }
+        crate::inputs::required_secret_input_names(self.declared_inputs())
     }
 
     /// Returns the set of declared source secrets that may be passed to runtime.
     #[must_use]
     pub fn declared_secret_names(&self) -> BTreeSet<String> {
-        match &self.inner {
-            ValidatedManifestKind::Http(manifest) => manifest.declared_secret_names(),
-            ValidatedManifestKind::File(manifest) => manifest.declared_secret_names(),
-            ValidatedManifestKind::Mcp(manifest) => manifest.declared_secret_names(),
-            ValidatedManifestKind::V4(manifest) => manifest
-                .declared_inputs
-                .iter()
-                .filter(|input| input.kind == crate::ManifestInputKind::Secret)
-                .map(|input| input.key.clone())
-                .collect(),
-        }
+        crate::inputs::declared_secret_input_names(self.declared_inputs())
     }
 
     /// Returns the declared top-level inputs for this manifest in authored order.

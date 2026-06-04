@@ -11,15 +11,15 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, FunctionArgBinding, ManifestError,
-    ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result,
-    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
-    TableCommon, TableFunctionArgSpec, ValueSourceSpec,
+    ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, ManifestError, ManifestInputKind,
+    ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend,
+    SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
+    TableFunctionArgSpec, ValueSourceSpec,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
-    validate_identifier, validate_test_queries, validate_unique_values,
+    validate_table_function_args, validate_test_queries,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -68,14 +68,6 @@ pub enum McpServerSpec {
         #[serde(default)]
         auth: Option<McpHttpAuthSpec>,
     },
-}
-
-/// Supported MCP transports.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum McpTransport {
-    Stdio,
-    StreamableHttp,
 }
 
 /// One environment variable passed to a stdio MCP server process.
@@ -325,12 +317,12 @@ impl RawMcpTableFunctionSpec {
 
 impl RawMcpTableSpec {
     fn into_validated(self, source_name: &str) -> Result<McpTableSpec> {
-        validate_mcp_table(source_name, &self)?;
-        let filters = self
+        let filters: Vec<FilterSpec> = self
             .filters
             .iter()
             .map(McpTableFilterSpec::filter_spec)
             .collect();
+        validate_mcp_table(source_name, &self, &filters)?;
         let filter_bindings = self
             .filters
             .iter()
@@ -354,13 +346,6 @@ impl RawMcpTableSpec {
             pagination: self.pagination,
             response: self.response,
         })
-    }
-
-    fn filter_specs(&self) -> Vec<FilterSpec> {
-        self.filters
-            .iter()
-            .map(McpTableFilterSpec::filter_spec)
-            .collect()
     }
 }
 
@@ -550,10 +535,8 @@ fn is_local_http_url(url: &url::Url) -> bool {
 }
 
 fn validate_server_env_value_source(source_name: &str, env: &McpEnvSpec) -> Result<()> {
-    validate_source_scoped_value_source(
-        &env.value,
-        &format!("source '{source_name}' MCP server env '{}'", env.name),
-    )
+    let context = format!("source '{source_name}' MCP server env '{}'", env.name);
+    validate_source_scoped_value_source(&env.value, SourceScopedValueContext::source(&context))
 }
 
 fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) -> Result<()> {
@@ -570,36 +553,8 @@ fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) 
         )));
     }
 
-    let mut arg_names = HashSet::new();
-    let mut request_arg_names = HashSet::new();
-    for arg in &function.args {
-        validate_identifier(
-            &arg.name,
-            &format!(
-                "source '{source_name}' function '{}' argument",
-                function.name
-            ),
-        )?;
-        if !arg_names.insert(arg.name.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' function '{}' argument '{}' is declared more than once",
-                function.name, arg.name
-            )));
-        }
-        validate_unique_values(
-            &arg.values,
-            &format!(
-                "source '{source_name}' function '{}' argument '{}'",
-                function.name, arg.name
-            ),
-        )?;
-        validate_function_binding(
-            source_name,
-            &function.name,
-            &arg.bind,
-            &mut request_arg_names,
-        )?;
-    }
+    let mut request_arg_names =
+        validate_table_function_args(source_name, &function.name, &function.args, "tool arg")?;
     if let Some(pagination) = &function.pagination {
         validate_pagination(
             source_name,
@@ -624,7 +579,11 @@ fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) 
     Ok(())
 }
 
-fn validate_mcp_table(source_name: &str, table: &RawMcpTableSpec) -> Result<()> {
+fn validate_mcp_table(
+    source_name: &str,
+    table: &RawMcpTableSpec,
+    filters: &[FilterSpec],
+) -> Result<()> {
     if table.tool.trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' table '{}' must define a non-empty tool",
@@ -644,13 +603,13 @@ fn validate_mcp_table(source_name: &str, table: &RawMcpTableSpec) -> Result<()> 
         &format!("table '{}'", table.name),
     )?;
     validate_filters_and_column_exprs(
-        &table.filter_specs(),
+        filters,
         &table.columns,
         source_name,
         &format!("table '{}'", table.name),
     )?;
 
-    let mut bound_tool_args: HashSet<&str> = HashSet::new();
+    let mut bound_tool_args: HashSet<&str> = table.tool_args.keys().map(String::as_str).collect();
     for (name, source) in &table.tool_args {
         if name.trim().is_empty() {
             return Err(ManifestError::validation(format!(
@@ -658,26 +617,13 @@ fn validate_mcp_table(source_name: &str, table: &RawMcpTableSpec) -> Result<()> 
                 table.name
             )));
         }
-        if !bound_tool_args.insert(name.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' table '{}' has multiple bindings for tool arg '{name}'",
-                table.name
-            )));
-        }
         validate_table_tool_arg_value_source(source_name, &table.name, name, source)?;
     }
 
-    let mut filter_names: HashSet<&str> = HashSet::new();
     for filter in &table.filters {
         if filter.tool_arg.trim().is_empty() {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' table '{}' filter '{}' must define a non-empty tool_arg",
-                table.name, filter.name
-            )));
-        }
-        if !filter_names.insert(filter.name.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' table '{}' has duplicate filter '{}'",
                 table.name, filter.name
             )));
         }
@@ -765,118 +711,107 @@ fn validate_table_tool_arg_value_source(
     source: &ValueSourceSpec,
 ) -> Result<()> {
     let context = format!("source '{source_name}' table '{table_name}' tool_args.{arg_name}");
-    match source {
-        ValueSourceSpec::Filter { key, .. }
-        | ValueSourceSpec::FilterInt { key, .. }
-        | ValueSourceSpec::FilterBool { key, .. }
-        | ValueSourceSpec::FilterSplit { key, .. }
-        | ValueSourceSpec::FilterSplitInt { key, .. } => Err(ManifestError::validation(format!(
-            "{context} references filter '{key}'; bind filters through filters[].tool_arg instead",
-        ))),
-        ValueSourceSpec::Arg { key, .. }
-        | ValueSourceSpec::ArgInt { key, .. }
-        | ValueSourceSpec::ArgBool { key, .. }
-        | ValueSourceSpec::ArgSplit { key, .. }
-        | ValueSourceSpec::ArgSplitInt { key, .. } => Err(ManifestError::validation(format!(
-            "{context} uses function argument '{key}' but tables do not take arguments",
-        ))),
-        ValueSourceSpec::State { key } => Err(ManifestError::validation(format!(
-            "{context} uses state value '{key}' but MCP table tool_args are source-scoped",
-        ))),
-        ValueSourceSpec::Template { template } => {
-            for token in template.tokens() {
-                match token.namespace() {
-                    crate::TemplateNamespace::Filter => {
-                        return Err(ManifestError::validation(format!(
-                            "{context} template references filter '{}'; bind filters through filters[].tool_arg instead",
-                            token.key()
-                        )));
-                    }
-                    crate::TemplateNamespace::Arg => {
-                        return Err(ManifestError::validation(format!(
-                            "{context} template references function argument '{}' but tables do not take arguments",
-                            token.key()
-                        )));
-                    }
-                    crate::TemplateNamespace::State => {
-                        return Err(ManifestError::validation(format!(
-                            "{context} template references state value '{}' but MCP table tool_args are source-scoped",
-                            token.key()
-                        )));
-                    }
-                    crate::TemplateNamespace::Expr | crate::TemplateNamespace::Other(_) => {
-                        return Err(ManifestError::validation(format!(
-                            "{context} uses unsupported template token '{}'",
-                            token.raw()
-                        )));
-                    }
-                    crate::TemplateNamespace::Input => {}
-                }
-            }
-            Ok(())
+    validate_source_scoped_value_source(source, SourceScopedValueContext::table_tool_arg(&context))
+}
+
+#[derive(Clone, Copy)]
+struct SourceScopedValueContext<'a> {
+    context: &'a str,
+    source_scope_text: &'static str,
+    arg_scope_text: &'static str,
+    direct_filter_text: &'static str,
+    template_filter_text: &'static str,
+    filter_suffix: &'static str,
+}
+
+impl<'a> SourceScopedValueContext<'a> {
+    fn table_tool_arg(context: &'a str) -> Self {
+        Self {
+            context,
+            source_scope_text: "MCP table tool_args are source-scoped",
+            arg_scope_text: "tables do not take arguments",
+            direct_filter_text: "references filter",
+            template_filter_text: "template references filter",
+            filter_suffix: "; bind filters through filters[].tool_arg instead",
         }
-        ValueSourceSpec::OneOf { values } => {
-            if values.is_empty() {
-                return Err(ManifestError::validation(format!(
-                    "{context} one_of values must not be empty"
-                )));
-            }
-            for value in values {
-                validate_table_tool_arg_value_source(source_name, table_name, arg_name, value)?;
-            }
-            Ok(())
+    }
+
+    fn source(context: &'a str) -> Self {
+        Self {
+            context,
+            source_scope_text: "the value is source-scoped",
+            arg_scope_text: "the value is source-scoped",
+            direct_filter_text: "uses table filter",
+            template_filter_text: "template references table filter",
+            filter_suffix: " but the value is source-scoped",
         }
-        _ => Ok(()),
+    }
+
+    fn direct_filter_error(self, key: &str) -> ManifestError {
+        ManifestError::validation(format!(
+            "{} {} '{key}'{}",
+            self.context, self.direct_filter_text, self.filter_suffix
+        ))
+    }
+
+    fn template_filter_error(self, key: &str) -> ManifestError {
+        ManifestError::validation(format!(
+            "{} {} '{key}'{}",
+            self.context, self.template_filter_text, self.filter_suffix
+        ))
     }
 }
 
-fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) -> Result<()> {
+fn validate_source_scoped_value_source(
+    source: &ValueSourceSpec,
+    context: SourceScopedValueContext<'_>,
+) -> Result<()> {
+    let context_text = context.context;
     match source {
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
-        | ValueSourceSpec::FilterSplitInt { key, .. } => Err(ManifestError::validation(format!(
-            "{context} uses table filter '{key}' but the value is source-scoped",
-        ))),
+        | ValueSourceSpec::FilterSplitInt { key, .. } => Err(context.direct_filter_error(key)),
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => Err(ManifestError::validation(format!(
-            "{context} uses function argument '{key}' but the value is source-scoped",
+            "{context_text} uses function argument '{key}' but {}",
+            context.arg_scope_text,
         ))),
         ValueSourceSpec::State { key } => Err(ManifestError::validation(format!(
-            "{context} uses state value '{key}' but the value is source-scoped",
+            "{context_text} uses state value '{key}' but {}",
+            context.source_scope_text,
         ))),
         ValueSourceSpec::Template { template } => {
             for token in template.tokens() {
                 match token.namespace() {
-                    crate::TemplateNamespace::Input => {}
                     crate::TemplateNamespace::Filter => {
-                        return Err(ManifestError::validation(format!(
-                            "{context} template references table filter '{}' but the value is source-scoped",
-                            token.key()
-                        )));
+                        return Err(context.template_filter_error(token.key()));
                     }
                     crate::TemplateNamespace::Arg => {
                         return Err(ManifestError::validation(format!(
-                            "{context} template references function argument '{}' but the value is source-scoped",
-                            token.key()
+                            "{context_text} template references function argument '{}' but {}",
+                            token.key(),
+                            context.arg_scope_text,
                         )));
                     }
                     crate::TemplateNamespace::State => {
                         return Err(ManifestError::validation(format!(
-                            "{context} template references state value '{}' but the value is source-scoped",
-                            token.key()
+                            "{context_text} template references state value '{}' but {}",
+                            token.key(),
+                            context.source_scope_text,
                         )));
                     }
                     crate::TemplateNamespace::Expr | crate::TemplateNamespace::Other(_) => {
                         return Err(ManifestError::validation(format!(
-                            "{context} uses unsupported template token '{}'",
+                            "{context_text} uses unsupported template token '{}'",
                             token.raw()
                         )));
                     }
+                    crate::TemplateNamespace::Input => {}
                 }
             }
             Ok(())
@@ -884,7 +819,7 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
         ValueSourceSpec::OneOf { values } => {
             if values.is_empty() {
                 return Err(ManifestError::validation(format!(
-                    "{context} one_of values must not be empty"
+                    "{context_text} one_of values must not be empty"
                 )));
             }
             for value in values {
@@ -899,36 +834,116 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
     }
 }
 
-fn validate_function_binding<'a>(
-    source_name: &str,
-    function_name: &str,
-    binding: &'a FunctionArgBinding,
-    request_arg_names: &mut HashSet<&'a str>,
-) -> Result<()> {
-    if !request_arg_names.insert(binding.arg.as_str()) {
-        return Err(ManifestError::validation(format!(
-            "source '{source_name}' function '{function_name}' has multiple bindings for tool arg '{}'",
-            binding.arg
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{McpServerSpec, McpSourceManifest};
+    use crate::test_support::assert_error_contains;
+
+    fn parse_mcp(body: Value) -> crate::Result<McpSourceManifest> {
+        let Value::Object(mut manifest) = body else {
+            return McpSourceManifest::parse_manifest_value(body);
+        };
+
+        for (key, value) in [
+            ("dsl_version", json!(3)),
+            ("name", json!("demo")),
+            ("version", json!("0.1.0")),
+            ("backend", json!("mcp")),
+            ("server", stdio_server()),
+        ] {
+            manifest.entry(key.to_string()).or_insert(value);
+        }
+
+        McpSourceManifest::parse_manifest_value(Value::Object(manifest))
+    }
+
+    fn stdio_server() -> Value {
+        json!({ "transport": "stdio", "command": "demo-mcp-server" })
+    }
+
+    fn id_columns() -> Value {
+        json!([{ "name": "id", "type": "Utf8" }])
+    }
+
+    fn title_columns() -> Value {
+        json!([{ "name": "title", "type": "Utf8" }])
+    }
+
+    fn issues_table() -> Value {
+        json!({
+            "name": "issues",
+            "tool": "list_issues",
+            "columns": title_columns()
+        })
+    }
+
+    fn issues_table_with(fields: Value) -> Value {
+        let Value::Object(mut table) = issues_table() else {
+            unreachable!("issues_table fixture is an object");
+        };
+        let Value::Object(fields) = fields else {
+            unreachable!("test fixture overrides must be an object");
+        };
+        table.extend(fields);
+        Value::Object(table)
+    }
+
+    fn parse_issues_table_with(fields: Value) -> crate::Result<McpSourceManifest> {
+        parse_mcp(json!({ "tables": [issues_table_with(fields)] }))
+    }
+
+    fn table_named(name: &str) -> Value {
+        json!({
+            "name": name,
+            "tool": "list_issues",
+            "columns": id_columns()
+        })
+    }
+
+    fn function_named(name: &str) -> Value {
+        json!({
+            "name": name,
+            "tool": "search_issues",
+            "args": [],
+            "columns": id_columns()
+        })
+    }
+
+    fn mcp_with_server(server: &Value) -> Value {
+        json!({
+            "server": server,
+            "tables": [issues_table()]
+        })
+    }
+
+    fn streamable_http_server(url: &str) -> Value {
+        json!({
+            "transport": "streamable_http",
+            "url": url
+        })
+    }
+
+    fn parse_streamable_http_url(url: &str) -> crate::Result<McpSourceManifest> {
+        parse_mcp(mcp_with_server(&streamable_http_server(url)))
+    }
+
+    fn assert_parse_error_contains(
+        result: crate::Result<McpSourceManifest>,
+        expectation: &str,
+        expected: &str,
+    ) {
+        let error = result.expect_err(expectation);
+        assert_error_contains(&error, expected);
+    }
 
     #[test]
     fn parses_mcp_manifest_with_secret_input() {
-        let manifest = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
+        let manifest = parse_mcp(json!({
             "name": "github_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
             "inputs": {
                 "GITHUB_TOKEN": { "kind": "secret" },
                 "OPTIONAL_TOKEN": { "kind": "secret", "required": false }
@@ -950,7 +965,7 @@ mod tests {
                     "required": true,
                     "bind": { "arg": "query" }
                 }],
-                "columns": [{ "name": "title", "type": "Utf8" }]
+                "columns": title_columns()
             }]
         }))
         .expect("mcp manifest should parse");
@@ -969,63 +984,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mcp_function_without_columns() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
-                "transport": "stdio",
-                "command": "demo-mcp-server"
-            },
-            "functions": [{
-                "name": "lookup",
-                "tool": "lookup"
-            }]
-        }))
-        .expect_err("missing columns should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "source 'demo' function 'lookup' must define columns"
-        );
+    fn rejects_mcp_surfaces_without_columns() {
+        for (name, manifest, expected) in [
+            (
+                "function",
+                json!({ "functions": [{ "name": "lookup", "tool": "lookup" }] }),
+                "source 'demo' function 'lookup' must define columns",
+            ),
+            (
+                "table",
+                json!({ "tables": [{ "name": "issues", "tool": "list_issues" }] }),
+                "source 'demo' table 'issues' must define columns",
+            ),
+        ] {
+            let error = parse_mcp(manifest).expect_err(name);
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     #[test]
     fn parses_streamable_http_mcp_server_with_input_backed_bearer_auth() {
-        let manifest = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
+        let manifest = parse_mcp(json!({
             "inputs": {
-                "MCP_ACCESS_TOKEN": {
-                    "kind": "secret",
-                    "credential": {
-                        "methods": [{
-                            "type": "oauth",
-                            "oauth": {
-                                "flow": { "type": "authorization_code", "pkce": "required" },
-                                "redirect_uri": "http://127.0.0.1:0/oauth/callback",
-                                "redirect_uri_port_mode": "random",
-                                "endpoints": {
-                                    "authorization_url": "https://provider.example.com/oauth/authorize",
-                                    "token_url": "https://provider.example.com/oauth/token"
-                                },
-                                "client": {
-                                    "id": { "default": "coral-client-id" }
-                                },
-                                "scopes": {
-                                    "scope": {
-                                        "delimiter": "space",
-                                        "values": ["read"]
-                                    }
-                                }
-                            }
-                        }]
-                    }
-                }
+                "MCP_ACCESS_TOKEN": { "kind": "secret" }
             },
             "server": {
                 "transport": "streamable_http",
@@ -1036,11 +1017,7 @@ mod tests {
                     "key": "MCP_ACCESS_TOKEN"
                 }
             },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
+            "tables": [issues_table()]
         }))
         .expect("streamable_http mcp manifest should parse");
 
@@ -1057,79 +1034,32 @@ mod tests {
 
     #[test]
     fn rejects_streamable_http_server_with_stdio_fields() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
+        assert_parse_error_contains(
+            parse_mcp(mcp_with_server(&json!({
                 "transport": "streamable_http",
                 "url": "https://mcp.example.com/mcp",
                 "command": "mcp-server"
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("stdio fields on streamable_http should fail");
-
-        assert!(error.to_string().contains("unknown field `command`"));
-    }
-
-    #[test]
-    fn rejects_insecure_non_local_streamable_http_url() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
-                "transport": "streamable_http",
-                "url": "http://mcp.example.com/mcp"
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("non-local http streamable_http url should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must use https unless it targets localhost")
+            }))),
+            "stdio fields on streamable_http should fail",
+            "unknown field `command`",
         );
     }
 
     #[test]
-    fn rejects_insecure_http_url_with_loopback_lookalike_host() {
-        // A hostname like `127.example.com` previously slipped past the
-        // `starts_with("127.")` check; the IP-parsing check rejects it.
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
-                "transport": "streamable_http",
-                "url": "http://127.example.com/mcp"
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("loopback-lookalike host should still fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must use https unless it targets localhost")
-        );
+    fn rejects_insecure_non_loopback_streamable_http_urls() {
+        for (url, expectation) in [
+            ("http://mcp.example.com/mcp", "non-local http should fail"),
+            (
+                "http://127.example.com/mcp",
+                "loopback-lookalike host should still fail",
+            ),
+        ] {
+            assert_parse_error_contains(
+                parse_streamable_http_url(url),
+                expectation,
+                "must use https unless it targets localhost",
+            );
+        }
     }
 
     #[test]
@@ -1139,87 +1069,35 @@ mod tests {
             "http://localhost:8080/mcp",
             "http://[::1]:8080/mcp",
         ] {
-            McpSourceManifest::parse_manifest_value(json!({
-                "dsl_version": 3,
-                "name": "remote_mcp",
-                "version": "0.1.0",
-                "backend": "mcp",
-                "server": {
-                    "transport": "streamable_http",
-                    "url": url
-                },
-                "tables": [{
-                    "name": "issues",
-                    "tool": "list_issues",
-                    "columns": [{ "name": "title", "type": "Utf8" }]
-                }]
-            }))
-            .unwrap_or_else(|err| panic!("loopback url `{url}` should parse: {err}"));
+            parse_streamable_http_url(url)
+                .unwrap_or_else(|err| panic!("loopback url `{url}` should parse: {err}"));
         }
     }
 
     #[test]
-    fn rejects_streamable_http_url_with_userinfo_password() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
-                "transport": "streamable_http",
-                "url": "https://alice:s3cret@mcp.example.com/mcp"
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("userinfo credentials should be rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must not embed credentials in userinfo"),
-            "got: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_streamable_http_url_with_username_only_userinfo() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
-                "transport": "streamable_http",
-                "url": "https://api-token@mcp.example.com/mcp"
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("username-only userinfo should be rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must not embed credentials in userinfo"),
-            "got: {error}"
-        );
+    fn rejects_streamable_http_urls_with_userinfo() {
+        for (url, expectation) in [
+            (
+                "https://alice:s3cret@mcp.example.com/mcp",
+                "userinfo credentials should be rejected",
+            ),
+            (
+                "https://api-token@mcp.example.com/mcp",
+                "username-only userinfo should be rejected",
+            ),
+        ] {
+            assert_parse_error_contains(
+                parse_streamable_http_url(url),
+                expectation,
+                "must not embed credentials in userinfo",
+            );
+        }
     }
 
     #[test]
     fn rejects_streamable_http_auth_token_from_literal() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
+        assert_parse_error_contains(
+            parse_mcp(mcp_with_server(&json!({
                 "transport": "streamable_http",
                 "url": "https://mcp.example.com/mcp",
                 "auth": {
@@ -1227,20 +1105,9 @@ mod tests {
                     "from": "literal",
                     "value": "hunter2"
                 }
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("literal bearer token should be rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must use `from: input` referencing a secret input"),
-            "got: {error}"
+            }))),
+            "literal bearer token should be rejected",
+            "must use `from: input` referencing a secret input",
         );
     }
 
@@ -1248,50 +1115,30 @@ mod tests {
     fn rejects_streamable_http_auth_token_from_variable_input() {
         // Use a non-credential-like name so the early credential-like
         // safety net does not fire before our explicit check.
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "remote_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "inputs": {
-                "MCP_OPAQUE_VALUE": { "kind": "variable", "default": "x" }
-            },
-            "server": {
-                "transport": "streamable_http",
-                "url": "https://mcp.example.com/mcp",
-                "auth": {
-                    "type": "bearer",
-                    "from": "input",
-                    "key": "MCP_OPAQUE_VALUE"
-                }
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "title", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("variable-kind input as bearer token should be rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must reference a `kind: secret` input"),
-            "got: {error}"
+        assert_parse_error_contains(
+            parse_mcp(json!({
+                "inputs": {
+                    "MCP_OPAQUE_VALUE": { "kind": "variable", "default": "x" }
+                },
+                "server": {
+                    "transport": "streamable_http",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": {
+                        "type": "bearer",
+                        "from": "input",
+                        "key": "MCP_OPAQUE_VALUE"
+                    }
+                },
+                "tables": [issues_table()]
+            })),
+            "variable-kind input as bearer token should be rejected",
+            "must reference a `kind: secret` input",
         );
     }
 
     #[test]
     fn parses_minimal_mcp_table() {
-        let manifest = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo_mcp",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
+        let manifest = parse_issues_table_with(json!({
                 "tool_args": {
                     "owner": { "from": "literal", "value": "acme" }
                 },
@@ -1304,7 +1151,6 @@ mod tests {
                     { "name": "id", "type": "Utf8" },
                     { "name": "title", "type": "Utf8" }
                 ]
-            }]
         }))
         .expect("table-only mcp manifest should parse");
 
@@ -1324,363 +1170,130 @@ mod tests {
     }
 
     #[test]
-    fn rejects_table_and_function_with_same_name() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }],
-            "functions": [{
-                "name": "issues",
-                "tool": "search_issues",
-                "args": [],
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("table/function name collision should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "source 'demo' declares both a table and function named 'issues'"
-        );
+    fn rejects_duplicate_mcp_surface_names() {
+        for (name, manifest, expected) in [
+            (
+                "table/function name collision",
+                json!({
+                    "tables": [table_named("issues")],
+                    "functions": [function_named("issues")]
+                }),
+                "source 'demo' declares both a table and function named 'issues'",
+            ),
+            (
+                "case-insensitive table/function name collision",
+                json!({
+                    "tables": [table_named("Issues")],
+                    "functions": [function_named("issues")]
+                }),
+                "source 'demo' declares both a table and function named 'issues'",
+            ),
+            (
+                "duplicate table names",
+                json!({
+                    "tables": [table_named("issues"), table_named("issues")]
+                }),
+                "source 'demo' table 'issues' is declared more than once",
+            ),
+            (
+                "case-insensitive duplicate table names",
+                json!({
+                    "tables": [table_named("Issues"), table_named("issues")]
+                }),
+                "source 'demo' table 'issues' is declared more than once",
+            ),
+            (
+                "case-insensitive duplicate function names",
+                json!({
+                    "functions": [function_named("Search"), function_named("search")]
+                }),
+                "source 'demo' function 'search' is declared more than once",
+            ),
+        ] {
+            let error = parse_mcp(manifest).expect_err(name);
+            assert_eq!(error.to_string(), expected, "unexpected error for {name}");
+        }
     }
 
     #[test]
-    fn rejects_table_and_function_names_that_differ_only_by_case() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "Issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }],
-            "functions": [{
-                "name": "issues",
-                "tool": "search_issues",
-                "args": [],
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("case-insensitive table/function name collision should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "source 'demo' declares both a table and function named 'issues'"
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_mcp_table_names() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [
-                {
-                    "name": "issues",
-                    "tool": "list_issues",
-                    "columns": [{ "name": "id", "type": "Utf8" }]
-                },
-                {
-                    "name": "issues",
-                    "tool": "list_issues",
-                    "columns": [{ "name": "id", "type": "Utf8" }]
-                }
-            ]
-        }))
-        .expect_err("duplicate table names should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "source 'demo' table 'issues' is declared more than once"
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_mcp_table_names_that_differ_only_by_case() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [
-                {
-                    "name": "Issues",
-                    "tool": "list_issues",
-                    "columns": [{ "name": "id", "type": "Utf8" }]
-                },
-                {
-                    "name": "issues",
-                    "tool": "list_issues",
-                    "columns": [{ "name": "id", "type": "Utf8" }]
-                }
-            ]
-        }))
-        .expect_err("case-insensitive duplicate table names should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "source 'demo' table 'issues' is declared more than once"
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_mcp_function_names_that_differ_only_by_case() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "functions": [
-                {
-                    "name": "Search",
-                    "tool": "search_issues",
-                    "columns": [{ "name": "id", "type": "Utf8" }]
-                },
-                {
-                    "name": "search",
-                    "tool": "search_issues",
-                    "columns": [{ "name": "id", "type": "Utf8" }]
-                }
-            ]
-        }))
-        .expect_err("case-insensitive duplicate function names should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "source 'demo' function 'search' is declared more than once"
-        );
-    }
-
-    #[test]
-    fn rejects_mcp_server_env_referencing_state() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
-                "transport": "stdio",
-                "command": "demo-mcp-server",
-                "env": [{
-                    "name": "CURSOR",
-                    "from": "state",
-                    "key": "cursor"
-                }]
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("state reference in server env should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("MCP server env 'CURSOR' uses state value 'cursor'"),
-            "got: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_mcp_server_env_template_referencing_filter() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": {
-                "transport": "stdio",
-                "command": "demo-mcp-server",
-                "env": [{
+    fn rejects_request_scoped_mcp_server_env_sources() {
+        for (name, env, expected) in [
+            (
+                "state reference in server env",
+                json!({ "name": "CURSOR", "from": "state", "key": "cursor" }),
+                "MCP server env 'CURSOR' uses state value 'cursor'",
+            ),
+            (
+                "filter template reference in server env",
+                json!({
                     "name": "FILTERED",
                     "from": "template",
                     "template": "{{filter.state}}"
-                }]
-            },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("filter template reference in server env should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("MCP server env 'FILTERED' template references table filter 'state'"),
-            "got: {error}"
-        );
+                }),
+                "MCP server env 'FILTERED' template references table filter 'state'",
+            ),
+        ] {
+            assert_parse_error_contains(
+                parse_mcp(json!({
+                    "server": {
+                        "transport": "stdio",
+                        "command": "demo-mcp-server",
+                        "env": [env]
+                    },
+                    "tables": [issues_table()]
+                })),
+                name,
+                expected,
+            );
+        }
     }
 
     #[test]
-    fn rejects_tool_args_referencing_filters() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "tool_args": {
-                    "state": { "from": "filter", "key": "state" }
-                },
-                "filters": [{
-                    "name": "state",
-                    "tool_arg": "state"
-                }],
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("filter reference in tool_args should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("references filter 'state'; bind filters through filters[].tool_arg"),
-            "got: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_tool_args_referencing_state() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "tool_args": {
-                    "cursor": { "from": "state", "key": "cursor" }
-                },
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("state reference in tool_args should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("tool_args.cursor uses state value 'cursor'"),
-            "got: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_tool_args_template_referencing_state() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "tool_args": {
-                    "cursor": { "from": "template", "template": "{{state.cursor}}" }
-                },
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("state template reference in tool_args should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("tool_args.cursor template references state value 'cursor'"),
-            "got: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_tool_arg_bindings_across_filters_and_tool_args() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "tool_args": {
-                    "state": { "from": "literal", "value": "open" }
-                },
-                "filters": [{
-                    "name": "state",
-                    "tool_arg": "state"
-                }],
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("duplicate tool arg bindings should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("binds tool arg 'state' that is already bound"),
-            "got: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_table_without_columns() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues"
-            }]
-        }))
-        .expect_err("missing columns should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "source 'demo' table 'issues' must define columns"
-        );
+    fn rejects_invalid_tool_arg_bindings() {
+        for (name, fields, expected) in [
+            (
+                "filter reference in tool_args",
+                json!({
+                    "tool_args": {
+                        "state": { "from": "filter", "key": "state" }
+                    },
+                    "filters": [{ "name": "state", "tool_arg": "state" }]
+                }),
+                "references filter 'state'; bind filters through filters[].tool_arg",
+            ),
+            (
+                "state reference in tool_args",
+                json!({ "tool_args": { "cursor": { "from": "state", "key": "cursor" } } }),
+                "tool_args.cursor uses state value 'cursor'",
+            ),
+            (
+                "state template reference in tool_args",
+                json!({
+                    "tool_args": {
+                        "cursor": { "from": "template", "template": "{{state.cursor}}" }
+                    }
+                }),
+                "tool_args.cursor template references state value 'cursor'",
+            ),
+            (
+                "duplicate filter and tool_args binding",
+                json!({
+                    "tool_args": {
+                        "state": { "from": "literal", "value": "open" }
+                    },
+                    "filters": [{ "name": "state", "tool_arg": "state" }]
+                }),
+                "binds tool arg 'state' that is already bound",
+            ),
+        ] {
+            assert_parse_error_contains(parse_issues_table_with(fields), name, expected);
+        }
     }
 
     #[test]
     fn parses_table_with_limit_binding() {
-        let manifest = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "limit_binding": { "tool_arg": "page_size", "max": 200 },
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
+        let manifest = parse_issues_table_with(json!({
+            "limit_binding": { "tool_arg": "page_size", "max": 200 }
         }))
         .expect("manifest with limit_binding should parse");
 
@@ -1692,22 +1305,12 @@ mod tests {
 
     #[test]
     fn parses_table_with_cursor_pagination() {
-        let manifest = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "pagination": {
-                    "cursor_arg": "cursor",
-                    "response_cursor_path": ["meta", "nextCursor"],
-                    "max_pages": 5
-                },
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
+        let manifest = parse_issues_table_with(json!({
+            "pagination": {
+                "cursor_arg": "cursor",
+                "response_cursor_path": ["meta", "nextCursor"],
+                "max_pages": 5
+            }
         }))
         .expect("manifest with pagination should parse");
 
@@ -1719,76 +1322,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_pagination_colliding_with_filter() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "filters": [{
-                    "name": "state",
-                    "tool_arg": "cursor"
-                }],
-                "pagination": {
-                    "cursor_arg": "cursor",
-                    "response_cursor_path": ["nextCursor"]
-                },
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("pagination cursor colliding with filter should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("pagination binds tool arg 'cursor' that is already bound"),
-            "got: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_limit_binding_colliding_with_filter() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" },
-            "tables": [{
-                "name": "issues",
-                "tool": "list_issues",
-                "filters": [{
-                    "name": "state",
-                    "tool_arg": "state"
-                }],
-                "limit_binding": { "tool_arg": "state" },
-                "columns": [{ "name": "id", "type": "Utf8" }]
-            }]
-        }))
-        .expect_err("limit_binding colliding with filter should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("limit_binding binds tool arg 'state' that is already bound"),
-            "got: {error}"
-        );
+    fn rejects_table_tool_arg_collisions() {
+        for (name, fields, expected) in [
+            (
+                "pagination cursor colliding with filter",
+                json!({
+                    "filters": [{ "name": "state", "tool_arg": "cursor" }],
+                    "pagination": {
+                        "cursor_arg": "cursor",
+                        "response_cursor_path": ["nextCursor"]
+                    }
+                }),
+                "pagination binds tool arg 'cursor' that is already bound",
+            ),
+            (
+                "limit_binding colliding with filter",
+                json!({
+                    "filters": [{ "name": "state", "tool_arg": "state" }],
+                    "limit_binding": { "tool_arg": "state" }
+                }),
+                "limit_binding binds tool arg 'state' that is already bound",
+            ),
+        ] {
+            assert_parse_error_contains(parse_issues_table_with(fields), name, expected);
+        }
     }
 
     #[test]
     fn rejects_manifest_without_tables_or_functions() {
-        let error = McpSourceManifest::parse_manifest_value(json!({
-            "dsl_version": 3,
-            "name": "demo",
-            "version": "0.1.0",
-            "backend": "mcp",
-            "server": { "transport": "stdio", "command": "demo-mcp-server" }
-        }))
-        .expect_err("manifest needs at least one tool surface");
+        let error = parse_mcp(json!({})).expect_err("manifest needs at least one tool surface");
 
         assert_eq!(
             error.to_string(),

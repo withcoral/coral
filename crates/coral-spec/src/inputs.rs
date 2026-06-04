@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value};
 use url::Url;
 
-use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
+use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace, TemplateToken};
 
 const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
 
@@ -153,38 +153,57 @@ fn render_oauth_endpoint_url(
     raw_template: &str,
     source_inputs: &BTreeMap<String, String>,
 ) -> Result<String> {
-    let template = ParsedTemplate::parse(raw_template)?;
-    let mut rendered = String::with_capacity(template.raw().len());
-    for part in template.parts() {
-        match part {
-            crate::TemplatePart::Literal(literal) => rendered.push_str(literal),
-            crate::TemplatePart::Token(token) => {
-                if token.namespace() != &TemplateNamespace::Input {
-                    return Err(ManifestError::validation(format!(
-                        "unsupported OAuth endpoint template token '{}'",
-                        token.raw()
-                    )));
-                }
-                if token.default_value().is_some() {
-                    return Err(ManifestError::validation(format!(
-                        "OAuth endpoint template token '{}' must declare defaults under top-level inputs",
-                        token.raw()
-                    )));
-                }
-                let value = source_inputs.get(token.key()).ok_or_else(|| {
-                    ManifestError::validation(format!(
-                        "missing source input '{}' for OAuth endpoint template",
-                        token.key()
-                    ))
-                })?;
-                rendered.push_str(value);
-            }
+    let (rendered, _) = render_oauth_endpoint_template(raw_template, |token| {
+        if token.namespace() != &TemplateNamespace::Input {
+            return Err(ManifestError::validation(format!(
+                "unsupported OAuth endpoint template token '{}'",
+                token.raw()
+            )));
         }
-    }
+        if token.default_value().is_some() {
+            return Err(ManifestError::validation(format!(
+                "OAuth endpoint template token '{}' must declare defaults under top-level inputs",
+                token.raw()
+            )));
+        }
+        let value = source_inputs.get(token.key()).ok_or_else(|| {
+            ManifestError::validation(format!(
+                "missing source input '{}' for OAuth endpoint template",
+                token.key()
+            ))
+        })?;
+        Ok(OAuthEndpointTemplateValue::Append(value.clone()))
+    })?;
     Url::parse(&rendered).map_err(|error| {
         ManifestError::validation(format!("invalid OAuth {label} URL: {error}"))
     })?;
     Ok(rendered)
+}
+
+enum OAuthEndpointTemplateValue {
+    Append(String),
+    DeferUrlValidation,
+}
+
+fn render_oauth_endpoint_template(
+    raw_template: &str,
+    mut resolve_token: impl FnMut(&TemplateToken) -> Result<OAuthEndpointTemplateValue>,
+) -> Result<(String, bool)> {
+    let template = ParsedTemplate::parse(raw_template)?;
+    let mut rendered = String::with_capacity(template.raw().len());
+    let mut has_deferred_url_validation = false;
+    for part in template.parts() {
+        match part {
+            crate::TemplatePart::Literal(literal) => rendered.push_str(literal),
+            crate::TemplatePart::Token(token) => match resolve_token(token)? {
+                OAuthEndpointTemplateValue::Append(value) => rendered.push_str(&value),
+                OAuthEndpointTemplateValue::DeferUrlValidation => {
+                    has_deferred_url_validation = true;
+                }
+            },
+        }
+    }
+    Ok((rendered, has_deferred_url_validation))
 }
 
 /// Supported loopback redirect URI port binding modes.
@@ -514,31 +533,19 @@ fn validate_oauth_endpoint_templates_for_method(
     declared: &BTreeMap<&str, &ManifestInputSpec>,
     input_scope: &str,
 ) -> Result<()> {
-    if let Some(template) = oauth.authorization_url.as_deref() {
-        validate_oauth_endpoint_template(
-            input_key,
-            "authorization_url",
-            template,
-            declared,
-            input_scope,
-        )?;
-    }
-    if let Some(template) = oauth.device_authorization_url.as_deref() {
-        validate_oauth_endpoint_template(
-            input_key,
+    for (field, template) in [
+        ("authorization_url", oauth.authorization_url.as_deref()),
+        (
             "device_authorization_url",
-            template,
-            declared,
-            input_scope,
-        )?;
+            oauth.device_authorization_url.as_deref(),
+        ),
+        ("token_url", Some(oauth.token_url.as_str())),
+    ] {
+        if let Some(template) = template {
+            validate_oauth_endpoint_template(input_key, field, template, declared, input_scope)?;
+        }
     }
-    validate_oauth_endpoint_template(
-        input_key,
-        "token_url",
-        &oauth.token_url,
-        declared,
-        input_scope,
-    )
+    Ok(())
 }
 
 fn validate_oauth_endpoint_template(
@@ -548,46 +555,42 @@ fn validate_oauth_endpoint_template(
     declared: &BTreeMap<&str, &ManifestInputSpec>,
     input_scope: &str,
 ) -> Result<()> {
-    let template = ParsedTemplate::parse(raw_template)?;
-    let mut rendered = String::with_capacity(template.raw().len());
-    let mut has_required_variable = false;
-
-    for part in template.parts() {
-        match part {
-            crate::TemplatePart::Literal(literal) => rendered.push_str(literal),
-            crate::TemplatePart::Token(token) => {
-                if !matches!(token.namespace(), TemplateNamespace::Input) {
-                    return Err(ManifestError::validation(format!(
-                        "manifest input '{input_key}' oauth.endpoints.{field} uses unsupported template token '{}'; OAuth endpoint templates only support source variable input tokens",
-                        token.raw()
-                    )));
-                }
-                if token.default_value().is_some() {
-                    return Err(ManifestError::validation(format!(
-                        "manifest input '{}' must declare defaults under {input_scope}",
-                        token.key()
-                    )));
-                }
-                let Some(input) = declared.get(token.key()) else {
-                    return Err(ManifestError::validation(format!(
-                        "manifest input '{}' is referenced but not declared under {input_scope}",
-                        token.key()
-                    )));
-                };
-                if input.kind != ManifestInputKind::Variable {
-                    return Err(ManifestError::validation(format!(
-                        "manifest input '{}' is referenced by oauth.endpoints.{field} but is not a variable",
-                        token.key()
-                    )));
-                }
-                if input.required {
-                    has_required_variable = true;
-                } else {
-                    rendered.push_str(&input.default_value);
-                }
+    let (rendered, has_required_variable) = render_oauth_endpoint_template(
+        raw_template,
+        |token| {
+            if !matches!(token.namespace(), TemplateNamespace::Input) {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{input_key}' oauth.endpoints.{field} uses unsupported template token '{}'; OAuth endpoint templates only support source variable input tokens",
+                    token.raw()
+                )));
             }
-        }
-    }
+            if token.default_value().is_some() {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{}' must declare defaults under {input_scope}",
+                    token.key()
+                )));
+            }
+            let Some(input) = declared.get(token.key()) else {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{}' is referenced but not declared under {input_scope}",
+                    token.key()
+                )));
+            };
+            if input.kind != ManifestInputKind::Variable {
+                return Err(ManifestError::validation(format!(
+                    "manifest input '{}' is referenced by oauth.endpoints.{field} but is not a variable",
+                    token.key()
+                )));
+            }
+            if input.required {
+                Ok(OAuthEndpointTemplateValue::DeferUrlValidation)
+            } else {
+                Ok(OAuthEndpointTemplateValue::Append(
+                    input.default_value.clone(),
+                ))
+            }
+        },
+    )?;
 
     if !has_required_variable {
         Url::parse(&rendered).map_err(|error| {
@@ -601,11 +604,7 @@ fn validate_oauth_endpoint_template(
 }
 
 fn parse_credential(input_key: &str, value: &Value) -> Result<ManifestCredentialSpec> {
-    let credential = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' credential must be a mapping"
-        ))
-    })?;
+    let credential = input_mapping(input_key, "credential", value)?;
     let methods = credential
         .get("methods")
         .ok_or_else(|| {
@@ -638,11 +637,7 @@ fn parse_credential_method(
     index: usize,
     value: &Value,
 ) -> Result<ManifestCredentialMethod> {
-    let method = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' credential.methods[{index}] must be a mapping"
-        ))
-    })?;
+    let method = input_mapping(input_key, &format!("credential.methods[{index}]"), value)?;
     let label = method
         .get("label")
         .and_then(Value::as_str)
@@ -655,20 +650,14 @@ fn parse_credential_method(
         .get("hint")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    match method.get("type").and_then(Value::as_str) {
+    let (kind, oauth) = match method.get("type").and_then(Value::as_str) {
         Some("source_config") => {
             if method.contains_key("oauth") {
                 return Err(ManifestError::validation(format!(
                     "manifest input '{input_key}' source_config credential method must not contain oauth"
                 )));
             }
-            Ok(ManifestCredentialMethod {
-                kind: ManifestCredentialMethodKind::SourceConfig,
-                label,
-                description,
-                hint,
-                oauth: None,
-            })
+            (ManifestCredentialMethodKind::SourceConfig, None)
         }
         Some("oauth") => {
             let oauth = method
@@ -679,21 +668,26 @@ fn parse_credential_method(
                     ))
                 })
                 .and_then(|oauth| parse_oauth(input_key, index, oauth))?;
-            Ok(ManifestCredentialMethod {
-                kind: ManifestCredentialMethodKind::OAuth,
-                label,
-                description,
-                hint,
-                oauth: Some(oauth),
-            })
+            (ManifestCredentialMethodKind::OAuth, Some(oauth))
         }
-        Some(other) => Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' credential method has unsupported type '{other}'"
-        ))),
-        None => Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' credential method is missing type"
-        ))),
-    }
+        Some(other) => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' credential method has unsupported type '{other}'"
+            )));
+        }
+        None => {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' credential method is missing type"
+            )));
+        }
+    };
+    Ok(ManifestCredentialMethod {
+        kind,
+        label,
+        description,
+        hint,
+        oauth,
+    })
 }
 
 fn parse_oauth(
@@ -701,11 +695,11 @@ fn parse_oauth(
     method_index: usize,
     value: &Value,
 ) -> Result<ManifestOAuthCredentialSpec> {
-    let oauth = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' credential.methods[{method_index}].oauth must be a mapping"
-        ))
-    })?;
+    let oauth = input_mapping(
+        input_key,
+        &format!("credential.methods[{method_index}].oauth"),
+        value,
+    )?;
     let flow = oauth
         .get("flow")
         .ok_or_else(|| {
@@ -803,11 +797,7 @@ fn parse_redirect_uri_port_mode(
 }
 
 fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowSpec> {
-    let flow = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.flow must be a mapping"
-        ))
-    })?;
+    let flow = input_mapping(input_key, "oauth.flow", value)?;
     let kind = match flow.get("type").and_then(Value::as_str) {
         Some("authorization_code") => ManifestOAuthFlowKind::AuthorizationCode,
         Some("device_code") => ManifestOAuthFlowKind::DeviceCode,
@@ -849,11 +839,7 @@ fn parse_oauth_flow(input_key: &str, value: &Value) -> Result<ManifestOAuthFlowS
 }
 
 fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthClientSpec> {
-    let client = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client must be a mapping"
-        ))
-    })?;
+    let client = input_mapping(input_key, "oauth.client", value)?;
     let id = client
         .get("id")
         .ok_or_else(|| {
@@ -875,11 +861,7 @@ fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthCli
 }
 
 fn parse_oauth_client_id(input_key: &str, value: &Value) -> Result<ManifestOAuthClientIdSpec> {
-    let id = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client.id must be a mapping"
-        ))
-    })?;
+    let id = input_mapping(input_key, "oauth.client.id", value)?;
     let default = id
         .get("default")
         .and_then(Value::as_str)
@@ -903,11 +885,7 @@ fn parse_oauth_client_secret(
     input_key: &str,
     value: &Value,
 ) -> Result<ManifestOAuthClientSecretSpec> {
-    let secret = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client.secret must be a mapping"
-        ))
-    })?;
+    let secret = input_mapping(input_key, "oauth.client.secret", value)?;
     let input = required_string(secret, "input", input_key, "oauth.client.secret")?;
     validate_input_key("oauth client secret input key", &input)?;
     let transport = match secret.get("transport").and_then(Value::as_str) {
@@ -926,11 +904,7 @@ fn parse_oauth_client_secret(
 }
 
 fn parse_oauth_scopes(input_key: &str, value: &Value) -> Result<ManifestOAuthScopesSpec> {
-    let scopes = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.scopes must be a mapping"
-        ))
-    })?;
+    let scopes = input_mapping(input_key, "oauth.scopes", value)?;
     let scope = scopes
         .get("scope")
         .ok_or_else(|| {
@@ -943,11 +917,7 @@ fn parse_oauth_scopes(input_key: &str, value: &Value) -> Result<ManifestOAuthSco
 }
 
 fn parse_oauth_scope(input_key: &str, value: &Value) -> Result<ManifestOAuthScopeSpec> {
-    let scope = value.as_object().ok_or_else(|| {
-        ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.scopes.scope must be a mapping"
-        ))
-    })?;
+    let scope = input_mapping(input_key, "oauth.scopes.scope", value)?;
     let delimiter = match scope.get("delimiter").and_then(Value::as_str) {
         Some("space") => ManifestOAuthScopeDelimiter::Space,
         Some("comma") => ManifestOAuthScopeDelimiter::Comma,
@@ -985,6 +955,18 @@ fn parse_oauth_scope(input_key: &str, value: &Value) -> Result<ManifestOAuthScop
         )));
     }
     Ok(ManifestOAuthScopeSpec { delimiter, values })
+}
+
+fn input_mapping<'a>(
+    input_key: &str,
+    context: &str,
+    value: &'a Value,
+) -> Result<&'a Map<String, Value>> {
+    value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' {context} must be a mapping"
+        ))
+    })
 }
 
 fn required_string(
@@ -1033,44 +1015,53 @@ fn validate_oauth_flow_fields(
     has_client_secret: bool,
 ) -> Result<()> {
     match flow.kind {
-        ManifestOAuthFlowKind::AuthorizationCode => {
-            if redirect_uri.is_none() {
-                return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' authorization_code oauth method is missing redirect_uri"
-                )));
-            }
-            if authorization_url.is_none() {
-                return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' authorization_code oauth method is missing endpoints.authorization_url"
-                )));
-            }
-        }
-        ManifestOAuthFlowKind::DeviceCode => {
-            if redirect_uri.is_some() {
-                return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method must not declare redirect_uri"
-                )));
-            }
-            if has_redirect_uri_port_mode {
-                return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method must not declare redirect_uri_port_mode"
-                )));
-            }
-            if authorization_url.is_some() {
-                return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method must not declare endpoints.authorization_url"
-                )));
-            }
-            if device_authorization_url.is_none() {
-                return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method is missing endpoints.device_authorization_url"
-                )));
-            }
-            if has_client_secret {
-                return Err(ManifestError::validation(format!(
-                    "manifest input '{input_key}' device_code oauth method must not declare client.secret"
-                )));
-            }
+        ManifestOAuthFlowKind::AuthorizationCode => validate_oauth_flow_rules(
+            input_key,
+            &[
+                (
+                    redirect_uri.is_none(),
+                    "authorization_code oauth method is missing redirect_uri",
+                ),
+                (
+                    authorization_url.is_none(),
+                    "authorization_code oauth method is missing endpoints.authorization_url",
+                ),
+            ],
+        ),
+        ManifestOAuthFlowKind::DeviceCode => validate_oauth_flow_rules(
+            input_key,
+            &[
+                (
+                    redirect_uri.is_some(),
+                    "device_code oauth method must not declare redirect_uri",
+                ),
+                (
+                    has_redirect_uri_port_mode,
+                    "device_code oauth method must not declare redirect_uri_port_mode",
+                ),
+                (
+                    authorization_url.is_some(),
+                    "device_code oauth method must not declare endpoints.authorization_url",
+                ),
+                (
+                    device_authorization_url.is_none(),
+                    "device_code oauth method is missing endpoints.device_authorization_url",
+                ),
+                (
+                    has_client_secret,
+                    "device_code oauth method must not declare client.secret",
+                ),
+            ],
+        ),
+    }
+}
+
+fn validate_oauth_flow_rules(input_key: &str, rules: &[(bool, &str)]) -> Result<()> {
+    for (condition, message) in rules {
+        if *condition {
+            return Err(ManifestError::validation(format!(
+                "manifest input '{input_key}' {message}"
+            )));
         }
     }
     Ok(())
@@ -1106,21 +1097,15 @@ fn redirect_bind_port(
     let has_explicit_port = redirect_uri_has_explicit_port(raw);
     match port_mode {
         ManifestOAuthRedirectUriPortMode::Fixed if has_explicit_port => {
-            let port = url.port_or_known_default().ok_or_else(|| {
-                ManifestError::validation(format!(
-                    "{context} must include an explicit non-zero port when redirect_uri_port_mode is fixed"
-                ))
-            })?;
+            let port = url
+                .port_or_known_default()
+                .ok_or_else(|| fixed_redirect_port_error(context))?;
             if port == 0 {
-                return Err(ManifestError::validation(format!(
-                    "{context} must include an explicit non-zero port when redirect_uri_port_mode is fixed"
-                )));
+                return Err(fixed_redirect_port_error(context));
             }
             Ok(ManifestOAuthRedirectBindPort::Fixed(port))
         }
-        ManifestOAuthRedirectUriPortMode::Fixed => Err(ManifestError::validation(format!(
-            "{context} must include an explicit non-zero port when redirect_uri_port_mode is fixed"
-        ))),
+        ManifestOAuthRedirectUriPortMode::Fixed => Err(fixed_redirect_port_error(context)),
         ManifestOAuthRedirectUriPortMode::Random if !has_explicit_port || url.port() == Some(0) => {
             Ok(ManifestOAuthRedirectBindPort::Random)
         }
@@ -1128,6 +1113,12 @@ fn redirect_bind_port(
             "{context} must omit the port or use port 0 when redirect_uri_port_mode is random"
         ))),
     }
+}
+
+fn fixed_redirect_port_error(context: &str) -> ManifestError {
+    ManifestError::validation(format!(
+        "{context} must include an explicit non-zero port when redirect_uri_port_mode is fixed"
+    ))
 }
 
 fn redirect_uri_has_explicit_port(raw: &str) -> bool {
@@ -1153,34 +1144,37 @@ fn validate_input_key(label: &str, value: &str) -> Result<()> {
         return Err(ManifestError::validation(format!("missing {label}")));
     }
     if trimmed != value {
-        return Err(ManifestError::validation(format!(
-            "{label} must not contain leading or trailing whitespace"
-        )));
+        return Err(input_key_error(
+            label,
+            "must not contain leading or trailing whitespace",
+        ));
     }
     if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err(ManifestError::validation(format!(
-            "{label} must not contain '/' or '\\\\'"
-        )));
+        return Err(input_key_error(label, "must not contain '/' or '\\\\'"));
     }
     if trimmed.contains('=') || trimmed.contains('\n') || trimmed.contains('\r') {
-        return Err(ManifestError::validation(format!(
-            "{label} must not contain '=', '\\n', or '\\r'"
-        )));
+        return Err(input_key_error(
+            label,
+            "must not contain '=', '\\n', or '\\r'",
+        ));
     }
     if trimmed.starts_with('#') {
-        return Err(ManifestError::validation(format!(
-            "{label} must not start with '#'"
-        )));
+        return Err(input_key_error(label, "must not start with '#'"));
     }
     if let Some(prefix) = RESERVED_INPUT_KEY_PREFIXES
         .iter()
         .find(|prefix| trimmed.starts_with(**prefix))
     {
-        return Err(ManifestError::validation(format!(
-            "{label} must not start with reserved prefix '{prefix}'"
-        )));
+        return Err(input_key_error(
+            label,
+            &format!("must not start with reserved prefix '{prefix}'"),
+        ));
     }
     Ok(())
+}
+
+fn input_key_error(label: &str, reason: &str) -> ManifestError {
+    ManifestError::validation(format!("{label} {reason}"))
 }
 
 pub(crate) fn validate_input_references(root: &Value, inputs: &[ManifestInputSpec]) -> Result<()> {
@@ -1289,14 +1283,15 @@ mod tests {
     )]
 
     use super::{
-        ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
-        ManifestOAuthClientIdSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
-        ManifestOAuthCredentialSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
-        ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
-        ManifestOAuthScopeDelimiter, collect_source_inputs_value,
+        ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind,
+        ManifestInputSpec, ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec,
+        ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
+        ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, collect_source_inputs_value,
     };
+    use crate::test_support::assert_error_contains;
     use crate::{ManifestError, Result};
     use std::collections::BTreeMap;
+    use std::fmt::Write as _;
 
     fn collect(raw: &str) -> Result<Vec<ManifestInputSpec>> {
         let root: serde_json::Value =
@@ -1353,6 +1348,16 @@ tables: []
     }
 
     fn manifest_with_input(raw_input: &str) -> String {
+        manifest_with_input_and_body(
+            raw_input,
+            r"
+base_url: https://api.example.com
+tables: []
+",
+        )
+    }
+
+    fn manifest_with_input_and_body(raw_input: &str, body: &str) -> String {
         format!(
             r"
 name: demo
@@ -1360,10 +1365,7 @@ version: 1.0.0
 dsl_version: 3
 backend: http
 inputs:
-{raw_input}
-base_url: https://api.example.com
-tables: []
-"
+{raw_input}{body}"
         )
     }
 
@@ -1397,20 +1399,140 @@ tables: []
         ))
     }
 
+    const DEFAULT_OAUTH_CLIENT: &str = r"
+              id:
+                default: default-client
+";
+    const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:53682/oauth/callback";
+    const DEFAULT_REDIRECT_URI_LINE: &str =
+        "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n";
+
+    fn default_oauth_input() -> String {
+        oauth_input(DEFAULT_OAUTH_CLIENT)
+    }
+
+    fn default_oauth_input_replacing(from: &str, to: &str) -> String {
+        default_oauth_input().replace(from, to)
+    }
+
+    fn default_oauth_error(from: &str, to: &str, expectation: &str) -> ManifestError {
+        collect(&default_oauth_input_replacing(from, to)).expect_err(expectation)
+    }
+
+    fn expect_collect_error(raw: &str, expectation: &str, expected: &str) {
+        let error = collect(raw).expect_err(expectation);
+        assert_error_contains(&error, expected);
+    }
+
+    fn auth_header_source(from: &str, key: &str) -> String {
+        format!(
+            r"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: {from}
+      key: {key}
+tables: []
+"
+        )
+    }
+
+    fn auth_header_one_of_sources(values: &[(&str, &str)]) -> String {
+        let mut value_items = String::new();
+        for (from, key) in values {
+            writeln!(
+                &mut value_items,
+                "        - from: {from}\n          key: {key}"
+            )
+            .expect("write value source");
+        }
+        format!(
+            r"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: one_of
+      values:
+{value_items}tables: []
+"
+        )
+    }
+
+    fn request_header_source(name: &str, from: &str, key: &str) -> String {
+        format!(
+            r"
+request_headers:
+  - name: {name}
+    from: {from}
+    key: {key}
+tables: []
+"
+        )
+    }
+
+    fn first_credential_method(inputs: &[ManifestInputSpec]) -> &ManifestCredentialMethod {
+        let credential = inputs[0].credential.as_ref().expect("credential");
+        assert_eq!(credential.methods.len(), 1);
+        &credential.methods[0]
+    }
+
+    fn first_oauth(inputs: &[ManifestInputSpec]) -> &ManifestOAuthCredentialSpec {
+        let method = first_credential_method(inputs);
+        assert_eq!(method.kind, ManifestCredentialMethodKind::OAuth);
+        method.oauth.as_ref().expect("oauth")
+    }
+
+    fn collect_oauth(raw: &str) -> Result<ManifestOAuthCredentialSpec> {
+        collect(raw).map(|inputs| {
+            inputs
+                .iter()
+                .find_map(|input| input.credential.as_ref()?.methods.first()?.oauth.as_ref())
+                .expect("oauth")
+                .clone()
+        })
+    }
+
+    fn tenant_endpoint_oauth_input() -> String {
+        default_oauth_input()
+            .replace(
+                "  API_TOKEN:\n",
+                "  OUTLOOK_TENANT_ID:\n    kind: variable\n    default: organizations\n  API_TOKEN:\n",
+            )
+            .replace(
+                "https://provider.example.com/oauth/authorize",
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize",
+            )
+            .replace(
+                "https://provider.example.com/oauth/token",
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+            )
+    }
+
+    fn tenant_endpoint_oauth() -> ManifestOAuthCredentialSpec {
+        collect_oauth(&tenant_endpoint_oauth_input().replace(
+            "              token_url: https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+            "              device_authorization_url: https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/devicecode\n              token_url: https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+        ))
+        .expect("tenant endpoint oauth")
+    }
+
+    fn outlook_tenant_inputs() -> BTreeMap<String, String> {
+        BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())])
+    }
+
     #[test]
     fn reserved_input_key_prefix_is_rejected() {
-        let error = collect(&manifest_with_input(
-            r"
+        expect_collect_error(
+            &manifest_with_input(
+                r"
   __coral.API_TOKEN:
     kind: secret
 ",
-        ))
-        .expect_err("reserved input key");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must not start with reserved prefix '__coral'")
+            ),
+            "reserved input key",
+            "must not start with reserved prefix '__coral'",
         );
     }
 
@@ -1428,14 +1550,10 @@ tables: []
 ",
         ))
         .expect("inputs");
-        let credential = inputs[0].credential.as_ref().expect("credential");
-        assert_eq!(credential.methods.len(), 1);
-        assert_eq!(
-            credential.methods[0].kind,
-            ManifestCredentialMethodKind::SourceConfig
-        );
-        assert_eq!(credential.methods[0].label.as_deref(), Some("Paste token"));
-        assert!(credential.methods[0].oauth.is_none());
+        let method = first_credential_method(&inputs);
+        assert_eq!(method.kind, ManifestCredentialMethodKind::SourceConfig);
+        assert_eq!(method.label.as_deref(), Some("Paste token"));
+        assert!(method.oauth.is_none());
     }
 
     #[test]
@@ -1455,16 +1573,7 @@ tables: []
 
     #[test]
     fn parses_oauth_public_client_with_default_client_id() {
-        let inputs = collect(&oauth_input(
-            r"
-              id:
-                default: default-client
-",
-        ))
-        .expect("inputs");
-        let method = &inputs[0].credential.as_ref().expect("credential").methods[0];
-        assert_eq!(method.kind, ManifestCredentialMethodKind::OAuth);
-        let oauth = method.oauth.as_ref().expect("oauth");
+        let oauth = collect_oauth(&default_oauth_input()).expect("inputs");
         assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::AuthorizationCode);
         assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Required);
         assert_eq!(
@@ -1491,61 +1600,34 @@ tables: []
     }
 
     #[test]
-    fn parses_random_redirect_uri_port_mode_without_explicit_port() {
-        let inputs = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+    fn parses_random_redirect_uri_port_modes() {
+        for (name, from, to) in [
+            (
+                "random mode without explicit port",
+                DEFAULT_REDIRECT_URI_LINE,
                 "            redirect_uri: http://127.0.0.1/oauth/callback\n            redirect_uri_port_mode: random\n",
             ),
-        )
-        .expect("inputs");
-        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
-            .oauth
-            .as_ref()
-            .expect("oauth");
-        assert_eq!(
-            oauth.redirect_uri_port_mode,
-            ManifestOAuthRedirectUriPortMode::Random
-        );
-        assert_eq!(
-            oauth.redirect_bind_port().expect("bind port"),
-            ManifestOAuthRedirectBindPort::Random
-        );
-    }
-
-    #[test]
-    fn infers_random_redirect_uri_port_mode_from_explicit_zero_port() {
-        let inputs = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "http://127.0.0.1:53682/oauth/callback",
+            (
+                "inferred random mode from explicit zero port",
+                DEFAULT_REDIRECT_URI,
                 "http://127.0.0.1:0/oauth/callback",
             ),
-        )
-        .expect("inputs");
-        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
-            .oauth
-            .as_ref()
-            .expect("oauth");
-        assert_eq!(
-            oauth.redirect_uri_port_mode,
-            ManifestOAuthRedirectUriPortMode::Random
-        );
-        assert_eq!(
-            oauth.redirect_bind_port().expect("bind port"),
-            ManifestOAuthRedirectBindPort::Random
-        );
+        ] {
+            let oauth =
+                collect_oauth(&default_oauth_input_replacing(from, to)).unwrap_or_else(|error| {
+                    panic!("{name} should parse: {error}");
+                });
+            assert_eq!(
+                oauth.redirect_uri_port_mode,
+                ManifestOAuthRedirectUriPortMode::Random,
+                "{name}"
+            );
+            assert_eq!(
+                oauth.redirect_bind_port().expect("bind port"),
+                ManifestOAuthRedirectBindPort::Random,
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1576,10 +1658,7 @@ tables: []
 ",
         ))
         .expect("inputs");
-        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
-            .oauth
-            .as_ref()
-            .expect("oauth");
+        let oauth = first_oauth(&inputs);
         assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::DeviceCode);
         assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Disabled);
         assert!(oauth.redirect_uri.is_none());
@@ -1592,102 +1671,86 @@ tables: []
     }
 
     #[test]
-    fn parses_oauth_public_client_with_input_client_id() {
-        let inputs = collect(&oauth_input(
-            r"
+    fn parses_oauth_public_client_id_variants() {
+        for (client, expected_default, name) in [
+            (
+                r"
               id:
                 input: OAUTH_CLIENT_ID
 ",
-        ))
-        .expect("inputs");
-        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
-            .oauth
-            .as_ref()
-            .expect("oauth");
-        assert_eq!(oauth.client.id.input.as_deref(), Some("OAUTH_CLIENT_ID"));
-        assert!(oauth.client.id.default.is_none());
-    }
-
-    #[test]
-    fn parses_oauth_public_client_with_default_and_input_override() {
-        let inputs = collect(&oauth_input(
-            r"
+                None,
+                "input-only client id",
+            ),
+            (
+                r"
               id:
                 default: default-client
                 input: OAUTH_CLIENT_ID
 ",
-        ))
-        .expect("inputs");
-        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
-            .oauth
-            .as_ref()
-            .expect("oauth");
-        assert_eq!(oauth.client.id.default.as_deref(), Some("default-client"));
-        assert_eq!(oauth.client.id.input.as_deref(), Some("OAUTH_CLIENT_ID"));
+                Some("default-client"),
+                "default client id with input override",
+            ),
+        ] {
+            let inputs = collect(&oauth_input(client)).unwrap_or_else(|error| {
+                panic!("{name} should parse: {error}");
+            });
+            let oauth = first_oauth(&inputs);
+            assert_eq!(
+                oauth.client.id.default.as_deref(),
+                expected_default,
+                "{name}"
+            );
+            assert_eq!(
+                oauth.client.id.input.as_deref(),
+                Some("OAUTH_CLIENT_ID"),
+                "{name}"
+            );
+        }
     }
 
     #[test]
-    fn parses_confidential_oauth_client_with_basic_auth() {
-        let inputs = collect(&oauth_input(
-            r"
+    fn parses_confidential_oauth_client_secret_transports() {
+        for (transport, expected) in [
+            ("basic_auth", ManifestOAuthClientSecretTransport::BasicAuth),
+            (
+                "request_body",
+                ManifestOAuthClientSecretTransport::RequestBody,
+            ),
+        ] {
+            let inputs = collect(&oauth_input(&format!(
+                r"
               id:
                 input: OAUTH_CLIENT_ID
               secret:
                 input: OAUTH_CLIENT_SECRET
-                transport: basic_auth
-",
-        ))
-        .expect("inputs");
-        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
-            .oauth
-            .as_ref()
-            .expect("oauth");
-        assert_eq!(
-            oauth.client.secret.as_ref().expect("secret").transport,
-            ManifestOAuthClientSecretTransport::BasicAuth
-        );
-    }
-
-    #[test]
-    fn parses_confidential_oauth_client_with_request_body() {
-        let inputs = collect(&oauth_input(
-            r"
-              id:
-                input: OAUTH_CLIENT_ID
-              secret:
-                input: OAUTH_CLIENT_SECRET
-                transport: request_body
-",
-        ))
-        .expect("inputs");
-        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
-            .oauth
-            .as_ref()
-            .expect("oauth");
-        assert_eq!(
-            oauth.client.secret.as_ref().expect("secret").transport,
-            ManifestOAuthClientSecretTransport::RequestBody
-        );
+                transport: {transport}
+"
+            )))
+            .unwrap_or_else(|error| panic!("{transport} should parse: {error}"));
+            let oauth = first_oauth(&inputs);
+            assert_eq!(
+                oauth.client.secret.as_ref().expect("secret").transport,
+                expected,
+                "{transport}"
+            );
+        }
     }
 
     #[test]
     fn oauth_client_secret_transport_labels_are_canonical() {
-        assert_eq!(
-            ManifestOAuthClientSecretTransport::BasicAuth.label(),
-            "basic_auth"
-        );
-        assert_eq!(
-            ManifestOAuthClientSecretTransport::RequestBody.label(),
-            "request_body"
-        );
-        assert_eq!(
-            ManifestOAuthClientSecretTransport::from_label("basic_auth"),
-            Some(ManifestOAuthClientSecretTransport::BasicAuth)
-        );
-        assert_eq!(
-            ManifestOAuthClientSecretTransport::from_label("request_body"),
-            Some(ManifestOAuthClientSecretTransport::RequestBody)
-        );
+        for (transport, label) in [
+            (ManifestOAuthClientSecretTransport::BasicAuth, "basic_auth"),
+            (
+                ManifestOAuthClientSecretTransport::RequestBody,
+                "request_body",
+            ),
+        ] {
+            assert_eq!(transport.label(), label);
+            assert_eq!(
+                ManifestOAuthClientSecretTransport::from_label(label),
+                Some(transport)
+            );
+        }
         assert_eq!(
             ManifestOAuthClientSecretTransport::from_label("unsupported"),
             None
@@ -1695,87 +1758,87 @@ tables: []
     }
 
     #[test]
-    fn rejects_credential_methods_on_variable_inputs() {
-        let error = collect(&manifest_with_input(
-            r"
+    fn rejects_invalid_oauth_credential_configurations() {
+        for (case, manifest, expected) in [
+            (
+                "credential methods on variable input",
+                manifest_with_input(
+                    r"
   API_BASE:
     kind: variable
     credential:
       methods:
         - type: source_config
 ",
-        ))
-        .expect_err("variable credential should fail");
-        assert!(error.to_string().contains("is not a secret"));
-    }
-
-    #[test]
-    fn rejects_unknown_credential_method_type() {
-        let error = collect(&manifest_with_input(
-            r"
+                ),
+                "is not a secret",
+            ),
+            (
+                "unknown credential method type",
+                manifest_with_input(
+                    r"
   API_TOKEN:
     kind: secret
     credential:
       methods:
         - type: magic
 ",
-        ))
-        .expect_err("unknown method should fail");
-        assert!(error.to_string().contains("unsupported type 'magic'"));
-    }
-
-    #[test]
-    fn rejects_unsupported_pkce_mode() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace("pkce: required", "pkce: optional"),
-        )
-        .expect_err("optional pkce should fail");
-        assert!(error.to_string().contains("unsupported value 'optional'"));
-    }
-
-    #[test]
-    fn rejects_missing_redirect_uri() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
-                "",
+                ),
+                "unsupported type 'magic'",
             ),
-        )
-        .expect_err("missing redirect uri should fail");
-        assert!(error.to_string().contains("missing redirect_uri"));
+            (
+                "unsupported pkce mode",
+                default_oauth_input_replacing("pkce: required", "pkce: optional"),
+                "unsupported value 'optional'",
+            ),
+            (
+                "malformed oauth endpoint URL",
+                default_oauth_input_replacing(
+                    "https://provider.example.com/oauth/authorize",
+                    "not a url",
+                ),
+                "authorization_url is invalid",
+            ),
+            (
+                "secret endpoint template reference",
+                default_oauth_input_replacing(
+                    "https://provider.example.com/oauth/token",
+                    "https://provider.example.com/{{input.API_TOKEN}}/oauth/token",
+                ),
+                "is referenced by oauth.endpoints.token_url but is not a variable",
+            ),
+            (
+                "runtime token endpoint template reference",
+                default_oauth_input_replacing(
+                    "https://provider.example.com/oauth/token",
+                    "https://provider.example.com/{{filter.tenant}}/oauth/token",
+                ),
+                "only support source variable input tokens",
+            ),
+            (
+                "client secret without transport",
+                oauth_input(
+                    r"
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+",
+                ),
+                "missing transport",
+            ),
+        ] {
+            expect_collect_error(&manifest, case, expected);
+        }
     }
 
     #[test]
     fn parses_redirect_uri_with_explicit_default_http_port() {
-        let inputs = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "http://127.0.0.1:53682/oauth/callback",
-                "http://127.0.0.1:80/oauth/callback",
-            ),
-        )
+        let oauth = collect_oauth(&default_oauth_input_replacing(
+            DEFAULT_REDIRECT_URI,
+            "http://127.0.0.1:80/oauth/callback",
+        ))
         .expect("explicit default port should pass");
-        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
-            .oauth
-            .as_ref()
-            .expect("oauth");
         assert_eq!(
             oauth.redirect_uri.as_deref(),
             Some("http://127.0.0.1:80/oauth/callback")
@@ -1787,140 +1850,100 @@ tables: []
     }
 
     #[test]
-    fn rejects_redirect_uri_without_explicit_port() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "http://127.0.0.1:53682/oauth/callback",
+    fn rejects_invalid_redirect_uri_configurations() {
+        for (name, from, to, expected) in [
+            (
+                "missing redirect uri",
+                DEFAULT_REDIRECT_URI_LINE,
+                "",
+                "missing redirect_uri",
+            ),
+            (
+                "missing port",
+                DEFAULT_REDIRECT_URI,
                 "http://127.0.0.1/oauth/callback",
+                "explicit non-zero port",
             ),
-        )
-        .expect_err("missing port should fail");
-        assert!(error.to_string().contains("explicit non-zero port"));
-    }
-
-    #[test]
-    fn rejects_random_redirect_uri_port_mode_with_explicit_nonzero_port() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+            (
+                "random mode with explicit nonzero port",
+                DEFAULT_REDIRECT_URI_LINE,
                 "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n            redirect_uri_port_mode: random\n",
+                "must omit the port",
             ),
-        )
-        .expect_err("random port with explicit nonzero port should fail");
-        assert!(error.to_string().contains("must omit the port"));
-    }
-
-    #[test]
-    fn rejects_random_redirect_uri_port_mode_with_explicit_default_http_port() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+            (
+                "random mode with explicit default port",
+                DEFAULT_REDIRECT_URI_LINE,
                 "            redirect_uri: http://127.0.0.1:80/oauth/callback\n            redirect_uri_port_mode: random\n",
+                "must omit the port",
             ),
-        )
-        .expect_err("random port with explicit default port should fail");
-        assert!(error.to_string().contains("must omit the port"));
-    }
-
-    #[test]
-    fn rejects_fixed_redirect_uri_port_mode_with_explicit_zero_port() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n",
+            (
+                "fixed mode with explicit zero port",
+                DEFAULT_REDIRECT_URI_LINE,
                 "            redirect_uri: http://127.0.0.1:0/oauth/callback\n            redirect_uri_port_mode: fixed\n",
+                "explicit non-zero port",
             ),
-        )
-        .expect_err("fixed port with explicit zero port should fail");
-        assert!(error.to_string().contains("explicit non-zero port"));
-    }
-
-    #[test]
-    fn rejects_non_loopback_redirect_uri() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "http://127.0.0.1:53682/oauth/callback",
+            (
+                "non-loopback redirect",
+                DEFAULT_REDIRECT_URI,
                 "http://example.com:53682/oauth/callback",
+                "loopback host",
             ),
-        )
-        .expect_err("non-loopback redirect should fail");
-        assert!(error.to_string().contains("loopback host"));
+        ] {
+            let error = default_oauth_error(from, to, name);
+            assert_error_contains(&error, expected);
+        }
     }
 
     #[test]
-    fn rejects_malformed_oauth_endpoint_urls() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace("https://provider.example.com/oauth/authorize", "not a url"),
-        )
-        .expect_err("bad endpoint should fail");
-        assert!(error.to_string().contains("authorization_url is invalid"));
+    fn validates_oauth_endpoint_templates_with_declared_defaults() {
+        expect_collect_error(
+            &tenant_endpoint_oauth_input()
+                .replace(
+                    "OUTLOOK_TENANT_ID:\n    kind: variable\n    default: organizations",
+                    "OUTLOOK_TENANT_ID:\n    kind: variable\n    default: foo bar.com",
+                )
+                .replace(
+                    "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+                    "https://{{input.OUTLOOK_TENANT_ID}}/oauth/token",
+                ),
+            "invalid default-rendered endpoint should fail",
+            "oauth.endpoints.token_url is invalid",
+        );
     }
 
     #[test]
-    fn parses_oauth_endpoint_templates_referencing_variables() {
-        let inputs = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "  API_TOKEN:\n",
-                "  OUTLOOK_TENANT_ID:\n    kind: variable\n    default: organizations\n  API_TOKEN:\n",
-            )
-            .replace(
-                "https://provider.example.com/oauth/authorize",
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize",
-            )
-            .replace(
-                "https://provider.example.com/oauth/token",
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
-            ),
+    fn defers_oauth_endpoint_url_parsing_for_required_variables() {
+        collect(
+            &tenant_endpoint_oauth_input()
+                .replace(
+                    "OUTLOOK_TENANT_ID:\n    kind: variable\n    default: organizations",
+                    "OUTLOOK_TENANT_ID:\n    kind: variable",
+                )
+                .replace(
+                    "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+                    "https://provider.example.com:{{input.OUTLOOK_TENANT_ID}}/oauth/token",
+                ),
         )
-        .expect("templated endpoint");
-        let oauth = inputs
-            .iter()
-            .find(|input| input.key == "API_TOKEN")
-            .and_then(|input| input.credential.as_ref())
-            .and_then(|credential| credential.methods[0].oauth.as_ref())
-            .expect("oauth");
+        .expect("required variable endpoint parsing should be deferred");
+    }
 
+    #[test]
+    fn endpoint_urls_reject_inline_template_defaults() {
+        let mut oauth = tenant_endpoint_oauth();
+        oauth.authorization_url = Some(
+            "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID|organizations}}/oauth2/v2.0/authorize"
+                .to_string(),
+        );
+        let error = oauth
+            .endpoint_urls(&outlook_tenant_inputs())
+            .expect_err("inline endpoint defaults should fail at the public render boundary");
+
+        assert_error_contains(&error, "must declare defaults under top-level inputs");
+    }
+
+    #[test]
+    fn endpoint_urls_render_source_input_templates() {
+        let oauth = tenant_endpoint_oauth();
         assert_eq!(
             oauth.authorization_url.as_deref(),
             Some(
@@ -1928,180 +1951,19 @@ tables: []
             )
         );
         assert_eq!(
+            oauth.device_authorization_url.as_deref(),
+            Some(
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/devicecode"
+            )
+        );
+        assert_eq!(
             oauth.token_url,
             "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
         );
-    }
 
-    #[test]
-    fn validates_oauth_endpoint_templates_with_declared_defaults() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "  API_TOKEN:\n",
-                "  OUTLOOK_HOST:\n    kind: variable\n    default: foo bar.com\n  API_TOKEN:\n",
-            )
-            .replace(
-                "https://provider.example.com/oauth/token",
-                "https://{{input.OUTLOOK_HOST}}/oauth/token",
-            ),
-        )
-        .expect_err("invalid default-rendered endpoint should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("oauth.endpoints.token_url is invalid"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn defers_oauth_endpoint_url_parsing_for_required_variables() {
-        collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "  API_TOKEN:\n",
-                "  OUTLOOK_PORT:\n    kind: variable\n  API_TOKEN:\n",
-            )
-            .replace(
-                "https://provider.example.com/oauth/token",
-                "https://provider.example.com:{{input.OUTLOOK_PORT}}/oauth/token",
-            ),
-        )
-        .expect("required variable endpoint parsing should be deferred");
-    }
-
-    #[test]
-    fn rejects_oauth_endpoint_templates_referencing_secrets() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "https://provider.example.com/oauth/token",
-                "https://provider.example.com/{{input.API_TOKEN}}/oauth/token",
-            ),
-        )
-        .expect_err("secret endpoint reference should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("is referenced by oauth.endpoints.token_url but is not a variable"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_oauth_endpoint_templates_referencing_runtime_tokens() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
-                "https://provider.example.com/oauth/token",
-                "https://provider.example.com/{{filter.tenant}}/oauth/token",
-            ),
-        )
-        .expect_err("runtime token endpoint reference should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("only support source variable input tokens"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn endpoint_urls_reject_inline_template_defaults() {
-        let oauth = ManifestOAuthCredentialSpec {
-            flow: ManifestOAuthFlowSpec {
-                kind: ManifestOAuthFlowKind::AuthorizationCode,
-                pkce: ManifestOAuthPkceMode::Disabled,
-            },
-            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
-            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
-            authorization_url: Some(
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID|organizations}}/oauth2/v2.0/authorize"
-                    .to_string(),
-            ),
-            device_authorization_url: None,
-            token_url:
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
-                    .to_string(),
-            client: ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
-            scopes: None,
-        };
-        let source_inputs =
-            BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
-        let error = oauth
-            .endpoint_urls(&source_inputs)
-            .expect_err("inline endpoint defaults should fail at the public render boundary");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must declare defaults under top-level inputs"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn endpoint_urls_render_source_input_templates() {
-        let oauth = ManifestOAuthCredentialSpec {
-            flow: ManifestOAuthFlowSpec {
-                kind: ManifestOAuthFlowKind::AuthorizationCode,
-                pkce: ManifestOAuthPkceMode::Disabled,
-            },
-            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
-            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
-            authorization_url: Some(
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize"
-                    .to_string(),
-            ),
-            device_authorization_url: Some(
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/devicecode"
-                    .to_string(),
-            ),
-            token_url:
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
-                    .to_string(),
-            client: ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
-            scopes: None,
-        };
-        let source_inputs =
-            BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
-        let endpoints = oauth.endpoint_urls(&source_inputs).expect("endpoint urls");
+        let endpoints = oauth
+            .endpoint_urls(&outlook_tenant_inputs())
+            .expect("endpoint urls");
 
         assert_eq!(
             endpoints.authorization_url.as_deref(),
@@ -2115,45 +1977,6 @@ tables: []
             endpoints.token_url,
             "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
         );
-    }
-
-    #[test]
-    fn rejects_client_secret_without_transport() {
-        let error = collect(&oauth_input(
-            r"
-              id:
-                input: OAUTH_CLIENT_ID
-              secret:
-                input: OAUTH_CLIENT_SECRET
-",
-        ))
-        .expect_err("missing transport should fail");
-        assert!(error.to_string().contains("missing transport"));
-    }
-
-    #[test]
-    fn from_input_value_source_resolves_against_declarations() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
-  GITHUB_TOKEN:
-    kind: secret
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: input
-      key: GITHUB_TOKEN
-tables: []
-";
-        let inputs = collect(manifest).expect("inputs");
-        let [input] = inputs.as_slice() else {
-            panic!("expected one input, got {inputs:?}");
-        };
-        assert_eq!(input.kind, ManifestInputKind::Secret);
     }
 
     #[test]
@@ -2180,235 +2003,149 @@ backend: http
 base_url: "{{input.GITHUB_API_BASE}}"
 tables: []
 "#;
-        let error = collect(manifest).expect_err("undeclared reference");
-        assert!(
-            error
-                .to_string()
-                .contains("referenced but not declared under top-level inputs"),
-            "unexpected error: {error}"
+        expect_collect_error(
+            manifest,
+            "undeclared reference",
+            "referenced but not declared under top-level inputs",
         );
     }
 
     #[test]
     fn undeclared_reference_is_rejected() {
-        let manifest = r#"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
+        let manifest = manifest_with_input_and_body(
+            r"
   GITHUB_TOKEN:
     kind: secret
+",
+            r#"
 base_url: "{{input.GITHUB_API_BASE}}"
 tables: []
-"#;
-        let error = collect(manifest).expect_err("undeclared input");
-        assert!(
-            error
-                .to_string()
-                .contains("referenced but not declared under top-level inputs")
+"#,
+        );
+        expect_collect_error(
+            &manifest,
+            "undeclared input",
+            "referenced but not declared under top-level inputs",
         );
     }
 
     #[test]
-    fn one_of_value_source_input_references_resolve_against_declarations() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
+    fn value_source_references_resolve_against_declarations() {
+        for (name, raw_input, body) in [
+            (
+                "auth input source",
+                r"
+  GITHUB_TOKEN:
+    kind: secret
+",
+                auth_header_source("input", "GITHUB_TOKEN"),
+            ),
+            (
+                "auth one_of source",
+                r"
   API_KEY:
     kind: secret
     required: false
   OAUTH_TOKEN:
     kind: secret
     required: false
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: one_of
-      values:
-        - from: input
-          key: API_KEY
-        - from: bearer
-          key: OAUTH_TOKEN
-tables: []
-";
-        let inputs = collect(manifest).expect("inputs");
-        assert_eq!(inputs.len(), 2);
-    }
-
-    #[test]
-    fn one_of_value_source_undeclared_input_references_are_rejected() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
-  API_KEY:
-    kind: secret
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: one_of
-      values:
-        - from: input
-          key: API_KEY
-        - from: bearer
-          key: OAUTH_TOKEN
-tables: []
-";
-        let error = collect(manifest).expect_err("undeclared input");
-        assert!(
-            error
-                .to_string()
-                .contains("referenced but not declared under top-level inputs")
-        );
-    }
-
-    #[test]
-    fn from_bearer_value_source_resolves_against_declarations() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
+",
+                auth_header_one_of_sources(&[("input", "API_KEY"), ("bearer", "OAUTH_TOKEN")]),
+            ),
+            (
+                "auth bearer source",
+                r"
   OAUTH_TOKEN:
     kind: secret
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: bearer
-      key: OAUTH_TOKEN
-tables: []
-";
-        let inputs = collect(manifest).expect("bearer key should resolve as an input key");
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].key, "OAUTH_TOKEN");
-    }
-
-    #[test]
-    fn from_bearer_value_source_requires_secret_input() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
-  HEADER_VALUE:
-    kind: variable
-    default: not-secret
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: bearer
-      key: HEADER_VALUE
-tables: []
-";
-        let error = collect(manifest).expect_err("bearer key must point at a secret input");
-        let message = error.to_string();
-        assert!(
-            message.contains("bearer value source 'HEADER_VALUE' must reference a secret input"),
-            "unexpected error: {message}"
-        );
-    }
-
-    #[test]
-    fn auth_input_value_source_requires_secret_input() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
-  HEADER_VALUE:
-    kind: variable
-    default: not-secret
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: one_of
-      values:
-        - from: input
-          key: HEADER_VALUE
-tables: []
-";
-        let error = collect(manifest).expect_err("auth input key must point at a secret input");
-        let message = error.to_string();
-        assert!(
-            message
-                .contains("auth input value source 'HEADER_VALUE' must reference a secret input"),
-            "unexpected error: {message}"
-        );
-    }
-
-    #[test]
-    fn non_auth_input_value_source_allows_variable_input() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
+",
+                auth_header_source("bearer", "OAUTH_TOKEN"),
+            ),
+            (
+                "non-auth input source",
+                r"
   API_VERSION:
     kind: variable
     default: 2026-01-01
-request_headers:
-  - name: API-Version
-    from: input
-    key: API_VERSION
-tables: []
-";
-        let inputs = collect(manifest).expect("non-auth request header can use variable inputs");
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].key, "API_VERSION");
+",
+                request_header_source("API-Version", "input", "API_VERSION"),
+            ),
+        ] {
+            collect(&manifest_with_input_and_body(raw_input, &body))
+                .unwrap_or_else(|error| panic!("{name} should resolve: {error}"));
+        }
+    }
+
+    #[test]
+    fn invalid_value_source_references_are_rejected() {
+        for (name, raw_input, body, expected) in [
+            (
+                "undeclared one_of bearer",
+                r"
+  API_KEY:
+    kind: secret
+",
+                auth_header_one_of_sources(&[("input", "API_KEY"), ("bearer", "OAUTH_TOKEN")]),
+                "referenced but not declared under top-level inputs",
+            ),
+            (
+                "bearer variable",
+                r"
+  HEADER_VALUE:
+    kind: variable
+    default: not-secret
+",
+                auth_header_source("bearer", "HEADER_VALUE"),
+                "bearer value source 'HEADER_VALUE' must reference a secret input",
+            ),
+            (
+                "auth input variable",
+                r"
+  HEADER_VALUE:
+    kind: variable
+    default: not-secret
+",
+                auth_header_one_of_sources(&[("input", "HEADER_VALUE")]),
+                "auth input value source 'HEADER_VALUE' must reference a secret input",
+            ),
+        ] {
+            expect_collect_error(
+                &manifest_with_input_and_body(raw_input, &body),
+                name,
+                expected,
+            );
+        }
     }
 
     #[test]
     fn inline_template_defaults_are_rejected() {
-        let manifest = r#"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
+        let manifest = manifest_with_input_and_body(
+            r"
   GITHUB_API_BASE:
     kind: variable
     default: https://api.github.com
+",
+            r#"
 base_url: "{{input.GITHUB_API_BASE|https://other.example.com}}"
 tables: []
-"#;
-        let error = collect(manifest).expect_err("inline default");
-        assert!(
-            error
-                .to_string()
-                .contains("must declare defaults under top-level inputs")
+"#,
+        );
+        expect_collect_error(
+            &manifest,
+            "inline default",
+            "must declare defaults under top-level inputs",
         );
     }
 
     #[test]
     fn secret_defaults_are_rejected() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
+        let manifest = manifest_with_input(
+            r"
   GITHUB_TOKEN:
     kind: secret
     default: abc123
-tables: []
-";
-        let error = collect(manifest).expect_err("secret default");
-        assert!(error.to_string().contains("must not declare a default"));
+",
+        );
+        expect_collect_error(&manifest, "secret default", "must not declare a default");
     }
 
     #[test]
@@ -2418,36 +2155,25 @@ tables: []
             "STRIPE_SECRET_KEY",
             "WEAVIATE_API_KEY_STAGING",
         ] {
-            let manifest = format!(
+            let manifest = manifest_with_input(&format!(
                 r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
   {key}:
     kind: variable
-tables: []
 "
-            );
-            let error = collect(&manifest).expect_err("credential variable");
-            assert!(error.to_string().contains("looks credential-like"));
+            ));
+            expect_collect_error(&manifest, "credential variable", "looks credential-like");
         }
     }
 
     #[test]
     fn credential_like_check_respects_underscore_boundaries() {
-        let manifest = r"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-inputs:
+        let manifest = manifest_with_input(
+            r"
   SERVICE_SECRETARIAT_URL:
     kind: variable
-tables: []
-";
-        let inputs = collect(manifest).expect("non-credential variable");
+",
+        );
+        let inputs = collect(&manifest).expect("non-credential variable");
         let [input] = inputs.as_slice() else {
             panic!("expected one input, got {inputs:?}");
         };

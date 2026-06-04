@@ -19,4 +19,4 @@ schemars.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-tracing.workspace = true
+tempfile.workspace = true

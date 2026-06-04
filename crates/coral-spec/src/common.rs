@@ -962,20 +962,26 @@ mod tests {
     use crate::backends::http::test_http_table_spec;
     use std::collections::HashSet;
 
+    fn request(path: &str) -> RequestSpec {
+        RequestSpec {
+            path: ParsedTemplate::parse(path).expect("template"),
+            ..RequestSpec::default()
+        }
+    }
+
+    fn optional_filter(name: &str) -> FilterSpec {
+        FilterSpec {
+            name: name.into(),
+            data_type: "Utf8".into(),
+            required: false,
+            mode: FilterMode::default(),
+            description: String::new(),
+        }
+    }
+
     #[test]
     fn resolve_request_returns_default_when_no_routes() {
-        let table = test_http_table_spec(
-            "items",
-            vec![],
-            vec![],
-            RequestSpec {
-                method: HttpMethod::GET,
-                path: ParsedTemplate::parse("/items").expect("template"),
-                query: vec![],
-                body: BodySpec::default(),
-                headers: vec![],
-            },
-        );
+        let table = test_http_table_spec("items", vec![], vec![], request("/items"));
         let filters = HashSet::new();
         assert_eq!(table.resolve_request(&filters).path, "/items");
     }
@@ -985,30 +991,12 @@ mod tests {
         let mut table = test_http_table_spec(
             "items",
             vec![],
-            vec![FilterSpec {
-                name: "id".into(),
-                data_type: "Utf8".into(),
-                required: false,
-                mode: FilterMode::default(),
-                description: String::new(),
-            }],
-            RequestSpec {
-                method: HttpMethod::GET,
-                path: ParsedTemplate::parse("/items").expect("template"),
-                query: vec![],
-                body: BodySpec::default(),
-                headers: vec![],
-            },
+            vec![optional_filter("id")],
+            request("/items"),
         );
         table.requests = vec![RequestRouteSpec {
             when_filters: vec!["id".into()],
-            request: RequestSpec {
-                method: HttpMethod::GET,
-                path: ParsedTemplate::parse("/items/{{filter.id}}").expect("template"),
-                query: vec![],
-                body: BodySpec::default(),
-                headers: vec![],
-            },
+            request: request("/items/{{filter.id}}"),
         }];
         let mut filters = HashSet::new();
         assert_eq!(table.resolve_request(&filters).path, "/items");
@@ -1021,51 +1009,17 @@ mod tests {
         let mut table = test_http_table_spec(
             "items",
             vec![],
-            vec![
-                FilterSpec {
-                    name: "id".into(),
-                    data_type: "Utf8".into(),
-                    required: false,
-                    mode: FilterMode::default(),
-                    description: String::new(),
-                },
-                FilterSpec {
-                    name: "org".into(),
-                    data_type: "Utf8".into(),
-                    required: false,
-                    mode: FilterMode::default(),
-                    description: String::new(),
-                },
-            ],
-            RequestSpec {
-                method: HttpMethod::GET,
-                path: ParsedTemplate::parse("/items").expect("template"),
-                query: vec![],
-                body: BodySpec::default(),
-                headers: vec![],
-            },
+            vec![optional_filter("id"), optional_filter("org")],
+            request("/items"),
         );
         table.requests = vec![
             RequestRouteSpec {
                 when_filters: vec!["id".into()],
-                request: RequestSpec {
-                    method: HttpMethod::GET,
-                    path: ParsedTemplate::parse("/items/by-id/{{filter.id}}").expect("template"),
-                    query: vec![],
-                    body: BodySpec::default(),
-                    headers: vec![],
-                },
+                request: request("/items/by-id/{{filter.id}}"),
             },
             RequestRouteSpec {
                 when_filters: vec!["id".into(), "org".into()],
-                request: RequestSpec {
-                    method: HttpMethod::GET,
-                    path: ParsedTemplate::parse("/orgs/{{filter.org}}/items/{{filter.id}}")
-                        .expect("template"),
-                    query: vec![],
-                    body: BodySpec::default(),
-                    headers: vec![],
-                },
+                request: request("/orgs/{{filter.org}}/items/{{filter.id}}"),
             },
         ];
 
@@ -1118,36 +1072,46 @@ mod tests {
     }
 
     #[test]
-    fn response_body_format_defaults_to_json() {
-        let spec: ResponseSpec =
-            serde_json::from_value(serde_json::json!({ "rows_path": ["data"] })).unwrap();
-        assert_eq!(spec.format, ResponseBodyFormat::Json);
+    fn response_body_format_cases() {
+        for (name, input, expected) in [
+            (
+                "default",
+                serde_json::json!({ "rows_path": ["data"] }),
+                ResponseBodyFormat::Json,
+            ),
+            (
+                "json_each_row",
+                serde_json::json!({ "format": "json_each_row" }),
+                ResponseBodyFormat::JsonEachRow,
+            ),
+        ] {
+            let spec: ResponseSpec = serde_json::from_value(input).unwrap();
+            assert_eq!(spec.format, expected, "{name}");
+        }
     }
 
     #[test]
-    fn response_body_format_parses_json_each_row() {
-        let spec: ResponseSpec =
-            serde_json::from_value(serde_json::json!({ "format": "json_each_row" })).unwrap();
-        assert_eq!(spec.format, ResponseBodyFormat::JsonEachRow);
-    }
-
-    #[test]
-    fn filter_mode_defaults_to_equality() {
-        let spec: FilterSpec = serde_json::from_value(serde_json::json!({
-            "name": "org"
-        }))
-        .unwrap();
-        assert_eq!(spec.mode, FilterMode::Equality);
-    }
-
-    #[test]
-    fn filter_mode_deserializes_contains() {
-        let spec: FilterSpec = serde_json::from_value(serde_json::json!({
-            "name": "q",
-            "mode": "contains"
-        }))
-        .unwrap();
-        assert_eq!(spec.mode, FilterMode::Contains);
+    fn filter_mode_cases() {
+        for (name, input, expected) in [
+            (
+                "default equality",
+                serde_json::json!({ "name": "org" }),
+                FilterMode::Equality,
+            ),
+            (
+                "contains",
+                serde_json::json!({ "name": "q", "mode": "contains" }),
+                FilterMode::Contains,
+            ),
+            (
+                "legacy search",
+                serde_json::json!({ "name": "q", "mode": "search" }),
+                FilterMode::Search,
+            ),
+        ] {
+            let spec: FilterSpec = serde_json::from_value(input).unwrap();
+            assert_eq!(spec.mode, expected, "{name}");
+        }
     }
 
     #[test]
@@ -1161,16 +1125,6 @@ mod tests {
     }
 
     #[test]
-    fn filter_mode_deserializes_legacy_search_value() {
-        let spec: FilterSpec = serde_json::from_value(serde_json::json!({
-            "name": "q",
-            "mode": "search"
-        }))
-        .unwrap();
-        assert_eq!(spec.mode, FilterMode::Search);
-    }
-
-    #[test]
     fn filter_metadata_defaults_to_utf8_with_empty_description() {
         let spec: FilterSpec = serde_json::from_value(serde_json::json!({
             "name": "q"
@@ -1181,30 +1135,41 @@ mod tests {
     }
 
     #[test]
-    fn table_function_kind_defaults_to_table() {
-        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
-            "name": "issues",
-            "request": { "path": "/issues" }
-        }))
-        .unwrap();
-        assert_eq!(spec.kind, SourceTableFunctionKind::Table);
-    }
-
-    #[test]
-    fn table_function_kind_deserializes_search() {
-        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
-            "name": "search_issues",
-            "kind": "search",
-            "request": { "path": "/search/issues" },
-            "search_limits": {
-                "default_top_k": 10,
-                "max_top_k": 100,
-                "max_calls_per_query": 1
-            }
-        }))
-        .unwrap();
-        assert_eq!(spec.kind, SourceTableFunctionKind::Search);
-        assert_eq!(spec.search_limits.unwrap().default_top_k, 10);
+    fn table_function_kind_cases() {
+        for (name, input, expected, expected_top_k) in [
+            (
+                "default table",
+                serde_json::json!({
+                    "name": "issues",
+                    "request": { "path": "/issues" }
+                }),
+                SourceTableFunctionKind::Table,
+                None,
+            ),
+            (
+                "search",
+                serde_json::json!({
+                    "name": "search_issues",
+                    "kind": "search",
+                    "request": { "path": "/search/issues" },
+                    "search_limits": {
+                        "default_top_k": 10,
+                        "max_top_k": 100,
+                        "max_calls_per_query": 1
+                    }
+                }),
+                SourceTableFunctionKind::Search,
+                Some(10),
+            ),
+        ] {
+            let spec: SourceTableFunctionSpec = serde_json::from_value(input).unwrap();
+            assert_eq!(spec.kind, expected, "{name}");
+            assert_eq!(
+                spec.search_limits.map(|limits| limits.default_top_k),
+                expected_top_k,
+                "{name}"
+            );
+        }
     }
 
     #[test]
