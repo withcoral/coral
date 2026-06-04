@@ -29,7 +29,7 @@ use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
     RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    required_filter_names, validate_bindable_filter_backend_support,
 };
 use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
 
@@ -147,16 +147,16 @@ impl CompiledBackendSource for McpCompiledSource {
         &self.manifest.common.name
     }
 
-    fn backend_kind(&self) -> Option<SourceBackend> {
-        Some(SourceBackend::Mcp)
-    }
-
-    fn has_bindable_filters(&self) -> bool {
-        self.manifest
-            .tables
-            .iter()
-            .flat_map(McpTableSpec::filters)
-            .any(|filter| filter.bindable)
+    fn validate_runtime_capabilities(&self) -> Result<()> {
+        validate_bindable_filter_backend_support(
+            self.source_name(),
+            SourceBackend::Mcp,
+            self.manifest
+                .tables
+                .iter()
+                .flat_map(McpTableSpec::filters)
+                .any(|filter| filter.bindable),
+        )
     }
 
     async fn register(

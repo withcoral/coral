@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use coral_spec::SourceBackend;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 use tracing::{Instrument as _, info_span};
@@ -220,7 +219,7 @@ async fn register_source(
     source: &dyn CompiledBackendSource,
 ) -> DataFusionResult<BackendRegistration> {
     check_reserved_schema(source.schema_name())?;
-    validate_bindable_backend_support(source)?;
+    source.validate_runtime_capabilities()?;
 
     if !seen_schemas.insert(source.schema_name().to_string()) {
         return Err(DataFusionError::Execution(format!(
@@ -230,37 +229,6 @@ async fn register_source(
     }
 
     source.register(ctx, registration_context).await
-}
-
-fn validate_bindable_backend_support(source: &dyn CompiledBackendSource) -> DataFusionResult<()> {
-    if !source.has_bindable_filters() {
-        return Ok(());
-    }
-
-    let supported = match source.backend_kind() {
-        Some(SourceBackend::Http) => true,
-        Some(SourceBackend::File | SourceBackend::Mcp) | None => false,
-    };
-
-    if !supported {
-        return Err(DataFusionError::Execution(format!(
-            "source '{}': bindable filters are not supported by the current engine for backend '{}'",
-            source.source_name(),
-            source
-                .backend_kind()
-                .map_or("composite", backend_kind_label)
-        )));
-    }
-
-    Ok(())
-}
-
-fn backend_kind_label(kind: SourceBackend) -> &'static str {
-    match kind {
-        SourceBackend::Http => "http",
-        SourceBackend::File => "file",
-        SourceBackend::Mcp => "mcp",
-    }
 }
 
 fn push_source_failure(

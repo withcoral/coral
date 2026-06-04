@@ -4,7 +4,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::SourceBackend;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -39,12 +38,11 @@ impl CompiledBackendSource for CompositeCompiledSource {
         &self.source_name
     }
 
-    fn backend_kind(&self) -> Option<SourceBackend> {
-        None
-    }
-
-    fn has_bindable_filters(&self) -> bool {
-        false
+    fn validate_runtime_capabilities(&self) -> datafusion::error::Result<()> {
+        for component in &self.components {
+            component.validate_runtime_capabilities()?;
+        }
+        Ok(())
     }
 
     async fn register(

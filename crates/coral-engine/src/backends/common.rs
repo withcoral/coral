@@ -164,9 +164,7 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
 
     fn source_name(&self) -> &str;
 
-    fn backend_kind(&self) -> Option<SourceBackend>;
-
-    fn has_bindable_filters(&self) -> bool;
+    fn validate_runtime_capabilities(&self) -> datafusion::error::Result<()>;
 
     /// Register this compiled source into a `DataFusion` session.
     ///
@@ -178,6 +176,29 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
         ctx: &SessionContext,
         registration: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration>;
+}
+
+pub(crate) fn validate_bindable_filter_backend_support(
+    source_name: &str,
+    backend_kind: SourceBackend,
+    has_bindable_filters: bool,
+) -> datafusion::error::Result<()> {
+    if !has_bindable_filters || matches!(backend_kind, SourceBackend::Http) {
+        return Ok(());
+    }
+
+    Err(DataFusionError::Execution(format!(
+        "source '{source_name}': bindable filters are not supported by the current engine for backend '{}'",
+        backend_kind_label(backend_kind)
+    )))
+}
+
+fn backend_kind_label(kind: SourceBackend) -> &'static str {
+    match kind {
+        SourceBackend::Http => "http",
+        SourceBackend::File => "file",
+        SourceBackend::Mcp => "mcp",
+    }
 }
 
 pub(crate) fn required_filter_names(filters: &[FilterSpec]) -> Vec<String> {
