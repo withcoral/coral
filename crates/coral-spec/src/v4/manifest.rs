@@ -10,7 +10,8 @@ use crate::inputs::{
     validate_oauth_endpoint_templates_with_scope,
 };
 use crate::{
-    HeaderSpec, ManifestError, ManifestInputSpec, ParsedTemplate, Result, validate_test_queries,
+    HeaderSpec, ManifestError, ManifestInputSpec, ParsedTemplate, Result, TemplateNamespace,
+    validate_test_queries,
 };
 
 #[derive(Debug, Clone)]
@@ -165,6 +166,15 @@ impl V4SourceManifest {
             let inputs = collect_declared_inputs(surface_value)?;
             validate_input_references(surface_value, &inputs)?;
             validate_oauth_endpoint_templates_with_scope(&inputs, "surface inputs")?;
+            if let Some(base_url) = raw_surface.base_url.as_ref() {
+                validate_openapi_base_url_template(
+                    &name,
+                    &raw_surface.id,
+                    &inputs,
+                    base_url,
+                    "authored",
+                )?;
+            }
             merge_surface_inputs(
                 &name,
                 &raw_surface.id,
@@ -233,6 +243,45 @@ fn parse_descriptor(source_name: &str, surface: &RawV4Surface) -> Result<Surface
             surface.id
         ))),
     }
+}
+
+pub fn validate_openapi_base_url_template(
+    source_name: &str,
+    surface_id: &str,
+    inputs: &[ManifestInputSpec],
+    base_url: &ParsedTemplate,
+    provenance: &str,
+) -> Result<()> {
+    let provenance = if provenance.is_empty() {
+        String::new()
+    } else {
+        format!("{provenance} ")
+    };
+    for token in base_url.tokens() {
+        match token.namespace() {
+            TemplateNamespace::Input => {
+                if token.default_value().is_some() {
+                    return Err(ManifestError::validation(format!(
+                        "source '{source_name}' surface '{surface_id}' {provenance}base_url input token '{{{{{}}}}}' must declare defaults under source inputs",
+                        token.raw()
+                    )));
+                }
+                if !inputs.iter().any(|input| input.key == token.key()) {
+                    return Err(ManifestError::validation(format!(
+                        "source '{source_name}' surface '{surface_id}' {provenance}base_url references undeclared input '{}'",
+                        token.key()
+                    )));
+                }
+            }
+            _ => {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' surface '{surface_id}' {provenance}base_url may only reference source inputs; unsupported template token '{{{{{}}}}}'",
+                    token.raw()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn merge_surface_inputs(

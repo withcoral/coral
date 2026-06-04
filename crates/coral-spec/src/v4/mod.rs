@@ -38,7 +38,7 @@ pub use ir::{
 };
 pub use manifest::{
     OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceType, V4SourceCommon, V4SourceManifest,
-    V4Surface,
+    V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
 pub use projections::{

@@ -9,12 +9,13 @@ use coral_spec::v4::{
     Diagnostic, Fingerprint, FingerprintSurface, MaterializedSurface, OPENAPI_IMPORTER_VERSION,
     PROJECTION_GENERATOR_VERSION, ProjectionCatalog, SemanticIr, V4_ARTIFACT_SCHEMA_VERSION,
     V4MaterializedSource, V4SourceManifest, generate_projection_catalog, import_openapi_surface,
-    normalize_source_document, validate_materialized_source,
+    normalize_source_document, openapi_document_metadata, validate_materialized_source,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
-    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ParsedTemplate,
 };
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -498,6 +499,7 @@ fn write_materialization(
     let mut fingerprint_surfaces = Vec::new();
     for surface in &manifest.surfaces {
         let bytes = read_descriptor(surface)?;
+        validate_materialized_surface_base_url(manifest, surface, &bytes)?;
         let observed = sha256_hex(&bytes);
         let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
             AppError::FailedPrecondition(format!(
@@ -562,6 +564,39 @@ fn write_materialization(
     write_yaml(&temp_dir.join("projections.yaml"), &projections)?;
     write_yaml(&temp_dir.join("diagnostics.yaml"), &diagnostics)?;
     Ok(())
+}
+
+fn validate_materialized_surface_base_url(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    bytes: &[u8],
+) -> Result<(), AppError> {
+    if !surface.openapi_runtime.base_url.raw().trim().is_empty() {
+        return Ok(());
+    }
+    let metadata = openapi_document_metadata(bytes).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to derive base_url for DSL v4 surface '{}': {error}",
+            surface.id
+        ))
+    })?;
+    let Some(server_url) = metadata.server_url.as_deref() else {
+        return Ok(());
+    };
+    let base_url = ParsedTemplate::parse(server_url).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to parse derived base_url for DSL v4 surface '{}': {error}",
+            surface.id
+        ))
+    })?;
+    validate_openapi_base_url_template(
+        &manifest.common.name,
+        &surface.id,
+        &surface.inputs,
+        &base_url,
+        "derived OpenAPI server",
+    )
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
 }
 
 fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {

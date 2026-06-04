@@ -104,6 +104,9 @@ you configure; it does not make an otherwise untrusted local agent safe.
   source uses `keychain` or `file (plaintext)` secret storage.
 - Review custom source specs before installing them, especially `base_url`,
   `auth`, and file `location` fields.
+- For DSL v4 OpenAPI surfaces, `base_url` may be literal or reference declared
+  `{{input.KEY}}` values only; query-time tokens such as `{{filter.host}}`,
+  `{{arg.host}}`, and `{{state.next}}` are rejected.
 - Configure `coral mcp-stdio` only in MCP clients you are comfortable allowing
   to query your installed sources.
 
