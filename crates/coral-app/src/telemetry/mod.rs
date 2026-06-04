@@ -39,7 +39,7 @@ static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
 static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
-const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body"];
+const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -631,6 +631,7 @@ mod tests {
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral.http.body", &tracing::Level::TRACE));
+        assert!(!targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
 
     #[test]
@@ -644,6 +645,7 @@ mod tests {
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
 
     #[test]
@@ -654,6 +656,7 @@ mod tests {
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
 
     #[test]
@@ -703,7 +706,7 @@ mod tests {
     fn target_filtering_exporter_hard_denies_configured_targets() {
         let memory = InMemorySpanExporter::default();
         let (targets, error) = build_trace_targets(
-            "coral_app=trace,coral.http.body=trace",
+            "coral_app=trace,coral.http.body=trace,coral.mcp.body=trace",
             DEFAULT_TRACE_FILTER,
         );
         assert!(error.is_none());
@@ -722,12 +725,19 @@ mod tests {
             let kept = tracing::trace_span!(target: "coral_app", "kept");
             let _kept = kept.enter();
 
-            let dropped = tracing::trace_span!(
+            let dropped_http = tracing::trace_span!(
                 target: "coral.http.body",
-                "dropped_body",
+                "dropped_http_body",
                 coral.http.request.body = "secret",
             );
-            let _dropped = dropped.enter();
+            let _dropped_http = dropped_http.enter();
+
+            let dropped_mcp = tracing::trace_span!(
+                target: "coral.mcp.body",
+                "dropped_mcp_body",
+                coral.mcp.request.body = "secret",
+            );
+            let _dropped_mcp = dropped_mcp.enter();
         });
         provider.force_flush().expect("flush spans");
 

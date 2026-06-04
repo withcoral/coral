@@ -1,5 +1,8 @@
 //! Shared template parsing for source-spec string interpolation.
 
+use std::borrow::Cow;
+
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{ManifestError, Result};
@@ -101,6 +104,16 @@ impl<'de> Deserialize<'de> for ParsedTemplate {
     {
         let raw = String::deserialize(deserializer)?;
         Self::parse(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for ParsedTemplate {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("ParsedTemplate")
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        String::json_schema(generator)
     }
 }
 

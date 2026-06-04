@@ -1,5 +1,5 @@
 ---
-source: xtask/src/render.rs
+source: xtask/src/docs/render.rs
 expression: "community_sources_page(&[demo, minimal])"
 ---
 ---

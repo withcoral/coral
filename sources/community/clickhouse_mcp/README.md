@@ -1,5 +1,25 @@
 # ClickHouse Cloud MCP Connector
 
+> **⚠️ Deprecated — use [`clickhouse_cloud`](../clickhouse_cloud/README.md) instead.**
+>
+> This source (`clickhouse_mcp`) is preserved for users who already
+> installed it from `main`. It will be removed in a future release.
+>
+> The replacement source `clickhouse_cloud` talks to
+> `mcp.clickhouse.cloud` natively over MCP Streamable HTTP and drives the
+> OAuth flow itself — no `mcp-remote` npm proxy, no manual
+> `MCP_ACCESS_TOKEN` env var.
+>
+> **To migrate:**
+>
+> ```bash
+> coral source rm clickhouse_mcp
+> coral source add --file sources/community/clickhouse_cloud/manifest.yaml --interactive
+> ```
+>
+> Then update any `clickhouse_mcp.*` references in your saved queries to
+> `clickhouse_cloud.*`. The table and function surface is identical.
+
 **Version:** 0.1.0
 **Source:** ClickHouse Cloud remote MCP server
 **Backend:** MCP (stdio, proxied through `mcp-remote`)

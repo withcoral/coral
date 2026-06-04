@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
@@ -16,7 +17,7 @@ use serde_json::{Value, json};
 use wiremock::matchers::{
     body_json, body_string, header, method, path, query_param, query_param_is_missing,
 };
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::harness::{
     build_source, build_source_with_secrets, execution_to_rows, test_runtime, users_rows,
@@ -1653,6 +1654,181 @@ async fn api_returns_malformed_json() {
             assert!(sqe.detail().contains("response decoding failed"));
         }
         other => panic!("unexpected malformed-json error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn api_does_not_retry_empty_or_whitespace_json_response() {
+    for (schema, body) in [("http_empty_json", ""), ("http_whitespace_json", " \n\t")] {
+        let server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let responder_attempts = Arc::clone(&attempts);
+        let body = body.to_string();
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .respond_with(move |_request: &Request| {
+                responder_attempts.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_string(body.clone())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let source = build_source(base_http_manifest(schema, &server.uri()));
+        let query = format!("SELECT id, name, email FROM {schema}.users ORDER BY id");
+
+        let error = CoralQuery::execute_sql(&[source], test_runtime(), &query)
+            .await
+            .expect_err("stable empty JSON response should be a permanent decode failure");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+        match error {
+            CoreError::QueryFailure(sqe) => {
+                assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+                assert_eq!(sqe.summary(), "Source response decode failed");
+                assert!(!sqe.retryable());
+                assert_eq!(
+                    sqe.metadata().get("provider_failure_stage").unwrap(),
+                    "decode"
+                );
+                assert!(
+                    sqe.hint()
+                        .expect("empty decode failures should include guidance")
+                        .contains("source manifest")
+                );
+            }
+            other => panic!("unexpected stable-empty-json error variant: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn api_retries_truncated_json_response() {
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let responder_attempts = Arc::clone(&attempts);
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(move |_request: &Request| {
+            if responder_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"data":[{"id":1,"name":"Ada","email":"ada@example.com"#)
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() }))
+            }
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest("http_truncated_json", &server.uri()));
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_truncated_json.users ORDER BY id",
+        )
+        .await
+        .expect("truncated JSON EOF should be retried"),
+    );
+
+    assert_eq!(rows, users_rows());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn api_reports_exhausted_truncated_get_json_as_retryable() {
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let responder_attempts = Arc::clone(&attempts);
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(move |_request: &Request| {
+            responder_attempts.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"data":[{"id":1,"name":"Ada","email":"ada@example.com"#)
+        })
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest(
+        "http_exhausted_truncated_json",
+        &server.uri(),
+    ));
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id, name, email FROM http_exhausted_truncated_json.users ORDER BY id",
+    )
+    .await
+    .expect_err("exhausted truncated GET JSON should surface as retryable");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(error.status_code(), StatusCode::Unavailable);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source response decode failed");
+            assert!(sqe.retryable());
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "decode"
+            );
+            assert!(
+                sqe.hint()
+                    .expect("retryable decode failures should include guidance")
+                    .contains("could not be fully decoded")
+            );
+        }
+        other => panic!("unexpected exhausted truncated-json error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn api_does_not_retry_truncated_json_response_for_post() {
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let responder_attempts = Arc::clone(&attempts);
+    Mock::given(method("POST"))
+        .and(path("/api/users"))
+        .respond_with(move |_request: &Request| {
+            responder_attempts.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"data":[{"id":1,"name":"Ada","email":"ada@example.com"#)
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_truncated_post_json", &server.uri());
+    manifest["tables"][0]["request"]["method"] = json!("POST");
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id, name, email FROM http_truncated_post_json.users ORDER BY id",
+    )
+    .await
+    .expect_err("truncated JSON EOF should not retry non-idempotent requests");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(error.status_code(), StatusCode::FailedPrecondition);
+    match error {
+        CoreError::QueryFailure(sqe) => {
+            assert_eq!(sqe.reason(), "PROVIDER_REQUEST_FAILED");
+            assert_eq!(sqe.summary(), "Source response decode failed");
+            assert!(!sqe.retryable());
+            assert_eq!(
+                sqe.metadata().get("provider_failure_stage").unwrap(),
+                "decode"
+            );
+        }
+        other => panic!("unexpected truncated-json error variant: {other:?}"),
     }
 }
 
