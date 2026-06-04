@@ -616,6 +616,58 @@ paths:
 }
 
 #[test]
+fn importer_treats_path_parameters_as_required_when_required_is_omitted() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: omitted_path_required
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /tenants/{tenant}/items/{id}:
+    get:
+      operationId: items/get
+      parameters:
+        - {name: id, in: path, required: false, schema: {type: string}}
+        - {name: tenant, in: path, schema: {type: string, default: public}}
+        - {name: include_archived, in: query, schema: {type: boolean}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let operation = ir.operations.first().expect("operation");
+    let required = operation
+        .inputs
+        .iter()
+        .map(|input| (input.name.as_str(), input.required))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(required.get("id"), Some(&true));
+    assert_eq!(required.get("tenant"), Some(&true));
+    assert_eq!(required.get("include_archived"), Some(&false));
+}
+
+#[test]
 fn importer_warns_for_invalid_parameters_and_unresolved_responses() {
     let manifest = parse_source_manifest_yaml(
         r"
