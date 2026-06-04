@@ -701,6 +701,7 @@ fn stable_credential_method(method: &ManifestCredentialMethod) -> Value {
         "kind": stable_credential_method_kind(method.kind),
         "label": &method.label,
         "description": &method.description,
+        "hint": &method.hint,
         "oauth": method.oauth.as_ref().map(stable_oauth_credential),
     })
 }
@@ -897,6 +898,48 @@ surfaces:
         replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
             .expect("install materialization");
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
+    }
+
+    fn credential_method_hint_manifest(hint: &str) -> V4SourceManifest {
+        let manifest_yaml = format!(
+            r"
+name: github_v4_materialization_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      ACCESS_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: source_config
+              label: Paste token
+              description: Configure a token manually.
+              hint: {hint}
+"
+        );
+        parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone()
+    }
+
+    #[test]
+    fn input_declarations_fingerprint_includes_credential_method_hint() {
+        let first = credential_method_hint_manifest("Use source config one.");
+        let second = credential_method_hint_manifest("Use source config two.");
+
+        let first_hash =
+            stable_input_declarations_sha256(&first.surfaces.first().expect("surface").inputs)
+                .expect("first hash");
+        let second_hash =
+            stable_input_declarations_sha256(&second.surfaces.first().expect("surface").inputs)
+                .expect("second hash");
+
+        assert_ne!(first_hash, second_hash);
     }
 
     #[test]
