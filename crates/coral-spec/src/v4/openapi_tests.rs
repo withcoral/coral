@@ -221,6 +221,128 @@ components:
 }
 
 #[test]
+fn importer_resolves_referenced_response_objects() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: referenced_responses
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /repos/{owner}/{repo}/issues:
+    get:
+      operationId: issues/list-for-repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          $ref: '#/components/responses/IssueList'
+components:
+  responses:
+    IssueList:
+      content:
+        application/json:
+          schema:
+            type: array
+            items: {$ref: '#/components/schemas/Issue'}
+  schemas:
+    Issue:
+      type: object
+      properties:
+        id: {type: integer}
+        title: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("response ref imports");
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "issues_list_for_repo")
+        .expect("projection");
+    assert_eq!(projection.name, "issues");
+    assert_eq!(projection.visibility, ProjectionVisibility::Published);
+    assert!(matches!(projection.kind, ProjectionKind::Table));
+}
+
+#[test]
+fn importer_warns_for_unresolved_response_object_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: broken_responses
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /missing:
+    get:
+      operationId: missing/list
+      responses:
+        '200':
+          $ref: '#/components/responses/Missing'
+  /external:
+    get:
+      operationId: external/list
+      responses:
+        '200':
+          $ref: 'https://example.com/openapi.yaml#/components/responses/Items'
+"
+        .as_bytes(),
+    )
+    .expect("broken response refs import with diagnostics");
+    let codes = ir
+        .operations
+        .iter()
+        .flat_map(|operation| operation.diagnostics.iter())
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"OPENAPI_REF_NOT_FOUND"), "{codes:?}");
+    assert!(
+        codes.contains(&"OPENAPI_EXTERNAL_REF_UNSUPPORTED"),
+        "{codes:?}"
+    );
+    for operation in &ir.operations {
+        assert_eq!(operation.output.cardinality, OutputCardinality::None);
+    }
+}
+
+#[test]
 fn importer_preserves_non_string_parameter_defaults() {
     let manifest = parse_source_manifest_yaml(
         r"

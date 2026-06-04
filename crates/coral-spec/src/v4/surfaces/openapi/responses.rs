@@ -20,9 +20,11 @@ impl OpenApiImporter<'_> {
         RestResponseAttachment,
         Option<IrEntityCandidate>,
     ) {
-        let Some((status_code, media_type, schema)) =
-            select_json_response(operation.get("responses").and_then(Value::as_object))
-        else {
+        let Some((status_code, media_type, schema)) = self.select_json_response(
+            operation.get("responses").and_then(Value::as_object),
+            operation_id,
+            diagnostics,
+        ) else {
             let response = ResponseSpec::default();
             return (
                 IrOperationOutput {
@@ -39,7 +41,7 @@ impl OpenApiImporter<'_> {
             );
         };
 
-        let Some(resolved) = self.resolve_ref(schema, operation_id, diagnostics) else {
+        let Some(resolved) = self.resolve_ref(&schema, operation_id, diagnostics) else {
             diagnostics.push(Diagnostic::warning(
                 "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
                 format!("operation '{operation_id}' response schema could not be resolved"),
@@ -95,32 +97,39 @@ impl OpenApiImporter<'_> {
             entity,
         )
     }
-}
-
-fn select_json_response(responses: Option<&Map<String, Value>>) -> Option<(u16, String, &Value)> {
-    let responses = responses?;
-    let mut candidates = Vec::new();
-    for (status, response) in responses {
-        let Ok(status_code) = status.parse::<u16>() else {
-            continue;
-        };
-        if !(200..300).contains(&status_code) {
-            continue;
+    fn select_json_response(
+        &self,
+        responses: Option<&Map<String, Value>>,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<(u16, String, Value)> {
+        let responses = responses?;
+        let mut candidates = Vec::new();
+        for (status, response) in responses {
+            let Ok(status_code) = status.parse::<u16>() else {
+                continue;
+            };
+            if !(200..300).contains(&status_code) {
+                continue;
+            }
+            let Some(response) = self.resolve_ref(response, operation_id, diagnostics) else {
+                continue;
+            };
+            let Some(content) = response.get("content").and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(json) = content.get("application/json") else {
+                continue;
+            };
+            let schema = json.get("schema").cloned().unwrap_or(Value::Null);
+            candidates.push((status_code, "application/json".to_string(), schema));
         }
-        let Some(content) = response.get("content").and_then(Value::as_object) else {
-            continue;
-        };
-        let Some(json) = content.get("application/json") else {
-            continue;
-        };
-        let schema = json.get("schema").unwrap_or(&Value::Null);
-        candidates.push((status_code, "application/json".to_string(), schema));
+        candidates
+            .iter()
+            .position(|(status, _, _)| *status == 200)
+            .and_then(|index| candidates.get(index).cloned())
+            .or_else(|| candidates.into_iter().min_by_key(|(status, _, _)| *status))
     }
-    candidates
-        .iter()
-        .position(|(status, _, _)| *status == 200)
-        .and_then(|index| candidates.get(index).cloned())
-        .or_else(|| candidates.into_iter().min_by_key(|(status, _, _)| *status))
 }
 
 fn classify_response_schema(
