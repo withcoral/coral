@@ -14,12 +14,16 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
-    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
+    OAuthCredentialAuthorization, OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure,
+    QueryTestSuccess, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret,
+    SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
+use coral_client::{
+    AppClient, DecodedStatusError, decode_status_error, default_workspace,
+    manifest_input_from_proto,
+};
 use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
@@ -138,22 +142,12 @@ pub(crate) async fn import_source(
     Err(anyhow::anyhow!("import source stream ended without source"))
 }
 
+#[derive(Default)]
 pub(crate) struct CollectedSourceInputs {
     pub(crate) variables: Vec<SourceVariable>,
     pub(crate) secrets: Vec<SourceSecret>,
     oauth_credential_retrievals: Vec<OAuthCredentialRetrieval>,
     oauth_labels: BTreeMap<String, String>,
-}
-
-impl CollectedSourceInputs {
-    fn new() -> Self {
-        Self {
-            variables: Vec::new(),
-            secrets: Vec::new(),
-            oauth_credential_retrievals: Vec::new(),
-            oauth_labels: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,12 +158,9 @@ pub(crate) enum CredentialPromptMode {
 
 impl CredentialPromptMode {
     fn reads_env_before_prompt(self, input: &ManifestInputSpec) -> bool {
-        match self {
-            Self::EnvFirst => true,
-            Self::CredentialMethodFirst => {
-                input.kind == ManifestInputKind::Variable || input.credential.is_none()
-            }
-        }
+        self == Self::EnvFirst
+            || input.kind == ManifestInputKind::Variable
+            || input.credential.is_none()
     }
 }
 
@@ -215,38 +206,106 @@ pub(crate) async fn import_source_with_credentials(
     source_from_import_credential_stream(response.into_inner(), &inputs.oauth_labels).await
 }
 
+pub(crate) async fn add_source_from_args(
+    app: &AppClient,
+    name: Option<String>,
+    file: Option<PathBuf>,
+    interactive: bool,
+) -> Result<(), anyhow::Error> {
+    if interactive {
+        require_interactive()?;
+    }
+
+    let source = match (name, file) {
+        (Some(name), None) => {
+            let bundled_name = source_name_arg(Some(&name))?;
+            let available = discover_sources(app)
+                .await?
+                .into_iter()
+                .find(|source| source.name == bundled_name)
+                .ok_or_else(|| anyhow::anyhow!("unknown bundled source '{bundled_name}'"))?;
+            if interactive {
+                install_bundled_source_with_prompt(app, &available, CredentialPromptMode::EnvFirst)
+                    .await?
+            } else {
+                let inputs = source_info_inputs(&available)?;
+                let (variables, secrets) = collect_inputs_from_env(
+                    &inputs,
+                    format!("coral source add --interactive {}", available.name),
+                )?;
+                add_bundled_source(app, &available.name, variables, secrets).await?
+            }
+        }
+        (None, Some(file)) => {
+            let (manifest_yaml, manifest) = load_validated_manifest_file(&file)?;
+            if interactive {
+                let inputs = prompt_for_inputs_with_credential_methods(manifest.declared_inputs())?;
+                import_source_with_credentials(app, manifest_yaml, inputs).await?
+            } else {
+                let (variables, secrets) = collect_inputs_from_env(
+                    manifest.declared_inputs(),
+                    format!(
+                        "coral source add --interactive --file {}",
+                        shell_quote_arg(&file.display().to_string())
+                    ),
+                )?;
+                import_source(app, manifest_yaml, variables, secrets).await?
+            }
+        }
+        _ => unreachable!("clap enforces exactly one of name or file"),
+    };
+    println!(
+        "Added source {} (secrets: {})",
+        source.name,
+        source_credential_storage_label(source.credential_storage)
+    );
+    validate_and_warn(app, &source.name, TableDisplayLimit::DEFAULT).await
+}
+
+pub(crate) async fn install_bundled_source_with_prompt(
+    app: &AppClient,
+    source: &SourceInfo,
+    mode: CredentialPromptMode,
+) -> Result<Source, anyhow::Error> {
+    let inputs = source_info_inputs(source)?;
+    let inputs = prompt_for_inputs_with_credential_methods_in_mode(&inputs, mode)?;
+    add_bundled_source_with_credentials(app, &source.name, inputs).await
+}
+
+fn source_info_inputs(source: &SourceInfo) -> Result<Vec<ManifestInputSpec>, anyhow::Error> {
+    source
+        .inputs
+        .iter()
+        .map(manifest_input_from_proto)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(anyhow::Error::from)
+}
+
 async fn source_from_bundled_credential_stream(
-    mut stream: tonic::Streaming<CreateBundledSourceWithOAuthResponse>,
+    stream: tonic::Streaming<CreateBundledSourceWithOAuthResponse>,
     oauth_labels: &BTreeMap<String, String>,
 ) -> Result<Source, anyhow::Error> {
-    let mut redirect_prompt = OAuthRedirectPastePrompt::default();
-    loop {
-        let response = match stream.message().await {
-            Ok(Some(response)) => response,
-            Ok(None) => {
-                redirect_prompt.cancel_and_join();
-                return Err(anyhow::anyhow!(
-                    "source credential retrieval stream ended before source installation completed"
-                ));
-            }
-            Err(error) => {
-                redirect_prompt.cancel_and_join();
-                return Err(oauth_error("retrieve", &error));
-            }
-        };
-        let event = response.event.map(CredentialStreamEvent::from);
-        if let Some(source) =
-            handle_credential_stream_event(event, oauth_labels, &mut redirect_prompt)
-        {
-            redirect_prompt.cancel_and_join();
-            return Ok(source);
-        }
-    }
+    source_from_credential_stream(stream, oauth_labels, "source installation", |response| {
+        response.event.map(CredentialStreamEvent::from)
+    })
+    .await
 }
 
 async fn source_from_import_credential_stream(
-    mut stream: tonic::Streaming<ImportSourceResponse>,
+    stream: tonic::Streaming<ImportSourceResponse>,
     oauth_labels: &BTreeMap<String, String>,
+) -> Result<Source, anyhow::Error> {
+    source_from_credential_stream(stream, oauth_labels, "source import", |response| {
+        response.event.map(CredentialStreamEvent::from)
+    })
+    .await
+}
+
+async fn source_from_credential_stream<Response>(
+    mut stream: tonic::Streaming<Response>,
+    oauth_labels: &BTreeMap<String, String>,
+    completion_action: &'static str,
+    event: impl Fn(Response) -> Option<CredentialStreamEvent>,
 ) -> Result<Source, anyhow::Error> {
     let mut redirect_prompt = OAuthRedirectPastePrompt::default();
     loop {
@@ -255,7 +314,7 @@ async fn source_from_import_credential_stream(
             Ok(None) => {
                 redirect_prompt.cancel_and_join();
                 return Err(anyhow::anyhow!(
-                    "source credential retrieval stream ended before source import completed"
+                    "source credential retrieval stream ended before {completion_action} completed"
                 ));
             }
             Err(error) => {
@@ -263,9 +322,8 @@ async fn source_from_import_credential_stream(
                 return Err(oauth_error("retrieve", &error));
             }
         };
-        let event = response.event.map(CredentialStreamEvent::from);
         if let Some(source) =
-            handle_credential_stream_event(event, oauth_labels, &mut redirect_prompt)
+            handle_credential_stream_event(event(response), oauth_labels, &mut redirect_prompt)
         {
             redirect_prompt.cancel_and_join();
             return Ok(source);
@@ -275,11 +333,7 @@ async fn source_from_import_credential_stream(
 
 enum CredentialStreamEvent {
     Source(Source),
-    OAuthAuthorization {
-        input_key: String,
-        authorization_url: String,
-        user_code: String,
-    },
+    OAuthAuthorization(OAuthCredentialAuthorization),
     OAuthCompleted,
 }
 
@@ -291,11 +345,7 @@ impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStrea
             }
             create_bundled_source_with_o_auth_response::Event::OauthAuthorization(
                 authorization,
-            ) => Self::OAuthAuthorization {
-                input_key: authorization.input_key,
-                authorization_url: authorization.authorization_url,
-                user_code: authorization.user_code,
-            },
+            ) => Self::OAuthAuthorization(authorization),
             create_bundled_source_with_o_auth_response::Event::OauthCompleted(_) => {
                 Self::OAuthCompleted
             }
@@ -308,11 +358,7 @@ impl From<import_source_response::Event> for CredentialStreamEvent {
         match event {
             import_source_response::Event::Source(source) => Self::Source(source),
             import_source_response::Event::OauthAuthorization(authorization) => {
-                Self::OAuthAuthorization {
-                    input_key: authorization.input_key,
-                    authorization_url: authorization.authorization_url,
-                    user_code: authorization.user_code,
-                }
+                Self::OAuthAuthorization(authorization)
             }
             import_source_response::Event::OauthCompleted(_) => Self::OAuthCompleted,
         }
@@ -324,38 +370,35 @@ fn handle_credential_stream_event(
     oauth_labels: &BTreeMap<String, String>,
     redirect_prompt: &mut OAuthRedirectPastePrompt,
 ) -> Option<Source> {
-    match event {
-        Some(CredentialStreamEvent::OAuthAuthorization {
-            input_key,
-            authorization_url,
-            user_code,
-        }) => {
+    match event? {
+        CredentialStreamEvent::OAuthAuthorization(authorization) => {
             let label = oauth_labels
-                .get(&input_key)
-                .map_or(input_key.as_str(), String::as_str);
+                .get(&authorization.input_key)
+                .map_or(authorization.input_key.as_str(), String::as_str);
             println!("Open this URL to connect {label}:");
-            println!("{authorization_url}");
+            println!("{}", authorization.authorization_url);
             redirect_prompt.cancel_and_join();
-            if user_code.is_empty() {
-                redirect_prompt
-                    .replace(spawn_oauth_redirect_paste_prompt(&authorization_url, label));
+            if authorization.user_code.is_empty() {
+                redirect_prompt.replace(spawn_oauth_redirect_paste_prompt(
+                    &authorization.authorization_url,
+                    label,
+                ));
             } else {
-                println!("Enter this code when prompted: {user_code}");
+                println!("Enter this code when prompted: {}", authorization.user_code);
             }
-            if let Err(err) = crate::browser::open_url(&authorization_url) {
+            if let Err(err) = crate::browser::open_url(&authorization.authorization_url) {
                 println!("{}", style(format!("Could not open browser: {err}")).dim());
             }
             None
         }
-        Some(CredentialStreamEvent::Source(source)) => {
+        CredentialStreamEvent::Source(source) => {
             redirect_prompt.cancel_and_join();
             Some(source)
         }
-        Some(CredentialStreamEvent::OAuthCompleted) => {
+        CredentialStreamEvent::OAuthCompleted => {
             redirect_prompt.cancel_and_join();
             None
         }
-        None => None,
     }
 }
 
@@ -631,7 +674,7 @@ pub(crate) fn prompt_for_inputs_with_credential_methods_in_mode(
     inputs: &[ManifestInputSpec],
     mode: CredentialPromptMode,
 ) -> Result<CollectedSourceInputs, anyhow::Error> {
-    let mut collected = CollectedSourceInputs::new();
+    let mut collected = CollectedSourceInputs::default();
 
     for input in inputs {
         if mode.reads_env_before_prompt(input) {
@@ -719,8 +762,7 @@ fn collect_inputs_with_hint(
     mut lookup: impl FnMut(&str) -> String,
     interactive_command: Option<String>,
 ) -> Result<(Vec<SourceVariable>, Vec<SourceSecret>), anyhow::Error> {
-    let mut variables = Vec::new();
-    let mut secrets = Vec::new();
+    let mut collected = CollectedSourceInputs::default();
     let mut missing = Vec::new();
 
     for input in inputs {
@@ -736,16 +778,7 @@ fn collect_inputs_with_hint(
             }
             continue;
         }
-        match input.kind {
-            ManifestInputKind::Variable => variables.push(SourceVariable {
-                key: input.key.clone(),
-                value,
-            }),
-            ManifestInputKind::Secret => secrets.push(SourceSecret {
-                key: input.key.clone(),
-                value,
-            }),
-        }
+        push_collected_input(&mut collected, input, value);
     }
 
     if !missing.is_empty() {
@@ -761,7 +794,7 @@ fn collect_inputs_with_hint(
         ));
     }
 
-    Ok((variables, secrets))
+    Ok((collected.variables, collected.secrets))
 }
 
 pub(crate) fn source_origin_label(origin: i32) -> &'static str {
@@ -787,15 +820,7 @@ pub(crate) async fn validate_and_print(
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
     let response = validate_source(app, source_name).await?;
-    print_validation_pretty(&response, limit)?;
-    match validation_follow_up(&response, ValidationSeverityMode::WarnOnly) {
-        ValidationFollowUp::None => Ok(()),
-        ValidationFollowUp::Warn(message) => {
-            eprintln!("Warning: {message}");
-            Ok(())
-        }
-        ValidationFollowUp::Fail(message) => Err(anyhow::anyhow!(message)),
-    }
+    print_validation_and_follow_up(&response, limit, ValidationSeverityMode::WarnOnly)
 }
 
 pub(crate) async fn validate_and_warn(
@@ -824,14 +849,22 @@ pub(crate) async fn test_and_print(
         Err(status) => return Err(anyhow::Error::from(status).into()),
     };
 
-    print_validation_pretty(&response, limit)?;
-    match validation_follow_up(&response, severity_mode) {
+    print_validation_and_follow_up(&response, limit, severity_mode).map_err(crate::CliError::from)
+}
+
+fn print_validation_and_follow_up(
+    response: &ValidateSourceResponse,
+    limit: TableDisplayLimit,
+    severity_mode: ValidationSeverityMode,
+) -> Result<(), anyhow::Error> {
+    print_validation_pretty(response, limit)?;
+    match validation_follow_up(response, severity_mode) {
         ValidationFollowUp::None => Ok(()),
         ValidationFollowUp::Warn(message) => {
             eprintln!("Warning: {message}");
             Ok(())
         }
-        ValidationFollowUp::Fail(message) => Err(anyhow::anyhow!(message).into()),
+        ValidationFollowUp::Fail(message) => Err(anyhow::anyhow!(message)),
     }
 }
 
@@ -1015,11 +1048,10 @@ fn validation_follow_up(
         return ValidationFollowUp::None;
     }
 
-    let failure_count = query_test_counts.failed.max(1);
     let message = format!(
         "{} of {} validation quer{} failed",
-        failure_count,
-        query_test_counts.declared.max(failure_count),
+        query_test_counts.failed,
+        query_test_counts.declared,
         if query_test_counts.declared == 1 {
             "y"
         } else {
@@ -1655,12 +1687,10 @@ pub(crate) fn finalize_input_value(
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::indexing_slicing,
-        reason = "collected input order assertions intentionally fail loudly in tests"
-    )]
-
-    use coral_api::v1::ValidateSourceResponse;
+    use coral_api::v1::{
+        QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceSecret, SourceVariable,
+        ValidateSourceResponse, query_test_result::Outcome,
+    };
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestInputKind, ManifestInputSpec,
@@ -1681,25 +1711,96 @@ mod tests {
         validation_follow_up,
     };
 
+    fn manifest_input(
+        key: &str,
+        kind: ManifestInputKind,
+        required: bool,
+        default_value: &str,
+    ) -> ManifestInputSpec {
+        ManifestInputSpec {
+            key: key.to_string(),
+            kind,
+            required,
+            default_value: default_value.to_string(),
+            hint: None,
+            credential: None,
+        }
+    }
+
+    fn validation_response(query_tests: Vec<QueryTestResult>) -> ValidateSourceResponse {
+        ValidateSourceResponse {
+            source: None,
+            tables: Vec::new(),
+            table_functions: Vec::new(),
+            query_tests,
+        }
+    }
+
+    fn passed_query(sql: &str) -> QueryTestResult {
+        QueryTestResult {
+            sql: sql.to_string(),
+            outcome: Some(Outcome::Success(QueryTestSuccess { row_count: 1 })),
+        }
+    }
+
+    fn failed_query(sql: &str) -> QueryTestResult {
+        QueryTestResult {
+            sql: sql.to_string(),
+            outcome: Some(Outcome::Failure(QueryTestFailure {
+                error_message: "missing".to_string(),
+            })),
+        }
+    }
+
+    fn variable_input(key: &str, required: bool, default_value: &str) -> ManifestInputSpec {
+        manifest_input(key, ManifestInputKind::Variable, required, default_value)
+    }
+
+    fn secret_input(key: &str, required: bool) -> ManifestInputSpec {
+        manifest_input(key, ManifestInputKind::Secret, required, "")
+    }
+
+    fn parsed_url(raw: &str) -> Url {
+        Url::parse(raw).expect("url should parse")
+    }
+
+    fn assert_oauth_redirect_error(
+        case: &str,
+        callback_url: &str,
+        expected_state: Option<&str>,
+        expected_message: &str,
+    ) {
+        let expected = parsed_url("http://localhost:53682/oauth/callback");
+        let callback = parsed_url(callback_url);
+        let error = validate_oauth_redirect_url(&callback, &expected, expected_state)
+            .expect_err(&format!("{case} should fail"));
+        assert!(
+            error.to_string().contains(expected_message),
+            "{case}: unexpected error: {error}"
+        );
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
+    }
+
+    fn assert_redirect_key_action(
+        value: &mut String,
+        key: KeyEvent,
+        expected: RedirectPromptAction,
+    ) {
+        assert_eq!(apply_redirect_prompt_key(key, value), expected);
+    }
+
     #[test]
     fn collect_inputs_reads_variables_and_secrets_from_lookup() {
         let inputs = vec![
-            ManifestInputSpec {
-                key: "LINEAR_API_BASE".to_string(),
-                kind: ManifestInputKind::Variable,
-                required: false,
-                default_value: "https://api.linear.app".to_string(),
-                hint: None,
-                credential: None,
-            },
-            ManifestInputSpec {
-                key: "LINEAR_API_KEY".to_string(),
-                kind: ManifestInputKind::Secret,
-                required: true,
-                default_value: String::new(),
-                hint: None,
-                credential: None,
-            },
+            variable_input("LINEAR_API_BASE", false, "https://api.linear.app"),
+            secret_input("LINEAR_API_KEY", true),
         ];
         let env: HashMap<&str, &str> = [("LINEAR_API_KEY", "lin_token")].into_iter().collect();
         let (variables, secrets) = collect_inputs_with_hint(
@@ -1708,32 +1809,34 @@ mod tests {
             None,
         )
         .expect("should succeed");
-        assert_eq!(variables.len(), 1);
-        assert_eq!(variables[0].key, "LINEAR_API_BASE");
-        assert_eq!(variables[0].value, "https://api.linear.app");
-        assert_eq!(secrets.len(), 1);
-        assert_eq!(secrets[0].key, "LINEAR_API_KEY");
-        assert_eq!(secrets[0].value, "lin_token");
+        assert_eq!(
+            variables,
+            vec![SourceVariable {
+                key: "LINEAR_API_BASE".to_string(),
+                value: "https://api.linear.app".to_string(),
+            }]
+        );
+        assert_eq!(
+            secrets,
+            vec![SourceSecret {
+                key: "LINEAR_API_KEY".to_string(),
+                value: "lin_token".to_string(),
+            }]
+        );
     }
 
     #[test]
     fn credential_method_first_defers_env_for_secrets_with_credential_methods() {
-        let input = ManifestInputSpec {
-            key: "LINEAR_OAUTH_ACCESS_TOKEN".to_string(),
-            kind: ManifestInputKind::Secret,
-            required: false,
-            default_value: String::new(),
-            hint: None,
-            credential: Some(ManifestCredentialSpec {
-                methods: vec![ManifestCredentialMethod {
-                    kind: ManifestCredentialMethodKind::SourceConfig,
-                    label: Some("Paste token".to_string()),
-                    description: None,
-                    hint: None,
-                    oauth: None,
-                }],
-            }),
-        };
+        let mut input = secret_input("LINEAR_OAUTH_ACCESS_TOKEN", false);
+        input.credential = Some(ManifestCredentialSpec {
+            methods: vec![ManifestCredentialMethod {
+                kind: ManifestCredentialMethodKind::SourceConfig,
+                label: Some("Paste token".to_string()),
+                description: None,
+                hint: None,
+                oauth: None,
+            }],
+        });
 
         assert!(CredentialPromptMode::EnvFirst.reads_env_before_prompt(&input));
         assert!(!CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&input));
@@ -1814,22 +1917,8 @@ mod tests {
 
     #[test]
     fn credential_method_first_keeps_env_for_plain_inputs() {
-        let variable = ManifestInputSpec {
-            key: "LINEAR_API_BASE".to_string(),
-            kind: ManifestInputKind::Variable,
-            required: false,
-            default_value: String::new(),
-            hint: None,
-            credential: None,
-        };
-        let plain_secret = ManifestInputSpec {
-            key: "LINEAR_API_KEY".to_string(),
-            kind: ManifestInputKind::Secret,
-            required: false,
-            default_value: String::new(),
-            hint: None,
-            credential: None,
-        };
+        let variable = variable_input("LINEAR_API_BASE", false, "");
+        let plain_secret = secret_input("LINEAR_API_KEY", false);
 
         assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&variable));
         assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&plain_secret));
@@ -1837,57 +1926,39 @@ mod tests {
 
     #[test]
     fn collect_inputs_env_value_overrides_default() {
-        let inputs = vec![ManifestInputSpec {
-            key: "API_BASE".to_string(),
-            kind: ManifestInputKind::Variable,
-            required: false,
-            default_value: "https://example.com".to_string(),
-            hint: None,
-            credential: None,
-        }];
+        let inputs = vec![variable_input("API_BASE", false, "https://example.com")];
         let (variables, _) =
             collect_inputs_with_hint(&inputs, |_| "https://override.test".to_string(), None)
                 .expect("env should override default");
-        assert_eq!(variables.len(), 1);
-        assert_eq!(variables[0].value, "https://override.test");
+        assert_eq!(
+            variables,
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://override.test".to_string(),
+            }]
+        );
     }
 
     #[test]
     fn collect_inputs_uses_default_when_env_empty() {
-        let inputs = vec![ManifestInputSpec {
-            key: "API_BASE".to_string(),
-            kind: ManifestInputKind::Variable,
-            required: true,
-            default_value: "https://example.com".to_string(),
-            hint: None,
-            credential: None,
-        }];
+        let inputs = vec![variable_input("API_BASE", true, "https://example.com")];
         let (variables, secrets) = collect_inputs_with_hint(&inputs, |_| String::new(), None)
             .expect("default should satisfy required");
-        assert_eq!(secrets.len(), 0);
-        assert_eq!(variables.len(), 1);
-        assert_eq!(variables[0].value, "https://example.com");
+        assert!(secrets.is_empty());
+        assert_eq!(
+            variables,
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }]
+        );
     }
 
     #[test]
     fn collect_inputs_errors_on_missing_required() {
         let inputs = vec![
-            ManifestInputSpec {
-                key: "LINEAR_API_KEY".to_string(),
-                kind: ManifestInputKind::Secret,
-                required: true,
-                default_value: String::new(),
-                hint: None,
-                credential: None,
-            },
-            ManifestInputSpec {
-                key: "OTHER_KEY".to_string(),
-                kind: ManifestInputKind::Variable,
-                required: true,
-                default_value: String::new(),
-                hint: None,
-                credential: None,
-            },
+            secret_input("LINEAR_API_KEY", true),
+            variable_input("OTHER_KEY", true, ""),
         ];
         let error = collect_inputs_with_hint(&inputs, |_| String::new(), None)
             .expect_err("missing required inputs should fail");
@@ -1899,23 +1970,15 @@ mod tests {
 
     #[test]
     fn source_name_arg_rejects_dot_segments() {
-        let error = source_name_arg(Some("..")).expect_err("dot segment should fail");
-        assert!(error.to_string().contains("must not be '.' or '..'"));
-
-        let error = source_name_arg(Some(" . ")).expect_err("dot segment should fail");
-        assert!(error.to_string().contains("must not be '.' or '..'"));
+        for name in ["..", " . "] {
+            let error = source_name_arg(Some(name)).expect_err("dot segment should fail");
+            assert!(error.to_string().contains("must not be '.' or '..'"));
+        }
     }
 
     #[test]
     fn collect_inputs_skips_optional_empty_inputs() {
-        let inputs = vec![ManifestInputSpec {
-            key: "OPTIONAL".to_string(),
-            kind: ManifestInputKind::Variable,
-            required: false,
-            default_value: String::new(),
-            hint: None,
-            credential: None,
-        }];
+        let inputs = vec![variable_input("OPTIONAL", false, "")];
         let (variables, secrets) = collect_inputs_with_hint(&inputs, |_| String::new(), None)
             .expect("optional should be omitted");
         assert!(variables.is_empty());
@@ -1924,14 +1987,7 @@ mod tests {
 
     #[test]
     fn empty_optional_input_is_omitted_for_server_side_defaults() {
-        let input = ManifestInputSpec {
-            key: "API_BASE".to_string(),
-            kind: ManifestInputKind::Variable,
-            required: false,
-            default_value: "https://example.com".to_string(),
-            hint: None,
-            credential: None,
-        };
+        let input = variable_input("API_BASE", false, "https://example.com");
         assert_eq!(
             finalize_input_value(&input, String::new(), "source variable")
                 .expect("empty optional input should be omitted"),
@@ -1941,14 +1997,7 @@ mod tests {
 
     #[test]
     fn empty_required_input_without_default_is_rejected() {
-        let input = ManifestInputSpec {
-            key: "API_TOKEN".to_string(),
-            kind: ManifestInputKind::Secret,
-            required: true,
-            default_value: String::new(),
-            hint: None,
-            credential: None,
-        };
+        let input = secret_input("API_TOKEN", true);
         let error = finalize_input_value(&input, String::new(), "source secret")
             .expect_err("required empty input should fail");
         assert!(error.to_string().contains("missing required source secret"));
@@ -1979,35 +2028,29 @@ mod tests {
     }
 
     #[test]
-    fn oauth_redirect_url_must_match_expected_loopback_callback() {
-        let expected = Url::parse("http://localhost:53682/oauth/callback").expect("expected url");
-        let mismatched =
-            Url::parse("http://localhost:53682/other?state=xyz&code=abc").expect("callback url");
-
-        let error = validate_oauth_redirect_url(&mismatched, &expected, None)
-            .expect_err("mismatched callback should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must match the OAuth redirect URI"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn oauth_redirect_url_rejects_non_loopback_hosts() {
-        let expected = Url::parse("http://localhost:53682/oauth/callback").expect("expected url");
-        let callback = Url::parse("http://example.com:53682/oauth/callback?state=xyz&code=abc")
-            .expect("callback url");
-
-        let error = validate_oauth_redirect_url(&callback, &expected, None)
-            .expect_err("non-loopback callback should fail");
-
-        assert!(
-            error.to_string().contains("host must be loopback"),
-            "unexpected error: {error}"
-        );
+    fn oauth_redirect_url_rejects_invalid_callbacks() {
+        for (case, callback_url, expected_state, expected_message) in [
+            (
+                "mismatched callback",
+                "http://localhost:53682/other?state=xyz&code=abc",
+                None,
+                "must match the OAuth redirect URI",
+            ),
+            (
+                "non-loopback host",
+                "http://example.com:53682/oauth/callback?state=xyz&code=abc",
+                None,
+                "host must be loopback",
+            ),
+            (
+                "state mismatch",
+                "http://localhost:53682/oauth/callback?state=old&code=abc",
+                Some("xyz"),
+                "state",
+            ),
+        ] {
+            assert_oauth_redirect_error(case, callback_url, expected_state, expected_message);
+        }
     }
 
     #[test]
@@ -2018,7 +2061,8 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept callback");
             let mut buffer = [0_u8; 1024];
             let read = stream.read(&mut buffer).expect("read callback request");
-            let request = String::from_utf8_lossy(&buffer[..read]);
+            let request =
+                String::from_utf8_lossy(buffer.get(..read).expect("read bytes are in buffer"));
             assert!(
                 request.starts_with("GET /oauth/callback?state=xyz&code=test-code HTTP/1.1\r\n"),
                 "unexpected request: {request}"
@@ -2027,8 +2071,7 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
                 .expect("write callback response");
         });
-        let expected =
-            Url::parse(&format!("http://127.0.0.1:{port}/oauth/callback")).expect("expected url");
+        let expected = parsed_url(&format!("http://127.0.0.1:{port}/oauth/callback"));
         let callback_url =
             format!("http://127.0.0.1:{port}/oauth/callback?state=xyz&code=test-code");
 
@@ -2038,53 +2081,30 @@ mod tests {
     }
 
     #[test]
-    fn oauth_redirect_url_must_match_expected_state_when_present() {
-        let expected = Url::parse("http://localhost:53682/oauth/callback").expect("expected url");
-        let stale = Url::parse("http://localhost:53682/oauth/callback?state=old&code=abc")
-            .expect("callback url");
-
-        let error = validate_oauth_redirect_url(&stale, &expected, Some("xyz"))
-            .expect_err("state mismatch should fail before callback submission");
-
-        assert!(
-            error.to_string().contains("state"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
     fn redirect_prompt_key_events_collect_submit_and_edit_url() {
         let mut value = String::new();
 
         for ch in "http://localhost/callback".chars() {
-            assert_eq!(
-                apply_redirect_prompt_key(
-                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                    &mut value
-                ),
-                RedirectPromptAction::Continue
+            assert_redirect_key_action(
+                &mut value,
+                key(KeyCode::Char(ch)),
+                RedirectPromptAction::Continue,
             );
         }
-        assert_eq!(
-            apply_redirect_prompt_key(
-                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-                &mut value
-            ),
-            RedirectPromptAction::Continue
+        assert_redirect_key_action(
+            &mut value,
+            key(KeyCode::Backspace),
+            RedirectPromptAction::Continue,
         );
-        assert_eq!(
-            apply_redirect_prompt_key(
-                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
-                &mut value
-            ),
-            RedirectPromptAction::Continue
+        assert_redirect_key_action(
+            &mut value,
+            key(KeyCode::Char('k')),
+            RedirectPromptAction::Continue,
         );
-        assert_eq!(
-            apply_redirect_prompt_key(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                &mut value
-            ),
-            RedirectPromptAction::Submit
+        assert_redirect_key_action(
+            &mut value,
+            key(KeyCode::Enter),
+            RedirectPromptAction::Submit,
         );
 
         assert_eq!(value, "http://localhost/callback");
@@ -2094,20 +2114,8 @@ mod tests {
     fn redirect_prompt_key_events_cancel_without_appending_control_input() {
         let mut value = String::from("http://localhost/callback");
 
-        assert_eq!(
-            apply_redirect_prompt_key(
-                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
-                &mut value
-            ),
-            RedirectPromptAction::Continue
-        );
-        assert_eq!(
-            apply_redirect_prompt_key(
-                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-                &mut value
-            ),
-            RedirectPromptAction::Cancel
-        );
+        assert_redirect_key_action(&mut value, ctrl('x'), RedirectPromptAction::Continue);
+        assert_redirect_key_action(&mut value, ctrl('c'), RedirectPromptAction::Cancel);
         assert_eq!(value, "http://localhost/callback");
     }
 
@@ -2115,100 +2123,42 @@ mod tests {
     fn redirect_prompt_key_echoes_visible_edits() {
         let mut output = Vec::new();
 
-        render_redirect_prompt_key_echo(
-            &mut output,
-            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
-            0,
-            1,
-        )
-        .expect("echo char");
-        render_redirect_prompt_key_echo(
-            &mut output,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            1,
-            0,
-        )
-        .expect("echo backspace");
-        render_redirect_prompt_key_echo(
-            &mut output,
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            0,
-            0,
-        )
-        .expect("skip control char");
+        render_redirect_prompt_key_echo(&mut output, key(KeyCode::Char('h')), 0, 1)
+            .expect("echo char");
+        render_redirect_prompt_key_echo(&mut output, key(KeyCode::Backspace), 1, 0)
+            .expect("echo backspace");
+        render_redirect_prompt_key_echo(&mut output, ctrl('c'), 0, 0).expect("skip control char");
 
         assert_eq!(output, b"h\x08 \x08");
     }
 
     #[test]
-    fn validation_follow_up_is_none_when_all_query_tests_pass() {
-        let response = ValidateSourceResponse {
-            source: None,
-            tables: Vec::new(),
-            table_functions: Vec::new(),
-            query_tests: vec![coral_api::v1::QueryTestResult {
-                sql: "SELECT 1".to_string(),
-                outcome: Some(coral_api::v1::query_test_result::Outcome::Success(
-                    coral_api::v1::QueryTestSuccess { row_count: 1 },
-                )),
-            }],
-        };
-
-        assert_eq!(
-            validation_follow_up(&response, ValidationSeverityMode::Strict),
-            ValidationFollowUp::None
-        );
-    }
-
-    #[test]
-    fn validation_follow_up_is_error_in_strict_mode() {
-        let response = ValidateSourceResponse {
-            source: None,
-            tables: Vec::new(),
-            table_functions: Vec::new(),
-            query_tests: vec![
-                coral_api::v1::QueryTestResult {
-                    sql: "SELECT 1".to_string(),
-                    outcome: Some(coral_api::v1::query_test_result::Outcome::Success(
-                        coral_api::v1::QueryTestSuccess { row_count: 1 },
-                    )),
-                },
-                coral_api::v1::QueryTestResult {
-                    sql: "SELECT missing".to_string(),
-                    outcome: Some(coral_api::v1::query_test_result::Outcome::Failure(
-                        coral_api::v1::QueryTestFailure {
-                            error_message: "missing".to_string(),
-                        },
-                    )),
-                },
-            ],
-        };
-
-        assert_eq!(
-            validation_follow_up(&response, ValidationSeverityMode::Strict),
-            ValidationFollowUp::Fail("1 of 2 validation queries failed".to_string())
-        );
-    }
-
-    #[test]
-    fn validation_follow_up_is_warning_in_warn_only_mode() {
-        let response = ValidateSourceResponse {
-            source: None,
-            tables: Vec::new(),
-            table_functions: Vec::new(),
-            query_tests: vec![coral_api::v1::QueryTestResult {
-                sql: "SELECT missing".to_string(),
-                outcome: Some(coral_api::v1::query_test_result::Outcome::Failure(
-                    coral_api::v1::QueryTestFailure {
-                        error_message: "missing".to_string(),
-                    },
-                )),
-            }],
-        };
-
-        assert_eq!(
-            validation_follow_up(&response, ValidationSeverityMode::WarnOnly),
-            ValidationFollowUp::Warn("1 of 1 validation query failed".to_string())
-        );
+    fn validation_follow_up_cases() {
+        for (name, queries, severity_mode, expected) in [
+            (
+                "all pass",
+                vec![passed_query("SELECT 1")],
+                ValidationSeverityMode::Strict,
+                ValidationFollowUp::None,
+            ),
+            (
+                "strict failure",
+                vec![passed_query("SELECT 1"), failed_query("SELECT missing")],
+                ValidationSeverityMode::Strict,
+                ValidationFollowUp::Fail("1 of 2 validation queries failed".to_string()),
+            ),
+            (
+                "warn-only failure",
+                vec![failed_query("SELECT missing")],
+                ValidationSeverityMode::WarnOnly,
+                ValidationFollowUp::Warn("1 of 1 validation query failed".to_string()),
+            ),
+        ] {
+            assert_eq!(
+                validation_follow_up(&validation_response(queries), severity_mode),
+                expected,
+                "{name}"
+            );
+        }
     }
 }

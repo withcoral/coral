@@ -7,6 +7,7 @@
 )]
 #![cfg(feature = "cli-test-server")]
 
+mod common;
 mod harness;
 
 use std::sync::Arc;
@@ -23,6 +24,7 @@ use coral_api::v1::{
 use tempfile::tempdir;
 use tonic::Code;
 
+use common::{assert_contains, assert_contains_all, assert_not_contains, stderr, stdout};
 use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
 
 #[cfg(feature = "embedded-ui")]
@@ -34,18 +36,10 @@ fn ui_help_does_not_require_app_bootstrap() {
         .assert()
         .success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        stdout.contains("embedded Coral UI"),
-        "expected ui help text: {stdout}"
-    );
-    assert!(
-        stdout.contains("--port <PORT>"),
-        "expected ui port option: {stdout}"
-    );
-    assert!(
-        stdout.contains("--no-open"),
-        "expected ui no-open option: {stdout}"
+    let stdout = stdout(&assert);
+    assert_contains_all(
+        &stdout,
+        &["embedded Coral UI", "--port <PORT>", "--no-open"],
     );
 }
 
@@ -65,24 +59,42 @@ fn assert_default_workspace(workspace: Option<&coral_api::v1::Workspace>) {
     );
 }
 
+fn success_stdout<const N: usize>(server: &MockServer, args: [&str; N]) -> String {
+    stdout(&server.cmd().args(args).assert().success())
+}
+
+fn failure_stderr<const N: usize>(server: &MockServer, args: [&str; N]) -> String {
+    stderr(&server.cmd().args(args).assert().failure())
+}
+
+async fn configured_failure_stderr(config: MockServerConfig, args: &[&str]) -> String {
+    let server = MockServer::start_with_config(config).await;
+    let stderr = stderr(&server.cmd().args(args).assert().failure());
+    server.shutdown().await;
+    stderr
+}
+
+fn only_request<T>(requests: Vec<T>, label: &str) -> T {
+    assert_eq!(requests.len(), 1, "expected one {label} call");
+    requests.into_iter().next().expect("single request")
+}
+
+enum CliErrorExpectation {
+    Contains(&'static str),
+    RequiredArgument,
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sql_command_renders_table_output() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "select 1 as value"])
-        .assert()
-        .success();
+    let stdout = success_stdout(&server, ["sql", "select 1 as value"]);
+    assert_contains(&stdout, "value");
+    assert_contains(&stdout, "1");
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(stdout.contains("value"), "expected column header: {stdout}");
-    assert!(stdout.contains('1'), "expected row value: {stdout}");
-
-    let requests = server.execute_sql_requests();
-    assert_eq!(requests.len(), 1, "expected one execute_sql call");
-    assert_eq!(requests[0].sql, "select 1 as value");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.execute_sql_requests(), "execute_sql");
+    assert_eq!(request.sql, "select 1 as value");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -91,9 +103,7 @@ async fn sql_command_renders_table_output() {
 async fn source_list_renders_configured_sources() {
     let server = MockServer::start().await;
 
-    let assert = server.cmd().args(["source", "list"]).assert().success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = success_stdout(&server, ["source", "list"]);
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
@@ -105,9 +115,8 @@ async fn source_list_renders_configured_sources() {
         "expected configured source list"
     );
 
-    let requests = server.list_sources_requests();
-    assert_eq!(requests.len(), 1, "expected one list_sources call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.list_sources_requests(), "list_sources");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -149,19 +158,12 @@ async fn source_list_renders_dash_for_missing_authored_version() {
 async fn sql_command_renders_json_output() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "--format", "json", "select 1 as value"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = success_stdout(&server, ["sql", "--format", "json", "select 1 as value"]);
     assert_eq!(stdout.trim(), "[{\"value\":1}]", "expected JSON rows");
 
-    let requests = server.execute_sql_requests();
-    assert_eq!(requests.len(), 1, "expected one execute_sql call");
-    assert_eq!(requests[0].sql, "select 1 as value");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.execute_sql_requests(), "execute_sql");
+    assert_eq!(request.sql, "select 1 as value");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -170,9 +172,7 @@ async fn sql_command_renders_json_output() {
 async fn source_discover_renders_available_sources() {
     let server = MockServer::start().await;
 
-    let assert = server.cmd().args(["source", "discover"]).assert().success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = success_stdout(&server, ["source", "discover"]);
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
@@ -184,150 +184,71 @@ async fn source_discover_renders_available_sources() {
         "expected discover source list"
     );
 
-    let requests = server.discover_sources_requests();
-    assert_eq!(requests.len(), 1, "expected one discover_sources call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.discover_sources_requests(), "discover_sources");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_discover_renders_empty_state() {
-    let server = MockServer::start_with_config(MockServerConfig::default().with_discover_sources(
-        DiscoverSourcesResponse {
-            sources: Vec::new(),
-        },
-    ))
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_discover_sources(DiscoverSourcesResponse::default()),
+    )
     .await;
 
-    let assert = server.cmd().args(["source", "discover"]).assert().success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = success_stdout(&server, ["source", "discover"]);
     assert_eq!(
         stdout.trim(),
         "No bundled sources available.",
         "expected empty state"
     );
 
-    let requests = server.discover_sources_requests();
-    assert_eq!(requests.len(), 1, "expected one discover_sources call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.discover_sources_requests(), "discover_sources");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_info_renders_metadata_for_installed_source() {
+async fn source_info_renders_metadata_variants() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "info", "github"])
-        .assert()
-        .success();
+    let stdout = success_stdout(&server, ["source", "info", "github"]);
+    assert_contains_all(
+        &stdout,
+        &[
+            "github",
+            "installed",
+            "1.0.0",
+            "GitHub data",
+            "GITHUB_TOKEN",
+            "secret",
+            "required",
+        ],
+    );
+    assert_not_contains(&stdout, "github.com/settings/tokens");
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(stdout.contains("github"), "expected source name: {stdout}");
-    assert!(
-        stdout.contains("installed"),
-        "expected installed status: {stdout}"
-    );
-    assert!(stdout.contains("1.0.0"), "expected version: {stdout}");
-    assert!(
-        stdout.contains("GitHub data"),
-        "expected description: {stdout}"
-    );
-    assert!(
-        stdout.contains("GITHUB_TOKEN"),
-        "expected input key: {stdout}"
-    );
-    assert!(stdout.contains("secret"), "expected input kind: {stdout}");
-    assert!(
-        stdout.contains("required"),
-        "expected input requirement: {stdout}"
-    );
-    assert!(
-        !stdout.contains("github.com/settings/tokens"),
-        "expected hint to be hidden without --verbose: {stdout}"
-    );
+    let stdout = success_stdout(&server, ["source", "info", "github", "--verbose"]);
+    assert_contains(&stdout, "github.com/settings/tokens");
+
+    let stdout = success_stdout(&server, ["source", "info", "slack"]);
+    assert_contains_all(&stdout, &["not installed", "2.1.0", "Slack data"]);
+
+    let stdout = success_stdout(&server, ["source", "info", "jira"]);
+    assert_contains_all(&stdout, &["jira", "installed", "imported", "2.0.0"]);
 
     let requests = server.get_source_info_requests();
-    assert_eq!(requests.len(), 1, "expected one get_source_info call");
-    assert_eq!(requests[0].name, "github");
-    assert_default_workspace(requests[0].workspace.as_ref());
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_info_verbose_includes_input_hints() {
-    let server = MockServer::start().await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "info", "github", "--verbose"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        stdout.contains("github.com/settings/tokens"),
-        "expected hint with --verbose: {stdout}"
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["github", "github", "slack", "jira"]
     );
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_info_renders_metadata_for_available_source() {
-    let server = MockServer::start().await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "info", "slack"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        stdout.contains("not installed"),
-        "expected not-installed status: {stdout}"
-    );
-    assert!(stdout.contains("2.1.0"), "expected version: {stdout}");
-    assert!(
-        stdout.contains("Slack data"),
-        "expected description: {stdout}"
-    );
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_info_renders_installed_imported_source() {
-    let server = MockServer::start().await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "info", "jira"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(stdout.contains("jira"), "expected source name: {stdout}");
-    assert!(
-        stdout.contains("installed"),
-        "expected installed status: {stdout}"
-    );
-    assert!(
-        stdout.contains("imported"),
-        "expected imported origin: {stdout}"
-    );
-    assert!(stdout.contains("2.0.0"), "expected version: {stdout}");
-
-    let requests = server.get_source_info_requests();
-    assert_eq!(requests.len(), 1, "expected one get_source_info call");
-    assert_eq!(requests[0].name, "jira");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    for request in requests {
+        assert_default_workspace(request.workspace.as_ref());
+    }
 
     server.shutdown().await;
 }
@@ -359,42 +280,28 @@ async fn source_info_omits_missing_authored_version() {
 async fn source_info_errors_for_unknown_source() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "info", "nope"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("unknown source 'nope'"),
-        "expected unknown source error: {stderr}"
-    );
+    let stderr = failure_stderr(&server, ["source", "info", "nope"]);
+    assert_contains(&stderr, "unknown source 'nope'");
 
     server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_list_renders_empty_state() {
-    let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
-        ListSourcesResponse {
-            sources: Vec::new(),
-        },
-    ))
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_list_sources(ListSourcesResponse::default()),
+    )
     .await;
 
-    let assert = server.cmd().args(["source", "list"]).assert().success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = success_stdout(&server, ["source", "list"]);
     assert_eq!(
         stdout.trim(),
         "No sources configured.",
         "expected empty state"
     );
 
-    let requests = server.list_sources_requests();
-    assert_eq!(requests.len(), 1, "expected one list_sources call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.list_sources_requests(), "list_sources");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -403,31 +310,20 @@ async fn source_list_renders_empty_state() {
 async fn source_test_renders_validation_summary() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "test", "github"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        stdout.contains("github connected successfully"),
-        "expected success summary: {stdout}"
-    );
-    assert!(
-        stdout.contains("github (2 tables)"),
-        "expected schema summary: {stdout}"
-    );
-    assert!(stdout.contains("issues"), "expected issues table: {stdout}");
-    assert!(
-        stdout.contains("pull_requests"),
-        "expected pull_requests table: {stdout}"
+    let stdout = success_stdout(&server, ["source", "test", "github"]);
+    assert_contains_all(
+        &stdout,
+        &[
+            "github connected successfully",
+            "github (2 tables)",
+            "issues",
+            "pull_requests",
+        ],
     );
 
-    let requests = server.validate_source_requests();
-    assert_eq!(requests.len(), 1, "expected one validate_source call");
-    assert_eq!(requests[0].name, "github");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.validate_source_requests(), "validate_source");
+    assert_eq!(request.name, "github");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -436,23 +332,16 @@ async fn source_test_renders_validation_summary() {
 async fn source_remove_reports_removed_source() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "remove", "github"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = success_stdout(&server, ["source", "remove", "github"]);
     assert_eq!(
         stdout.trim(),
         "Removed source github",
         "expected remove confirmation"
     );
 
-    let requests = server.delete_source_requests();
-    assert_eq!(requests.len(), 1, "expected one delete_source call");
-    assert_eq!(requests[0].name, "github");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.delete_source_requests(), "delete_source");
+    assert_eq!(request.name, "github");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -464,21 +353,11 @@ async fn sql_command_surfaces_server_errors() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "select 1 as value"])
-        .assert()
-        .failure();
+    let stderr = failure_stderr(&server, ["sql", "select 1 as value"]);
+    assert_contains(&stderr, "mock SQL failure");
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("mock SQL failure"),
-        "expected server error in stderr: {stderr}"
-    );
-
-    let requests = server.execute_sql_requests();
-    assert_eq!(requests.len(), 1, "expected one execute_sql call");
-    assert_eq!(requests[0].sql, "select 1 as value");
+    let request = only_request(server.execute_sql_requests(), "execute_sql");
+    assert_eq!(request.sql, "select 1 as value");
 
     server.shutdown().await;
 }
@@ -491,34 +370,64 @@ async fn source_test_surfaces_validation_errors() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "test", "github"])
-        .assert()
-        .failure();
+    let stderr = failure_stderr(&server, ["source", "test", "github"]);
+    assert_contains(&stderr, "mock validate failure");
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("mock validate failure"),
-        "expected validation error in stderr: {stderr}"
-    );
-
-    let requests = server.validate_source_requests();
-    assert_eq!(requests.len(), 1, "expected one validate_source call");
-    assert_eq!(requests[0].name, "github");
+    let request = only_request(server.validate_source_requests(), "validate_source");
+    assert_eq!(request.name, "github");
 
     server.shutdown().await;
 }
-
-// ---------------------------------------------------------------------------
-// SQL output shape
-// ---------------------------------------------------------------------------
 
 fn sql_response(schema: &Schema, batches: &[RecordBatch], row_count: i64) -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(schema, batches).expect("encode arrow ipc"),
         row_count,
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_commands_reject_invalid_cli_arguments() {
+    let server = MockServer::start().await;
+
+    for (case, args, expectation) in [
+        (
+            "source add requires name or file",
+            &["source", "add"][..],
+            CliErrorExpectation::RequiredArgument,
+        ),
+        (
+            "source add rejects name and file together",
+            &["source", "add", "github", "--file", "manifest.yaml"][..],
+            CliErrorExpectation::Contains("cannot be used with"),
+        ),
+        (
+            "source test rejects invalid name",
+            &["source", "test", "a/b"][..],
+            CliErrorExpectation::Contains("must not contain"),
+        ),
+        (
+            "source remove rejects invalid name",
+            &["source", "remove", "a/b"][..],
+            CliErrorExpectation::Contains("must not contain"),
+        ),
+        (
+            "source add interactive requires tty",
+            &["source", "add", "--interactive", "github"][..],
+            CliErrorExpectation::Contains("requires a TTY"),
+        ),
+    ] {
+        let stderr = stderr(&server.cmd().args(args).assert().failure());
+        match expectation {
+            CliErrorExpectation::Contains(expected) => assert_contains(&stderr, expected),
+            CliErrorExpectation::RequiredArgument => assert!(
+                stderr.contains("required") || stderr.contains("must be provided"),
+                "{case}: expected clap error about required arguments: {stderr}"
+            ),
+        }
+    }
+
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -550,7 +459,6 @@ async fn sql_table_output_renders_multiple_columns_and_rows() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     let lines = nonempty_lines(&stdout);
 
-    // Arrow pretty table: border, header, border, data rows, border.
     assert!(lines[0].starts_with('+'), "top border: {}", lines[0]);
     assert!(
         lines[1].contains("id") && lines[1].contains("name"),
@@ -572,10 +480,9 @@ async fn sql_table_output_renders_multiple_columns_and_rows() {
     assert!(lines[6].starts_with('+'), "bottom border: {}", lines[6]);
     assert_eq!(lines.len(), 7, "expected 7 lines, got: {stdout}");
 
-    let requests = server.execute_sql_requests();
-    assert_eq!(requests.len(), 1, "expected one execute_sql call");
-    assert_eq!(requests[0].sql, "select id, name from users");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    let request = only_request(server.execute_sql_requests(), "execute_sql");
+    assert_eq!(request.sql, "select id, name from users");
+    assert_default_workspace(request.workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -701,44 +608,6 @@ async fn sql_json_output_renders_empty_result() {
     server.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Clap argument validation
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_add_requires_name_or_file() {
-    let server = MockServer::start().await;
-
-    let assert = server.cmd().args(["source", "add"]).assert().failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("required") || stderr.contains("must be provided"),
-        "expected clap error about required arguments: {stderr}"
-    );
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_add_rejects_name_and_file_together() {
-    let server = MockServer::start().await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "add", "github", "--file", "manifest.yaml"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("cannot be used with"),
-        "expected clap conflict error: {stderr}"
-    );
-
-    server.shutdown().await;
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
     let server = MockServer::start().await;
@@ -794,52 +663,6 @@ surfaces:
     server.shutdown().await;
 }
 
-// ---------------------------------------------------------------------------
-// Name validation
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_test_rejects_invalid_name() {
-    let server = MockServer::start().await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "test", "a/b"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("must not contain"),
-        "expected name validation error: {stderr}"
-    );
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_remove_rejects_invalid_name() {
-    let server = MockServer::start().await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "remove", "a/b"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("must not contain"),
-        "expected name validation error: {stderr}"
-    );
-
-    server.shutdown().await;
-}
-
-// ---------------------------------------------------------------------------
-// Interactive-mode gating
-// ---------------------------------------------------------------------------
-
 #[tokio::test(flavor = "multi_thread")]
 async fn source_add_reports_missing_env_vars_without_interactive() {
     let server = MockServer::start().await;
@@ -851,37 +674,14 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
         .assert()
         .failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("missing required environment variable"),
-        "expected missing env var error: {stderr}"
-    );
-    assert!(
-        stderr.contains("GITHUB_TOKEN"),
-        "expected missing env var to name GITHUB_TOKEN: {stderr}"
-    );
-    assert!(
-        stderr.contains("coral source add --interactive github"),
-        "expected exact interactive recovery command: {stderr}"
-    );
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_add_interactive_requires_tty() {
-    let server = MockServer::start().await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "add", "--interactive", "github"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("requires a TTY"),
-        "expected TTY requirement error: {stderr}"
+    let stderr = stderr(&assert);
+    assert_contains_all(
+        &stderr,
+        &[
+            "missing required environment variable",
+            "GITHUB_TOKEN",
+            "coral source add --interactive github",
+        ],
     );
 
     server.shutdown().await;
@@ -889,7 +689,7 @@ async fn source_add_interactive_requires_tty() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_test_suggests_add_for_uninstalled_bundled_source() {
-    let server = MockServer::start_with_config(
+    let stderr = configured_failure_stderr(
         MockServerConfig::default()
             .with_validate_source_not_found("default:demo_bundled")
             .with_discover_sources(DiscoverSourcesResponse {
@@ -903,94 +703,45 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
                     credential_storage: SourceCredentialStorage::Unspecified as i32,
                 }],
             }),
+        &["source", "test", "demo_bundled"],
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "test", "demo_bundled"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("source 'demo_bundled' is not installed"),
-        "expected not-installed error in stderr: {stderr}"
+    assert_contains_all(
+        &stderr,
+        &[
+            "source 'demo_bundled' is not installed",
+            "coral source add demo_bundled",
+        ],
     );
-    assert!(
-        stderr.contains("coral source add demo_bundled"),
-        "expected add suggestion in stderr: {stderr}"
-    );
-    assert!(
-        !stderr.contains("default:demo_bundled"),
-        "should not expose workspace-qualified source name: {stderr}"
-    );
-
-    server.shutdown().await;
+    assert_not_contains(&stderr, "default:demo_bundled");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_test_normalizes_error_for_unknown_source() {
-    let server = MockServer::start_with_config(
-        MockServerConfig::default()
-            .with_validate_source_not_found("default:totally_unknown")
-            .with_discover_sources(DiscoverSourcesResponse {
-                sources: Vec::new(),
-            }),
-    )
-    .await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "test", "totally_unknown"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("source 'totally_unknown' was not found"),
-        "expected normalized not-found error in stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("coral source discover"),
-        "expected discover suggestion in stderr: {stderr}"
-    );
-    assert!(
-        !stderr.contains("default:totally_unknown"),
-        "should not expose workspace-qualified source name: {stderr}"
-    );
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn source_remove_normalizes_error_for_unknown_source() {
-    let server = MockServer::start_with_config(
-        MockServerConfig::default().with_delete_source_not_found("default:unknown_source"),
-    )
-    .await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "remove", "unknown_source"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains("source 'unknown_source' was not found"),
-        "expected normalized not-found error in stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("coral source list"),
-        "expected list suggestion in stderr: {stderr}"
-    );
-    assert!(
-        !stderr.contains("default:unknown_source"),
-        "should not expose workspace-qualified source name: {stderr}"
-    );
-
-    server.shutdown().await;
+async fn source_commands_normalize_error_for_unknown_source() {
+    for (config, args, expected, raw_name) in [
+        (
+            MockServerConfig::default()
+                .with_validate_source_not_found("default:totally_unknown")
+                .with_discover_sources(DiscoverSourcesResponse::default()),
+            ["source", "test", "totally_unknown"],
+            [
+                "source 'totally_unknown' was not found",
+                "coral source discover",
+            ],
+            "default:totally_unknown",
+        ),
+        (
+            MockServerConfig::default().with_delete_source_not_found("default:unknown_source"),
+            ["source", "remove", "unknown_source"],
+            ["source 'unknown_source' was not found", "coral source list"],
+            "default:unknown_source",
+        ),
+    ] {
+        let stderr = configured_failure_stderr(config, &args).await;
+        assert_contains_all(&stderr, &expected);
+        assert_not_contains(&stderr, raw_name);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1000,26 +751,12 @@ async fn source_remove_preserves_unrelated_not_found_errors() {
     // io::ErrorKind::NotFound). The CLI must not rewrite those into the
     // friendly "source was not found" message.
     let raw_message = "manifest file missing: No such file or directory (os error 2)";
-    let server = MockServer::start_with_config(
+    let stderr = configured_failure_stderr(
         MockServerConfig::default().with_delete_source_error(Code::NotFound, raw_message),
+        &["source", "remove", "broken_source"],
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "remove", "broken_source"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
-    assert!(
-        stderr.contains(raw_message),
-        "expected raw server error to surface unchanged: {stderr}"
-    );
-    assert!(
-        !stderr.contains("source 'broken_source' was not found"),
-        "should not rewrite non-source-missing NotFound: {stderr}"
-    );
-
-    server.shutdown().await;
+    assert_contains(&stderr, raw_message);
+    assert_not_contains(&stderr, "source 'broken_source' was not found");
 }

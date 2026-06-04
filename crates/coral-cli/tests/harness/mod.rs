@@ -48,16 +48,19 @@ fn workspace() -> Workspace {
     }
 }
 
-fn mock_source() -> Source {
+fn mock_source_with(name: &str, version: &str, origin: SourceOrigin) -> Source {
     Source {
         workspace: Some(workspace()),
-        name: "github".to_string(),
-        version: "1.0.0".to_string(),
-        secrets: Vec::new(),
-        variables: Vec::new(),
-        origin: SourceOrigin::Bundled as i32,
+        name: name.to_string(),
+        version: version.to_string(),
+        origin: origin as i32,
         credential_storage: SourceCredentialStorage::File as i32,
+        ..Default::default()
     }
+}
+
+fn mock_source() -> Source {
+    mock_source_with("github", "1.0.0", SourceOrigin::Bundled)
 }
 
 fn mock_table(schema_name: &str, name: &str) -> Table {
@@ -65,10 +68,7 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
         workspace: Some(workspace()),
         schema_name: schema_name.to_string(),
         name: name.to_string(),
-        description: String::new(),
-        guide: String::new(),
-        columns: Vec::new(),
-        required_filters: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -136,6 +136,38 @@ fn table_summary(table: &Table) -> TableSummary {
     }
 }
 
+fn table_matched_fields(table: &Table, regex: &regex::Regex) -> Vec<String> {
+    let qualified_name = format!("{}.{}", table.schema_name, table.name);
+    [
+        ("schema_name", table.schema_name.as_str()),
+        ("table_name", table.name.as_str()),
+        ("name", qualified_name.as_str()),
+        ("description", table.description.as_str()),
+        ("guide", table.guide.as_str()),
+    ]
+    .into_iter()
+    .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
+    .chain(
+        table
+            .required_filters
+            .iter()
+            .any(|filter| regex.is_match(filter))
+            .then_some("required_filters".to_string()),
+    )
+    .collect()
+}
+
+fn column_matched_fields(column: &Column, regex: &regex::Regex) -> Vec<String> {
+    [
+        ("column_name", column.name.as_str()),
+        ("description", column.description.as_str()),
+        ("data_type", column.data_type.as_str()),
+    ]
+    .into_iter()
+    .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
+    .collect()
+}
+
 fn paginate<T>(items: Vec<T>, pagination: PaginationRequest) -> (Vec<T>, PaginationResponse) {
     let total = u32::try_from(items.len()).unwrap_or(u32::MAX);
     let offset = usize::try_from(pagination.offset).expect("offset");
@@ -169,39 +201,35 @@ fn paginate<T>(items: Vec<T>, pagination: PaginationRequest) -> (Vec<T>, Paginat
     )
 }
 
-fn table_matched_fields(table: &Table, regex: &regex::Regex) -> Vec<String> {
-    let name = format!("{}.{}", table.schema_name, table.name);
-    let candidates = [
-        ("schema_name", table.schema_name.as_str()),
-        ("table_name", table.name.as_str()),
-        ("name", name.as_str()),
-        ("description", table.description.as_str()),
-        ("guide", table.guide.as_str()),
-    ];
-    let mut matches = candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
-        .collect::<Vec<_>>();
-    if table
-        .required_filters
-        .iter()
-        .any(|filter| regex.is_match(filter))
-    {
-        matches.push("required_filters".to_string());
+fn github_token_input() -> SourceInputSpec {
+    SourceInputSpec {
+        key: "GITHUB_TOKEN".to_string(),
+        required: true,
+        hint: "Create a token at github.com/settings/tokens".to_string(),
+        input: Some(ProtoSourceInput::Secret(SourceSecretInput {
+            credential: None,
+        })),
     }
-    matches
 }
 
-fn column_matched_fields(column: &Column, regex: &regex::Regex) -> Vec<String> {
-    let candidates = [
-        ("column_name", column.name.as_str()),
-        ("description", column.description.as_str()),
-        ("data_type", column.data_type.as_str()),
-    ];
-    candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
-        .collect()
+fn source_info(
+    name: &str,
+    description: &str,
+    version: &str,
+    installed: bool,
+    origin: SourceOrigin,
+    credential_storage: SourceCredentialStorage,
+    inputs: Vec<SourceInputSpec>,
+) -> SourceInfo {
+    SourceInfo {
+        name: name.to_string(),
+        description: description.to_string(),
+        version: version.to_string(),
+        inputs,
+        installed,
+        origin: origin as i32,
+        credential_storage: credential_storage as i32,
+    }
 }
 
 fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
@@ -227,13 +255,11 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
         (schema, batch, 1)
     };
 
-    ExecuteSqlResponse {
-        arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
-        row_count,
-    }
+    mock_arrow_response(&schema, batch, row_count)
 }
 
 fn mock_coral_tables_response() -> ExecuteSqlResponse {
+    let tables = mock_visible_tables();
     let schema = Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
@@ -244,62 +270,57 @@ fn mock_coral_tables_response() -> ExecuteSqlResponse {
     let batch = RecordBatch::try_new(
         Arc::new(schema.clone()),
         vec![
-            Arc::new(StringArray::from(vec![
-                "local_messages",
-                "local_messages",
-                "local_messages",
-            ])),
-            Arc::new(StringArray::from(vec!["events", "messages", "sessions"])),
-            Arc::new(StringArray::from(vec![
-                "Fixture events",
-                "Fixture messages",
-                "Fixture sessions",
-            ])),
-            Arc::new(StringArray::from(vec![
-                "Query fixture events.",
-                "Query fixture messages.",
-                "Query fixture sessions.",
-            ])),
-            Arc::new(StringArray::from(vec!["", "owner,repo", ""])),
+            Arc::new(StringArray::from(
+                tables
+                    .iter()
+                    .map(|table| table.schema_name.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                tables
+                    .iter()
+                    .map(|table| table.name.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                tables
+                    .iter()
+                    .map(|table| table.description.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                tables
+                    .iter()
+                    .map(|table| table.guide.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                tables
+                    .iter()
+                    .map(|table| table.required_filters.join(","))
+                    .collect::<Vec<_>>(),
+            )),
         ],
     )
     .expect("build coral.tables batch");
 
+    mock_arrow_response(
+        &schema,
+        batch,
+        i64::try_from(tables.len()).expect("row count"),
+    )
+}
+
+fn mock_arrow_response(schema: &Schema, batch: RecordBatch, row_count: i64) -> ExecuteSqlResponse {
     ExecuteSqlResponse {
-        arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
-        row_count: 3,
+        arrow_ipc_stream: encode_arrow_ipc_stream(schema, &[batch]).expect("encode arrow ipc"),
+        row_count,
     }
 }
 
 fn mock_discover_response() -> DiscoverSourcesResponse {
     DiscoverSourcesResponse {
-        sources: vec![
-            SourceInfo {
-                name: "github".to_string(),
-                description: "GitHub data".to_string(),
-                version: "1.0.0".to_string(),
-                inputs: vec![SourceInputSpec {
-                    key: "GITHUB_TOKEN".to_string(),
-                    required: true,
-                    hint: "Create a token at github.com/settings/tokens".to_string(),
-                    input: Some(ProtoSourceInput::Secret(SourceSecretInput {
-                        credential: None,
-                    })),
-                }],
-                installed: true,
-                origin: SourceOrigin::Bundled as i32,
-                credential_storage: SourceCredentialStorage::File as i32,
-            },
-            SourceInfo {
-                name: "slack".to_string(),
-                description: "Slack data".to_string(),
-                version: "2.1.0".to_string(),
-                inputs: Vec::new(),
-                installed: false,
-                origin: SourceOrigin::Bundled as i32,
-                credential_storage: SourceCredentialStorage::Unspecified as i32,
-            },
-        ],
+        sources: vec![mock_github_source_info(), mock_slack_source_info()],
     }
 }
 
@@ -310,58 +331,62 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "issues"),
             mock_table("github", "pull_requests"),
         ],
-        table_functions: Vec::new(),
-        query_tests: Vec::new(),
+        ..Default::default()
     }
 }
 
 fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
     match name {
-        "github" => Ok(SourceInfo {
-            name: "github".to_string(),
-            description: "GitHub data".to_string(),
-            version: "1.0.0".to_string(),
-            inputs: vec![SourceInputSpec {
-                key: "GITHUB_TOKEN".to_string(),
-                required: true,
-                hint: "Create a token at github.com/settings/tokens".to_string(),
-                input: Some(ProtoSourceInput::Secret(SourceSecretInput {
-                    credential: None,
-                })),
-            }],
-            installed: true,
-            origin: SourceOrigin::Bundled as i32,
-            credential_storage: SourceCredentialStorage::File as i32,
-        }),
-        "slack" => Ok(SourceInfo {
-            name: "slack".to_string(),
-            description: "Slack data".to_string(),
-            version: "2.1.0".to_string(),
-            inputs: Vec::new(),
-            installed: false,
-            origin: SourceOrigin::Bundled as i32,
-            credential_storage: SourceCredentialStorage::Unspecified as i32,
-        }),
-        "jira" => Ok(SourceInfo {
-            name: "jira".to_string(),
-            description: "Jira data".to_string(),
-            version: "2.0.0".to_string(),
-            inputs: Vec::new(),
-            installed: true,
-            origin: SourceOrigin::Imported as i32,
-            credential_storage: SourceCredentialStorage::File as i32,
-        }),
-        "versionless" => Ok(SourceInfo {
-            name: "versionless".to_string(),
-            description: String::new(),
-            version: String::new(),
-            inputs: Vec::new(),
-            installed: true,
-            origin: SourceOrigin::Imported as i32,
-            credential_storage: SourceCredentialStorage::File as i32,
-        }),
+        "github" => Ok(mock_github_source_info()),
+        "slack" => Ok(mock_slack_source_info()),
+        "jira" => Ok(mock_jira_source_info()),
+        "versionless" => Ok(source_info(
+            "versionless",
+            "",
+            "",
+            true,
+            SourceOrigin::Imported,
+            SourceCredentialStorage::File,
+            Vec::new(),
+        )),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
+}
+
+fn mock_github_source_info() -> SourceInfo {
+    source_info(
+        "github",
+        "GitHub data",
+        "1.0.0",
+        true,
+        SourceOrigin::Bundled,
+        SourceCredentialStorage::File,
+        vec![github_token_input()],
+    )
+}
+
+fn mock_slack_source_info() -> SourceInfo {
+    source_info(
+        "slack",
+        "Slack data",
+        "2.1.0",
+        false,
+        SourceOrigin::Bundled,
+        SourceCredentialStorage::Unspecified,
+        Vec::new(),
+    )
+}
+
+fn mock_jira_source_info() -> SourceInfo {
+    source_info(
+        "jira",
+        "Jira data",
+        "2.0.0",
+        true,
+        SourceOrigin::Imported,
+        SourceCredentialStorage::File,
+        Vec::new(),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -409,31 +434,18 @@ impl MockError {
     }
 }
 
-#[derive(Clone)]
-enum MockResult<T> {
-    Ok(T),
-    Err(MockError),
+type MockResult<T> = Result<T, MockError>;
+
+fn mock_error<T>(code: Code, message: impl Into<String>) -> MockResult<T> {
+    Err(MockError::new(code, message))
 }
 
-impl<T> MockResult<T> {
-    fn ok(value: T) -> Self {
-        Self::Ok(value)
-    }
+fn mock_source_not_found<T>(qualified: impl Into<String>) -> MockResult<T> {
+    Err(MockError::source_not_found(qualified))
+}
 
-    fn err(code: Code, message: impl Into<String>) -> Self {
-        Self::Err(MockError::new(code, message))
-    }
-
-    fn source_not_found(qualified: impl Into<String>) -> Self {
-        Self::Err(MockError::source_not_found(qualified))
-    }
-
-    fn into_tonic_result(self) -> Result<T, Status> {
-        match self {
-            Self::Ok(value) => Ok(value),
-            Self::Err(error) => Err(error.status()),
-        }
-    }
+fn into_tonic_result<T>(result: MockResult<T>) -> Result<T, Status> {
+    result.map_err(|error| error.status())
 }
 
 #[derive(Clone)]
@@ -449,53 +461,42 @@ impl Default for MockServerConfig {
     fn default() -> Self {
         Self {
             execute_sql_override: None,
-            discover_sources: MockResult::ok(mock_discover_response()),
-            list_sources: MockResult::ok(ListSourcesResponse {
+            discover_sources: Ok(mock_discover_response()),
+            list_sources: Ok(ListSourcesResponse {
                 sources: vec![
-                    Source {
-                        workspace: Some(workspace()),
-                        name: "github".to_string(),
-                        version: "1.0.0".to_string(),
-                        secrets: Vec::new(),
-                        variables: Vec::new(),
-                        origin: SourceOrigin::Bundled as i32,
-                        credential_storage: SourceCredentialStorage::File as i32,
-                    },
-                    Source {
-                        workspace: Some(workspace()),
-                        name: "jira".to_string(),
-                        version: "2.0.0".to_string(),
-                        secrets: Vec::new(),
-                        variables: Vec::new(),
-                        origin: SourceOrigin::Imported as i32,
-                        credential_storage: SourceCredentialStorage::File as i32,
-                    },
+                    mock_source(),
+                    mock_source_with("jira", "2.0.0", SourceOrigin::Imported),
                 ],
             }),
-            validate_source: MockResult::ok(mock_validate_response()),
-            delete_source: MockResult::ok(()),
+            validate_source: Ok(mock_validate_response()),
+            delete_source: Ok(()),
         }
     }
 }
 
 impl MockServerConfig {
     pub(crate) fn with_discover_sources(mut self, response: DiscoverSourcesResponse) -> Self {
-        self.discover_sources = MockResult::ok(response);
+        self.discover_sources = Ok(response);
         self
     }
 
     pub(crate) fn with_list_sources(mut self, response: ListSourcesResponse) -> Self {
-        self.list_sources = MockResult::ok(response);
+        self.list_sources = Ok(response);
+        self
+    }
+
+    pub(crate) fn with_validate_source(mut self, response: ValidateSourceResponse) -> Self {
+        self.validate_source = Ok(response);
         self
     }
 
     pub(crate) fn with_execute_sql(mut self, response: ExecuteSqlResponse) -> Self {
-        self.execute_sql_override = Some(MockResult::ok(response));
+        self.execute_sql_override = Some(Ok(response));
         self
     }
 
     pub(crate) fn with_execute_sql_error(mut self, code: Code, message: impl Into<String>) -> Self {
-        self.execute_sql_override = Some(MockResult::err(code, message));
+        self.execute_sql_override = Some(mock_error(code, message));
         self
     }
 
@@ -504,15 +505,7 @@ impl MockServerConfig {
         code: Code,
         message: impl Into<String>,
     ) -> Self {
-        self.validate_source = MockResult::err(code, message);
-        self
-    }
-
-    pub(crate) fn with_validate_source_response(
-        mut self,
-        response: ValidateSourceResponse,
-    ) -> Self {
-        self.validate_source = MockResult::ok(response);
+        self.validate_source = mock_error(code, message);
         self
     }
 
@@ -520,7 +513,7 @@ impl MockServerConfig {
     /// from `validate_source` (a `Code::NotFound` Status carrying an
     /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
     pub(crate) fn with_validate_source_not_found(mut self, qualified: impl Into<String>) -> Self {
-        self.validate_source = MockResult::source_not_found(qualified);
+        self.validate_source = mock_source_not_found(qualified);
         self
     }
 
@@ -529,7 +522,7 @@ impl MockServerConfig {
         code: Code,
         message: impl Into<String>,
     ) -> Self {
-        self.delete_source = MockResult::err(code, message);
+        self.delete_source = mock_error(code, message);
         self
     }
 
@@ -537,7 +530,7 @@ impl MockServerConfig {
     /// from `delete_source` (a `Code::NotFound` Status carrying an
     /// AIP-193 `ErrorInfo` with `reason = "SOURCE_NOT_FOUND"`).
     pub(crate) fn with_delete_source_not_found(mut self, qualified: impl Into<String>) -> Self {
-        self.delete_source = MockResult::source_not_found(qualified);
+        self.delete_source = mock_source_not_found(qualified);
         self
     }
 }
@@ -581,13 +574,18 @@ struct Captured {
     list_columns: Mutex<Vec<ListColumnsRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
-    get_source: Mutex<Vec<GetSourceRequest>>,
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
-    create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
-    create_bundled_source_with_oauth: Mutex<Vec<CreateBundledSourceWithOAuthRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
+}
+
+fn capture_request<T>(requests: &Mutex<Vec<T>>, request: T, label: &str) {
+    requests.lock().expect(label).push(request);
+}
+
+fn captured_requests<T: Clone>(requests: &Mutex<Vec<T>>, label: &str) -> Vec<T> {
+    requests.lock().expect(label).clone()
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -618,11 +616,11 @@ impl QueryService for MockQueryService {
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let request = request.into_inner();
-        self.captured
-            .execute_sql
-            .lock()
-            .expect("execute_sql capture")
-            .push(request.clone());
+        capture_request(
+            &self.captured.execute_sql,
+            request.clone(),
+            "execute_sql capture",
+        );
         let sql = request.sql;
         if sql
             .trim_start()
@@ -633,7 +631,7 @@ impl QueryService for MockQueryService {
         }
 
         let response = match self.config.execute_sql_override.clone() {
-            Some(result) => result.into_tonic_result()?,
+            Some(result) => into_tonic_result(result)?,
             None => mock_sql_response(&sql),
         };
 
@@ -666,11 +664,11 @@ impl CatalogService for MockCatalogService {
         request: Request<ListCatalogRequest>,
     ) -> Result<Response<ListCatalogResponse>, Status> {
         let request = request.into_inner();
-        self.captured
-            .list_catalog
-            .lock()
-            .expect("list_catalog capture")
-            .push(request.clone());
+        capture_request(
+            &self.captured.list_catalog,
+            request.clone(),
+            "list_catalog capture",
+        );
         Ok(Response::new(list_catalog_response(&request)))
     }
 
@@ -679,11 +677,11 @@ impl CatalogService for MockCatalogService {
         request: Request<SearchCatalogRequest>,
     ) -> Result<Response<SearchCatalogResponse>, Status> {
         let request = request.into_inner();
-        self.captured
-            .search_catalog
-            .lock()
-            .expect("search_catalog capture")
-            .push(request.clone());
+        capture_request(
+            &self.captured.search_catalog,
+            request.clone(),
+            "search_catalog capture",
+        );
         let pattern = regex::RegexBuilder::new(&request.pattern)
             .case_insensitive(request.ignore_case)
             .build()
@@ -722,15 +720,14 @@ impl CatalogService for MockCatalogService {
         request: Request<DescribeTableRequest>,
     ) -> Result<Response<DescribeTableResponse>, Status> {
         let request = request.into_inner();
-        self.captured
-            .describe_table
-            .lock()
-            .expect("describe_table capture")
-            .push(request.clone());
-        let table = mock_visible_tables().into_iter().find(|table| {
+        capture_request(
+            &self.captured.describe_table,
+            request.clone(),
+            "describe_table capture",
+        );
+        if let Some(table) = mock_visible_tables().into_iter().find(|table| {
             table.schema_name == request.schema_name && table.name == request.table_name
-        });
-        if let Some(table) = table {
+        }) {
             return Ok(Response::new(DescribeTableResponse {
                 table: Some(table),
                 suggestions: Vec::new(),
@@ -738,6 +735,7 @@ impl CatalogService for MockCatalogService {
                 same_schema_tables: Vec::new(),
             }));
         }
+
         let same_schema_tables = mock_visible_tables()
             .into_iter()
             .filter(|table| table.schema_name == request.schema_name)
@@ -757,11 +755,11 @@ impl CatalogService for MockCatalogService {
         request: Request<ListColumnsRequest>,
     ) -> Result<Response<ListColumnsResponse>, Status> {
         let request = request.into_inner();
-        self.captured
-            .list_columns
-            .lock()
-            .expect("list_columns capture")
-            .push(request.clone());
+        capture_request(
+            &self.captured.list_columns,
+            request.clone(),
+            "list_columns capture",
+        );
         let table = mock_visible_tables()
             .into_iter()
             .find(|table| {
@@ -780,22 +778,20 @@ impl CatalogService for MockCatalogService {
                     })
             })
             .transpose()?;
-        let mut columns = Vec::new();
-        for column in table.columns {
-            if request.required_only && !column.is_required_filter {
-                continue;
-            }
-            let matched_fields = regex
-                .as_ref()
-                .map_or_else(Vec::new, |regex| column_matched_fields(&column, regex));
-            if regex.is_some() && matched_fields.is_empty() {
-                continue;
-            }
-            columns.push(ColumnSearchResult {
-                column: Some(column),
-                matched_fields,
-            });
-        }
+        let columns = table
+            .columns
+            .into_iter()
+            .filter(|column| !request.required_only || column.is_required_filter)
+            .filter_map(|column| {
+                let matched_fields = regex
+                    .as_ref()
+                    .map_or_else(Vec::new, |regex| column_matched_fields(&column, regex));
+                (regex.is_none() || !matched_fields.is_empty()).then_some(ColumnSearchResult {
+                    column: Some(column),
+                    matched_fields,
+                })
+            })
+            .collect();
         let (columns, pagination) = paginate(
             columns,
             request.pagination.unwrap_or(PaginationRequest {
@@ -821,25 +817,33 @@ type MockBundledSourceStream =
 type MockImportSourceStream =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 
-fn mock_bundled_source_stream() -> MockBundledSourceStream {
-    let (tx, rx) =
-        tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithOAuthResponse, Status>>(1);
-    tx.try_send(Ok(CreateBundledSourceWithOAuthResponse {
-        event: Some(create_bundled_source_with_o_auth_response::Event::Source(
-            mock_source(),
-        )),
-    }))
-    .expect("send mock bundled source credential event");
+fn single_item_stream<T: Send + 'static>(
+    item: T,
+    label: &str,
+) -> Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<T, Status>>(1);
+    tx.try_send(Ok(item)).expect(label);
     Box::pin(ReceiverStream::new(rx))
 }
 
+fn mock_bundled_source_stream() -> MockBundledSourceStream {
+    single_item_stream(
+        CreateBundledSourceWithOAuthResponse {
+            event: Some(create_bundled_source_with_o_auth_response::Event::Source(
+                mock_source(),
+            )),
+        },
+        "send mock bundled source credential event",
+    )
+}
+
 fn mock_import_source_stream() -> MockImportSourceStream {
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportSourceResponse, Status>>(1);
-    tx.try_send(Ok(ImportSourceResponse {
-        event: Some(import_source_response::Event::Source(mock_source())),
-    }))
-    .expect("send mock import source credential event");
-    Box::pin(ReceiverStream::new(rx))
+    single_item_stream(
+        ImportSourceResponse {
+            event: Some(import_source_response::Event::Source(mock_source())),
+        },
+        "send mock import source credential event",
+    )
 }
 
 #[tonic::async_trait]
@@ -851,39 +855,34 @@ impl SourceService for MockSourceService {
         &self,
         request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
-        self.captured
-            .discover_sources
-            .lock()
-            .expect("discover_sources capture")
-            .push(request.into_inner());
-        Ok(Response::new(
-            self.config.discover_sources.clone().into_tonic_result()?,
-        ))
+        capture_request(
+            &self.captured.discover_sources,
+            request.into_inner(),
+            "discover_sources capture",
+        );
+        Ok(Response::new(into_tonic_result(
+            self.config.discover_sources.clone(),
+        )?))
     }
 
     async fn list_sources(
         &self,
         request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
-        self.captured
-            .list_sources
-            .lock()
-            .expect("list_sources capture")
-            .push(request.into_inner());
-        Ok(Response::new(
-            self.config.list_sources.clone().into_tonic_result()?,
-        ))
+        capture_request(
+            &self.captured.list_sources,
+            request.into_inner(),
+            "list_sources capture",
+        );
+        Ok(Response::new(into_tonic_result(
+            self.config.list_sources.clone(),
+        )?))
     }
 
     async fn get_source(
         &self,
-        request: Request<GetSourceRequest>,
+        _request: Request<GetSourceRequest>,
     ) -> Result<Response<GetSourceResponse>, Status> {
-        self.captured
-            .get_source
-            .lock()
-            .expect("get_source capture")
-            .push(request.into_inner());
         Ok(Response::new(GetSourceResponse {
             source: Some(mock_source()),
         }))
@@ -894,11 +893,11 @@ impl SourceService for MockSourceService {
         request: Request<GetSourceInfoRequest>,
     ) -> Result<Response<GetSourceInfoResponse>, Status> {
         let request = request.into_inner();
-        self.captured
-            .get_source_info
-            .lock()
-            .expect("get_source_info capture")
-            .push(request.clone());
+        capture_request(
+            &self.captured.get_source_info,
+            request.clone(),
+            "get_source_info capture",
+        );
         Ok(Response::new(GetSourceInfoResponse {
             source_info: Some(mock_source_info(&request.name)?),
         }))
@@ -906,13 +905,8 @@ impl SourceService for MockSourceService {
 
     async fn create_bundled_source(
         &self,
-        request: Request<CreateBundledSourceRequest>,
+        _request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
-        self.captured
-            .create_bundled_source
-            .lock()
-            .expect("create_bundled_source capture")
-            .push(request.into_inner());
         Ok(Response::new(CreateBundledSourceResponse {
             source: Some(mock_source()),
         }))
@@ -920,13 +914,8 @@ impl SourceService for MockSourceService {
 
     async fn create_bundled_source_with_o_auth(
         &self,
-        request: Request<CreateBundledSourceWithOAuthRequest>,
+        _request: Request<CreateBundledSourceWithOAuthRequest>,
     ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
-        self.captured
-            .create_bundled_source_with_oauth
-            .lock()
-            .expect("create_bundled_source_with_oauth capture")
-            .push(request.into_inner());
         Ok(Response::new(mock_bundled_source_stream()))
     }
 
@@ -934,11 +923,11 @@ impl SourceService for MockSourceService {
         &self,
         request: Request<ImportSourceRequest>,
     ) -> Result<Response<Self::ImportSourceStream>, Status> {
-        self.captured
-            .import_source
-            .lock()
-            .expect("import_source capture")
-            .push(request.into_inner());
+        capture_request(
+            &self.captured.import_source,
+            request.into_inner(),
+            "import_source capture",
+        );
         Ok(Response::new(mock_import_source_stream()))
     }
 
@@ -946,12 +935,12 @@ impl SourceService for MockSourceService {
         &self,
         request: Request<DeleteSourceRequest>,
     ) -> Result<Response<DeleteSourceResponse>, Status> {
-        self.captured
-            .delete_source
-            .lock()
-            .expect("delete_source capture")
-            .push(request.into_inner());
-        self.config.delete_source.clone().into_tonic_result()?;
+        capture_request(
+            &self.captured.delete_source,
+            request.into_inner(),
+            "delete_source capture",
+        );
+        into_tonic_result(self.config.delete_source.clone())?;
         Ok(Response::new(DeleteSourceResponse {}))
     }
 
@@ -959,14 +948,14 @@ impl SourceService for MockSourceService {
         &self,
         request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
-        self.captured
-            .validate_source
-            .lock()
-            .expect("validate_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(
-            self.config.validate_source.clone().into_tonic_result()?,
-        ))
+        capture_request(
+            &self.captured.validate_source,
+            request.into_inner(),
+            "validate_source capture",
+        );
+        Ok(Response::new(into_tonic_result(
+            self.config.validate_source.clone(),
+        )?))
     }
 }
 
@@ -991,8 +980,8 @@ impl MockServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let config = Arc::new(config);
         let captured = Arc::new(Captured::default());
-        let query_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
+        let query_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
@@ -1022,15 +1011,6 @@ impl MockServer {
         }
     }
 
-    pub(crate) async fn start_with_validate_source_response(
-        validate_source_response: ValidateSourceResponse,
-    ) -> Self {
-        Self::start_with_config(
-            MockServerConfig::default().with_validate_source_response(validate_source_response),
-        )
-        .await
-    }
-
     pub(crate) fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
@@ -1043,91 +1023,47 @@ impl MockServer {
     }
 
     pub(crate) fn execute_sql_requests(&self) -> Vec<ExecuteSqlRequest> {
-        self.captured
-            .execute_sql
-            .lock()
-            .expect("execute_sql capture")
-            .clone()
-    }
-
-    pub(crate) fn discover_sources_requests(&self) -> Vec<DiscoverSourcesRequest> {
-        self.captured
-            .discover_sources
-            .lock()
-            .expect("discover_sources capture")
-            .clone()
-    }
-
-    pub(crate) fn list_sources_requests(&self) -> Vec<ListSourcesRequest> {
-        self.captured
-            .list_sources
-            .lock()
-            .expect("list_sources capture")
-            .clone()
+        captured_requests(&self.captured.execute_sql, "execute_sql capture")
     }
 
     pub(crate) fn list_catalog_requests(&self) -> Vec<ListCatalogRequest> {
-        self.captured
-            .list_catalog
-            .lock()
-            .expect("list_catalog capture")
-            .clone()
+        captured_requests(&self.captured.list_catalog, "list_catalog capture")
     }
 
     pub(crate) fn search_catalog_requests(&self) -> Vec<SearchCatalogRequest> {
-        self.captured
-            .search_catalog
-            .lock()
-            .expect("search_catalog capture")
-            .clone()
+        captured_requests(&self.captured.search_catalog, "search_catalog capture")
     }
 
     pub(crate) fn describe_table_requests(&self) -> Vec<DescribeTableRequest> {
-        self.captured
-            .describe_table
-            .lock()
-            .expect("describe_table capture")
-            .clone()
+        captured_requests(&self.captured.describe_table, "describe_table capture")
     }
 
     pub(crate) fn list_columns_requests(&self) -> Vec<ListColumnsRequest> {
-        self.captured
-            .list_columns
-            .lock()
-            .expect("list_columns capture")
-            .clone()
+        captured_requests(&self.captured.list_columns, "list_columns capture")
+    }
+
+    pub(crate) fn discover_sources_requests(&self) -> Vec<DiscoverSourcesRequest> {
+        captured_requests(&self.captured.discover_sources, "discover_sources capture")
+    }
+
+    pub(crate) fn list_sources_requests(&self) -> Vec<ListSourcesRequest> {
+        captured_requests(&self.captured.list_sources, "list_sources capture")
     }
 
     pub(crate) fn get_source_info_requests(&self) -> Vec<GetSourceInfoRequest> {
-        self.captured
-            .get_source_info
-            .lock()
-            .expect("get_source_info capture")
-            .clone()
+        captured_requests(&self.captured.get_source_info, "get_source_info capture")
     }
 
     pub(crate) fn validate_source_requests(&self) -> Vec<ValidateSourceRequest> {
-        self.captured
-            .validate_source
-            .lock()
-            .expect("validate_source capture")
-            .clone()
+        captured_requests(&self.captured.validate_source, "validate_source capture")
     }
 
     pub(crate) fn delete_source_requests(&self) -> Vec<DeleteSourceRequest> {
-        self.captured
-            .delete_source
-            .lock()
-            .expect("delete_source capture")
-            .clone()
+        captured_requests(&self.captured.delete_source, "delete_source capture")
     }
 
     pub(crate) fn import_source_requests(&self) -> Vec<ImportSourceRequest> {
-        self.captured
-            .import_source
-            .lock()
-            .expect("import_source capture")
-            .clone()
+        captured_requests(&self.captured.import_source, "import_source capture")
     }
 
     pub(crate) fn endpoint_uri(&self) -> &str {

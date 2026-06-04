@@ -1,7 +1,6 @@
 use coral_api::v1::{ExecuteSqlRequest, Source, SourceInfo};
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
-    manifest_input_from_proto,
 };
 use dialoguer::console::{measure_text_width, style};
 use dialoguer::{Select, theme::ColorfulTheme};
@@ -67,7 +66,7 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
                 if source.installed {
                     run_installed_source_menu(app, &theme, source).await?;
                 } else {
-                    run_add_bundled_source(app, source).await?;
+                    install_and_validate_bundled_source(app, source, "Added").await?;
                     match run_next_steps(app, &theme).await? {
                         NextStepChoice::AddMoreSources => {}
                         NextStepChoice::Exit => return Ok(()),
@@ -169,24 +168,7 @@ async fn run_installed_source_menu(
             .await?;
         }
         Some(InstalledSourceAction::Reconfigure) => {
-            let inputs = source
-                .inputs
-                .iter()
-                .map(manifest_input_from_proto)
-                .collect::<Result<Vec<_>, _>>()?;
-            let inputs = source_ops::prompt_for_inputs_with_credential_methods_in_mode(
-                &inputs,
-                source_ops::CredentialPromptMode::CredentialMethodFirst,
-            )?;
-            let result =
-                source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
-            println!("Reconfigured source {}", result.name);
-            source_ops::validate_and_warn(
-                app,
-                &result.name,
-                source_ops::TableDisplayLimit::DEFAULT,
-            )
-            .await?;
+            install_and_validate_bundled_source(app, source, "Reconfigured").await?;
         }
         Some(InstalledSourceAction::Back) | None => {}
     }
@@ -194,18 +176,18 @@ async fn run_installed_source_menu(
     Ok(())
 }
 
-async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<(), anyhow::Error> {
-    let inputs = source
-        .inputs
-        .iter()
-        .map(manifest_input_from_proto)
-        .collect::<Result<Vec<_>, _>>()?;
-    let inputs = source_ops::prompt_for_inputs_with_credential_methods_in_mode(
-        &inputs,
+async fn install_and_validate_bundled_source(
+    app: &AppClient,
+    source: &SourceInfo,
+    action: &str,
+) -> Result<(), anyhow::Error> {
+    let result = source_ops::install_bundled_source_with_prompt(
+        app,
+        source,
         source_ops::CredentialPromptMode::CredentialMethodFirst,
-    )?;
-    let result = source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
-    println!("Added source {}", result.name);
+    )
+    .await?;
+    println!("{action} source {}", result.name);
     source_ops::validate_and_warn(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
 }
 
@@ -359,17 +341,21 @@ mod tests {
 
     use super::{format_source_list_item, truncate_description};
 
-    #[test]
-    fn source_list_item_shows_checkmark_for_installed() {
-        let source = SourceInfo {
-            name: "github".to_string(),
-            description: "Query repositories and issues".to_string(),
+    fn source_info(name: &str, description: &str, installed: bool) -> SourceInfo {
+        SourceInfo {
+            name: name.to_string(),
+            description: description.to_string(),
             version: "1.0.0".to_string(),
             inputs: Vec::new(),
-            installed: true,
+            installed,
             origin: 1,
-            credential_storage: 1,
-        };
+            credential_storage: i32::from(installed),
+        }
+    }
+
+    #[test]
+    fn source_list_item_shows_checkmark_for_installed() {
+        let source = source_info("github", "Query repositories and issues", true);
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("✓ "));
         assert!(item.contains("github"));
@@ -378,15 +364,7 @@ mod tests {
 
     #[test]
     fn source_list_item_shows_space_for_uninstalled() {
-        let source = SourceInfo {
-            name: "slack".to_string(),
-            description: "Send and receive messages".to_string(),
-            version: "1.0.0".to_string(),
-            inputs: Vec::new(),
-            installed: false,
-            origin: 1,
-            credential_storage: 0,
-        };
+        let source = source_info("slack", "Send and receive messages", false);
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("  "));
         assert!(item.contains("slack"));
@@ -394,24 +372,8 @@ mod tests {
 
     #[test]
     fn source_list_item_aligns_names() {
-        let short = SourceInfo {
-            name: "gh".to_string(),
-            description: "GitHub".to_string(),
-            version: "1.0.0".to_string(),
-            inputs: Vec::new(),
-            installed: false,
-            origin: 1,
-            credential_storage: 0,
-        };
-        let long = SourceInfo {
-            name: "statusgator".to_string(),
-            description: "Status pages".to_string(),
-            version: "1.0.0".to_string(),
-            inputs: Vec::new(),
-            installed: false,
-            origin: 1,
-            credential_storage: 0,
-        };
+        let short = source_info("gh", "GitHub", false);
+        let long = source_info("statusgator", "Status pages", false);
         let width = 11; // len of "statusgator"
         let short_item = format_source_list_item(&short, width);
         let long_item = format_source_list_item(&long, width);

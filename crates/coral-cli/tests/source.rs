@@ -4,6 +4,7 @@
     reason = "Integration test crates only use a small subset of the package dependencies."
 )]
 
+mod common;
 #[cfg(feature = "cli-test-server")]
 mod harness;
 
@@ -11,13 +12,57 @@ use tempfile::tempdir;
 
 use std::process::Command;
 
+use common::assert_contains;
+#[cfg(feature = "cli-test-server")]
+use common::{assert_contains_all, stderr, stdout};
 #[cfg(feature = "cli-test-server")]
 use coral_api::v1::{
     QueryTestFailure, QueryTestResult, QueryTestSuccess, Source, SourceCredentialStorage,
     SourceOrigin, ValidateSourceResponse, Workspace, query_test_result,
 };
 #[cfg(feature = "cli-test-server")]
-use harness::MockServer;
+use harness::{MockServer, MockServerConfig};
+
+#[cfg(feature = "cli-test-server")]
+async fn run_source_test(
+    sql: &str,
+    outcome: query_test_result::Outcome,
+    expect_success: bool,
+) -> (String, String) {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_validate_source(
+        ValidateSourceResponse {
+            source: Some(Source {
+                workspace: Some(Workspace {
+                    name: "default".to_string(),
+                }),
+                name: "local_messages".to_string(),
+                version: "0.1.0".to_string(),
+                origin: SourceOrigin::Imported as i32,
+                credential_storage: SourceCredentialStorage::File as i32,
+                ..Default::default()
+            }),
+            query_tests: vec![QueryTestResult {
+                sql: sql.to_string(),
+                outcome: Some(outcome),
+            }],
+            ..Default::default()
+        },
+    ))
+    .await;
+    let assert = server
+        .cmd()
+        .args(["source", "test", "local_messages"])
+        .assert();
+    let assert = if expect_success {
+        assert.success()
+    } else {
+        assert.failure()
+    };
+    let stdout = stdout(&assert);
+    let stderr = stderr(&assert);
+    server.shutdown().await;
+    (stdout, stderr)
+}
 
 #[test]
 fn source_test_errors_when_required_secret_is_missing() {
@@ -81,118 +126,47 @@ fn source_test_errors_when_required_secret_is_missing() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "expected non-zero exit status");
-    assert!(
-        stderr.contains("source 'fake' is missing secret 'TEST_API_KEY'"),
-        "expected missing secret error in stderr, got: {stderr}"
-    );
+    assert_contains(&stderr, "source 'fake' is missing secret 'TEST_API_KEY'");
 }
 
 #[cfg(feature = "cli-test-server")]
 #[tokio::test(flavor = "multi_thread")]
 async fn source_test_exits_non_zero_when_query_tests_fail() {
-    let server = MockServer::start_with_validate_source_response(ValidateSourceResponse {
-        source: Some(Source {
-            workspace: Some(Workspace {
-                name: "default".to_string(),
-            }),
-            name: "local_messages".to_string(),
-            version: "0.1.0".to_string(),
-            secrets: Vec::new(),
-            variables: Vec::new(),
-            origin: SourceOrigin::Imported as i32,
-            credential_storage: SourceCredentialStorage::File as i32,
+    let (stdout, stderr) = run_source_test(
+        "SELECT * FROM local_messages.missing",
+        query_test_result::Outcome::Failure(QueryTestFailure {
+            error_message: "invalid input: table not found".to_string(),
         }),
-        tables: Vec::new(),
-        table_functions: Vec::new(),
-        query_tests: vec![QueryTestResult {
-            sql: "SELECT * FROM local_messages.missing".to_string(),
-            outcome: Some(query_test_result::Outcome::Failure(QueryTestFailure {
-                error_message: "invalid input: table not found".to_string(),
-            })),
-        }],
-    })
+        false,
+    )
     .await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "test", "local_messages"])
-        .assert()
-        .failure();
-    let output = assert.get_output();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stdout.contains("Query tests"),
-        "expected query-test summary in stdout, got: {stdout}"
+    assert_contains_all(
+        &stdout,
+        &["Query tests", "SELECT * FROM local_messages.missing"],
     );
-    assert!(
-        stdout.contains("SELECT * FROM local_messages.missing"),
-        "expected failing query text in stdout, got: {stdout}"
-    );
-    assert!(
-        stderr.contains("1 of 1 validation query failed"),
-        "expected strict failure in stderr, got: {stderr}"
-    );
-
-    server.shutdown().await;
+    assert_contains(&stderr, "1 of 1 validation query failed");
 }
 
 #[cfg(feature = "cli-test-server")]
 #[tokio::test(flavor = "multi_thread")]
 async fn source_test_succeeds_when_query_tests_pass() {
-    let server = MockServer::start_with_validate_source_response(ValidateSourceResponse {
-        source: Some(Source {
-            workspace: Some(Workspace {
-                name: "default".to_string(),
-            }),
-            name: "local_messages".to_string(),
-            version: "0.1.0".to_string(),
-            secrets: Vec::new(),
-            variables: Vec::new(),
-            origin: SourceOrigin::Imported as i32,
-            credential_storage: SourceCredentialStorage::File as i32,
-        }),
-        tables: Vec::new(),
-        table_functions: Vec::new(),
-        query_tests: vec![QueryTestResult {
-            sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
-            outcome: Some(query_test_result::Outcome::Success(QueryTestSuccess {
-                row_count: 1,
-            })),
-        }],
-    })
+    let (stdout, stderr) = run_source_test(
+        "SELECT COUNT(*) AS n FROM local_messages.messages",
+        query_test_result::Outcome::Success(QueryTestSuccess { row_count: 1 }),
+        true,
+    )
     .await;
-
-    let assert = server
-        .cmd()
-        .args(["source", "test", "local_messages"])
-        .assert()
-        .success();
-    let output = assert.get_output();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stdout.contains("Query tests"),
-        "expected query-test summary in stdout, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("SELECT COUNT(*) AS n FROM local_messages.messages"),
-        "expected passing query text in stdout, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("1 declared · 1 passed · 0 failed"),
-        "expected passing query-test counts in stdout, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("1 row"),
-        "expected passing query row count in stdout, got: {stdout}"
+    assert_contains_all(
+        &stdout,
+        &[
+            "Query tests",
+            "SELECT COUNT(*) AS n FROM local_messages.messages",
+            "1 declared · 1 passed · 0 failed",
+            "1 row",
+        ],
     );
     assert!(
         stderr.trim().is_empty(),
         "expected no stderr output, got: {stderr}"
     );
-
-    server.shutdown().await;
 }

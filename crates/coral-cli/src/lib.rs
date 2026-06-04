@@ -32,7 +32,7 @@ use coral_api::v1::ExecuteSqlRequest;
 use coral_app::StaticAssetsProvider;
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table, manifest_input_from_proto,
+    format_batches_table,
 };
 use dialoguer::console::measure_text_width;
 use tonic::Request;
@@ -544,10 +544,11 @@ async fn run_app_command(
             {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
+                    let error = query_error::render_query_error(&status);
                     return Err(CliError::Query {
-                        error_message: query_error::telemetry_error_message(&status),
-                        error_type: query_error::telemetry_error_type(&status),
-                        rendered_stderr: query_error::render_query_error(&status),
+                        error_message: error.error_message,
+                        error_type: error.error_type,
+                        rendered_stderr: error.rendered_stderr,
                     });
                 }
             };
@@ -661,7 +662,9 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
         SourceCommand::Info { name, verbose } => {
             source_ops::print_source_info(app, &name, verbose).await?;
         }
-        SourceCommand::Add(args) => run_source_add(app, args).await?,
+        SourceCommand::Add(args) => {
+            source_ops::add_source_from_args(app, args.name, args.file, args.interactive).await?;
+        }
         SourceCommand::Lint { file } => {
             source_ops::load_validated_manifest_file(&file)?;
             println!("Manifest is valid");
@@ -767,71 +770,6 @@ fn pad_cell(value: &str, width: usize, pad: bool) -> String {
 
     let padding = width.saturating_sub(measure_text_width(value));
     format!("{value}{}", " ".repeat(padding))
-}
-
-async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliError> {
-    let SourceAddArgs {
-        name,
-        file,
-        interactive,
-    } = args;
-    if interactive {
-        source_ops::require_interactive()?;
-    }
-    let response = match (name, file) {
-        (Some(name), None) => {
-            let bundled_name = source_ops::source_name_arg(Some(&name))?;
-            let discover = source_ops::discover_sources(app).await?;
-            let available = discover
-                .into_iter()
-                .find(|source| source.name == bundled_name)
-                .ok_or_else(|| anyhow::anyhow!("unknown bundled source '{bundled_name}'"))?;
-            let inputs = available
-                .inputs
-                .iter()
-                .map(manifest_input_from_proto)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(anyhow::Error::from)?;
-            if interactive {
-                let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
-                source_ops::add_bundled_source_with_credentials(app, &available.name, inputs)
-                    .await?
-            } else {
-                let (variables, secrets) = source_ops::collect_inputs_from_env(
-                    &inputs,
-                    format!("coral source add --interactive {}", available.name),
-                )?;
-                source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
-            }
-        }
-        (None, Some(file)) => {
-            let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
-            if interactive {
-                let inputs = source_ops::prompt_for_inputs_with_credential_methods(
-                    manifest.declared_inputs(),
-                )?;
-                source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
-            } else {
-                let (variables, secrets) = source_ops::collect_inputs_from_env(
-                    manifest.declared_inputs(),
-                    format!(
-                        "coral source add --interactive --file {}",
-                        source_ops::shell_quote_arg(&file.display().to_string())
-                    ),
-                )?;
-                source_ops::import_source(app, manifest_yaml, variables, secrets).await?
-            }
-        }
-        _ => unreachable!("clap enforces exactly one of name or file"),
-    };
-    println!(
-        "Added source {} (secrets: {})",
-        response.name,
-        source_ops::source_credential_storage_label(response.credential_storage)
-    );
-    source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
-        .await
-        .map_err(Into::into)
 }
 
 #[cfg(test)]

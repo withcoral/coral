@@ -5,10 +5,14 @@
 //! `Plain` variant writes the server message verbatim. This module has no
 //! side effects — callers own stderr emission and process termination.
 
-use std::fmt::Write as _;
-
 use coral_api::grpc_response_status_code;
-use coral_client::{CoralQueryError, DecodedStatusError, decode_status_error};
+use coral_client::{DecodedStatusError, decode_status_error, render_error_block};
+
+pub(crate) struct RenderedQueryError {
+    pub(crate) rendered_stderr: String,
+    pub(crate) error_type: String,
+    pub(crate) error_message: String,
+}
 
 /// Renders a `tonic::Status` as a user-facing stderr block.
 ///
@@ -20,25 +24,29 @@ use coral_client::{CoralQueryError, DecodedStatusError, decode_status_error};
 /// The caller is responsible for writing the result to stderr and exiting
 /// with a non-zero code — keeping this function side-effect-free so the
 /// process-termination site stays in `main`.
-pub(crate) fn render_query_error(status: &tonic::Status) -> String {
+pub(crate) fn render_query_error(status: &tonic::Status) -> RenderedQueryError {
     match decode_status_error(status) {
-        DecodedStatusError::Structured(error) => render_structured(&error),
-        DecodedStatusError::Plain(message) => render_plain(status.code(), &message),
+        DecodedStatusError::Structured(error) => {
+            let rendered_stderr =
+                render_structured(&error.summary, &error.detail, error.hint.as_deref());
+            RenderedQueryError {
+                rendered_stderr,
+                error_type: error.reason,
+                error_message: error.summary,
+            }
+        }
+        DecodedStatusError::Plain(message) => RenderedQueryError {
+            rendered_stderr: render_plain(status.code(), &message),
+            error_type: grpc_response_status_code(status.code()).to_string(),
+            error_message: message,
+        },
     }
 }
 
-pub(crate) fn telemetry_error_type(status: &tonic::Status) -> String {
-    match decode_status_error(status) {
-        DecodedStatusError::Structured(error) => error.reason,
-        DecodedStatusError::Plain(_) => grpc_response_status_code(status.code()).to_string(),
-    }
-}
-
-pub(crate) fn telemetry_error_message(status: &tonic::Status) -> String {
-    match decode_status_error(status) {
-        DecodedStatusError::Structured(error) => error.summary,
-        DecodedStatusError::Plain(message) => message,
-    }
+fn render_structured(summary: &str, detail: &str, hint: Option<&str>) -> String {
+    let mut text = render_error_block(summary, detail, hint);
+    text.push('\n');
+    text
 }
 
 fn render_plain(code: tonic::Code, message: &str) -> String {
@@ -56,18 +64,6 @@ fn grpc_code_label(code: tonic::Code) -> &'static str {
         tonic::Code::Internal => "internal error",
         _ => "error",
     }
-}
-
-fn render_structured(error: &CoralQueryError) -> String {
-    let mut text = format!("Error: {}", error.summary);
-    if !error.detail.is_empty() {
-        write!(text, "\nDetail: {}", error.detail).expect("writing to String cannot fail");
-    }
-    if let Some(hint) = &error.hint {
-        write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
-    }
-    text.push('\n');
-    text
 }
 
 #[cfg(test)]
@@ -96,6 +92,10 @@ mod tests {
         Status::with_error_details_vec(Code::FailedPrecondition, "plain fallback", details)
     }
 
+    fn rendered_stderr(status: &Status) -> String {
+        render_query_error(status).rendered_stderr
+    }
+
     #[test]
     fn structured_renders_summary_detail_and_hint() {
         let status = build_coral_status(
@@ -113,11 +113,7 @@ mod tests {
             ],
             false,
         );
-        let error = match decode_status_error(&status) {
-            DecodedStatusError::Structured(e) => e,
-            DecodedStatusError::Plain(_) => panic!("expected Structured"),
-        };
-        let rendered = render_structured(&error);
+        let rendered = rendered_stderr(&status);
         assert!(rendered.starts_with("Error: github.issues requires"));
         assert!(rendered.contains("Detail: missing required filter"));
         assert!(rendered.contains("Hint: Add a constant equality filter"));
@@ -138,9 +134,10 @@ mod tests {
             false,
         );
 
-        assert_eq!(telemetry_error_type(&status), "MISSING_REQUIRED_FILTER");
+        let rendered = render_query_error(&status);
+        assert_eq!(rendered.error_type, "MISSING_REQUIRED_FILTER");
         assert_eq!(
-            telemetry_error_message(&status),
+            rendered.error_message,
             "github.files requires `WHERE pull_number = <constant>`"
         );
     }
@@ -155,11 +152,7 @@ mod tests {
             ],
             true,
         );
-        let error = match decode_status_error(&status) {
-            DecodedStatusError::Structured(e) => e,
-            DecodedStatusError::Plain(_) => panic!("expected Structured"),
-        };
-        let rendered = render_structured(&error);
+        let rendered = rendered_stderr(&status);
         assert!(rendered.contains("Error: Source request failed"));
         assert!(!rendered.contains("Detail:"));
         assert!(rendered.contains("Hint: Retry after a brief wait."));
@@ -175,11 +168,7 @@ mod tests {
             ],
             false,
         );
-        let error = match decode_status_error(&status) {
-            DecodedStatusError::Structured(e) => e,
-            DecodedStatusError::Plain(_) => panic!("expected Structured"),
-        };
-        let rendered = render_structured(&error);
+        let rendered = rendered_stderr(&status);
         assert!(rendered.contains("Error: Source request failed"));
         assert!(rendered.contains("Detail: connection reset"));
         assert!(!rendered.contains("Hint:"));
@@ -189,11 +178,7 @@ mod tests {
     fn structured_falls_back_to_message_when_no_summary_in_metadata() {
         let status =
             build_coral_status("PROVIDER_REQUEST_FAILED", vec![("source", "github")], false);
-        let error = match decode_status_error(&status) {
-            DecodedStatusError::Structured(e) => e,
-            DecodedStatusError::Plain(_) => panic!("expected Structured"),
-        };
-        let rendered = render_structured(&error);
+        let rendered = rendered_stderr(&status);
         assert!(
             rendered.contains("Error: plain fallback"),
             "should fall back to Status::message(): {rendered}"
@@ -210,8 +195,9 @@ mod tests {
     fn plain_telemetry_uses_grpc_code_and_message() {
         let status = Status::new(Code::FailedPrecondition, "missing source setup");
 
-        assert_eq!(telemetry_error_type(&status), "FAILED_PRECONDITION");
-        assert_eq!(telemetry_error_message(&status), "missing source setup");
+        let rendered = render_query_error(&status);
+        assert_eq!(rendered.error_type, "FAILED_PRECONDITION");
+        assert_eq!(rendered.error_message, "missing source setup");
     }
 
     #[test]
