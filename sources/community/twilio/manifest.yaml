@@ -1,0 +1,2128 @@
+name: twilio
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: "Twilio Programmable Communications API data \u2014 messages (SMS/MMS/WhatsApp), voice calls, phone numbers,\
+  \ recordings, transcriptions, conferences, call queues, usage records, applications, alerts, accounts, and message feedback\
+  \ \u2014 via the Twilio REST API v2010 with Account SID / Auth Token authentication. Enables SQL-based querying of your\
+  \ entire communications infrastructure including messaging analytics, call performance, cost tracking, telephony inventory,\
+  \ and error monitoring."
+inputs:
+  TWILIO_ACCOUNT_SID:
+    kind: variable
+    hint: Your Twilio Account SID (starts with "AC"). Found on the Twilio Console dashboard at https://console.twilio.com.
+      This is also used as the Basic Auth username.
+  TWILIO_AUTH_TOKEN:
+    kind: secret
+    hint: Your Twilio Auth Token. Found on the Twilio Console dashboard next to the Account SID. Used as the Basic Auth password.
+      For production, consider creating an API Key instead. See https://www.twilio.com/docs/iam/api-keys
+base_url: https://api.twilio.com/2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}
+auth:
+  type: BasicAuth
+  username: '{{input.TWILIO_ACCOUNT_SID}}'
+  password: '{{input.TWILIO_AUTH_TOKEN}}'
+request_headers:
+- name: Accept
+  from: literal
+  value: application/json
+test_queries:
+- SELECT sid, friendly_name, status FROM twilio.account LIMIT 1
+- SELECT sid, body, status, direction FROM twilio.messages LIMIT 1
+tables:
+- name: account
+  description: 'Retrieves the authenticated Twilio account. This is a singleton endpoint returning a single row with account
+    details including SID, friendly name, type, status, date created, and owner email. Use this table to verify connectivity,
+    inspect account status, and retrieve the account SID for reference.
+
+    '
+  guide: "Start with `SELECT sid, friendly_name, type, status, date_created FROM twilio.account`. Singleton \u2014 always\
+    \ returns exactly one row. Use to verify your API credentials are working correctly.\n"
+  request:
+    method: GET
+    path: .json
+  response:
+    row_strategy: direct
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: 'The unique 34-character Account SID (starts with "AC"). This is the master identifier for your Twilio account.
+
+      '
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: friendly_name
+    type: Utf8
+    nullable: true
+    description: A human-readable name for the account.
+    expr:
+      kind: path
+      path:
+      - friendly_name
+  - name: type
+    type: Utf8
+    nullable: true
+    description: 'The account type. Values: Full, Trial. Trial accounts have sending restrictions and a limited balance.
+
+      '
+    expr:
+      kind: path
+      path:
+      - type
+  - name: status
+    type: Utf8
+    nullable: true
+    description: 'The account status. Values: active, suspended, closed.
+
+      '
+    expr:
+      kind: path
+      path:
+      - status
+  - name: owner_account_sid
+    type: Utf8
+    nullable: true
+    description: 'The SID of the parent account if this is a subaccount. Same as `sid` for master accounts.
+
+      '
+    expr:
+      kind: path
+      path:
+      - owner_account_sid
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the account was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the account was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+- name: messages
+  description: "Lists all messages (SMS, MMS, WhatsApp) sent and received through the Twilio account. Each message includes\
+    \ the body text, sender, recipient, status, direction, price, segment count, error codes, messaging service SID, and timestamps.\
+    \ This is the primary table for messaging analytics \u2014 delivery rates, cost analysis, error tracking, and channel\
+    \ performance. Supports optional filters for date range and phone number.\n"
+  guide: 'Start with `SELECT sid, body, from_number, to_number, status, direction, price, date_sent FROM twilio.messages LIMIT
+    50`. Filter by `date_sent_after` and `date_sent_before` (YYYY-MM-DD) to scope by date range. Filter by `to` or `from`
+    to scope by phone number. Use `status` to find failed messages (status = ''failed'' or ''undelivered''). Use `direction`
+    to separate inbound vs outbound. Use `error_code` to diagnose delivery failures.
+
+    '
+  fetch_limit_default: 100
+  filters:
+  - name: to
+  - name: from
+  - name: date_sent_after
+  - name: date_sent_before
+  request:
+    method: GET
+    path: /Messages.json
+    query:
+    - name: To
+      from: filter
+      key: to
+    - name: From
+      from: filter
+      key: from
+    - name: DateSent>
+      from: filter
+      key: date_sent_after
+    - name: DateSent<
+      from: filter
+      key: date_sent_before
+  response:
+    rows_path:
+    - messages
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: 'Unique 34-character message SID (starts with "SM" for SMS or "MM" for MMS). The primary identifier for every
+      message.
+
+      '
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: body
+    type: Utf8
+    nullable: true
+    description: 'The text body of the message. Up to 1,600 characters for SMS. Null for MMS-only messages (media without
+      text).
+
+      '
+    expr:
+      kind: path
+      path:
+      - body
+  - name: from_number
+    type: Utf8
+    nullable: true
+    description: 'The sender phone number or channel address in E.164 format (e.g., "+14155551234") or WhatsApp format ("whatsapp:+14155551234").
+
+      '
+    expr:
+      kind: path
+      path:
+      - from
+  - name: to_number
+    type: Utf8
+    nullable: true
+    description: 'The recipient phone number or channel address in E.164 format.
+
+      '
+    expr:
+      kind: path
+      path:
+      - to
+  - name: status
+    type: Utf8
+    nullable: false
+    description: 'Current delivery status. Values: accepted, queued, sending, sent, delivered, undelivered, failed, receiving,
+      received, read. Use ''failed''/''undelivered'' for error analysis.
+
+      '
+    expr:
+      kind: path
+      path:
+      - status
+  - name: direction
+    type: Utf8
+    nullable: true
+    description: 'Message direction. Values: inbound, outbound-api, outbound-call, outbound-reply. Use to separate customer
+      messages from system-initiated sends.
+
+      '
+    expr:
+      kind: path
+      path:
+      - direction
+  - name: price
+    type: Utf8
+    nullable: true
+    description: 'The cost billed for this message (as a string, e.g., "-0.0075"). Negative values indicate charges. Null
+      while processing. Use with `price_unit` for cost analysis.
+
+      '
+    expr:
+      kind: path
+      path:
+      - price
+  - name: price_unit
+    type: Utf8
+    nullable: true
+    description: 'The currency unit for the price (e.g., "USD"). Always lowercase ISO 4217 code.
+
+      '
+    expr:
+      kind: path
+      path:
+      - price_unit
+  - name: num_segments
+    type: Utf8
+    nullable: true
+    description: 'Number of SMS segments the message was split into. Messages over 160 characters (GSM-7) or 70 characters
+      (UCS-2/Unicode) are split into multiple segments, each billed separately. Critical for cost forecasting.
+
+      '
+    expr:
+      kind: path
+      path:
+      - num_segments
+  - name: num_media
+    type: Utf8
+    nullable: true
+    description: 'Number of media items (images, videos) attached to this MMS message. "0" for plain SMS.
+
+      '
+    expr:
+      kind: path
+      path:
+      - num_media
+  - name: error_code
+    type: Int64
+    nullable: true
+    description: 'Twilio error code if the message failed or was undelivered. Null on success. Common codes: 30001 (queue
+      overflow), 30003 (unreachable), 30005 (unknown destination), 30006 (landline), 30007 (carrier violation). See https://www.twilio.com/docs/api/errors
+
+      '
+    expr:
+      kind: path
+      path:
+      - error_code
+  - name: error_message
+    type: Utf8
+    nullable: true
+    description: 'Human-readable description of the error. Null on success. Provides context for the error_code.
+
+      '
+    expr:
+      kind: path
+      path:
+      - error_message
+  - name: messaging_service_sid
+    type: Utf8
+    nullable: true
+    description: 'The SID of the Messaging Service used to send this message. Null if sent directly from a phone number without
+      a Messaging Service.
+
+      '
+    expr:
+      kind: path
+      path:
+      - messaging_service_sid
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID that owns this message.
+    expr:
+      kind: path
+      path:
+      - account_sid
+  - name: api_version
+    type: Utf8
+    nullable: true
+    description: The Twilio API version used to process this message.
+    expr:
+      kind: path
+      path:
+      - api_version
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the message resource was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_sent
+    type: Utf8
+    nullable: true
+    description: 'When the message was sent (RFC 2822 format). Null if the message is still queued or failed before sending.
+
+      '
+    expr:
+      kind: path
+      path:
+      - date_sent
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the message was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+  - name: to_filter
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Echoes the `to` filter value.
+    expr:
+      kind: from_filter
+      key: to
+  - name: from_filter
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Echoes the `from` filter value.
+    expr:
+      kind: from_filter
+      key: from
+  - name: date_sent_after_filter
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Echoes the `date_sent_after` filter value.
+    expr:
+      kind: from_filter
+      key: date_sent_after
+  - name: date_sent_before_filter
+    type: Utf8
+    nullable: true
+    virtual: true
+    description: Echoes the `date_sent_before` filter value.
+    expr:
+      kind: from_filter
+      key: date_sent_before
+- name: calls
+  description: "Lists all voice calls made and received through the Twilio account. Each call includes the caller, callee,\
+    \ status, duration, price, direction, queue time, forwarding info, and timestamps. This table is essential for voice analytics\
+    \ \u2014 call volume trends, average duration, cost per call, failure rates, and agent performance tracking. Supports\
+    \ optional date range filters.\n"
+  guide: 'Start with `SELECT sid, from_number, to_number, status, duration, direction, price, start_time FROM twilio.calls
+    LIMIT 50`. Filter by `start_time_after` and `start_time_before` (YYYY-MM-DD) for date range. Use `status` to find failed
+    calls. Use `direction` to separate inbound from outbound. Use `duration` for call length analytics. Use `price` for cost
+    tracking.
+
+    '
+  fetch_limit_default: 100
+  filters:
+  - name: to
+  - name: from
+  - name: status
+  - name: start_time_after
+  - name: start_time_before
+  request:
+    method: GET
+    path: /Calls.json
+    query:
+    - name: To
+      from: filter
+      key: to
+    - name: From
+      from: filter
+      key: from
+    - name: Status
+      from: filter
+      key: status
+    - name: StartTime>
+      from: filter
+      key: start_time_after
+    - name: StartTime<
+      from: filter
+      key: start_time_before
+  response:
+    rows_path:
+    - calls
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: 'Unique 34-character call SID (starts with "CA"). The primary identifier for every call.
+
+      '
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: from_number
+    type: Utf8
+    nullable: true
+    description: 'The caller''s phone number in E.164 format, SIP URI, or Twilio Client identifier.
+
+      '
+    expr:
+      kind: path
+      path:
+      - from
+  - name: from_formatted
+    type: Utf8
+    nullable: true
+    description: The caller's number in a human-readable national format.
+    expr:
+      kind: path
+      path:
+      - from_formatted
+  - name: to_number
+    type: Utf8
+    nullable: true
+    description: 'The callee''s phone number in E.164 format, SIP URI, or Twilio Client identifier.
+
+      '
+    expr:
+      kind: path
+      path:
+      - to
+  - name: to_formatted
+    type: Utf8
+    nullable: true
+    description: The callee's number in a human-readable national format.
+    expr:
+      kind: path
+      path:
+      - to_formatted
+  - name: status
+    type: Utf8
+    nullable: false
+    description: 'Current call status. Values: queued, ringing, in-progress, completed, busy, failed, no-answer, canceled.
+      Use for call success rate analytics.
+
+      '
+    expr:
+      kind: path
+      path:
+      - status
+  - name: direction
+    type: Utf8
+    nullable: true
+    description: 'Call direction. Values: inbound, outbound-api, outbound-dial, trunking-originating, trunking-terminating.
+
+      '
+    expr:
+      kind: path
+      path:
+      - direction
+  - name: duration
+    type: Utf8
+    nullable: true
+    description: 'Call duration in seconds (as a string). "0" for calls that were not answered. Use for average call length
+      analytics.
+
+      '
+    expr:
+      kind: path
+      path:
+      - duration
+  - name: price
+    type: Utf8
+    nullable: true
+    description: 'The cost billed for this call (as a string). Negative values indicate charges. Null while the call is in-progress.
+
+      '
+    expr:
+      kind: path
+      path:
+      - price
+  - name: price_unit
+    type: Utf8
+    nullable: true
+    description: The currency unit for the price (e.g., "USD").
+    expr:
+      kind: path
+      path:
+      - price_unit
+  - name: queue_time
+    type: Utf8
+    nullable: true
+    description: 'Estimated time in milliseconds the call spent queued before execution began. High values indicate capacity
+      issues.
+
+      '
+    expr:
+      kind: path
+      path:
+      - queue_time
+  - name: caller_name
+    type: Utf8
+    nullable: true
+    description: 'The CNAM (Caller ID Name) lookup result for inbound calls. Null for outbound calls or when CNAM is not available.
+
+      '
+    expr:
+      kind: path
+      path:
+      - caller_name
+  - name: forwarded_from
+    type: Utf8
+    nullable: true
+    description: 'The phone number the call was forwarded from, if applicable. Indicates call forwarding in the PSTN network.
+
+      '
+    expr:
+      kind: path
+      path:
+      - forwarded_from
+  - name: parent_call_sid
+    type: Utf8
+    nullable: true
+    description: 'The SID of the parent call if this is a child call (e.g., created via <Dial>). Null for top-level calls.
+
+      '
+    expr:
+      kind: path
+      path:
+      - parent_call_sid
+  - name: phone_number_sid
+    type: Utf8
+    nullable: true
+    description: 'The SID of the Twilio phone number that handled this call. Join to `twilio.phone_numbers.sid`.
+
+      '
+    expr:
+      kind: path
+      path:
+      - phone_number_sid
+  - name: group_sid
+    type: Utf8
+    nullable: true
+    description: The call group SID, if the call was part of a group.
+    expr:
+      kind: path
+      path:
+      - group_sid
+  - name: trunk_sid
+    type: Utf8
+    nullable: true
+    description: 'The SID of the SIP trunk used for this call, if applicable. Relevant for Elastic SIP Trunking.
+
+      '
+    expr:
+      kind: path
+      path:
+      - trunk_sid
+  - name: answered_by
+    type: Utf8
+    nullable: true
+    description: 'Who or what answered the call. Values: human, machine. Populated when Answering Machine Detection (AMD)
+      is enabled.
+
+      '
+    expr:
+      kind: path
+      path:
+      - answered_by
+  - name: api_version
+    type: Utf8
+    nullable: true
+    description: The Twilio API version used to create this call.
+    expr:
+      kind: path
+      path:
+      - api_version
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID that owns this call.
+    expr:
+      kind: path
+      path:
+      - account_sid
+  - name: start_time
+    type: Utf8
+    nullable: true
+    description: When the call started (RFC 2822 format). Null if not yet started.
+    expr:
+      kind: path
+      path:
+      - start_time
+  - name: end_time
+    type: Utf8
+    nullable: true
+    description: When the call ended (RFC 2822 format). Null if still in progress.
+    expr:
+      kind: path
+      path:
+      - end_time
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the call resource was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the call resource was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+- name: phone_numbers
+  description: "Lists all provisioned incoming phone numbers on the Twilio account. Each number includes capabilities (voice,\
+    \ SMS, MMS, fax), webhook URLs, associated application SIDs, emergency address, and trunk configuration. This table is\
+    \ your telephony inventory \u2014 use it to audit number allocation, capability coverage, webhook configuration, and compliance\
+    \ (emergency addressing).\n"
+  guide: 'Start with `SELECT sid, phone_number, friendly_name, sms_enabled, voice_enabled, status FROM twilio.phone_numbers`.
+    Use `sms_enabled` and `voice_enabled` to audit capabilities. Check `voice_url` and `sms_url` for webhook configuration.
+    Use `emergency_address_sid` for compliance auditing.
+
+    '
+  fetch_limit_default: 100
+  request:
+    method: GET
+    path: /IncomingPhoneNumbers.json
+  response:
+    rows_path:
+    - incoming_phone_numbers
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: 'Unique 34-character phone number SID (starts with "PN"). Referenced by `phone_number_sid` on calls.
+
+      '
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: phone_number
+    type: Utf8
+    nullable: false
+    description: 'The phone number in E.164 format (e.g., "+14155551234"). The canonical identifier for the number.
+
+      '
+    expr:
+      kind: path
+      path:
+      - phone_number
+  - name: friendly_name
+    type: Utf8
+    nullable: true
+    description: 'A human-readable label for the number (e.g., "Support Line", "Marketing SMS"). Set by the account owner.
+
+      '
+    expr:
+      kind: path
+      path:
+      - friendly_name
+  - name: status
+    type: Utf8
+    nullable: true
+    description: 'The status of the phone number. Values: in-use, released.
+
+      '
+    expr:
+      kind: path
+      path:
+      - status
+  - name: sms_enabled
+    type: Boolean
+    nullable: true
+    description: Whether this number can send and receive SMS.
+    expr:
+      kind: path
+      path:
+      - capabilities
+      - sms
+  - name: voice_enabled
+    type: Boolean
+    nullable: true
+    description: Whether this number can make and receive voice calls.
+    expr:
+      kind: path
+      path:
+      - capabilities
+      - voice
+  - name: mms_enabled
+    type: Boolean
+    nullable: true
+    description: Whether this number can send and receive MMS.
+    expr:
+      kind: path
+      path:
+      - capabilities
+      - mms
+  - name: fax_enabled
+    type: Boolean
+    nullable: true
+    description: Whether this number supports fax.
+    expr:
+      kind: path
+      path:
+      - capabilities
+      - fax
+  - name: voice_url
+    type: Utf8
+    nullable: true
+    description: 'The URL Twilio requests when this number receives a voice call. Null if using an application SID instead.
+
+      '
+    expr:
+      kind: path
+      path:
+      - voice_url
+  - name: voice_method
+    type: Utf8
+    nullable: true
+    description: HTTP method used for the voice webhook (GET or POST).
+    expr:
+      kind: path
+      path:
+      - voice_method
+  - name: voice_fallback_url
+    type: Utf8
+    nullable: true
+    description: Fallback URL if the primary voice webhook fails.
+    expr:
+      kind: path
+      path:
+      - voice_fallback_url
+  - name: voice_application_sid
+    type: Utf8
+    nullable: true
+    description: 'The TwiML Application SID handling voice for this number. Join to `twilio.applications.sid`.
+
+      '
+    expr:
+      kind: path
+      path:
+      - voice_application_sid
+  - name: sms_url
+    type: Utf8
+    nullable: true
+    description: 'The URL Twilio requests when this number receives an SMS.
+
+      '
+    expr:
+      kind: path
+      path:
+      - sms_url
+  - name: sms_method
+    type: Utf8
+    nullable: true
+    description: HTTP method used for the SMS webhook (GET or POST).
+    expr:
+      kind: path
+      path:
+      - sms_method
+  - name: sms_fallback_url
+    type: Utf8
+    nullable: true
+    description: Fallback URL if the primary SMS webhook fails.
+    expr:
+      kind: path
+      path:
+      - sms_fallback_url
+  - name: sms_application_sid
+    type: Utf8
+    nullable: true
+    description: 'The TwiML Application SID handling SMS for this number. Join to `twilio.applications.sid`.
+
+      '
+    expr:
+      kind: path
+      path:
+      - sms_application_sid
+  - name: trunk_sid
+    type: Utf8
+    nullable: true
+    description: 'The SID of the SIP trunk handling this number. Relevant for Elastic SIP Trunking configurations.
+
+      '
+    expr:
+      kind: path
+      path:
+      - trunk_sid
+  - name: emergency_address_sid
+    type: Utf8
+    nullable: true
+    description: 'The SID of the emergency address for E911. Required for regulatory compliance in many jurisdictions.
+
+      '
+    expr:
+      kind: path
+      path:
+      - emergency_address_sid
+  - name: emergency_status
+    type: Utf8
+    nullable: true
+    description: 'Emergency address status. Values: Active, Inactive.
+
+      '
+    expr:
+      kind: path
+      path:
+      - emergency_status
+  - name: origin
+    type: Utf8
+    nullable: true
+    description: 'How the number was obtained. Values: twilio, hosted, ported.
+
+      '
+    expr:
+      kind: path
+      path:
+      - origin
+  - name: address_sid
+    type: Utf8
+    nullable: true
+    description: The SID of the address associated with this number.
+    expr:
+      kind: path
+      path:
+      - address_sid
+  - name: identity_sid
+    type: Utf8
+    nullable: true
+    description: The SID of the identity associated with this number.
+    expr:
+      kind: path
+      path:
+      - identity_sid
+  - name: bundle_sid
+    type: Utf8
+    nullable: true
+    description: The SID of the regulatory bundle for this number.
+    expr:
+      kind: path
+      path:
+      - bundle_sid
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the number was provisioned (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the number was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+- name: recordings
+  description: 'Lists all call recordings stored in the Twilio account. Each recording includes the associated call SID, duration,
+    status, source channel, encryption status, and pricing. Use this table for compliance auditing (are all calls being recorded?),
+    storage cost analysis, and recording lifecycle management.
+
+    '
+  guide: 'Start with `SELECT sid, call_sid, duration, status, channels, price, date_created FROM twilio.recordings LIMIT 50`.
+    Join `call_sid` to `twilio.calls.sid` for full call context. Filter by `date_created_after` and `date_created_before`
+    (YYYY-MM-DD) for date range queries.
+
+    '
+  fetch_limit_default: 100
+  filters:
+  - name: date_created_after
+  - name: date_created_before
+  - name: call_sid
+  request:
+    method: GET
+    path: /Recordings.json
+    query:
+    - name: DateCreated>
+      from: filter
+      key: date_created_after
+    - name: DateCreated<
+      from: filter
+      key: date_created_before
+    - name: CallSid
+      from: filter
+      key: call_sid
+  response:
+    rows_path:
+    - recordings
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: 'Unique 34-character recording SID (starts with "RE").
+
+      '
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: call_sid
+    type: Utf8
+    nullable: false
+    description: 'The SID of the call that produced this recording. Join to `twilio.calls.sid` for call context.
+
+      '
+    expr:
+      kind: path
+      path:
+      - call_sid
+  - name: conference_sid
+    type: Utf8
+    nullable: true
+    description: 'The SID of the conference if this is a conference recording. Join to `twilio.conferences.sid`. Null for
+      regular calls.
+
+      '
+    expr:
+      kind: path
+      path:
+      - conference_sid
+  - name: duration
+    type: Utf8
+    nullable: true
+    description: The recording duration in seconds (as a string).
+    expr:
+      kind: path
+      path:
+      - duration
+  - name: channels
+    type: Int64
+    nullable: true
+    description: 'Number of audio channels in the recording. 1 = mono (mixed), 2 = dual-channel (caller and callee separated).
+
+      '
+    expr:
+      kind: path
+      path:
+      - channels
+  - name: status
+    type: Utf8
+    nullable: true
+    description: 'Recording status. Values: processing, completed, absent, deleted. Use ''completed'' for available recordings.
+
+      '
+    expr:
+      kind: path
+      path:
+      - status
+  - name: source
+    type: Utf8
+    nullable: true
+    description: 'How the recording was initiated. Values: DialVerb, Conference, OutboundAPI, Trunking, RecordVerb, StartCallRecordingAPI,
+      StartConferenceRecordingAPI.
+
+      '
+    expr:
+      kind: path
+      path:
+      - source
+  - name: price
+    type: Utf8
+    nullable: true
+    description: The cost of the recording (as a string).
+    expr:
+      kind: path
+      path:
+      - price
+  - name: price_unit
+    type: Utf8
+    nullable: true
+    description: Currency unit for the recording price.
+    expr:
+      kind: path
+      path:
+      - price_unit
+  - name: encryption_details
+    type: Json
+    nullable: true
+    description: 'Encryption details for the recording (as JSON). Contains encryption type, initialization vector, and key
+      SID. Null if not encrypted.
+
+      '
+    expr:
+      kind: path
+      path:
+      - encryption_details
+  - name: error_code
+    type: Int64
+    nullable: true
+    description: Error code if the recording failed. Null on success.
+    expr:
+      kind: path
+      path:
+      - error_code
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID that owns this recording.
+    expr:
+      kind: path
+      path:
+      - account_sid
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the recording was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the recording was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+- name: transcriptions
+  description: 'Lists all transcriptions generated from call recordings. Each transcription includes the transcribed text,
+    status, duration, price, and the associated recording SID. Use this table for call content analysis, keyword extraction,
+    and compliance monitoring (e.g., detecting prohibited phrases in sales calls).
+
+    '
+  guide: 'Start with `SELECT sid, recording_sid, transcription_text, status, duration, price FROM twilio.transcriptions LIMIT
+    50`. Join `recording_sid` to `twilio.recordings.sid` for recording context. Use `status` = ''completed'' for successfully
+    transcribed recordings.
+
+    '
+  fetch_limit_default: 100
+  request:
+    method: GET
+    path: /Transcriptions.json
+  response:
+    rows_path:
+    - transcriptions
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: Unique 34-character transcription SID (starts with "TR").
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: recording_sid
+    type: Utf8
+    nullable: false
+    description: 'The SID of the recording that was transcribed. Join to `twilio.recordings.sid`.
+
+      '
+    expr:
+      kind: path
+      path:
+      - recording_sid
+  - name: transcription_text
+    type: Utf8
+    nullable: true
+    description: 'The transcribed text content. Contains the full speech-to-text output. Null while processing.
+
+      '
+    expr:
+      kind: path
+      path:
+      - transcription_text
+  - name: status
+    type: Utf8
+    nullable: true
+    description: 'Transcription status. Values: queued, in-progress, completed, failed. Only ''completed'' has text content.
+
+      '
+    expr:
+      kind: path
+      path:
+      - status
+  - name: duration
+    type: Utf8
+    nullable: true
+    description: The duration of the transcribed recording in seconds.
+    expr:
+      kind: path
+      path:
+      - duration
+  - name: price
+    type: Utf8
+    nullable: true
+    description: The cost of the transcription (as a string).
+    expr:
+      kind: path
+      path:
+      - price
+  - name: price_unit
+    type: Utf8
+    nullable: true
+    description: Currency unit for the transcription price.
+    expr:
+      kind: path
+      path:
+      - price_unit
+  - name: type
+    type: Utf8
+    nullable: true
+    description: 'Transcription type. Values: fast, accurate. Fast provides quicker results; accurate provides better quality.
+
+      '
+    expr:
+      kind: path
+      path:
+      - type
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID that owns this transcription.
+    expr:
+      kind: path
+      path:
+      - account_sid
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the transcription was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the transcription was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+- name: conferences
+  description: 'Lists all conference calls on the Twilio account. Conferences allow multiple participants to join a shared
+    audio bridge. Each conference includes its friendly name, status, region, and participant-related settings. Use this table
+    for conference usage analytics, capacity planning, and multi-party call tracking.
+
+    '
+  guide: 'Start with `SELECT sid, friendly_name, status, region, date_created FROM twilio.conferences LIMIT 50`. Filter by
+    `status` (init, in-progress, completed) and `date_created_after` / `date_created_before` for date range. Use `friendly_name`
+    to identify specific conference rooms.
+
+    '
+  fetch_limit_default: 100
+  filters:
+  - name: status
+  - name: friendly_name
+  - name: date_created_after
+  - name: date_created_before
+  request:
+    method: GET
+    path: /Conferences.json
+    query:
+    - name: Status
+      from: filter
+      key: status
+    - name: FriendlyName
+      from: filter
+      key: friendly_name
+    - name: DateCreated>
+      from: filter
+      key: date_created_after
+    - name: DateCreated<
+      from: filter
+      key: date_created_before
+  response:
+    rows_path:
+    - conferences
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: Unique 34-character conference SID (starts with "CF").
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: friendly_name
+    type: Utf8
+    nullable: true
+    description: 'The friendly name of the conference (the room identifier). Multiple conferences can share the same friendly
+      name over time.
+
+      '
+    expr:
+      kind: path
+      path:
+      - friendly_name
+  - name: status
+    type: Utf8
+    nullable: true
+    description: 'Conference status. Values: init, in-progress, completed.
+
+      '
+    expr:
+      kind: path
+      path:
+      - status
+  - name: region
+    type: Utf8
+    nullable: true
+    description: 'The Twilio region where the conference is hosted (e.g., "us1", "ie1", "au1", "sg1").
+
+      '
+    expr:
+      kind: path
+      path:
+      - region
+  - name: reason_conference_ended
+    type: Utf8
+    nullable: true
+    description: 'Why the conference ended. Values include: conference-ended-via-api, participant-with-end-conference-on-exit-left,
+      last-participant-left.
+
+      '
+    expr:
+      kind: path
+      path:
+      - reason_conference_ended
+  - name: call_sid_ending_conference
+    type: Utf8
+    nullable: true
+    description: The call SID that caused the conference to end.
+    expr:
+      kind: path
+      path:
+      - call_sid_ending_conference
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID that owns this conference.
+    expr:
+      kind: path
+      path:
+      - account_sid
+  - name: api_version
+    type: Utf8
+    nullable: true
+    description: The Twilio API version.
+    expr:
+      kind: path
+      path:
+      - api_version
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the conference was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the conference was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+- name: queues
+  description: "Lists all call queues in the Twilio account. Queues hold callers in line while waiting for an agent \u2014\
+    \ essential for contact center and IVR workflows. Each queue includes the current size, max capacity, and average wait\
+    \ time. Use this table for capacity planning and queue performance monitoring.\n"
+  guide: 'Start with `SELECT sid, friendly_name, current_size, max_size, average_wait_time FROM twilio.queues`. Use `current_size`
+    and `max_size` for capacity monitoring. Use `average_wait_time` for caller experience analysis.
+
+    '
+  request:
+    method: GET
+    path: /Queues.json
+  response:
+    rows_path:
+    - queues
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: Unique 34-character queue SID (starts with "QU").
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: friendly_name
+    type: Utf8
+    nullable: true
+    description: A human-readable label for the queue.
+    expr:
+      kind: path
+      path:
+      - friendly_name
+  - name: current_size
+    type: Int64
+    nullable: true
+    description: 'Number of callers currently waiting in the queue. Key real-time capacity metric.
+
+      '
+    expr:
+      kind: path
+      path:
+      - current_size
+  - name: max_size
+    type: Int64
+    nullable: true
+    description: 'Maximum number of callers that can wait in the queue. Calls beyond this limit receive a busy signal.
+
+      '
+    expr:
+      kind: path
+      path:
+      - max_size
+  - name: average_wait_time
+    type: Int64
+    nullable: true
+    description: 'Average wait time in seconds for callers in this queue. Critical for customer experience SLA monitoring.
+
+      '
+    expr:
+      kind: path
+      path:
+      - average_wait_time
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID that owns this queue.
+    expr:
+      kind: path
+      path:
+      - account_sid
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the queue was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the queue was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+- name: usage_records
+  description: 'Lists account usage records aggregated by category. Each record contains the usage category (e.g., calls,
+    sms, recordings), quantity consumed, count of events, and total cost. Supports date range filters for billing period analysis.
+    This is the primary table for cost tracking, budget forecasting, and usage trend analysis across all Twilio products.
+
+    '
+  guide: 'Start with `SELECT category, description, usage, usage_unit, count, price, start_date, end_date FROM twilio.usage_records`.
+    Filter by `category` (e.g., ''calls'', ''sms'', ''sms-inbound'', ''sms-outbound'', ''recordings'', ''phonenumbers'').
+    Filter by `start_date` and `end_date` (YYYY-MM-DD) for billing periods. Sum `price` by `category` for cost breakdowns.
+
+    '
+  fetch_limit_default: 100
+  filters:
+  - name: category
+  - name: start_date
+  - name: end_date
+  request:
+    method: GET
+    path: /Usage/Records.json
+    query:
+    - name: Category
+      from: filter
+      key: category
+    - name: StartDate
+      from: filter
+      key: start_date
+    - name: EndDate
+      from: filter
+      key: end_date
+  response:
+    rows_path:
+    - usage_records
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: category
+    type: Utf8
+    nullable: false
+    description: 'The usage category. Common values: calls, calls-inbound, calls-outbound, sms, sms-inbound, sms-outbound,
+      mms, recordings, transcriptions, phonenumbers, totalprice.
+
+      '
+    expr:
+      kind: path
+      path:
+      - category
+  - name: description
+    type: Utf8
+    nullable: true
+    description: 'Human-readable description of the usage category (e.g., "Total Inbound SMS Messages").
+
+      '
+    expr:
+      kind: path
+      path:
+      - description
+  - name: usage
+    type: Utf8
+    nullable: true
+    description: 'The quantity of usage consumed (e.g., "42" minutes, "1500" messages). As a string.
+
+      '
+    expr:
+      kind: path
+      path:
+      - usage
+  - name: usage_unit
+    type: Utf8
+    nullable: true
+    description: 'The unit of measurement for the usage field (e.g., "minutes", "messages", "calls").
+
+      '
+    expr:
+      kind: path
+      path:
+      - usage_unit
+  - name: count
+    type: Utf8
+    nullable: true
+    description: 'The number of usage events (e.g., total number of calls or messages). As a string.
+
+      '
+    expr:
+      kind: path
+      path:
+      - count
+  - name: count_unit
+    type: Utf8
+    nullable: true
+    description: The unit for the count field (e.g., "calls", "messages").
+    expr:
+      kind: path
+      path:
+      - count_unit
+  - name: price
+    type: Utf8
+    nullable: true
+    description: 'The total cost for this usage category in the account''s currency (as a string). The primary billing metric.
+
+      '
+    expr:
+      kind: path
+      path:
+      - price
+  - name: price_unit
+    type: Utf8
+    nullable: true
+    description: The currency unit (e.g., "USD").
+    expr:
+      kind: path
+      path:
+      - price_unit
+  - name: as_of
+    type: Utf8
+    nullable: true
+    description: The timestamp up to which this record is calculated.
+    expr:
+      kind: path
+      path:
+      - as_of
+  - name: start_date
+    type: Utf8
+    nullable: true
+    description: Start of the usage period (YYYY-MM-DD).
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: end_date
+    type: Utf8
+    nullable: true
+    description: End of the usage period (YYYY-MM-DD).
+    expr:
+      kind: path
+      path:
+      - end_date
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID these usage records belong to.
+    expr:
+      kind: path
+      path:
+      - account_sid
+- name: usage_records_daily
+  description: 'Lists daily usage records broken down by category. Same fields as `usage_records` but aggregated per day.
+    Use this table for daily cost trends, usage spikes detection, and day-over-day comparison analytics. Critical for identifying
+    anomalies in messaging or call volumes.
+
+    '
+  guide: 'Start with `SELECT category, usage, count, price, start_date FROM twilio.usage_records_daily`. Filter by `category`
+    for specific product lines. Combine with date filters for trend analysis.
+
+    '
+  fetch_limit_default: 100
+  filters:
+  - name: category
+  - name: start_date
+  - name: end_date
+  request:
+    method: GET
+    path: /Usage/Records/Daily.json
+    query:
+    - name: Category
+      from: filter
+      key: category
+    - name: StartDate
+      from: filter
+      key: start_date
+    - name: EndDate
+      from: filter
+      key: end_date
+  response:
+    rows_path:
+    - usage_records
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: category
+    type: Utf8
+    nullable: false
+    description: The usage category.
+    expr:
+      kind: path
+      path:
+      - category
+  - name: description
+    type: Utf8
+    nullable: true
+    description: Human-readable description of the category.
+    expr:
+      kind: path
+      path:
+      - description
+  - name: usage
+    type: Utf8
+    nullable: true
+    description: The quantity of usage for this day.
+    expr:
+      kind: path
+      path:
+      - usage
+  - name: usage_unit
+    type: Utf8
+    nullable: true
+    description: The unit of measurement for usage.
+    expr:
+      kind: path
+      path:
+      - usage_unit
+  - name: count
+    type: Utf8
+    nullable: true
+    description: The number of usage events for this day.
+    expr:
+      kind: path
+      path:
+      - count
+  - name: count_unit
+    type: Utf8
+    nullable: true
+    description: The unit for the count field.
+    expr:
+      kind: path
+      path:
+      - count_unit
+  - name: price
+    type: Utf8
+    nullable: true
+    description: The total cost for this day and category.
+    expr:
+      kind: path
+      path:
+      - price
+  - name: price_unit
+    type: Utf8
+    nullable: true
+    description: The currency unit.
+    expr:
+      kind: path
+      path:
+      - price_unit
+  - name: start_date
+    type: Utf8
+    nullable: true
+    description: Start of the daily period (YYYY-MM-DD).
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: end_date
+    type: Utf8
+    nullable: true
+    description: End of the daily period (YYYY-MM-DD).
+    expr:
+      kind: path
+      path:
+      - end_date
+- name: usage_records_monthly
+  description: 'Lists monthly usage records broken down by category. Same fields as `usage_records` but aggregated per month.
+    Use this table for monthly billing reports, budget tracking, and month-over-month trend analysis. Ideal for finance team
+    cost reviews and capacity planning.
+
+    '
+  guide: 'Start with `SELECT category, description, usage, count, price, start_date, end_date FROM twilio.usage_records_monthly`.
+    Sum `price` for total monthly spend. Group by `category` for departmental cost allocation.
+
+    '
+  fetch_limit_default: 100
+  filters:
+  - name: category
+  - name: start_date
+  - name: end_date
+  request:
+    method: GET
+    path: /Usage/Records/Monthly.json
+    query:
+    - name: Category
+      from: filter
+      key: category
+    - name: StartDate
+      from: filter
+      key: start_date
+    - name: EndDate
+      from: filter
+      key: end_date
+  response:
+    rows_path:
+    - usage_records
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: category
+    type: Utf8
+    nullable: false
+    description: The usage category.
+    expr:
+      kind: path
+      path:
+      - category
+  - name: description
+    type: Utf8
+    nullable: true
+    description: Human-readable description of the category.
+    expr:
+      kind: path
+      path:
+      - description
+  - name: usage
+    type: Utf8
+    nullable: true
+    description: The quantity of usage for this month.
+    expr:
+      kind: path
+      path:
+      - usage
+  - name: usage_unit
+    type: Utf8
+    nullable: true
+    description: The unit of measurement for usage.
+    expr:
+      kind: path
+      path:
+      - usage_unit
+  - name: count
+    type: Utf8
+    nullable: true
+    description: The number of usage events for this month.
+    expr:
+      kind: path
+      path:
+      - count
+  - name: count_unit
+    type: Utf8
+    nullable: true
+    description: The unit for the count field.
+    expr:
+      kind: path
+      path:
+      - count_unit
+  - name: price
+    type: Utf8
+    nullable: true
+    description: The total cost for this month and category.
+    expr:
+      kind: path
+      path:
+      - price
+  - name: price_unit
+    type: Utf8
+    nullable: true
+    description: The currency unit.
+    expr:
+      kind: path
+      path:
+      - price_unit
+  - name: start_date
+    type: Utf8
+    nullable: true
+    description: Start of the monthly period (YYYY-MM-DD).
+    expr:
+      kind: path
+      path:
+      - start_date
+  - name: end_date
+    type: Utf8
+    nullable: true
+    description: End of the monthly period (YYYY-MM-DD).
+    expr:
+      kind: path
+      path:
+      - end_date
+- name: applications
+  description: 'Lists all TwiML Applications in the Twilio account. Applications are reusable webhook configurations that
+    can be assigned to phone numbers. Instead of setting webhook URLs on each number individually, you can point multiple
+    numbers to a single application. Use this table to audit webhook routing and ensure all applications have valid URLs.
+
+    '
+  guide: 'Start with `SELECT sid, friendly_name, voice_url, sms_url, date_created FROM twilio.applications`. Join `voice_application_sid`
+    and `sms_application_sid` on `twilio.phone_numbers` to see which numbers use each app.
+
+    '
+  request:
+    method: GET
+    path: /Applications.json
+  response:
+    rows_path:
+    - applications
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: 'Unique 34-character application SID (starts with "AP"). Referenced by `voice_application_sid` and `sms_application_sid`
+      on phone numbers.
+
+      '
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: friendly_name
+    type: Utf8
+    nullable: true
+    description: A human-readable name for the application.
+    expr:
+      kind: path
+      path:
+      - friendly_name
+  - name: voice_url
+    type: Utf8
+    nullable: true
+    description: The URL Twilio requests when a call is received.
+    expr:
+      kind: path
+      path:
+      - voice_url
+  - name: voice_method
+    type: Utf8
+    nullable: true
+    description: HTTP method for the voice webhook (GET or POST).
+    expr:
+      kind: path
+      path:
+      - voice_method
+  - name: voice_fallback_url
+    type: Utf8
+    nullable: true
+    description: Fallback URL if the primary voice webhook fails.
+    expr:
+      kind: path
+      path:
+      - voice_fallback_url
+  - name: voice_fallback_method
+    type: Utf8
+    nullable: true
+    description: HTTP method for the voice fallback webhook.
+    expr:
+      kind: path
+      path:
+      - voice_fallback_method
+  - name: voice_caller_id_lookup
+    type: Boolean
+    nullable: true
+    description: Whether caller ID lookup is enabled for voice.
+    expr:
+      kind: path
+      path:
+      - voice_caller_id_lookup
+  - name: status_callback
+    type: Utf8
+    nullable: true
+    description: URL for call status callback notifications.
+    expr:
+      kind: path
+      path:
+      - status_callback
+  - name: status_callback_method
+    type: Utf8
+    nullable: true
+    description: HTTP method for status callbacks.
+    expr:
+      kind: path
+      path:
+      - status_callback_method
+  - name: sms_url
+    type: Utf8
+    nullable: true
+    description: The URL Twilio requests when an SMS is received.
+    expr:
+      kind: path
+      path:
+      - sms_url
+  - name: sms_method
+    type: Utf8
+    nullable: true
+    description: HTTP method for the SMS webhook (GET or POST).
+    expr:
+      kind: path
+      path:
+      - sms_method
+  - name: sms_fallback_url
+    type: Utf8
+    nullable: true
+    description: Fallback URL if the primary SMS webhook fails.
+    expr:
+      kind: path
+      path:
+      - sms_fallback_url
+  - name: sms_fallback_method
+    type: Utf8
+    nullable: true
+    description: HTTP method for the SMS fallback webhook.
+    expr:
+      kind: path
+      path:
+      - sms_fallback_method
+  - name: sms_status_callback
+    type: Utf8
+    nullable: true
+    description: URL for SMS status callback notifications.
+    expr:
+      kind: path
+      path:
+      - sms_status_callback
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID that owns this application.
+    expr:
+      kind: path
+      path:
+      - account_sid
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the application was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the application was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+- name: notifications
+  description: 'Lists all notifications (event logs) generated during call and message processing. Notifications include errors,
+    warnings, and informational events about webhook interactions. Each notification is tied to a specific call SID and includes
+    the error code, log level, and the message text. Use this table alongside `alerts` for comprehensive error monitoring.
+
+    '
+  guide: 'Start with `SELECT sid, call_sid, error_code, log, message_text, date_created FROM twilio.notifications LIMIT 50`.
+    Join `call_sid` to `twilio.calls.sid` for call context. Filter by `log` level (0 = ERROR, 1 = WARNING, 2 = NOTICE) for
+    triage.
+
+    '
+  fetch_limit_default: 100
+  filters:
+  - name: log
+  - name: message_date_after
+  - name: message_date_before
+  request:
+    method: GET
+    path: /Notifications.json
+    query:
+    - name: Log
+      from: filter
+      key: log
+    - name: MessageDate>
+      from: filter
+      key: message_date_after
+    - name: MessageDate<
+      from: filter
+      key: message_date_before
+  response:
+    rows_path:
+    - notifications
+  pagination:
+    mode: page
+    page_number_param: Page
+    page_size_param: PageSize
+    page_size:
+      default: 50
+      max: 1000
+  columns:
+  - name: sid
+    type: Utf8
+    nullable: false
+    description: Unique notification SID.
+    expr:
+      kind: path
+      path:
+      - sid
+  - name: call_sid
+    type: Utf8
+    nullable: true
+    description: 'The call SID this notification is associated with. Join to `twilio.calls.sid`.
+
+      '
+    expr:
+      kind: path
+      path:
+      - call_sid
+  - name: error_code
+    type: Utf8
+    nullable: true
+    description: The Twilio error code.
+    expr:
+      kind: path
+      path:
+      - error_code
+  - name: log
+    type: Utf8
+    nullable: true
+    description: 'Severity level. Values: 0 (ERROR), 1 (WARNING), 2 (NOTICE).
+
+      '
+    expr:
+      kind: path
+      path:
+      - log
+  - name: message_text
+    type: Utf8
+    nullable: true
+    description: Human-readable description of the notification event.
+    expr:
+      kind: path
+      path:
+      - message_text
+  - name: request_url
+    type: Utf8
+    nullable: true
+    description: The webhook URL that was requested.
+    expr:
+      kind: path
+      path:
+      - request_url
+  - name: request_method
+    type: Utf8
+    nullable: true
+    description: HTTP method used for the webhook request.
+    expr:
+      kind: path
+      path:
+      - request_method
+  - name: request_variables
+    type: Utf8
+    nullable: true
+    description: Request variables sent to the webhook.
+    expr:
+      kind: path
+      path:
+      - request_variables
+  - name: response_body
+    type: Utf8
+    nullable: true
+    description: Response body from the webhook.
+    expr:
+      kind: path
+      path:
+      - response_body
+  - name: response_headers
+    type: Utf8
+    nullable: true
+    description: Response headers from the webhook.
+    expr:
+      kind: path
+      path:
+      - response_headers
+  - name: account_sid
+    type: Utf8
+    nullable: true
+    description: The Account SID.
+    expr:
+      kind: path
+      path:
+      - account_sid
+  - name: api_version
+    type: Utf8
+    nullable: true
+    description: The Twilio API version.
+    expr:
+      kind: path
+      path:
+      - api_version
+  - name: date_created
+    type: Utf8
+    nullable: true
+    description: When the notification was created (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_created
+  - name: date_updated
+    type: Utf8
+    nullable: true
+    description: When the notification was last updated (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - date_updated
+  - name: message_date
+    type: Utf8
+    nullable: true
+    description: The date of the notification message (RFC 2822 format).
+    expr:
+      kind: path
+      path:
+      - message_date
