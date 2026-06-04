@@ -100,15 +100,19 @@ impl OpenApiImporter<'_> {
                             ),
                         }
                     } else if let Some(additional) = resolved.get("additionalProperties") {
-                        let value_type_ref = self
-                            .import_schema(
-                                additional,
-                                &format!("{type_id}_value"),
-                                operation_id,
-                                diagnostics,
-                            )
-                            .unwrap_or_else(|| "json".to_string());
-                        IrTypeShape::Map { value_type_ref }
+                        if additional.as_bool() == Some(false) {
+                            IrTypeShape::Object { fields: Vec::new() }
+                        } else {
+                            let value_type_ref = self
+                                .import_schema(
+                                    additional,
+                                    &format!("{type_id}_value"),
+                                    operation_id,
+                                    diagnostics,
+                                )
+                                .unwrap_or_else(|| "json".to_string());
+                            IrTypeShape::Map { value_type_ref }
+                        }
                     } else {
                         IrTypeShape::Json
                     }

@@ -510,6 +510,100 @@ paths:
 }
 
 #[test]
+fn importer_respects_additional_properties_false() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: additional_properties
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /closed:
+    get:
+      operationId: schemas/closed
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/closed_object'}
+  /map:
+    get:
+      operationId: schemas/map
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/string_map'}
+components:
+  schemas:
+    closed_object:
+      type: object
+      additionalProperties: false
+    string_map:
+      type: object
+      additionalProperties:
+        type: string
+"
+        .as_bytes(),
+    )
+    .expect("additionalProperties import");
+
+    let operations = ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation))
+        .collect::<BTreeMap<_, _>>();
+
+    let closed_operation = operations
+        .get("schemas_closed")
+        .expect("closed object operation");
+    let closed = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == closed_operation.output.type_ref)
+        .expect("closed object row type");
+    let IrTypeShape::Object { fields } = &closed.shape else {
+        panic!("closed object imported as {:?}", closed.shape);
+    };
+    assert!(fields.is_empty());
+
+    let map_operation = operations.get("schemas_map").expect("map operation");
+    let map = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == map_operation.output.type_ref)
+        .expect("map row type");
+    let IrTypeShape::Map { value_type_ref } = &map.shape else {
+        panic!(
+            "schema-valued additionalProperties imported as {:?}",
+            map.shape
+        );
+    };
+    let value = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == value_type_ref.as_str())
+        .expect("map value type");
+    assert!(matches!(
+        &value.shape,
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+}
+
+#[test]
 fn importer_warns_for_unresolved_response_object_refs() {
     let manifest = parse_source_manifest_yaml(
         r"
