@@ -104,14 +104,12 @@ impl OpenApiImporter<'_> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<(u16, String, Value)> {
         let responses = responses?;
-        let mut candidates = Vec::new();
+        let mut numeric_candidates = Vec::new();
+        let mut range_candidates = Vec::new();
         for (status, response) in responses {
-            let Ok(status_code) = status.parse::<u16>() else {
+            let Some(status) = success_response_status(status) else {
                 continue;
             };
-            if !(200..300).contains(&status_code) {
-                continue;
-            }
             let Some(response) = self.resolve_ref(response, operation_id, diagnostics) else {
                 continue;
             };
@@ -122,14 +120,60 @@ impl OpenApiImporter<'_> {
                 continue;
             };
             let schema = json.get("schema").cloned().unwrap_or(Value::Null);
-            candidates.push((status_code, "application/json".to_string(), schema));
+            let candidate = (
+                status.representative_status_code(),
+                "application/json".to_string(),
+                schema,
+            );
+            if status.is_range() {
+                range_candidates.push(candidate);
+            } else {
+                numeric_candidates.push(candidate);
+            }
         }
-        candidates
-            .iter()
-            .position(|(status, _, _)| *status == 200)
-            .and_then(|index| candidates.get(index).cloned())
-            .or_else(|| candidates.into_iter().min_by_key(|(status, _, _)| *status))
+        preferred_numeric_response(numeric_candidates)
+            .or_else(|| range_candidates.into_iter().next())
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SuccessResponseStatus {
+    Numeric(u16),
+    Range2xx,
+}
+
+impl SuccessResponseStatus {
+    fn representative_status_code(self) -> u16 {
+        match self {
+            Self::Numeric(status_code) => status_code,
+            Self::Range2xx => 200,
+        }
+    }
+
+    fn is_range(self) -> bool {
+        matches!(self, Self::Range2xx)
+    }
+}
+
+fn success_response_status(status: &str) -> Option<SuccessResponseStatus> {
+    if let Ok(status_code) = status.parse::<u16>() {
+        return (200..300)
+            .contains(&status_code)
+            .then_some(SuccessResponseStatus::Numeric(status_code));
+    }
+    status
+        .eq_ignore_ascii_case("2XX")
+        .then_some(SuccessResponseStatus::Range2xx)
+}
+
+fn preferred_numeric_response(
+    candidates: Vec<(u16, String, Value)>,
+) -> Option<(u16, String, Value)> {
+    candidates
+        .iter()
+        .position(|(status, _, _)| *status == 200)
+        .and_then(|index| candidates.get(index).cloned())
+        .or_else(|| candidates.into_iter().min_by_key(|(status, _, _)| *status))
 }
 
 fn classify_response_schema(
