@@ -27,25 +27,20 @@ pub enum CredentialsError {
     Parse(String),
     #[error("credential storage unavailable: {0}")]
     Unavailable(String),
-    #[error("credential snapshot storage mismatch: snapshot is {snapshot}, requested {requested}")]
-    SnapshotStorageMismatch {
-        snapshot: &'static str,
-        requested: &'static str,
-    },
-}
-
-#[derive(Clone)]
-struct EncodedCredentialMaterial(Vec<u8>);
-
-impl EncodedCredentialMaterial {
-    fn bytes(&self) -> &[u8] {
-        &self.0
-    }
 }
 
 struct CredentialSetRef<'a> {
     workspace_name: &'a WorkspaceName,
     credential_set_id: &'a CredentialSetId,
+}
+
+impl<'a> CredentialSetRef<'a> {
+    fn new(workspace_name: &'a WorkspaceName, credential_set_id: &'a CredentialSetId) -> Self {
+        Self {
+            workspace_name,
+            credential_set_id,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,26 +94,12 @@ trait CredentialMaterialBackend: Send + Sync {
         Ok(())
     }
 
-    fn read(
-        &self,
-        set: &CredentialSetRef<'_>,
-    ) -> Result<Option<EncodedCredentialMaterial>, CredentialsError>;
+    fn read(&self, set: &CredentialSetRef<'_>) -> Result<Option<Vec<u8>>, CredentialsError>;
 
     fn write(
         &self,
         set: &CredentialSetRef<'_>,
-        material: Option<&EncodedCredentialMaterial>,
-    ) -> Result<(), CredentialsError>;
-
-    fn snapshot(
-        &self,
-        set: &CredentialSetRef<'_>,
-    ) -> Result<CredentialMaterialSnapshot, CredentialsError>;
-
-    fn restore(
-        &self,
-        set: &CredentialSetRef<'_>,
-        snapshot: &CredentialMaterialSnapshot,
+        material: Option<&[u8]>,
     ) -> Result<(), CredentialsError>;
 }
 
@@ -171,7 +152,7 @@ impl CredentialStore {
         Self::with_keychain_backend(
             layout,
             preference,
-            Arc::new(TestKeychainBackend::unavailable()),
+            Arc::new(TestKeychainBackend::new(false)),
         )
     }
 
@@ -180,11 +161,7 @@ impl CredentialStore {
         layout: AppStateLayout,
         preference: CredentialStoragePreference,
     ) -> Self {
-        Self::with_keychain_backend(
-            layout,
-            preference,
-            Arc::new(TestKeychainBackend::available()),
-        )
+        Self::with_keychain_backend(layout, preference, Arc::new(TestKeychainBackend::new(true)))
     }
 
     pub(crate) fn replace_material(
@@ -194,10 +171,7 @@ impl CredentialStore {
         storage: CredentialStorageKind,
         values: &BTreeMap<String, String>,
     ) -> Result<(), AppError> {
-        let set = CredentialSetRef {
-            workspace_name,
-            credential_set_id,
-        };
+        let set = CredentialSetRef::new(workspace_name, credential_set_id);
         let backend = self.backend(storage);
         tracing::trace!(%credential_set_id, %storage, "replacing credential material");
         let encoded = if values.is_empty() {
@@ -206,7 +180,7 @@ impl CredentialStore {
             Some(encode_values(storage, values)?)
         };
         contextualize_storage_error(
-            backend.write(&set, encoded.as_ref()),
+            backend.write(&set, encoded.as_deref()),
             "writing",
             credential_set_id,
             storage,
@@ -250,10 +224,7 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        let set = CredentialSetRef {
-            workspace_name,
-            credential_set_id,
-        };
+        let set = CredentialSetRef::new(workspace_name, credential_set_id);
         tracing::trace!(%credential_set_id, %storage, "reading credential material");
         let encoded = contextualize_storage_error(
             self.backend(storage).read(&set),
@@ -262,7 +233,7 @@ impl CredentialStore {
             storage,
         )?;
         match encoded {
-            Some(encoded) => decode_values(storage, encoded.bytes()).map_err(Into::into),
+            Some(encoded) => decode_values(storage, &encoded).map_err(Into::into),
             None => Ok(BTreeMap::new()),
         }
     }
@@ -273,18 +244,18 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<CredentialMaterialSnapshot, AppError> {
-        let set = CredentialSetRef {
-            workspace_name,
-            credential_set_id,
-        };
+        let set = CredentialSetRef::new(workspace_name, credential_set_id);
         tracing::trace!(%credential_set_id, %storage, "snapshotting credential material");
-        contextualize_storage_error(
-            self.backend(storage).snapshot(&set),
-            "snapshotting",
-            credential_set_id,
-            storage,
-        )
-        .map_err(Into::into)
+        let encoded = match storage {
+            CredentialStorageKind::File => match FileLock::shared(self.layout.state_lock()) {
+                Ok(_lock) => self.backend(storage).read(&set),
+                Err(error) => Err(error.into()),
+            },
+            CredentialStorageKind::Keychain => self.backend(storage).read(&set),
+        };
+        let encoded =
+            contextualize_storage_error(encoded, "snapshotting", credential_set_id, storage)?;
+        Ok(CredentialMaterialSnapshot::new(storage, encoded))
     }
 
     pub(crate) fn restore_material(
@@ -294,13 +265,10 @@ impl CredentialStore {
         snapshot: &CredentialMaterialSnapshot,
     ) -> Result<(), AppError> {
         let storage = snapshot.storage();
-        let set = CredentialSetRef {
-            workspace_name,
-            credential_set_id,
-        };
+        let set = CredentialSetRef::new(workspace_name, credential_set_id);
         tracing::trace!(%credential_set_id, %storage, "restoring credential material");
         contextualize_storage_error(
-            self.backend(storage).restore(&set, snapshot),
+            self.backend(storage).write(&set, snapshot.material()),
             "restoring",
             credential_set_id,
             storage,
@@ -314,10 +282,7 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<(), AppError> {
-        let set = CredentialSetRef {
-            workspace_name,
-            credential_set_id,
-        };
+        let set = CredentialSetRef::new(workspace_name, credential_set_id);
         tracing::trace!(%credential_set_id, %storage, "removing credential material");
         contextualize_storage_error(
             self.backend(storage).write(&set, None),
@@ -400,18 +365,15 @@ struct TestKeychainBackend {
 
 #[cfg(test)]
 impl TestKeychainBackend {
-    fn available() -> Self {
+    fn new(available: bool) -> Self {
         Self {
-            available: true,
+            available,
             material: std::sync::Mutex::new(None),
         }
     }
 
-    fn unavailable() -> Self {
-        Self {
-            available: false,
-            material: std::sync::Mutex::new(None),
-        }
+    fn material_bytes(&self) -> Option<Vec<u8>> {
+        self.material.lock().expect("material lock").clone()
     }
 
     fn lock_material(
@@ -435,42 +397,18 @@ impl CredentialMaterialBackend for TestKeychainBackend {
         }
     }
 
-    fn read(
-        &self,
-        _set: &CredentialSetRef<'_>,
-    ) -> Result<Option<EncodedCredentialMaterial>, CredentialsError> {
+    fn read(&self, _set: &CredentialSetRef<'_>) -> Result<Option<Vec<u8>>, CredentialsError> {
         self.probe()?;
-        Ok(self.lock_material()?.clone().map(EncodedCredentialMaterial))
+        Ok(self.lock_material()?.clone())
     }
 
     fn write(
         &self,
         _set: &CredentialSetRef<'_>,
-        material: Option<&EncodedCredentialMaterial>,
+        material: Option<&[u8]>,
     ) -> Result<(), CredentialsError> {
         self.probe()?;
-        *self.lock_material()? = material.map(|material| material.bytes().to_vec());
-        Ok(())
-    }
-
-    fn snapshot(
-        &self,
-        _set: &CredentialSetRef<'_>,
-    ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
-        self.probe()?;
-        Ok(CredentialMaterialSnapshot::new(
-            CredentialStorageKind::Keychain,
-            self.lock_material()?.clone(),
-        ))
-    }
-
-    fn restore(
-        &self,
-        _set: &CredentialSetRef<'_>,
-        snapshot: &CredentialMaterialSnapshot,
-    ) -> Result<(), CredentialsError> {
-        self.probe()?;
-        *self.lock_material()? = snapshot.material().map(ToOwned::to_owned);
+        *self.lock_material()? = material.map(ToOwned::to_owned);
         Ok(())
     }
 }
@@ -497,13 +435,10 @@ impl FileCredentialBackend {
 }
 
 impl CredentialMaterialBackend for FileCredentialBackend {
-    fn read(
-        &self,
-        set: &CredentialSetRef<'_>,
-    ) -> Result<Option<EncodedCredentialMaterial>, CredentialsError> {
+    fn read(&self, set: &CredentialSetRef<'_>) -> Result<Option<Vec<u8>>, CredentialsError> {
         let path = self.material_file(set)?;
         match std::fs::read(path) {
-            Ok(bytes) => Ok(Some(EncodedCredentialMaterial(bytes))),
+            Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
@@ -512,49 +447,12 @@ impl CredentialMaterialBackend for FileCredentialBackend {
     fn write(
         &self,
         set: &CredentialSetRef<'_>,
-        material: Option<&EncodedCredentialMaterial>,
+        material: Option<&[u8]>,
     ) -> Result<(), CredentialsError> {
         let path = self.material_file(set)?;
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
         match material {
-            Some(material) => write_file_unlocked(&path, material.bytes()),
-            None => remove_file_if_exists_unlocked(&path).map_err(Into::into),
-        }
-    }
-
-    fn snapshot(
-        &self,
-        set: &CredentialSetRef<'_>,
-    ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
-        let path = self.material_file(set)?;
-        let _lock = FileLock::shared(self.layout.state_lock())?;
-        match std::fs::read(path) {
-            Ok(bytes) => Ok(CredentialMaterialSnapshot::new(
-                CredentialStorageKind::File,
-                Some(bytes),
-            )),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(
-                CredentialMaterialSnapshot::new(CredentialStorageKind::File, None),
-            ),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    fn restore(
-        &self,
-        set: &CredentialSetRef<'_>,
-        snapshot: &CredentialMaterialSnapshot,
-    ) -> Result<(), CredentialsError> {
-        if snapshot.storage() != CredentialStorageKind::File {
-            return Err(CredentialsError::SnapshotStorageMismatch {
-                snapshot: snapshot.storage().as_config_value(),
-                requested: CredentialStorageKind::File.as_config_value(),
-            });
-        }
-        let path = self.material_file(set)?;
-        let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        match snapshot.material() {
-            Some(bytes) => write_file_unlocked(&path, bytes),
+            Some(material) => write_file_unlocked(&path, material),
             None => remove_file_if_exists_unlocked(&path).map_err(Into::into),
         }
     }
@@ -642,17 +540,11 @@ impl KeychainCredentialBackend {
             .map_err(|error| keychain_error(&error))?;
         Ok(())
     }
-}
 
-impl CredentialMaterialBackend for KeychainCredentialBackend {
-    fn probe(&self) -> Result<(), CredentialsError> {
-        self.run_native(|backend| backend.probe_native())
-    }
-
-    fn read(
+    fn read_password_bytes(
         &self,
         set: &CredentialSetRef<'_>,
-    ) -> Result<Option<EncodedCredentialMaterial>, CredentialsError> {
+    ) -> Result<Option<Vec<u8>>, CredentialsError> {
         let entry = KeychainEntryAddress::from_set(&self.config_namespace, set);
         self.run_native(move |backend| {
             backend.probe_native()?;
@@ -660,30 +552,36 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
                 .entry_for(&entry.service, &entry.account)?
                 .get_password()
             {
-                Ok(value) => Ok(Some(EncodedCredentialMaterial(value.into_bytes()))),
+                Ok(value) => Ok(Some(value.into_bytes())),
                 Err(keyring_core::Error::NoEntry) => Ok(None),
                 Err(error) => Err(keychain_error(&error)),
             }
         })
     }
+}
+
+impl CredentialMaterialBackend for KeychainCredentialBackend {
+    fn probe(&self) -> Result<(), CredentialsError> {
+        self.run_native(|backend| backend.probe_native())
+    }
+
+    fn read(&self, set: &CredentialSetRef<'_>) -> Result<Option<Vec<u8>>, CredentialsError> {
+        self.read_password_bytes(set)
+    }
 
     fn write(
         &self,
         set: &CredentialSetRef<'_>,
-        material: Option<&EncodedCredentialMaterial>,
+        material: Option<&[u8]>,
     ) -> Result<(), CredentialsError> {
         let entry = KeychainEntryAddress::from_set(&self.config_namespace, set);
         let value = material
-            .map(|material| {
-                std::str::from_utf8(material.bytes())
-                    .map(ToOwned::to_owned)
-                    .map_err(|error| {
-                        CredentialsError::Parse(format!(
-                            "keychain material is not valid UTF-8: {error}"
-                        ))
-                    })
-            })
-            .transpose()?;
+            .map(std::str::from_utf8)
+            .transpose()
+            .map_err(|error| {
+                CredentialsError::Parse(format!("keychain material is not valid UTF-8: {error}"))
+            })?
+            .map(ToOwned::to_owned);
         self.run_native(move |backend| {
             backend.probe_native()?;
             let entry = backend.entry_for(&entry.service, &entry.account)?;
@@ -697,47 +595,6 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
                 },
             }
         })
-    }
-
-    fn snapshot(
-        &self,
-        set: &CredentialSetRef<'_>,
-    ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
-        let entry = KeychainEntryAddress::from_set(&self.config_namespace, set);
-        self.run_native(move |backend| {
-            backend.probe_native()?;
-            match backend
-                .entry_for(&entry.service, &entry.account)?
-                .get_password()
-            {
-                Ok(value) => Ok(CredentialMaterialSnapshot::new(
-                    CredentialStorageKind::Keychain,
-                    Some(value.into_bytes()),
-                )),
-                Err(keyring_core::Error::NoEntry) => Ok(CredentialMaterialSnapshot::new(
-                    CredentialStorageKind::Keychain,
-                    None,
-                )),
-                Err(error) => Err(keychain_error(&error)),
-            }
-        })
-    }
-
-    fn restore(
-        &self,
-        set: &CredentialSetRef<'_>,
-        snapshot: &CredentialMaterialSnapshot,
-    ) -> Result<(), CredentialsError> {
-        if snapshot.storage() != CredentialStorageKind::Keychain {
-            return Err(CredentialsError::SnapshotStorageMismatch {
-                snapshot: snapshot.storage().as_config_value(),
-                requested: CredentialStorageKind::Keychain.as_config_value(),
-            });
-        }
-        match snapshot.material() {
-            Some(bytes) => self.write(set, Some(&EncodedCredentialMaterial(bytes.to_vec()))),
-            None => self.write(set, None),
-        }
     }
 }
 
@@ -851,20 +708,14 @@ struct KeychainMaterialDocument {
 fn encode_values(
     storage: CredentialStorageKind,
     values: &BTreeMap<String, String>,
-) -> Result<EncodedCredentialMaterial, CredentialsError> {
+) -> Result<Vec<u8>, CredentialsError> {
     match storage {
-        CredentialStorageKind::File => Ok(EncodedCredentialMaterial(
-            render_env_file(values).into_bytes(),
-        )),
-        CredentialStorageKind::Keychain => {
-            let document = KeychainMaterialDocument {
-                version: 1,
-                values: values.clone(),
-            };
-            serde_json::to_vec(&document)
-                .map(EncodedCredentialMaterial)
-                .map_err(|error| CredentialsError::Parse(error.to_string()))
-        }
+        CredentialStorageKind::File => Ok(render_env_file(values).into_bytes()),
+        CredentialStorageKind::Keychain => serde_json::to_vec(&KeychainMaterialDocument {
+            version: 1,
+            values: values.clone(),
+        })
+        .map_err(|error| CredentialsError::Parse(error.to_string())),
     }
 }
 
@@ -890,38 +741,6 @@ fn decode_values(
             Ok(document.values)
         }
     }
-}
-
-#[cfg(test)]
-fn load_file(path: &Path) -> Result<BTreeMap<String, String>, CredentialsError> {
-    if !path.exists() {
-        return Ok(BTreeMap::new());
-    }
-
-    parse_env_file(&std::fs::read_to_string(path)?)
-}
-
-#[cfg(test)]
-fn save_file(
-    path: &Path,
-    lock_path: &Path,
-    values: &BTreeMap<String, String>,
-) -> Result<(), CredentialsError> {
-    let _lock = FileLock::exclusive(lock_path)?;
-    save_values_unlocked(path, values)
-}
-
-#[cfg(test)]
-fn save_values_unlocked(
-    path: &Path,
-    values: &BTreeMap<String, String>,
-) -> Result<(), CredentialsError> {
-    if values.is_empty() {
-        remove_file_if_exists_unlocked(path)?;
-        return Ok(());
-    }
-
-    write_file_unlocked(path, render_env_file(values).as_bytes())
 }
 
 fn write_file_unlocked(path: &Path, bytes: &[u8]) -> Result<(), CredentialsError> {
@@ -1061,103 +880,136 @@ fn encode_env_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    use super::{CredentialMaterialBackend, CredentialSetRef, EncodedCredentialMaterial};
-    use super::{CredentialStore, decode_env_value, encode_env_value, load_file, save_file};
-    use crate::credentials::{
-        CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind,
-        CredentialStoragePreference,
+    use super::{
+        CredentialMaterialSnapshot, CredentialSetRef, CredentialStore, TestKeychainBackend,
+        decode_env_value, encode_env_value, parse_env_file, render_env_file,
     };
+    use crate::credentials::CredentialStorageKind::{File, Keychain};
+    use crate::credentials::CredentialStoragePreference::{Auto, Keychain as PreferKeychain};
+    use crate::credentials::{CredentialSetId, CredentialStorageKind, CredentialStoragePreference};
     use crate::sources::SourceName;
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
     use tempfile::TempDir;
 
-    struct FakeKeychainBackend {
-        probe_ok: bool,
-        material: Mutex<Option<Vec<u8>>>,
+    fn available_keychain() -> Arc<TestKeychainBackend> {
+        Arc::new(TestKeychainBackend::new(true))
     }
 
-    impl FakeKeychainBackend {
-        fn available() -> Arc<Self> {
-            Arc::new(Self {
-                probe_ok: true,
-                material: Mutex::new(None),
-            })
-        }
-
-        fn unavailable() -> Arc<Self> {
-            Arc::new(Self {
-                probe_ok: false,
-                material: Mutex::new(None),
-            })
-        }
-
-        fn material_bytes(&self) -> Option<Vec<u8>> {
-            self.material.lock().expect("material lock").clone()
-        }
-
-        fn lock_material(
-            &self,
-        ) -> Result<std::sync::MutexGuard<'_, Option<Vec<u8>>>, super::CredentialsError> {
-            self.material.lock().map_err(|error| {
-                super::CredentialsError::Unavailable(format!(
-                    "fake keychain lock poisoned: {error}"
-                ))
-            })
-        }
+    fn unavailable_keychain() -> Arc<TestKeychainBackend> {
+        Arc::new(TestKeychainBackend::new(false))
     }
 
-    impl CredentialMaterialBackend for FakeKeychainBackend {
-        fn probe(&self) -> Result<(), super::CredentialsError> {
-            if self.probe_ok {
-                Ok(())
-            } else {
-                Err(super::CredentialsError::Unavailable(
-                    "fake keychain unavailable".to_string(),
-                ))
+    struct StoreFixture {
+        _temp: TempDir,
+        layout: AppStateLayout,
+        store: CredentialStore,
+        workspace_name: WorkspaceName,
+        source_name: SourceName,
+        credential_set_id: CredentialSetId,
+    }
+
+    impl StoreFixture {
+        fn file() -> Self {
+            let temp = TempDir::new().expect("temp dir");
+            let layout = test_layout(&temp);
+            let store = CredentialStore::new(layout.clone());
+            Self::with_store(temp, layout, store)
+        }
+
+        fn keychain(
+            preference: CredentialStoragePreference,
+            keychain: Arc<TestKeychainBackend>,
+        ) -> Self {
+            let temp = TempDir::new().expect("temp dir");
+            let layout = test_layout(&temp);
+            let store =
+                CredentialStore::with_keychain_backend(layout.clone(), preference, keychain);
+            Self::with_store(temp, layout, store)
+        }
+
+        fn with_store(temp: TempDir, layout: AppStateLayout, store: CredentialStore) -> Self {
+            let workspace_name = WorkspaceName::default();
+            let source_name = SourceName::parse("secured_messages").expect("source");
+            let credential_set_id = CredentialSetId::for_source(&source_name);
+            Self {
+                _temp: temp,
+                layout,
+                store,
+                workspace_name,
+                source_name,
+                credential_set_id,
             }
         }
 
-        fn read(
-            &self,
-            _set: &CredentialSetRef<'_>,
-        ) -> Result<Option<EncodedCredentialMaterial>, super::CredentialsError> {
-            self.probe()?;
-            Ok(self.lock_material()?.clone().map(EncodedCredentialMaterial))
+        fn secret_file(&self) -> std::path::PathBuf {
+            self.layout
+                .secret_file(&self.workspace_name, &self.source_name)
         }
 
-        fn write(
+        fn write_raw_material(&self, raw: &str) {
+            let path = self.secret_file();
+            std::fs::create_dir_all(path.parent().expect("secret parent"))
+                .expect("secret parent dir");
+            std::fs::write(path, raw).expect("write raw material");
+        }
+
+        fn replace(
             &self,
-            _set: &CredentialSetRef<'_>,
-            material: Option<&EncodedCredentialMaterial>,
-        ) -> Result<(), super::CredentialsError> {
-            self.probe()?;
-            *self.lock_material()? = material.map(|material| material.bytes().to_vec());
-            Ok(())
+            storage: CredentialStorageKind,
+            values: &BTreeMap<String, String>,
+            label: &str,
+        ) {
+            self.store
+                .replace_material(
+                    &self.workspace_name,
+                    &self.credential_set_id,
+                    storage,
+                    values,
+                )
+                .expect(label);
+        }
+
+        fn remove(&self, storage: CredentialStorageKind, label: &str) {
+            self.store
+                .remove_material(&self.workspace_name, &self.credential_set_id, storage)
+                .expect(label);
+        }
+
+        fn read(&self, storage: CredentialStorageKind, label: &str) -> BTreeMap<String, String> {
+            self.store
+                .read_material(&self.workspace_name, &self.credential_set_id, storage)
+                .expect(label)
         }
 
         fn snapshot(
             &self,
-            _set: &CredentialSetRef<'_>,
-        ) -> Result<CredentialMaterialSnapshot, super::CredentialsError> {
-            self.probe()?;
-            Ok(CredentialMaterialSnapshot::new(
-                CredentialStorageKind::Keychain,
-                self.lock_material()?.clone(),
-            ))
+            storage: CredentialStorageKind,
+            label: &str,
+        ) -> CredentialMaterialSnapshot {
+            self.store
+                .snapshot_material(&self.workspace_name, &self.credential_set_id, storage)
+                .expect(label)
         }
 
-        fn restore(
-            &self,
-            _set: &CredentialSetRef<'_>,
-            snapshot: &CredentialMaterialSnapshot,
-        ) -> Result<(), super::CredentialsError> {
-            self.probe()?;
-            *self.lock_material()? = snapshot.material().map(ToOwned::to_owned);
-            Ok(())
+        fn restore_snapshot(&self, snapshot: &CredentialMaterialSnapshot, label: &str) {
+            self.store
+                .restore_material(&self.workspace_name, &self.credential_set_id, snapshot)
+                .expect(label);
         }
+    }
+
+    fn test_layout(temp: &TempDir) -> AppStateLayout {
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        layout
+    }
+
+    fn api_token_values() -> BTreeMap<String, String> {
+        BTreeMap::from([("API_TOKEN".to_string(), "secret-token".to_string())])
     }
 
     #[test]
@@ -1166,10 +1018,7 @@ mod tests {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
-        let set = CredentialSetRef {
-            workspace_name: &workspace_name,
-            credential_set_id: &credential_set_id,
-        };
+        let set = CredentialSetRef::new(&workspace_name, &credential_set_id);
 
         let address = super::KeychainEntryAddress::from_set(&config_namespace, &set);
 
@@ -1192,10 +1041,7 @@ mod tests {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
-        let set = CredentialSetRef {
-            workspace_name: &workspace_name,
-            credential_set_id: &credential_set_id,
-        };
+        let set = CredentialSetRef::new(&workspace_name, &credential_set_id);
 
         let first = super::KeychainEntryAddress::from_set(&first_namespace, &set);
         let second = super::KeychainEntryAddress::from_set(&second_namespace, &set);
@@ -1239,15 +1085,14 @@ mod tests {
 
     #[test]
     fn round_trips_encoded_secret_values() {
-        let temp = TempDir::new().expect("temp dir");
-        let path = temp.path().join("secret.env");
-        let lock_path = temp.path().join(".lock");
         let values = std::collections::BTreeMap::from([
             ("TOKEN".to_string(), "abc".to_string()),
             ("MULTI".to_string(), "hello\nworld".to_string()),
         ]);
-        save_file(&path, &lock_path, &values).expect("save env file");
-        assert_eq!(load_file(&path).expect("load env file"), values);
+        assert_eq!(
+            parse_env_file(&render_env_file(&values)).expect("parse env file"),
+            values
+        );
         assert_eq!(encode_env_value("hello world"), "\"hello world\"");
         assert_eq!(
             decode_env_value("\"hello\\nworld\"", 1).expect("decode"),
@@ -1257,115 +1102,48 @@ mod tests {
 
     #[test]
     fn replace_material_does_not_parse_existing_file() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let store = CredentialStore::new(layout.clone());
-        let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("secured_messages").expect("source");
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let path = layout.secret_file(&workspace_name, &source_name);
-        std::fs::create_dir_all(path.parent().expect("secret parent")).expect("secret parent dir");
-        std::fs::write(&path, "BROKEN\n").expect("write malformed existing env file");
+        let fixture = StoreFixture::file();
+        let path = fixture.secret_file();
+        fixture.write_raw_material("BROKEN\n");
 
-        let values = BTreeMap::from([("API_TOKEN".to_string(), "secret-token".to_string())]);
-        store
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-                &values,
-            )
-            .expect("replace malformed material");
-        assert_eq!(load_file(&path).expect("load replaced material"), values);
+        let values = api_token_values();
+        fixture.replace(File, &values, "replace malformed material");
+        assert_eq!(
+            parse_env_file(&std::fs::read_to_string(&path).expect("read replaced material"))
+                .expect("load replaced material"),
+            values
+        );
 
-        std::fs::write(&path, "BROKEN\n").expect("write malformed existing env file");
-        store
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-                &BTreeMap::new(),
-            )
-            .expect("remove malformed material");
+        fixture.write_raw_material("BROKEN\n");
+        fixture.replace(File, &BTreeMap::new(), "remove malformed material");
         assert!(!path.exists(), "empty replacement should remove material");
     }
 
     #[test]
     fn remove_material_treats_missing_files_as_success() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let store = CredentialStore::new(layout.clone());
-        let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("secured_messages").expect("source");
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let path = layout.secret_file(&workspace_name, &source_name);
+        let fixture = StoreFixture::file();
+        let path = fixture.secret_file();
 
-        store
-            .remove_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-            )
-            .expect("missing material should be removable");
+        fixture.remove(File, "missing material should be removable");
 
-        std::fs::create_dir_all(path.parent().expect("secret parent")).expect("secret parent dir");
-        std::fs::write(&path, "BROKEN\n").expect("write malformed existing env file");
-        store
-            .remove_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-            )
-            .expect("malformed material should be removable");
+        fixture.write_raw_material("BROKEN\n");
+        fixture.remove(File, "malformed material should be removable");
         assert!(!path.exists(), "remove should delete material");
 
-        store
-            .remove_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-            )
-            .expect("second remove should still be successful");
+        fixture.remove(File, "second remove should still be successful");
     }
 
     #[test]
     fn restore_material_snapshot_preserves_raw_bytes() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let store = CredentialStore::new(layout.clone());
-        let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("secured_messages").expect("source");
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let path = layout.secret_file(&workspace_name, &source_name);
-        std::fs::create_dir_all(path.parent().expect("secret parent")).expect("secret parent dir");
-        std::fs::write(&path, "BROKEN\n").expect("write malformed existing env file");
+        let fixture = StoreFixture::file();
+        let path = fixture.secret_file();
+        fixture.write_raw_material("BROKEN\n");
 
-        let snapshot = store
-            .snapshot_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-            )
-            .expect("snapshot malformed material");
-        let values = BTreeMap::from([("API_TOKEN".to_string(), "secret-token".to_string())]);
-        store
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-                &values,
-            )
-            .expect("replace material");
+        let snapshot = fixture.snapshot(File, "snapshot malformed material");
+        let values = api_token_values();
+        fixture.replace(File, &values, "replace material");
 
-        store
-            .restore_material(&workspace_name, &credential_set_id, &snapshot)
-            .expect("restore malformed material");
+        fixture.restore_snapshot(&snapshot, "restore malformed material");
         assert_eq!(
             std::fs::read(&path).expect("restored bytes"),
             b"BROKEN\n".to_vec()
@@ -1373,69 +1151,29 @@ mod tests {
     }
 
     #[test]
-    fn auto_prefers_keychain_when_probe_succeeds() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let keychain = FakeKeychainBackend::available();
-        let store = CredentialStore::with_keychain_backend(
-            layout,
-            CredentialStoragePreference::Auto,
-            keychain.clone(),
-        );
-        assert_eq!(
-            store.default_write_storage().expect("storage"),
-            CredentialStorageKind::Keychain
-        );
-    }
-
-    #[test]
-    fn auto_falls_back_to_file_when_keychain_probe_fails() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let store = CredentialStore::with_keychain_backend(
-            layout,
-            CredentialStoragePreference::Auto,
-            FakeKeychainBackend::unavailable(),
-        );
-        assert_eq!(
-            store.default_write_storage().expect("storage"),
-            CredentialStorageKind::File
-        );
-    }
-
-    #[test]
-    fn explicit_file_uses_file_even_when_keychain_probe_fails() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let store = CredentialStore::with_keychain_backend(
-            layout,
-            CredentialStoragePreference::File,
-            FakeKeychainBackend::unavailable(),
-        );
-        assert_eq!(
-            store.default_write_storage().expect("storage"),
-            CredentialStorageKind::File
-        );
+    fn default_write_storage_follows_preference_and_probe_result() {
+        for (preference, keychain, expected) in [
+            (Auto, available_keychain(), Keychain),
+            (Auto, unavailable_keychain(), File),
+            (
+                CredentialStoragePreference::File,
+                unavailable_keychain(),
+                File,
+            ),
+        ] {
+            let fixture = StoreFixture::keychain(preference, keychain);
+            assert_eq!(
+                fixture.store.default_write_storage().expect("storage"),
+                expected
+            );
+        }
     }
 
     #[test]
     fn explicit_keychain_fails_when_probe_fails() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let store = CredentialStore::with_keychain_backend(
-            layout,
-            CredentialStoragePreference::Keychain,
-            FakeKeychainBackend::unavailable(),
-        );
-        let error = store
+        let fixture = StoreFixture::keychain(PreferKeychain, unavailable_keychain());
+        let error = fixture
+            .store
             .default_write_storage()
             .expect_err("explicit keychain should fail");
         assert!(
@@ -1450,19 +1188,8 @@ mod tests {
 
     #[test]
     fn keychain_backend_stores_one_versioned_document() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let keychain = FakeKeychainBackend::available();
-        let store = CredentialStore::with_keychain_backend(
-            layout,
-            CredentialStoragePreference::Keychain,
-            keychain.clone(),
-        );
-        let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("secured_messages").expect("source");
-        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let keychain = available_keychain();
+        let fixture = StoreFixture::keychain(PreferKeychain, keychain.clone());
         let values = BTreeMap::from([
             ("API_TOKEN".to_string(), "secret-token".to_string()),
             (
@@ -1471,14 +1198,7 @@ mod tests {
             ),
         ]);
 
-        store
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::Keychain,
-                &values,
-            )
-            .expect("write keychain material");
+        fixture.replace(Keychain, &values, "write keychain material");
 
         let raw = keychain.material_bytes().expect("keychain blob");
         let document: serde_json::Value = serde_json::from_slice(&raw).expect("json");
@@ -1489,24 +1209,9 @@ mod tests {
                 .and_then(|values| values.get("API_TOKEN")),
             Some(&serde_json::json!("secret-token"))
         );
-        assert_eq!(
-            store
-                .read_material(
-                    &workspace_name,
-                    &credential_set_id,
-                    CredentialStorageKind::Keychain,
-                )
-                .expect("read keychain material"),
-            values
-        );
+        assert_eq!(fixture.read(Keychain, "read keychain material"), values);
 
-        store
-            .remove_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::Keychain,
-            )
-            .expect("remove keychain material");
+        fixture.remove(Keychain, "remove keychain material");
         assert!(
             keychain.material_bytes().is_none(),
             "remove should delete the stored keychain document"

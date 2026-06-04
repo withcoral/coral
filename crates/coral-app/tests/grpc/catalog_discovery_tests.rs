@@ -3,150 +3,79 @@
     reason = "JSON/proto regression assertions intentionally fail loudly in tests."
 )]
 
-use coral_api::v1::{
-    DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-    SearchCatalogRequest, catalog_item,
-};
-use coral_client::default_workspace;
-use tonic::Request;
+use coral_api::v1::catalog_item;
 
-use super::harness::{
-    GrpcHarness, fixture_manifest_with_functions_yaml, fixture_manifest_with_multiple_tables_yaml,
-    fixture_manifest_with_required_filter_yaml,
-};
+use super::harness::{GrpcHarness, assert_pagination, assert_status_contains, page};
+
+fn catalog_function(item: &catalog_item::Item) -> &coral_api::v1::TableFunction {
+    match item {
+        catalog_item::Item::TableFunction(function) => function,
+        catalog_item::Item::Table(_) => panic!("expected table function"),
+    }
+}
+
+fn catalog_table(item: &catalog_item::Item) -> &coral_api::v1::TableSummary {
+    match item {
+        catalog_item::Item::Table(table) => table,
+        catalog_item::Item::TableFunction(_) => panic!("expected table"),
+    }
+}
+
+fn assert_matched_field(fields: &[String], expected: &str) {
+    assert!(
+        fields.iter().any(|field| field == expected),
+        "expected matched field {expected}, got {fields:?}"
+    );
+}
 
 #[tokio::test]
 async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
     let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_functions_yaml(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    harness.import_searchy_source().await;
 
     let response = harness
-        .catalog_client()
-        .search_catalog(Request::new(SearchCatalogRequest {
-            workspace: Some(default_workspace()),
-            pattern: "Issue".to_string(),
-            ignore_case: true,
-            schema_name: "searchy".to_string(),
-            kind: 0,
-            pagination: Some(PaginationRequest {
-                limit: 2,
-                offset: 0,
-            }),
-        }))
+        .search_catalog("Issue", true, "searchy", 0, Some(page(2, 0)))
         .await
-        .expect("search catalog")
-        .into_inner();
+        .expect("search catalog");
 
-    let pagination = response.pagination.expect("pagination");
-    assert_eq!(pagination.total_count, 2);
-    assert_eq!(pagination.limit, 2);
-    assert_eq!(pagination.offset, 0);
-    assert!(!pagination.has_more);
+    assert_pagination(response.pagination, 2, 2, 0, false);
     assert_eq!(response.items.len(), 2);
-    let function = match response.items[0]
-        .item
-        .as_ref()
-        .expect("search result")
-        .item
-        .as_ref()
-        .expect("catalog item")
-    {
-        catalog_item::Item::TableFunction(function) => function,
-        catalog_item::Item::Table(_) => panic!("expected table function"),
-    };
+    let function = catalog_function(
+        response.items[0]
+            .item
+            .as_ref()
+            .expect("search result")
+            .item
+            .as_ref()
+            .expect("catalog item"),
+    );
     assert_eq!(function.name, "lookup_issue");
-    assert!(
-        response.items[0]
-            .matched_fields
-            .iter()
-            .any(|field| field == "description")
-    );
-    assert!(
-        response.items[0]
-            .matched_fields
-            .iter()
-            .any(|field| field == "result_columns")
-    );
+    assert_matched_field(&response.items[0].matched_fields, "description");
+    assert_matched_field(&response.items[0].matched_fields, "result_columns");
 }
 
 #[tokio::test]
 async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagination() {
     let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_functions_yaml(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    harness.import_searchy_source().await;
 
-    let response = harness
-        .catalog_client()
-        .list_catalog(Request::new(ListCatalogRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "searchy".to_string(),
-            kind: 0,
-            pagination: Some(PaginationRequest {
-                limit: 2,
-                offset: 0,
-            }),
-        }))
-        .await
-        .expect("list catalog")
-        .into_inner();
+    let response = harness.list_catalog("searchy", 0, Some(page(2, 0))).await;
 
-    let pagination = response.pagination.expect("pagination");
-    assert_eq!(pagination.total_count, 3);
-    assert_eq!(pagination.limit, 2);
-    assert_eq!(pagination.offset, 0);
-    assert!(pagination.has_more);
-    assert_eq!(pagination.next_offset, 2);
+    assert_pagination(response.pagination, 3, 2, 0, true);
     let counts = response.counts.as_ref().expect("catalog counts");
     assert_eq!(counts.table_count, 1);
     assert_eq!(counts.table_function_count, 2);
     assert_eq!(response.items.len(), 2);
-    let function = match response.items[0].item.as_ref().expect("catalog item") {
-        catalog_item::Item::TableFunction(function) => function,
-        catalog_item::Item::Table(_) => panic!("expected table function"),
-    };
+    let function = catalog_function(response.items[0].item.as_ref().expect("catalog item"));
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.name, "lookup_issue");
-    let table = match response.items[1].item.as_ref().expect("catalog item") {
-        catalog_item::Item::Table(table) => table,
-        catalog_item::Item::TableFunction(_) => panic!("expected table"),
-    };
+    let table = catalog_table(response.items[1].item.as_ref().expect("catalog item"));
     assert_eq!(table.schema_name, "searchy");
     assert_eq!(table.name, "placeholder");
     assert_eq!(table.description, "Placeholder table");
 
-    let function_only = harness
-        .catalog_client()
-        .list_catalog(Request::new(ListCatalogRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "searchy".to_string(),
-            kind: 2,
-            pagination: Some(PaginationRequest {
-                limit: 10,
-                offset: 0,
-            }),
-        }))
-        .await
-        .expect("list table function catalog")
-        .into_inner();
-    assert_eq!(
-        function_only
-            .pagination
-            .as_ref()
-            .expect("pagination")
-            .total_count,
-        2
-    );
+    let function_only = harness.list_catalog("searchy", 2, Some(page(10, 0))).await;
+    assert_pagination(function_only.pagination, 2, 10, 0, false);
     let counts = function_only.counts.as_ref().expect("catalog counts");
     assert_eq!(counts.table_count, 1);
     assert_eq!(counts.table_function_count, 2);
@@ -161,28 +90,12 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
 #[tokio::test]
 async fn list_columns_filters_required_columns_and_patterns() {
     let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_required_filter_yaml(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    harness.import_filtered_messages_source().await;
 
     let required = harness
-        .catalog_client()
-        .list_columns(Request::new(ListColumnsRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "filtered_messages".to_string(),
-            table_name: "messages".to_string(),
-            pattern: None,
-            ignore_case: true,
-            required_only: true,
-            pagination: None,
-        }))
+        .list_columns("filtered_messages", "messages", None, true)
         .await
-        .expect("list required columns")
-        .into_inner();
+        .expect("list required columns");
     let pagination = required.pagination.expect("required pagination");
     assert_eq!(pagination.total_count, 1);
     let required_column = required.columns[0].column.as_ref().expect("column");
@@ -190,19 +103,9 @@ async fn list_columns_filters_required_columns_and_patterns() {
     assert!(required_column.is_required_filter);
 
     let filtered = harness
-        .catalog_client()
-        .list_columns(Request::new(ListColumnsRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "filtered_messages".to_string(),
-            table_name: "messages".to_string(),
-            pattern: Some("TEXT".to_string()),
-            ignore_case: true,
-            required_only: false,
-            pagination: None,
-        }))
+        .list_columns("filtered_messages", "messages", Some("TEXT"), false)
         .await
-        .expect("list filtered columns")
-        .into_inner();
+        .expect("list filtered columns");
     assert_eq!(
         filtered
             .pagination
@@ -218,35 +121,15 @@ async fn list_columns_filters_required_columns_and_patterns() {
             .name,
         "text"
     );
-    assert!(
-        filtered.columns[0]
-            .matched_fields
-            .iter()
-            .any(|field| field == "column_name")
-    );
+    assert_matched_field(&filtered.columns[0].matched_fields, "column_name");
 }
 
 #[tokio::test]
 async fn describe_missing_table_returns_catalog_suggestions() {
     let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    harness.import_multiple_table_messages_source().await;
 
-    let response = harness
-        .catalog_client()
-        .describe_table(Request::new(DescribeTableRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "local_messages".to_string(),
-            table_name: "messeges".to_string(),
-        }))
-        .await
-        .expect("describe missing table")
-        .into_inner();
+    let response = harness.describe_table("local_messages", "messeges").await;
 
     assert!(response.table.is_none());
     assert_eq!(response.available_schemas, vec!["coral", "local_messages"]);
@@ -258,24 +141,11 @@ async fn describe_missing_table_returns_catalog_suggestions() {
 #[tokio::test]
 async fn describe_missing_table_name_does_not_apply_regex_limits() {
     let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    harness.import_multiple_table_messages_source().await;
 
     let response = harness
-        .catalog_client()
-        .describe_table(Request::new(DescribeTableRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "local_messages".to_string(),
-            table_name: "missing_table_".repeat(40),
-        }))
-        .await
-        .expect("describe long missing table name")
-        .into_inner();
+        .describe_table("local_messages", "missing_table_".repeat(40))
+        .await;
 
     assert!(response.table.is_none());
     assert_eq!(response.same_schema_tables.len(), 3);
@@ -285,25 +155,10 @@ async fn describe_missing_table_name_does_not_apply_regex_limits() {
 #[tokio::test]
 async fn list_columns_missing_table_takes_precedence_over_invalid_pattern() {
     let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    harness.import_multiple_table_messages_source().await;
 
     let error = harness
-        .catalog_client()
-        .list_columns(Request::new(ListColumnsRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "local_messages".to_string(),
-            table_name: "missing".to_string(),
-            pattern: Some("[".to_string()),
-            ignore_case: true,
-            required_only: false,
-            pagination: None,
-        }))
+        .list_columns("local_messages", "missing", Some("["), false)
         .await
         .expect_err("missing table should be reported before pattern validation");
 
@@ -315,40 +170,23 @@ async fn invalid_regex_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
-        .catalog_client()
-        .search_catalog(Request::new(SearchCatalogRequest {
-            workspace: Some(default_workspace()),
-            pattern: "[".to_string(),
-            ignore_case: true,
-            schema_name: String::new(),
-            kind: 0,
-            pagination: None,
-        }))
+        .search_catalog("[", true, "", 0, None)
         .await
         .expect_err("invalid catalog regex should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(error.message().contains("invalid regex pattern"));
+    assert_status_contains(
+        &error,
+        tonic::Code::InvalidArgument,
+        "invalid regex pattern",
+    );
 
-    harness
-        .import_source(
-            fixture_manifest_with_required_filter_yaml(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    harness.import_filtered_messages_source().await;
     let error = harness
-        .catalog_client()
-        .list_columns(Request::new(ListColumnsRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "filtered_messages".to_string(),
-            table_name: "messages".to_string(),
-            pattern: Some("[".to_string()),
-            ignore_case: true,
-            required_only: false,
-            pagination: None,
-        }))
+        .list_columns("filtered_messages", "messages", Some("["), false)
         .await
         .expect_err("invalid column regex should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(error.message().contains("invalid regex pattern"));
+    assert_status_contains(
+        &error,
+        tonic::Code::InvalidArgument,
+        "invalid regex pattern",
+    );
 }

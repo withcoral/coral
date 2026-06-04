@@ -33,6 +33,9 @@
 //! - `coral-engine` owns the data plane: backend registration, `DataFusion`
 //!   runtime assembly, and `SQL` execution over validated specs.
 //!
+#[cfg(test)]
+use wiremock as _;
+
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;

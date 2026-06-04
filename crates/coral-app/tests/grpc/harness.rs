@@ -2,9 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
-    PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, catalog_item, import_source_response,
+    CreateBundledSourceRequest, DeleteSourceRequest, DescribeTableRequest, DescribeTableResponse,
+    DiscoverSourcesRequest, ExecuteSqlRequest, ExplainSqlRequest, GetSourceInfoRequest,
+    GetSourceRequest, ImportSourceRequest, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, PaginationRequest,
+    PaginationResponse, QueryPlan, QueryTestFailure, QueryTestResult, SearchCatalogRequest,
+    SearchCatalogResponse, Source, SourceInfo, SourceSecret, SourceVariable, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, catalog_item, import_source_response,
+    query_test_result,
 };
 use coral_client::{
     AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -13,7 +18,8 @@ use coral_client::{
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tonic::Request;
+use tonic::{Request, Response};
+use wiremock::{Mock, MockServer, Request as WiremockRequest, matchers::any};
 
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
@@ -23,8 +29,25 @@ pub(crate) struct GrpcHarness {
 }
 
 pub(crate) struct FailingHttpFixture {
-    base_url: String,
-    task: tokio::task::JoinHandle<()>,
+    server: MockServer,
+}
+
+fn failing_http_error(_request: &WiremockRequest) -> std::io::Error {
+    std::io::Error::other("fixture connection failure")
+}
+
+fn expect_unary<T>(result: Result<Response<T>, tonic::Status>, expectation: &str) -> T {
+    result.expect(expectation).into_inner()
+}
+
+fn expect_unary_error<T>(
+    result: Result<Response<T>, tonic::Status>,
+    expectation: &str,
+) -> tonic::Status {
+    match result {
+        Ok(_) => panic!("{expectation}"),
+        Err(status) => status,
+    }
 }
 
 impl GrpcHarness {
@@ -36,6 +59,14 @@ impl GrpcHarness {
 
     pub(crate) async fn start_with_config_dir(config_dir: PathBuf) -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
+        Self::start_with_parts(temp_dir, config_dir).await
+    }
+
+    pub(crate) async fn start_with_config(raw_config: &str) -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        fs::write(config_dir.join("config.toml"), raw_config).expect("write config");
         Self::start_with_parts(temp_dir, config_dir).await
     }
 
@@ -65,6 +96,10 @@ impl GrpcHarness {
         &self.config_dir
     }
 
+    pub(crate) fn config_raw(&self) -> String {
+        fs::read_to_string(self.config_dir.join("config.toml")).expect("read config")
+    }
+
     pub(crate) fn source_client(&self) -> SourceClient {
         self.app.source_client()
     }
@@ -83,54 +118,266 @@ impl GrpcHarness {
         variables: Vec<SourceVariable>,
         secrets: Vec<SourceSecret>,
     ) -> Source {
-        let mut stream = self
-            .source_client()
-            .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(default_workspace()),
-                manifest_yaml,
-                variables,
-                secrets,
-                oauth_credential_retrievals: Vec::new(),
-            }))
+        import_source_with_client(self.source_client(), manifest_yaml, variables, secrets).await
+    }
+
+    pub(crate) async fn import_source_without_inputs(&self, manifest_yaml: String) -> Source {
+        self.import_source(manifest_yaml, Vec::new(), Vec::new())
             .await
-            .expect("import source")
-            .into_inner();
-        stream
-            .message()
+    }
+
+    pub(crate) async fn import_local_messages_source(&self) -> Source {
+        self.import_source_without_inputs(fixture_manifest_yaml(self.temp_path()))
             .await
-            .expect("import source stream")
-            .and_then(|response| match response.event {
-                Some(import_source_response::Event::Source(source)) => Some(source),
-                _ => None,
-            })
-            .expect("import source response")
+    }
+
+    pub(crate) async fn import_multiple_table_messages_source(&self) -> Source {
+        self.import_source_without_inputs(fixture_manifest_with_multiple_tables_yaml(
+            self.temp_path(),
+        ))
+        .await
+    }
+
+    pub(crate) async fn import_searchy_source(&self) -> Source {
+        self.import_source_without_inputs(fixture_manifest_with_functions_yaml())
+            .await
+    }
+
+    pub(crate) async fn import_filtered_messages_source(&self) -> Source {
+        self.import_source_without_inputs(fixture_manifest_with_required_filter_yaml())
+            .await
+    }
+
+    pub(crate) async fn import_secured_messages_source(&self) -> Source {
+        self.import_source(
+            fixture_manifest_with_inputs_yaml(),
+            vec![source_variable("API_BASE", "https://example.com")],
+            vec![source_secret("API_TOKEN", "secret-token")],
+        )
+        .await
+    }
+
+    pub(crate) async fn import_source_error(
+        &self,
+        manifest_yaml: String,
+        variables: Vec<SourceVariable>,
+        secrets: Vec<SourceSecret>,
+    ) -> tonic::Status {
+        expect_unary_error(
+            self.source_client()
+                .import_source(Request::new(import_source_request(
+                    manifest_yaml,
+                    variables,
+                    secrets,
+                )))
+                .await,
+            "import source should fail",
+        )
+    }
+
+    pub(crate) async fn create_bundled_source(
+        &self,
+        name: &str,
+        variables: Vec<SourceVariable>,
+        secrets: Vec<SourceSecret>,
+    ) -> Source {
+        expect_unary(
+            self.source_client()
+                .create_bundled_source(Request::new(create_bundled_source_request(
+                    name, variables, secrets,
+                )))
+                .await,
+            "create bundled source",
+        )
+        .source
+        .expect("create bundled source response")
+    }
+
+    pub(crate) async fn create_bundled_source_error(
+        &self,
+        name: &str,
+        variables: Vec<SourceVariable>,
+        secrets: Vec<SourceSecret>,
+    ) -> tonic::Status {
+        expect_unary_error(
+            self.source_client()
+                .create_bundled_source(Request::new(create_bundled_source_request(
+                    name, variables, secrets,
+                )))
+                .await,
+            "create bundled source should fail",
+        )
     }
 
     pub(crate) async fn list_sources(&self) -> Vec<Source> {
-        self.source_client()
-            .list_sources(Request::new(ListSourcesRequest {
+        expect_unary(
+            self.source_client()
+                .list_sources(Request::new(ListSourcesRequest {
+                    workspace: Some(default_workspace()),
+                }))
+                .await,
+            "list sources",
+        )
+        .sources
+    }
+
+    pub(crate) async fn discover_sources(&self) -> Vec<SourceInfo> {
+        expect_unary(
+            self.source_client()
+                .discover_sources(Request::new(DiscoverSourcesRequest {
+                    workspace: Some(default_workspace()),
+                }))
+                .await,
+            "discover sources",
+        )
+        .sources
+    }
+
+    pub(crate) async fn get_source(&self, name: &str) -> Source {
+        expect_unary(
+            self.source_client()
+                .get_source(Request::new(GetSourceRequest {
+                    workspace: Some(default_workspace()),
+                    name: name.to_string(),
+                }))
+                .await,
+            "get source",
+        )
+        .source
+        .expect("get source response")
+    }
+
+    pub(crate) async fn get_source_error(&self, name: &str) -> tonic::Status {
+        expect_unary_error(
+            self.source_client()
+                .get_source(Request::new(GetSourceRequest {
+                    workspace: Some(default_workspace()),
+                    name: name.to_string(),
+                }))
+                .await,
+            "get source should fail",
+        )
+    }
+
+    pub(crate) async fn get_source_info(&self, name: &str) -> coral_api::v1::SourceInfo {
+        expect_unary(
+            self.source_client()
+                .get_source_info(Request::new(GetSourceInfoRequest {
+                    workspace: Some(default_workspace()),
+                    name: name.to_string(),
+                }))
+                .await,
+            "get source info",
+        )
+        .source_info
+        .expect("get source info response")
+    }
+
+    pub(crate) async fn delete_source(&self, name: &str) {
+        expect_unary(
+            self.source_client()
+                .delete_source(Request::new(DeleteSourceRequest {
+                    workspace: Some(default_workspace()),
+                    name: name.to_string(),
+                }))
+                .await,
+            "delete source",
+        );
+    }
+
+    pub(crate) async fn delete_source_error(&self, name: &str) -> tonic::Status {
+        expect_unary_error(
+            self.source_client()
+                .delete_source(Request::new(DeleteSourceRequest {
+                    workspace: Some(default_workspace()),
+                    name: name.to_string(),
+                }))
+                .await,
+            "delete source should fail",
+        )
+    }
+
+    pub(crate) async fn list_catalog(
+        &self,
+        schema_name: &str,
+        kind: i32,
+        pagination: Option<PaginationRequest>,
+    ) -> ListCatalogResponse {
+        expect_unary(
+            self.catalog_client()
+                .list_catalog(Request::new(ListCatalogRequest {
+                    workspace: Some(default_workspace()),
+                    schema_name: schema_name.to_string(),
+                    kind,
+                    pagination,
+                }))
+                .await,
+            "list catalog",
+        )
+    }
+
+    pub(crate) async fn search_catalog(
+        &self,
+        pattern: &str,
+        ignore_case: bool,
+        schema_name: &str,
+        kind: i32,
+        pagination: Option<PaginationRequest>,
+    ) -> Result<SearchCatalogResponse, tonic::Status> {
+        self.catalog_client()
+            .search_catalog(Request::new(SearchCatalogRequest {
                 workspace: Some(default_workspace()),
+                pattern: pattern.to_string(),
+                ignore_case,
+                schema_name: schema_name.to_string(),
+                kind,
+                pagination,
             }))
             .await
-            .expect("list sources")
-            .into_inner()
-            .sources
+            .map(tonic::Response::into_inner)
+    }
+
+    pub(crate) async fn list_columns(
+        &self,
+        schema_name: &str,
+        table_name: &str,
+        pattern: Option<&str>,
+        required_only: bool,
+    ) -> Result<ListColumnsResponse, tonic::Status> {
+        self.catalog_client()
+            .list_columns(Request::new(ListColumnsRequest {
+                workspace: Some(default_workspace()),
+                schema_name: schema_name.to_string(),
+                table_name: table_name.to_string(),
+                pattern: pattern.map(str::to_string),
+                ignore_case: true,
+                required_only,
+                pagination: None,
+            }))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    pub(crate) async fn describe_table(
+        &self,
+        schema_name: &str,
+        table_name: impl Into<String>,
+    ) -> DescribeTableResponse {
+        expect_unary(
+            self.catalog_client()
+                .describe_table(Request::new(DescribeTableRequest {
+                    workspace: Some(default_workspace()),
+                    schema_name: schema_name.to_string(),
+                    table_name: table_name.into(),
+                }))
+                .await,
+            "describe table",
+        )
     }
 
     pub(crate) async fn list_tables(&self) -> Vec<TableSummary> {
-        self.catalog_client()
-            .list_catalog(Request::new(ListCatalogRequest {
-                workspace: Some(default_workspace()),
-                schema_name: String::new(),
-                kind: 1,
-                pagination: Some(PaginationRequest {
-                    limit: 0,
-                    offset: 0,
-                }),
-            }))
+        self.list_catalog("", 1, Some(page(0, 0)))
             .await
-            .expect("list catalog")
-            .into_inner()
             .items
             .into_iter()
             .filter_map(|item| match item.item {
@@ -141,33 +388,214 @@ impl GrpcHarness {
     }
 
     pub(crate) async fn validate_source(&self, source_name: &str) -> ValidateSourceResponse {
-        self.source_client()
-            .validate_source(Request::new(ValidateSourceRequest {
-                workspace: Some(default_workspace()),
-                name: source_name.to_string(),
-            }))
-            .await
-            .expect("validate source")
-            .into_inner()
+        expect_unary(
+            self.source_client()
+                .validate_source(Request::new(ValidateSourceRequest {
+                    workspace: Some(default_workspace()),
+                    name: source_name.to_string(),
+                }))
+                .await,
+            "validate source",
+        )
+    }
+
+    pub(crate) async fn validate_source_error(&self, source_name: &str) -> tonic::Status {
+        expect_unary_error(
+            self.source_client()
+                .validate_source(Request::new(ValidateSourceRequest {
+                    workspace: Some(default_workspace()),
+                    name: source_name.to_string(),
+                }))
+                .await,
+            "validate source should fail",
+        )
+    }
+
+    pub(crate) async fn explain_sql(&self, sql: &str) -> QueryPlan {
+        expect_unary(
+            self.query_client()
+                .explain_sql(Request::new(ExplainSqlRequest {
+                    workspace: Some(default_workspace()),
+                    sql: sql.to_string(),
+                }))
+                .await,
+            "explain sql",
+        )
+        .plan
+        .expect("query plan")
     }
 
     pub(crate) async fn execute_sql_rows(&self, sql: &str) -> Vec<Value> {
-        let response = self
-            .query_client()
+        execute_sql_rows_with_client(self.query_client(), sql.to_string()).await
+    }
+
+    pub(crate) async fn execute_sql_error(&self, sql: impl Into<String>) -> tonic::Status {
+        expect_unary_error(
+            self.query_client()
+                .execute_sql(Request::new(ExecuteSqlRequest {
+                    workspace: Some(default_workspace()),
+                    sql: sql.into(),
+                }))
+                .await,
+            "execute sql should fail",
+        )
+    }
+}
+
+pub(crate) fn source_variable(key: &str, value: &str) -> SourceVariable {
+    SourceVariable {
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+pub(crate) fn source_variables(pairs: &[(&str, &str)]) -> Vec<SourceVariable> {
+    pairs
+        .iter()
+        .map(|(key, value)| source_variable(key, value))
+        .collect()
+}
+
+pub(crate) fn source_secret(key: &str, value: &str) -> SourceSecret {
+    SourceSecret {
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+pub(crate) fn source_secrets(pairs: &[(&str, &str)]) -> Vec<SourceSecret> {
+    pairs
+        .iter()
+        .map(|(key, value)| source_secret(key, value))
+        .collect()
+}
+
+pub(crate) fn page(limit: u32, offset: u32) -> PaginationRequest {
+    PaginationRequest { limit, offset }
+}
+
+pub(crate) fn assert_pagination(
+    pagination: Option<PaginationResponse>,
+    total_count: u32,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
+) {
+    let pagination = pagination.expect("pagination");
+    assert_eq!(pagination.total_count, total_count);
+    assert_eq!(pagination.limit, limit);
+    assert_eq!(pagination.offset, offset);
+    assert_eq!(pagination.has_more, has_more);
+    assert_eq!(
+        pagination.next_offset,
+        if has_more { offset + limit } else { 0 }
+    );
+}
+
+pub(crate) fn assert_table_present(tables: &[TableSummary], schema_name: &str) {
+    assert!(tables.iter().any(|table| table.schema_name == schema_name));
+}
+
+pub(crate) fn assert_table_absent(tables: &[TableSummary], schema_name: &str) {
+    assert!(!tables.iter().any(|table| table.schema_name == schema_name));
+}
+
+pub(crate) fn assert_query_test_failure(result: &QueryTestResult, expected_message: Option<&str>) {
+    assert!(matches!(
+        &result.outcome,
+        Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
+            if expected_message == Some(error_message.as_str())
+                || expected_message.is_none() && !error_message.is_empty()
+    ));
+}
+
+pub(crate) async fn import_source_with_client(
+    mut client: SourceClient,
+    manifest_yaml: String,
+    variables: Vec<SourceVariable>,
+    secrets: Vec<SourceSecret>,
+) -> Source {
+    let mut stream = client
+        .import_source(Request::new(import_source_request(
+            manifest_yaml,
+            variables,
+            secrets,
+        )))
+        .await
+        .expect("import source")
+        .into_inner();
+    stream
+        .message()
+        .await
+        .expect("import source stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("import source response")
+}
+
+pub(crate) async fn execute_sql_rows_with_client(
+    mut client: QueryClient,
+    sql: String,
+) -> Vec<Value> {
+    let response = expect_unary(
+        client
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
-                sql: sql.to_string(),
+                sql,
             }))
-            .await
-            .expect("execute sql")
-            .into_inner();
-        batches_to_json_rows(
-            decode_execute_sql_response(&response)
-                .expect("decode query response")
-                .batches(),
-        )
-        .expect("query rows")
+            .await,
+        "execute sql",
+    );
+    batches_to_json_rows(
+        decode_execute_sql_response(&response)
+            .expect("decode query response")
+            .batches(),
+    )
+    .expect("query rows")
+}
+
+pub(crate) fn import_source_request(
+    manifest_yaml: String,
+    variables: Vec<SourceVariable>,
+    secrets: Vec<SourceSecret>,
+) -> ImportSourceRequest {
+    ImportSourceRequest {
+        workspace: Some(default_workspace()),
+        manifest_yaml,
+        variables,
+        secrets,
+        oauth_credential_retrievals: Vec::new(),
     }
+}
+
+fn create_bundled_source_request(
+    name: &str,
+    variables: Vec<SourceVariable>,
+    secrets: Vec<SourceSecret>,
+) -> CreateBundledSourceRequest {
+    CreateBundledSourceRequest {
+        workspace: Some(default_workspace()),
+        name: name.to_string(),
+        variables,
+        secrets,
+    }
+}
+
+pub(crate) fn assert_status_contains(error: &tonic::Status, code: tonic::Code, expected: &str) {
+    assert_eq!(error.code(), code);
+    assert!(
+        error.message().contains(expected),
+        "expected error to contain {expected:?}, got: {}",
+        error.message()
+    );
+}
+
+pub(crate) fn write_source_secrets(config_dir: &Path, source_name: &str, raw: &str) {
+    let secret_dir = source_dir(config_dir, source_name);
+    fs::create_dir_all(&secret_dir).expect("create secret dir");
+    fs::write(secret_dir.join("secrets.env"), raw).expect("write secrets");
 }
 
 fn ensure_file_credentials_config(config_dir: &Path) {
@@ -188,21 +616,12 @@ fn ensure_file_credentials_config(config_dir: &Path) {
 
 impl FailingHttpFixture {
     pub(crate) async fn new() -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind failing http fixture");
-        let addr = listener.local_addr().expect("fixture local addr");
-        let task = tokio::spawn(async move {
-            loop {
-                let (socket, _) = listener.accept().await.expect("accept fixture connection");
-                drop(socket);
-            }
-        });
-
-        Self {
-            base_url: format!("http://{addr}"),
-            task,
-        }
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with_err(failing_http_error)
+            .mount(&server)
+            .await;
+        Self { server }
     }
 
     pub(crate) fn manifest_yaml(&self) -> String {
@@ -210,32 +629,15 @@ impl FailingHttpFixture {
     }
 
     pub(crate) fn manifest_yaml_with_test_queries(&self, test_queries: &[&str]) -> String {
-        manifest_yaml(&json!({
-            "name": "unreachable_messages",
-            "version": "0.1.0",
-            "dsl_version": 3,
-            "backend": "http",
-            "base_url": self.base_url,
+        source_manifest_yaml(
+            "unreachable_messages",
+            "http",
+            json!({
+            "base_url": self.server.uri(),
             "test_queries": test_queries,
-            "tables": [{
-                "name": "messages",
-                "description": "Unreachable messages",
-                "request": {
-                    "method": "GET",
-                    "path": "/messages",
-                },
-                "response": {},
-                "columns": [
-                    {"name": "id", "type": "Utf8"},
-                ],
-            }],
-        }))
-    }
-}
-
-impl Drop for FailingHttpFixture {
-    fn drop(&mut self) {
-        self.task.abort();
+            "tables": [http_messages_table("Unreachable messages")],
+            }),
+        )
     }
 }
 
@@ -243,7 +645,7 @@ pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
     fixture_manifest_with_test_queries_yaml(root, &[])
 }
 
-pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String {
+fn fixture_messages_source(root: &Path) -> Value {
     let data_dir = root.join("fixture-data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     fs::write(
@@ -253,52 +655,60 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
 "#,
     )
     .expect("write jsonl");
-    let table_source = json!({
+    json!({
         "location": format!("file://{}/", data_dir.display()),
         "glob": "**/*.jsonl",
-    });
-    let table_columns = json!([
-        {"name": "type", "type": "Utf8"},
-        {"name": "sessionId", "type": "Utf8"},
-        {"name": "text", "type": "Utf8"},
-    ]);
-    manifest_yaml(&json!({
-        "name": "local_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "file",
-        "tables": [
-            {
-                "name": "events",
-                "description": "Fixture events",
-                "format": "jsonl",
-                "source": table_source.clone(),
-                "columns": table_columns.clone(),
-            },
-            {
-                "name": "messages",
-                "description": "Fixture messages",
-                "format": "jsonl",
-                "source": table_source.clone(),
-                "columns": table_columns.clone(),
-            },
-            {
-                "name": "sessions",
-                "description": "Fixture sessions",
-                "format": "jsonl",
-                "source": table_source,
-                "columns": table_columns,
-            },
+    })
+}
+
+fn fixture_messages_table(name: &str, description: &str, source: &Value) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "format": "jsonl",
+        "source": source,
+        "columns": [
+            {"name": "type", "type": "Utf8"},
+            {"name": "sessionId", "type": "Utf8"},
+            {"name": "text", "type": "Utf8"},
         ],
-    }))
+    })
+}
+
+fn http_messages_table(description: &str) -> Value {
+    json!({
+        "name": "messages",
+        "description": description,
+        "request": {
+            "method": "GET",
+            "path": "/messages",
+        },
+        "response": {},
+        "columns": [
+            {"name": "id", "type": "Utf8"},
+        ],
+    })
+}
+
+pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String {
+    let table_source = fixture_messages_source(root);
+    let tables = [
+        ("events", "Fixture events"),
+        ("messages", "Fixture messages"),
+        ("sessions", "Fixture sessions"),
+    ]
+    .into_iter()
+    .map(|(name, description)| fixture_messages_table(name, description, &table_source))
+    .collect::<Vec<_>>();
+
+    source_manifest_yaml("local_messages", "file", json!({ "tables": tables }))
 }
 
 pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
-    manifest_yaml(&json!({
-        "name": "filtered_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
+    source_manifest_yaml(
+        "filtered_messages",
+        "http",
+        json!({
         "base_url": "https://example.com",
         "tables": [{
             "name": "messages",
@@ -319,15 +729,15 @@ pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
                 { "name": "channel", "required": true }
             ],
         }],
-    }))
+        }),
+    )
 }
 
 pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
-    manifest_yaml(&json!({
-        "name": "searchy",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
+    source_manifest_yaml(
+        "searchy",
+        "http",
+        json!({
         "base_url": "https://example.com",
         "tables": [{
             "name": "placeholder",
@@ -360,151 +770,99 @@ pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
                     { "name": "title", "type": "Utf8", "description": "Issue title" },
                 ],
             },
-            {
-                "name": "search_issues",
-                "description": "Search issues",
-                "args": [
-                    {
-                        "name": "q",
-                        "required": true,
-                        "bind": { "arg": "q" },
-                    },
-                    {
-                        "name": "mode",
-                        "values": ["lexical", "semantic", "hybrid"],
-                        "bind": { "arg": "search_type" },
-                    },
-                ],
-                "request": {
-                    "method": "GET",
-                    "path": "/search/issues",
-                    "query": [
-                        { "name": "q", "from": "arg", "key": "q" },
-                        { "name": "search_type", "from": "arg", "key": "search_type" },
-                    ],
-                },
-                "response": {
-                    "rows_path": ["items"],
-                },
-                "columns": [
-                    { "name": "title", "type": "Utf8", "description": "Issue title" },
-                    { "name": "score", "type": "Float64" },
-                ],
-            },
+            search_issues_function(true),
         ],
-    }))
+        }),
+    )
 }
 
 pub(crate) fn fixture_function_only_manifest_yaml() -> String {
-    manifest_yaml(&json!({
-        "name": "searchy",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
-        "base_url": "https://example.com",
-        "functions": [{
-            "name": "search_issues",
-            "description": "Search issues",
-            "args": [{
-                "name": "q",
-                "required": true,
-                "bind": { "arg": "q" },
-            }],
-            "request": {
-                "method": "GET",
-                "path": "/search/issues",
-                "query": [
-                    { "name": "q", "from": "arg", "key": "q" },
-                ],
-            },
-            "response": {
-                "rows_path": ["items"],
-            },
-            "columns": [
-                { "name": "title", "type": "Utf8", "description": "Issue title" },
-            ],
-        }],
-    }))
+    source_manifest_yaml(
+        "searchy",
+        "http",
+        json!({
+            "base_url": "https://example.com",
+            "functions": [search_issues_function(false)],
+        }),
+    )
+}
+
+fn search_issues_function(include_search_mode: bool) -> Value {
+    let mut args = vec![json!({
+        "name": "q",
+        "required": true,
+        "bind": { "arg": "q" },
+    })];
+    let mut query = vec![json!({ "name": "q", "from": "arg", "key": "q" })];
+    let mut columns = vec![json!({
+        "name": "title",
+        "type": "Utf8",
+        "description": "Issue title",
+    })];
+    if include_search_mode {
+        args.push(json!({
+            "name": "mode",
+            "values": ["lexical", "semantic", "hybrid"],
+            "bind": { "arg": "search_type" },
+        }));
+        query.push(json!({ "name": "search_type", "from": "arg", "key": "search_type" }));
+        columns.push(json!({ "name": "score", "type": "Float64" }));
+    }
+
+    json!({
+        "name": "search_issues",
+        "description": "Search issues",
+        "args": args,
+        "request": {
+            "method": "GET",
+            "path": "/search/issues",
+            "query": query,
+        },
+        "response": {
+            "rows_path": ["items"],
+        },
+        "columns": columns,
+    })
 }
 
 pub(crate) fn fixture_manifest_with_test_queries_yaml(
     root: &Path,
     test_queries: &[&str],
 ) -> String {
-    let data_dir = root.join("fixture-data");
-    fs::create_dir_all(&data_dir).expect("create data dir");
-    fs::write(
-        data_dir.join("messages.jsonl"),
-        r#"{"type":"user","sessionId":"s1","text":"hello"}
-{"type":"assistant","sessionId":"s1","text":"world"}
-"#,
+    let table_source = fixture_messages_source(root);
+    source_manifest_yaml(
+        "local_messages",
+        "file",
+        json!({
+            "test_queries": test_queries,
+            "tables": [fixture_messages_table("messages", "Fixture messages", &table_source)],
+        }),
     )
-    .expect("write jsonl");
-    manifest_yaml(&json!({
-        "name": "local_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "file",
-        "test_queries": test_queries,
-        "tables": [{
-            "name": "messages",
-            "description": "Fixture messages",
-            "format": "jsonl",
-            "source": {
-                "location": format!("file://{}/", data_dir.display()),
-                "glob": "**/*.jsonl",
-            },
-            "columns": [
-                {"name": "type", "type": "Utf8"},
-                {"name": "sessionId", "type": "Utf8"},
-                {"name": "text", "type": "Utf8"},
-            ],
-        }],
-    }))
 }
 
 pub(crate) fn fixture_manifest_with_inputs_yaml() -> String {
-    manifest_yaml(&json!({
-        "name": "secured_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
-        "inputs": {
-            "API_BASE": { "kind": "variable", "default": "https://example.com" },
-            "API_TOKEN": { "kind": "secret" },
-        },
-        "base_url": "{{input.API_BASE}}",
-        "auth": {
-            "type": "HeaderAuth",
-            "headers": [{
-                "name": "Authorization",
-                "from": "template",
-                "template": "Bearer {{input.API_TOKEN}}",
-            }],
-        },
-        "tables": [{
-            "name": "messages",
-            "description": "Secured messages",
-            "request": {
-                "method": "GET",
-                "path": "/messages",
-            },
-            "response": {},
-            "columns": [
-                {"name": "id", "type": "Utf8"},
-            ],
-        }],
-    }))
+    secured_messages_manifest_yaml(
+        "secured_messages",
+        &json!({ "kind": "variable", "default": "https://example.com" }),
+        "Secured messages",
+    )
 }
 
 pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
-    manifest_yaml(&json!({
-        "name": "required_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
+    secured_messages_manifest_yaml(
+        "required_messages",
+        &json!({ "kind": "variable" }),
+        "Required-input messages",
+    )
+}
+
+fn secured_messages_manifest_yaml(name: &str, api_base: &Value, description: &str) -> String {
+    source_manifest_yaml(
+        name,
+        "http",
+        json!({
         "inputs": {
-            "API_BASE": { "kind": "variable" },
+            "API_BASE": api_base,
             "API_TOKEN": { "kind": "secret" },
         },
         "base_url": "{{input.API_BASE}}",
@@ -516,51 +874,58 @@ pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
                 "template": "Bearer {{input.API_TOKEN}}",
             }],
         },
-        "tables": [{
-            "name": "messages",
-            "description": "Required-input messages",
-            "request": {
-                "method": "GET",
-                "path": "/messages",
-            },
-            "response": {},
-            "columns": [
-                {"name": "id", "type": "Utf8"},
-            ],
-        }],
-    }))
+        "tables": [http_messages_table(description)],
+        }),
+    )
 }
 
 pub(crate) fn invalid_manifest_yaml() -> String {
-    manifest_yaml(&json!({
-        "name": "demo",
+    source_manifest_yaml_with_version(
+        "demo",
+        "1.0.0",
+        "http",
+        json!({
         "schema": "demo",
-        "version": "1.0.0",
-        "dsl_version": 3,
-        "backend": "http",
-        "tables": [{
-            "name": "messages",
-            "description": "Demo messages",
-            "request": {
-                "method": "GET",
-                "path": "/messages",
-            },
-            "response": {},
-            "columns": [
-                {"name": "id", "type": "Utf8"},
-            ],
-        }],
-    }))
+        "tables": [http_messages_table("Demo messages")],
+        }),
+    )
+}
+
+fn source_manifest_yaml(name: &str, backend: &str, body: Value) -> String {
+    source_manifest_yaml_with_version(name, "0.1.0", backend, body)
+}
+
+fn source_manifest_yaml_with_version(
+    name: &str,
+    version: &str,
+    backend: &str,
+    body: Value,
+) -> String {
+    let Value::Object(mut manifest) = body else {
+        panic!("test source manifest body must be an object");
+    };
+    for (key, value) in [
+        ("name", json!(name)),
+        ("version", json!(version)),
+        ("dsl_version", json!(3)),
+        ("backend", json!(backend)),
+    ] {
+        manifest.insert(key.to_string(), value);
+    }
+    manifest_yaml(&Value::Object(manifest))
 }
 
 fn manifest_yaml(value: &Value) -> String {
     serde_yaml::to_string(value).expect("serialize manifest yaml")
 }
 
-pub(crate) fn source_dir(config_dir: &Path, source_name: &str) -> PathBuf {
+pub(crate) fn sources_root(config_dir: &Path) -> PathBuf {
     config_dir
         .join("workspaces")
         .join("default")
         .join("sources")
-        .join(source_name)
+}
+
+pub(crate) fn source_dir(config_dir: &Path, source_name: &str) -> PathBuf {
+    sources_root(config_dir).join(source_name)
 }

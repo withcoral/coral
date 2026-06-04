@@ -156,13 +156,13 @@ pub(crate) fn core_status(error: CoreError) -> Status {
 
             let plain = render_plain_message(sqe.summary(), sqe.detail(), sqe.hint());
             Status::with_error_details_vec(
-                grpc_code(sqe.status()),
+                core_grpc_code(sqe.status()),
                 truncate_status_detail(plain),
                 details,
             )
         }
         other => Status::new(
-            grpc_code(other.status_code()),
+            core_grpc_code(other.status_code()),
             truncate_status_detail(other.to_string()),
         ),
     }
@@ -181,7 +181,7 @@ fn render_plain_message(summary: &str, detail: &str, hint: Option<&str>) -> Stri
     message
 }
 
-fn grpc_code(status: StatusCode) -> Code {
+pub(crate) fn core_grpc_code(status: StatusCode) -> Code {
     match status {
         StatusCode::InvalidArgument => Code::InvalidArgument,
         StatusCode::NotFound => Code::NotFound,

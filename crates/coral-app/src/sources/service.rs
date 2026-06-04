@@ -12,8 +12,8 @@ use coral_api::v1::{
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
     ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
     OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
-    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
-    OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
+    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialMethod,
+    OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
     OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
     OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
     SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
@@ -36,10 +36,9 @@ use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
-    CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, ImportSourceCommand,
-    ImportSourceEventSender, ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
-    PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
-    SourceOAuthCredentialRetrieval,
+    ImportSourceEventSender, ImportSourceWithCredentialsEvent, InstallSourceCommand,
+    InstallSourceTarget, InstallSourceWithOAuthCommand, PendingImportSourceWithCredentialsEvent,
+    SourceBinding, SourceBindings, SourceManager, SourceOAuthCredentialRetrieval,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
@@ -161,14 +160,15 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let command = CreateBundledSourceCommand {
-                name: bundled_name,
+            let command = InstallSourceCommand {
+                target: InstallSourceTarget::Bundled {
+                    name: SourceName::parse(&request.name).map_err(app_status)?,
+                },
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
             let response_workspace_name = workspace_name.clone();
             let installed = run_blocking_source_operation(move || {
-                sources.create_bundled_source(&workspace_name, &command)
+                sources.install_source(&workspace_name, &command)
             })
             .await?;
             Ok(Response::new(CreateBundledSourceResponse {
@@ -190,30 +190,15 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let response_workspace_name = workspace_name.clone();
-            let command = CreateBundledSourceWithOAuthCommand {
-                name: SourceName::parse(&request.name).map_err(app_status)?,
-                bindings: source_bindings_from_proto(request.variables, request.secrets),
-                oauth_credential_retrievals: request
-                    .oauth_credential_retrievals
-                    .into_iter()
-                    .map(oauth_credential_retrieval_from_proto)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(app_status)?,
-            };
-            let stream =
-                import_source_response_stream(response_workspace_name, move |event_sender| {
-                    instrument_grpc(span, async move {
-                        sources
-                            .create_bundled_source_with_oauth(
-                                &workspace_name,
-                                command,
-                                event_sender,
-                            )
-                            .await
-                            .map_err(app_status)
-                    })
-                });
+            let command = install_source_with_oauth_command(
+                InstallSourceTarget::Bundled {
+                    name: SourceName::parse(&request.name).map_err(app_status)?,
+                },
+                request.variables,
+                request.secrets,
+                request.oauth_credential_retrievals,
+            )?;
+            let stream = install_source_with_oauth_stream(sources, span, workspace_name, command);
             Ok(Response::new(Box::pin(stream.map(|response| {
                 response.map(create_bundled_source_with_o_auth_response_from_import_response)
             }))
@@ -233,42 +218,30 @@ impl SourceServiceApi for SourceService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let response_workspace_name = workspace_name.clone();
             if request.oauth_credential_retrievals.is_empty() {
-                let command = ImportSourceCommand {
-                    manifest_yaml: request.manifest_yaml,
+                let command = InstallSourceCommand {
+                    target: InstallSourceTarget::Imported {
+                        manifest_yaml: request.manifest_yaml,
+                    },
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
                 };
                 let installed = run_blocking_source_operation(move || {
-                    sources.import_source(&workspace_name, &command)
+                    sources.install_source(&workspace_name, &command)
                 })
                 .await?;
-                let response = ImportSourceResponse {
-                    event: Some(import_source_response::Event::Source(
-                        installed_source_to_proto(&response_workspace_name, installed),
-                    )),
-                };
-                return Ok(Response::new(
-                    Box::pin(tokio_stream::once(Ok(response))) as Self::ImportSourceStream
-                ));
+                return Ok(Response::new(Box::pin(tokio_stream::once(Ok(
+                    installed_source_import_response(&response_workspace_name, installed),
+                )))
+                    as Self::ImportSourceStream));
             }
-            let command = ImportSourceWithCredentialsCommand {
-                manifest_yaml: request.manifest_yaml,
-                bindings: source_bindings_from_proto(request.variables, request.secrets),
-                oauth_credential_retrievals: request
-                    .oauth_credential_retrievals
-                    .into_iter()
-                    .map(oauth_credential_retrieval_from_proto)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(app_status)?,
-            };
-            let stream =
-                import_source_response_stream(response_workspace_name, move |event_sender| {
-                    instrument_grpc(span, async move {
-                        sources
-                            .import_source_with_credentials(&workspace_name, command, event_sender)
-                            .await
-                            .map_err(app_status)
-                    })
-                });
+            let command = install_source_with_oauth_command(
+                InstallSourceTarget::Imported {
+                    manifest_yaml: request.manifest_yaml,
+                },
+                request.variables,
+                request.secrets,
+                request.oauth_credential_retrievals,
+            )?;
+            let stream = install_source_with_oauth_stream(sources, span, workspace_name, command);
             Ok(Response::new(stream))
         })
         .await
@@ -353,6 +326,40 @@ where
     ))
 }
 
+fn install_source_with_oauth_command(
+    target: InstallSourceTarget,
+    variables: Vec<SourceVariable>,
+    secrets: Vec<SourceSecret>,
+    oauth_credential_retrievals: Vec<OAuthCredentialRetrieval>,
+) -> Result<InstallSourceWithOAuthCommand, Status> {
+    Ok(InstallSourceWithOAuthCommand {
+        target,
+        bindings: source_bindings_from_proto(variables, secrets),
+        oauth_credential_retrievals: oauth_credential_retrievals
+            .into_iter()
+            .map(oauth_credential_retrieval_from_proto)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(app_status)?,
+    })
+}
+
+fn install_source_with_oauth_stream(
+    sources: SourceManager,
+    span: tracing::Span,
+    workspace_name: WorkspaceName,
+    command: InstallSourceWithOAuthCommand,
+) -> ImportSourceResponseStreamBox {
+    let response_workspace_name = workspace_name.clone();
+    import_source_response_stream(response_workspace_name, move |event_sender| {
+        instrument_grpc(span, async move {
+            sources
+                .install_source_with_oauth(&workspace_name, command, event_sender)
+                .await
+                .map_err(app_status)
+        })
+    })
+}
+
 struct ImportSourceResponseStream {
     events: mpsc::Receiver<PendingImportSourceWithCredentialsEvent>,
     import: Option<ImportSourceFuture>,
@@ -399,10 +406,8 @@ impl Stream for ImportSourceResponseStream {
             match import.as_mut().poll(cx) {
                 Poll::Ready(result) => {
                     this.import = None;
-                    this.completion = Some(result.map(|installed| ImportSourceResponse {
-                        event: Some(import_source_response::Event::Source(
-                            installed_source_to_proto(&this.response_workspace_name, installed),
-                        )),
+                    this.completion = Some(result.map(|installed| {
+                        installed_source_import_response(&this.response_workspace_name, installed)
                     }));
                 }
                 Poll::Pending => {
@@ -416,6 +421,17 @@ impl Stream for ImportSourceResponseStream {
     }
 }
 
+fn installed_source_import_response(
+    workspace_name: &WorkspaceName,
+    installed: InstalledSource,
+) -> ImportSourceResponse {
+    ImportSourceResponse {
+        event: Some(import_source_response::Event::Source(
+            installed_source_to_proto(workspace_name, installed),
+        )),
+    }
+}
+
 fn source_bindings_from_proto(
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
@@ -423,23 +439,18 @@ fn source_bindings_from_proto(
     SourceBindings {
         variables: variables
             .into_iter()
-            .map(source_variable_from_proto)
+            .map(|variable| SourceBinding {
+                key: variable.key,
+                value: variable.value,
+            })
             .collect(),
-        secrets: secrets.into_iter().map(source_secret_from_proto).collect(),
-    }
-}
-
-fn source_variable_from_proto(variable: SourceVariable) -> SourceBinding {
-    SourceBinding {
-        key: variable.key,
-        value: variable.value,
-    }
-}
-
-fn oauth_credential_input_from_proto(input: OAuthCredentialInput) -> SourceBinding {
-    SourceBinding {
-        key: input.key,
-        value: input.value,
+        secrets: secrets
+            .into_iter()
+            .map(|secret| SourceBinding {
+                key: secret.key,
+                value: secret.value,
+            })
+            .collect(),
     }
 }
 
@@ -458,16 +469,12 @@ fn oauth_credential_retrieval_from_proto(
         credential_inputs: retrieval
             .credential_inputs
             .into_iter()
-            .map(oauth_credential_input_from_proto)
+            .map(|input| SourceBinding {
+                key: input.key,
+                value: input.value,
+            })
             .collect(),
     })
-}
-
-fn source_secret_from_proto(secret: SourceSecret) -> SourceBinding {
-    SourceBinding {
-        key: secret.key,
-        value: secret.value,
-    }
 }
 
 fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> ImportSourceResponse {
@@ -714,53 +721,57 @@ mod tests {
         ManifestOAuthRedirectUriPortMode,
     };
 
-    #[test]
-    fn converts_credential_methods_to_source_input_spec() {
-        let input = ManifestInputSpec {
+    fn secret_input(credential: Option<ManifestCredentialSpec>) -> ManifestInputSpec {
+        ManifestInputSpec {
             key: "API_TOKEN".to_string(),
             kind: ManifestInputKind::Secret,
             required: true,
             default_value: String::new(),
             hint: None,
-            credential: Some(ManifestCredentialSpec {
-                methods: vec![
-                    ManifestCredentialMethod {
-                        kind: ManifestCredentialMethodKind::OAuth,
-                        label: Some("Connect".to_string()),
-                        description: None,
-                        hint: Some("Authorize in your browser.".to_string()),
-                        oauth: Some(ManifestOAuthCredentialSpec {
-                            flow: ManifestOAuthFlowSpec {
-                                kind: ManifestOAuthFlowKind::AuthorizationCode,
-                                pkce: ManifestOAuthPkceMode::Required,
+            credential,
+        }
+    }
+
+    #[test]
+    fn converts_credential_methods_to_source_input_spec() {
+        let input = secret_input(Some(ManifestCredentialSpec {
+            methods: vec![
+                ManifestCredentialMethod {
+                    kind: ManifestCredentialMethodKind::OAuth,
+                    label: Some("Connect".to_string()),
+                    description: None,
+                    hint: Some("Authorize in your browser.".to_string()),
+                    oauth: Some(ManifestOAuthCredentialSpec {
+                        flow: ManifestOAuthFlowSpec {
+                            kind: ManifestOAuthFlowKind::AuthorizationCode,
+                            pkce: ManifestOAuthPkceMode::Required,
+                        },
+                        redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+                        redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+                        authorization_url: Some(
+                            "https://provider.example.com/oauth/authorize".to_string(),
+                        ),
+                        device_authorization_url: None,
+                        token_url: "https://provider.example.com/oauth/token".to_string(),
+                        client: ManifestOAuthClientSpec {
+                            id: ManifestOAuthClientIdSpec {
+                                default: Some("default-client".to_string()),
+                                input: None,
                             },
-                            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
-                            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
-                            authorization_url: Some(
-                                "https://provider.example.com/oauth/authorize".to_string(),
-                            ),
-                            device_authorization_url: None,
-                            token_url: "https://provider.example.com/oauth/token".to_string(),
-                            client: ManifestOAuthClientSpec {
-                                id: ManifestOAuthClientIdSpec {
-                                    default: Some("default-client".to_string()),
-                                    input: None,
-                                },
-                                secret: None,
-                            },
-                            scopes: None,
-                        }),
-                    },
-                    ManifestCredentialMethod {
-                        kind: ManifestCredentialMethodKind::SourceConfig,
-                        label: Some("Paste token".to_string()),
-                        description: None,
-                        hint: None,
-                        oauth: None,
-                    },
-                ],
-            }),
-        };
+                            secret: None,
+                        },
+                        scopes: None,
+                    }),
+                },
+                ManifestCredentialMethod {
+                    kind: ManifestCredentialMethodKind::SourceConfig,
+                    label: Some("Paste token".to_string()),
+                    description: None,
+                    hint: None,
+                    oauth: None,
+                },
+            ],
+        }));
 
         let proto = candidate_source_input_to_proto(input);
 
@@ -801,16 +812,7 @@ mod tests {
 
     #[test]
     fn missing_credential_metadata_remains_absent() {
-        let input = ManifestInputSpec {
-            key: "API_TOKEN".to_string(),
-            kind: ManifestInputKind::Secret,
-            required: true,
-            default_value: String::new(),
-            hint: None,
-            credential: None,
-        };
-
-        let proto = candidate_source_input_to_proto(input);
+        let proto = candidate_source_input_to_proto(secret_input(None));
         let secret = match proto.input.expect("input") {
             ProtoSourceInput::Secret(secret) => secret,
             ProtoSourceInput::Variable(_) => panic!("expected secret input"),
@@ -825,11 +827,11 @@ mod tests {
             input_key: "API_TOKEN".to_string(),
             method_index: Some(1),
             credential_inputs: vec![
-                OAuthCredentialInput {
+                coral_api::v1::OAuthCredentialInput {
                     key: "CLIENT_ID".to_string(),
                     value: "client-id".to_string(),
                 },
-                OAuthCredentialInput {
+                coral_api::v1::OAuthCredentialInput {
                     key: "CLIENT_SECRET".to_string(),
                     value: "client-secret".to_string(),
                 },
@@ -848,17 +850,14 @@ mod tests {
 
     #[test]
     fn rejects_oauth_credential_retrieval_without_method_index() {
-        let result = oauth_credential_retrieval_from_proto(OAuthCredentialRetrieval {
-            input_key: "API_TOKEN".to_string(),
-            method_index: None,
-            credential_inputs: Vec::new(),
-        });
-        let Err(error) = result else {
+        let Err(AppError::InvalidInput(message)) =
+            oauth_credential_retrieval_from_proto(OAuthCredentialRetrieval {
+                input_key: "API_TOKEN".to_string(),
+                method_index: None,
+                credential_inputs: Vec::new(),
+            })
+        else {
             panic!("missing method_index should be rejected");
-        };
-
-        let AppError::InvalidInput(message) = error else {
-            panic!("unexpected error: {error}");
         };
         assert!(
             message.contains(

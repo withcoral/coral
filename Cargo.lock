@@ -1253,7 +1253,6 @@ dependencies = [
  "tonic",
  "tonic-types",
  "tonic-web",
- "tower",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

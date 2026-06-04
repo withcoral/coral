@@ -14,7 +14,7 @@ use crate::sources::SourceName;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
 
-use self::oauth::{OAuthCredentialService, RefreshOAuthCredentialRequest};
+use self::oauth::OAuthCredentialService;
 
 pub(crate) use store::{CredentialStore, CredentialsError};
 
@@ -223,10 +223,7 @@ impl CredentialManager {
             };
             if self
                 .oauth_credential_service
-                .refresh_if_needed(
-                    RefreshOAuthCredentialRequest::for_source_input(&input.key, oauth),
-                    material,
-                )
+                .refresh_if_needed(&input.key, oauth, material)
                 .await?
             {
                 *material = self.persist_refreshed_oauth_material(

@@ -5,17 +5,18 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
+use coral_api::grpc_response_status_code;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, TableInfo,
+    SourceValidationReport, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::bootstrap::AppError;
+use crate::bootstrap::{AppError, core_grpc_code};
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
@@ -438,18 +439,7 @@ fn app_error_type(error: &AppError) -> &'static str {
 fn core_error_type(error: &CoreError) -> String {
     match error {
         CoreError::QueryFailure(error) => error.reason().to_string(),
-        error => status_code_error_type(error.status_code()).to_string(),
-    }
-}
-
-fn status_code_error_type(status: StatusCode) -> &'static str {
-    match status {
-        StatusCode::InvalidArgument => "INVALID_ARGUMENT",
-        StatusCode::NotFound => "NOT_FOUND",
-        StatusCode::FailedPrecondition => "FAILED_PRECONDITION",
-        StatusCode::Unavailable => "UNAVAILABLE",
-        StatusCode::Unimplemented => "UNIMPLEMENTED",
-        StatusCode::Internal => "INTERNAL",
+        error => grpc_response_status_code(core_grpc_code(error.status_code())).to_string(),
     }
 }
 
@@ -498,7 +488,9 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
-    use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
+    use crate::sources::manager::{
+        InstallSourceCommand, InstallSourceTarget, SourceBindings, SourceManager,
+    };
     use crate::sources::model::SourceOrigin;
 
     struct QueryManagerFixture {
@@ -690,11 +682,12 @@ paths:
         )
         .expect("write OpenAPI fixture");
         source_manager
-            .import_source(
+            .install_source(
                 &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: format!(
-                        r"
+                &InstallSourceCommand {
+                    target: InstallSourceTarget::Imported {
+                        manifest_yaml: format!(
+                            r"
 name: github_v4_query
 dsl_version: 4
 surfaces:
@@ -702,8 +695,9 @@ surfaces:
     type: openapi
     file: {}
 ",
-                        openapi_file.display()
-                    ),
+                            openapi_file.display()
+                        ),
+                    },
                     bindings: SourceBindings::default(),
                 },
             )

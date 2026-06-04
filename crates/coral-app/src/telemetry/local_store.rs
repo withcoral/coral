@@ -1,6 +1,6 @@
 //! JSONL-backed span export for local trace capture.
 
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ use opentelemetry::{Array as OtelArray, KeyValue, Value as OtelValue};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
 use opentelemetry_sdk::trace::{SpanData, SpanExporter};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 use tokio::task;
@@ -465,7 +466,18 @@ struct TraceListSpanRecord {
     status: StoredTraceStatus,
     start_time_unix_nanos: i64,
     end_time_unix_nanos: i64,
-    attributes_json: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TraceSpanLocation {
+    file_index: usize,
+    line_number: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocatedTraceListSpanRecord {
+    span: TraceListSpanRecord,
+    location: TraceSpanLocation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,8 +486,8 @@ struct TracePrimaryCandidate {
     name: String,
     status: StoredTraceStatus,
     start_time_unix_nanos: i64,
-    attributes_json: String,
     priority: u8,
+    location: TraceSpanLocation,
 }
 
 #[derive(Debug, Clone)]
@@ -487,6 +499,44 @@ struct TraceListAggregate {
     error_count: u32,
     found_root_span: bool,
     primary: Option<TracePrimaryCandidate>,
+}
+
+#[derive(Debug, Clone)]
+struct TraceSummaryCandidate {
+    summary: TraceSummaryRecord,
+    primary: Option<TracePrimaryCandidate>,
+}
+
+struct TraceSummaryPrimary<'a> {
+    span_id: &'a str,
+    name: &'a str,
+    status: StoredTraceStatus,
+    attributes_json: Option<&'a str>,
+}
+
+impl<'a> TraceSummaryPrimary<'a> {
+    fn from_candidate(primary: &'a TracePrimaryCandidate) -> Self {
+        Self {
+            span_id: &primary.span_id,
+            name: &primary.name,
+            status: primary.status,
+            attributes_json: None,
+        }
+    }
+
+    fn from_span(span: &'a TraceSpanRecord) -> Self {
+        Self {
+            span_id: &span.span_id,
+            name: &span.name,
+            status: span.status,
+            attributes_json: Some(&span.attributes_json),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceSpanAttributesRecord {
+    attributes_json: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -549,7 +599,7 @@ impl TraceStore {
 
         for (file_index, file) in files.iter().enumerate().rev() {
             oldest_scanned_file_index = Some(file_index);
-            for span in read_list_spans_file(&file.path)? {
+            for span in read_list_spans_file(&file.path, file_index)? {
                 record_list_span(span, &mut spans_by_id, &mut traces);
             }
 
@@ -578,11 +628,22 @@ impl TraceStore {
         let mut summaries = traces
             .into_values()
             .filter(|aggregate| page_trace_ids.contains(&aggregate.trace_id))
-            .map(TraceListAggregate::into_summary)
+            .map(TraceListAggregate::into_summary_candidate)
             .collect::<Vec<_>>();
-        sort_summaries(&mut summaries);
+        summaries.sort_by(|left, right| {
+            right
+                .summary
+                .end_time_unix_nanos
+                .cmp(&left.summary.end_time_unix_nanos)
+                .then_with(|| left.summary.trace_id.cmp(&right.summary.trace_id))
+        });
+        enrich_summary_candidates(&mut summaries, &files)?;
 
-        Ok(summaries.into_iter().take(limit).collect())
+        Ok(summaries
+            .into_iter()
+            .take(limit)
+            .map(|candidate| candidate.summary)
+            .collect())
     }
 
     fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
@@ -692,14 +753,14 @@ fn span_jsonl_file(path: &Path) -> bool {
 }
 
 impl TracePrimaryCandidate {
-    fn from_span(span: &TraceListSpanRecord) -> Self {
+    fn from_span(span: &TraceListSpanRecord, location: TraceSpanLocation) -> Self {
         Self {
             span_id: span.span_id.clone(),
             name: span.name.clone(),
             status: span.status,
             start_time_unix_nanos: span.start_time_unix_nanos,
-            attributes_json: span.attributes_json.clone(),
             priority: primary_priority(&span.name, span.parent_span_id.as_deref()),
+            location,
         }
     }
 
@@ -717,11 +778,11 @@ impl TracePrimaryCandidate {
 }
 
 impl TraceListAggregate {
-    fn new(span: &TraceListSpanRecord) -> Self {
+    fn new(span: &LocatedTraceListSpanRecord) -> Self {
         let mut aggregate = Self {
-            trace_id: span.trace_id.clone(),
-            start_time_unix_nanos: span.start_time_unix_nanos,
-            end_time_unix_nanos: span.end_time_unix_nanos,
+            trace_id: span.span.trace_id.clone(),
+            start_time_unix_nanos: span.span.start_time_unix_nanos,
+            end_time_unix_nanos: span.span.end_time_unix_nanos,
             span_count: 0,
             error_count: 0,
             found_root_span: false,
@@ -731,16 +792,18 @@ impl TraceListAggregate {
         aggregate
     }
 
-    fn record_span(&mut self, span: &TraceListSpanRecord) {
-        self.start_time_unix_nanos = self.start_time_unix_nanos.min(span.start_time_unix_nanos);
-        self.end_time_unix_nanos = self.end_time_unix_nanos.max(span.end_time_unix_nanos);
+    fn record_span(&mut self, span: &LocatedTraceListSpanRecord) {
+        self.start_time_unix_nanos = self
+            .start_time_unix_nanos
+            .min(span.span.start_time_unix_nanos);
+        self.end_time_unix_nanos = self.end_time_unix_nanos.max(span.span.end_time_unix_nanos);
         self.span_count = self.span_count.saturating_add(1);
-        if span.status == StoredTraceStatus::Error {
+        if span.span.status == StoredTraceStatus::Error {
             self.error_count = self.error_count.saturating_add(1);
         }
-        self.found_root_span |= is_root_span_parent(span.parent_span_id.as_deref());
+        self.found_root_span |= is_root_span_parent(span.span.parent_span_id.as_deref());
 
-        let primary = TracePrimaryCandidate::from_span(span);
+        let primary = TracePrimaryCandidate::from_span(&span.span, span.location);
         if self
             .primary
             .as_ref()
@@ -750,7 +813,7 @@ impl TraceListAggregate {
         }
     }
 
-    fn into_summary(self) -> TraceSummaryRecord {
+    fn into_summary_candidate(self) -> TraceSummaryCandidate {
         let aggregate = TraceAggregate {
             trace_id: self.trace_id,
             start_time_unix_nanos: self.start_time_unix_nanos,
@@ -758,21 +821,30 @@ impl TraceListAggregate {
             span_count: self.span_count,
             error_count: self.error_count,
         };
-        summary_from_list_aggregate(&aggregate, self.primary.as_ref())
+        let summary = summary_from_aggregate(
+            &aggregate,
+            self.primary
+                .as_ref()
+                .map(TraceSummaryPrimary::from_candidate),
+        );
+        TraceSummaryCandidate {
+            summary,
+            primary: self.primary,
+        }
     }
 }
 
 fn record_list_span(
-    span: TraceListSpanRecord,
-    spans_by_id: &mut HashMap<(String, String), TraceListSpanRecord>,
+    span: LocatedTraceListSpanRecord,
+    spans_by_id: &mut HashMap<(String, String), LocatedTraceListSpanRecord>,
     traces: &mut HashMap<String, TraceListAggregate>,
 ) {
-    let key = (span.trace_id.clone(), span.span_id.clone());
+    let key = (span.span.trace_id.clone(), span.span.span_id.clone());
     match spans_by_id.entry(key) {
         Entry::Occupied(_) => {}
         Entry::Vacant(entry) => {
             traces
-                .entry(span.trace_id.clone())
+                .entry(span.span.trace_id.clone())
                 .and_modify(|aggregate| aggregate.record_span(&span))
                 .or_insert_with(|| TraceListAggregate::new(&span));
             entry.insert(span);
@@ -799,7 +871,7 @@ fn complete_list_aggregates_for_page(
     files: &[TraceStoreFile],
     oldest_scanned_file_index: Option<usize>,
     page_trace_ids: &HashSet<String>,
-    spans_by_id: &mut HashMap<(String, String), TraceListSpanRecord>,
+    spans_by_id: &mut HashMap<(String, String), LocatedTraceListSpanRecord>,
     traces: &mut HashMap<String, TraceListAggregate>,
 ) -> Result<(), TraceStoreError> {
     if page_trace_ids.is_empty() {
@@ -811,13 +883,18 @@ fn complete_list_aggregates_for_page(
     };
     let completion_start_cutoff = page_completion_start_cutoff(traces, page_trace_ids);
 
-    for file in files.iter().take(oldest_scanned_file_index).rev() {
+    for (file_index, file) in files
+        .iter()
+        .enumerate()
+        .take(oldest_scanned_file_index)
+        .rev()
+    {
         if completion_start_cutoff
             .is_some_and(|cutoff| file.span_end_upper_bound_unix_nanos < cutoff)
         {
             break;
         }
-        for span in read_list_spans_file_for_trace_ids(&file.path, page_trace_ids)? {
+        for span in read_list_spans_file_for_trace_ids(&file.path, file_index, page_trace_ids)? {
             record_list_span(span, spans_by_id, traces);
         }
     }
@@ -867,15 +944,6 @@ fn sort_trace_aggregates(aggregates: &mut [&TraceListAggregate]) {
     });
 }
 
-fn sort_summaries(summaries: &mut [TraceSummaryRecord]) {
-    summaries.sort_by(|left, right| {
-        right
-            .end_time_unix_nanos
-            .cmp(&left.end_time_unix_nanos)
-            .then_with(|| left.trace_id.cmp(&right.trace_id))
-    });
-}
-
 fn primary_priority(name: &str, parent_span_id: Option<&str>) -> u8 {
     if name == "coral.query" {
         0
@@ -901,27 +969,80 @@ fn line_trace_id(line: &str) -> Option<&str> {
     value.get(..value_end)
 }
 
-fn read_list_spans_file(path: &Path) -> Result<Vec<TraceListSpanRecord>, TraceStoreError> {
-    read_list_spans_file_filtered(path, None)
+fn read_list_spans_file(
+    path: &Path,
+    file_index: usize,
+) -> Result<Vec<LocatedTraceListSpanRecord>, TraceStoreError> {
+    read_list_spans_file_filtered(path, file_index, None)
 }
 
 fn read_list_spans_file_for_trace_ids(
     path: &Path,
+    file_index: usize,
     trace_ids: &HashSet<String>,
-) -> Result<Vec<TraceListSpanRecord>, TraceStoreError> {
-    read_list_spans_file_filtered(path, Some(trace_ids))
+) -> Result<Vec<LocatedTraceListSpanRecord>, TraceStoreError> {
+    read_list_spans_file_filtered(path, file_index, Some(trace_ids))
 }
 
 fn read_list_spans_file_filtered(
     path: &Path,
+    file_index: usize,
     trace_ids: Option<&HashSet<String>>,
-) -> Result<Vec<TraceListSpanRecord>, TraceStoreError> {
+) -> Result<Vec<LocatedTraceListSpanRecord>, TraceStoreError> {
+    let mut spans_by_id = BTreeMap::new();
+
+    read_jsonl_lines(path, |line| {
+        if line.text.trim().is_empty() {
+            return Ok(JsonlReadControl::Continue);
+        }
+        if trace_ids.is_some_and(|ids| {
+            !line_trace_id(line.text).is_some_and(|trace_id| ids.contains(trace_id))
+        }) {
+            return Ok(JsonlReadControl::Continue);
+        }
+        let Some(span) = decode_jsonl_record::<TraceListSpanRecord>(path, line)? else {
+            return Ok(JsonlReadControl::Stop);
+        };
+        if trace_ids.is_none_or(|ids| ids.contains(&span.trace_id)) {
+            let key = (span.trace_id.clone(), span.span_id.clone());
+            spans_by_id.insert(
+                key,
+                LocatedTraceListSpanRecord {
+                    span,
+                    location: TraceSpanLocation {
+                        file_index,
+                        line_number: line.number,
+                    },
+                },
+            );
+        }
+        Ok(JsonlReadControl::Continue)
+    })?;
+
+    Ok(spans_by_id.into_values().collect())
+}
+
+#[derive(Clone, Copy)]
+struct JsonlLine<'a> {
+    number: usize,
+    text: &'a str,
+    complete: bool,
+}
+
+enum JsonlReadControl {
+    Continue,
+    Stop,
+}
+
+fn read_jsonl_lines(
+    path: &Path,
+    mut visit: impl FnMut(JsonlLine<'_>) -> Result<JsonlReadControl, TraceStoreError>,
+) -> Result<(), TraceStoreError> {
     let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
         path: path.to_path_buf(),
         source,
     })?;
     let mut reader = BufReader::new(file);
-    let mut spans_by_id = HashMap::new();
     let mut line = String::new();
     let mut line_number = 0;
 
@@ -941,97 +1062,60 @@ fn read_list_spans_file_filtered(
         line_number += 1;
         let complete_line = line.ends_with('\n');
         let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.trim().is_empty() {
-            continue;
-        }
-        if trace_ids.is_some_and(|ids| {
-            !line_trace_id(trimmed).is_some_and(|trace_id| ids.contains(trace_id))
-        }) {
-            continue;
-        }
-
-        match serde_json::from_str::<TraceListSpanRecord>(trimmed) {
-            Ok(span) if trace_ids.is_none_or(|ids| ids.contains(&span.trace_id)) => {
-                spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
-            }
-            Ok(_span) => {}
-            Err(_) if !complete_line => break,
-            Err(source) => {
-                return Err(TraceStoreError::DecodeLine {
-                    path: path.to_path_buf(),
-                    line: line_number,
-                    source,
-                });
-            }
+        if matches!(
+            visit(JsonlLine {
+                number: line_number,
+                text: trimmed,
+                complete: complete_line,
+            })?,
+            JsonlReadControl::Stop
+        ) {
+            break;
         }
     }
 
-    Ok(spans_by_id.into_values().collect())
+    Ok(())
+}
+
+fn decode_jsonl_record<T: DeserializeOwned>(
+    path: &Path,
+    line: JsonlLine<'_>,
+) -> Result<Option<T>, TraceStoreError> {
+    match serde_json::from_str::<T>(line.text) {
+        Ok(record) => Ok(Some(record)),
+        Err(_) if !line.complete => Ok(None),
+        Err(source) => Err(TraceStoreError::DecodeLine {
+            path: path.to_path_buf(),
+            line: line.number,
+            source,
+        }),
+    }
 }
 
 fn read_trace_spans_file(
     path: &Path,
     trace_id: &str,
 ) -> Result<Vec<TraceSpanRecord>, TraceStoreError> {
-    let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
-        path: path.to_path_buf(),
-        source,
+    let mut spans_by_id = BTreeMap::new();
+
+    read_jsonl_lines(path, |line| {
+        if line.text.trim().is_empty() {
+            return Ok(JsonlReadControl::Continue);
+        }
+        if !line.text.contains(trace_id) {
+            return Ok(JsonlReadControl::Continue);
+        }
+        let Some(identity) = decode_jsonl_record::<TraceSpanIdentityRecord>(path, line)? else {
+            return Ok(JsonlReadControl::Stop);
+        };
+        if identity.trace_id == trace_id {
+            let Some(span) = decode_jsonl_record::<TraceSpanRecord>(path, line)? else {
+                return Ok(JsonlReadControl::Stop);
+            };
+            spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
+        }
+        Ok(JsonlReadControl::Continue)
     })?;
-    let mut reader = BufReader::new(file);
-    let mut spans_by_id = HashMap::new();
-    let mut line = String::new();
-    let mut line_number = 0;
-
-    loop {
-        line.clear();
-        let bytes_read =
-            reader
-                .read_line(&mut line)
-                .map_err(|source| TraceStoreError::ReadFile {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-        if bytes_read == 0 {
-            break;
-        }
-
-        line_number += 1;
-        let complete_line = line.ends_with('\n');
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.trim().is_empty() {
-            continue;
-        }
-        if !trimmed.contains(trace_id) {
-            continue;
-        }
-
-        match serde_json::from_str::<TraceSpanIdentityRecord>(trimmed) {
-            Ok(identity) if identity.trace_id == trace_id => {
-                match serde_json::from_str::<TraceSpanRecord>(trimmed) {
-                    Ok(span) => {
-                        spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
-                    }
-                    Err(_) if !complete_line => break,
-                    Err(source) => {
-                        return Err(TraceStoreError::DecodeLine {
-                            path: path.to_path_buf(),
-                            line: line_number,
-                            source,
-                        });
-                    }
-                }
-            }
-            Ok(_identity) => {}
-            Err(_) if !complete_line => break,
-            Err(source) => {
-                return Err(TraceStoreError::DecodeLine {
-                    path: path.to_path_buf(),
-                    line: line_number,
-                    source,
-                });
-            }
-        }
-    }
 
     Ok(spans_by_id.into_values().collect())
 }
@@ -1065,72 +1149,12 @@ fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummary
             span.span_id.as_str(),
         )
     });
-    summary_from_aggregate(&aggregate, primary)
-}
-
-fn summary_from_list_aggregate(
-    aggregate: &TraceAggregate,
-    primary: Option<&TracePrimaryCandidate>,
-) -> TraceSummaryRecord {
-    let fallback_status = if aggregate.error_count > 0 {
-        StoredTraceStatus::Error
-    } else {
-        StoredTraceStatus::Unspecified
-    };
-    let duration_nanos = aggregate
-        .end_time_unix_nanos
-        .saturating_sub(aggregate.start_time_unix_nanos);
-
-    primary.map_or_else(
-        || TraceSummaryRecord {
-            trace_id: aggregate.trace_id.clone(),
-            root_span_id: String::new(),
-            name: "trace".to_string(),
-            query: String::new(),
-            status: fallback_status,
-            start_time_unix_nanos: aggregate.start_time_unix_nanos,
-            end_time_unix_nanos: aggregate.end_time_unix_nanos,
-            duration_nanos,
-            span_count: aggregate.span_count,
-            row_count: 0,
-            row_count_recorded: false,
-        },
-        |primary| {
-            let attributes = parse_attributes(&primary.attributes_json);
-            let status = status_from_attributes(attributes.as_ref()).unwrap_or_else(|| {
-                if primary.status == StoredTraceStatus::Unspecified {
-                    fallback_status
-                } else {
-                    primary.status
-                }
-            });
-            let row_count = attributes
-                .as_ref()
-                .and_then(|attrs| attr_u64(attrs, "row_count"));
-
-            TraceSummaryRecord {
-                trace_id: aggregate.trace_id.clone(),
-                root_span_id: primary.span_id.clone(),
-                name: primary.name.clone(),
-                query: attributes
-                    .as_ref()
-                    .and_then(|attrs| attr_string(attrs, "sql"))
-                    .unwrap_or_default(),
-                status,
-                start_time_unix_nanos: aggregate.start_time_unix_nanos,
-                end_time_unix_nanos: aggregate.end_time_unix_nanos,
-                duration_nanos,
-                span_count: aggregate.span_count,
-                row_count: row_count.unwrap_or_default(),
-                row_count_recorded: row_count.is_some(),
-            }
-        },
-    )
+    summary_from_aggregate(&aggregate, primary.map(TraceSummaryPrimary::from_span))
 }
 
 fn summary_from_aggregate(
     aggregate: &TraceAggregate,
-    primary: Option<&TraceSpanRecord>,
+    primary: Option<TraceSummaryPrimary<'_>>,
 ) -> TraceSummaryRecord {
     let fallback_status = if aggregate.error_count > 0 {
         StoredTraceStatus::Error
@@ -1141,51 +1165,131 @@ fn summary_from_aggregate(
         .end_time_unix_nanos
         .saturating_sub(aggregate.start_time_unix_nanos);
 
-    primary.map_or_else(
-        || TraceSummaryRecord {
-            trace_id: aggregate.trace_id.clone(),
-            root_span_id: String::new(),
-            name: "trace".to_string(),
-            query: String::new(),
-            status: fallback_status,
-            start_time_unix_nanos: aggregate.start_time_unix_nanos,
-            end_time_unix_nanos: aggregate.end_time_unix_nanos,
-            duration_nanos,
-            span_count: aggregate.span_count,
-            row_count: 0,
-            row_count_recorded: false,
-        },
-        |primary| {
-            let attributes = parse_attributes(&primary.attributes_json);
-            let status = status_from_attributes(attributes.as_ref()).unwrap_or_else(|| {
-                if primary.status == StoredTraceStatus::Unspecified {
-                    fallback_status
-                } else {
-                    primary.status
-                }
-            });
-            let row_count = attributes
-                .as_ref()
-                .and_then(|attrs| attr_u64(attrs, "row_count"));
-
-            TraceSummaryRecord {
-                trace_id: aggregate.trace_id.clone(),
-                root_span_id: primary.span_id.clone(),
-                name: primary.name.clone(),
-                query: attributes
-                    .as_ref()
-                    .and_then(|attrs| attr_string(attrs, "sql"))
-                    .unwrap_or_default(),
-                status,
-                start_time_unix_nanos: aggregate.start_time_unix_nanos,
-                end_time_unix_nanos: aggregate.end_time_unix_nanos,
-                duration_nanos,
-                span_count: aggregate.span_count,
-                row_count: row_count.unwrap_or_default(),
-                row_count_recorded: row_count.is_some(),
+    let mut summary = TraceSummaryRecord {
+        trace_id: aggregate.trace_id.clone(),
+        root_span_id: primary
+            .as_ref()
+            .map_or_else(String::new, |primary| primary.span_id.to_string()),
+        name: primary
+            .as_ref()
+            .map_or_else(|| "trace".to_string(), |primary| primary.name.to_string()),
+        query: String::new(),
+        status: primary.as_ref().map_or(fallback_status, |primary| {
+            if primary.status == StoredTraceStatus::Unspecified {
+                fallback_status
+            } else {
+                primary.status
             }
-        },
-    )
+        }),
+        start_time_unix_nanos: aggregate.start_time_unix_nanos,
+        end_time_unix_nanos: aggregate.end_time_unix_nanos,
+        duration_nanos,
+        span_count: aggregate.span_count,
+        row_count: 0,
+        row_count_recorded: false,
+    };
+    if let Some(primary) = primary
+        && let Some(attributes_json) = primary.attributes_json
+    {
+        apply_summary_attributes(&mut summary, primary.status, attributes_json);
+    }
+    summary
+}
+
+fn enrich_summary_candidates(
+    summaries: &mut [TraceSummaryCandidate],
+    files: &[TraceStoreFile],
+) -> Result<(), TraceStoreError> {
+    let mut by_file: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+    for (summary_index, summary) in summaries.iter().enumerate() {
+        if let Some(primary) = &summary.primary {
+            by_file
+                .entry(primary.location.file_index)
+                .or_default()
+                .push((primary.location.line_number, summary_index));
+        }
+    }
+
+    for (file_index, mut targets) in by_file {
+        targets.sort_by_key(|(line_number, _summary_index)| *line_number);
+        let Some(path) = files.get(file_index) else {
+            continue;
+        };
+        let attributes = read_span_attributes_file(&path.path, &targets)?;
+        for (summary_index, attributes_json) in attributes {
+            if let Some(summary) = summaries.get_mut(summary_index)
+                && let Some(primary_status) = summary.primary.as_ref().map(|primary| primary.status)
+            {
+                apply_summary_attributes(&mut summary.summary, primary_status, &attributes_json);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn read_span_attributes_file(
+    path: &Path,
+    targets: &[(usize, usize)],
+) -> Result<Vec<(usize, String)>, TraceStoreError> {
+    let mut attributes = Vec::new();
+    let mut target_index = 0;
+
+    read_jsonl_lines(path, |line| {
+        while targets
+            .get(target_index)
+            .is_some_and(|(target_line, _summary_index)| *target_line < line.number)
+        {
+            target_index += 1;
+        }
+        let Some((target_line, _summary_index)) = targets.get(target_index) else {
+            return Ok(JsonlReadControl::Stop);
+        };
+        if *target_line != line.number {
+            return Ok(JsonlReadControl::Continue);
+        }
+
+        let Some(record) = decode_jsonl_record::<TraceSpanAttributesRecord>(path, line)? else {
+            return Ok(JsonlReadControl::Stop);
+        };
+        while let Some((target_line, summary_index)) = targets.get(target_index) {
+            if *target_line != line.number {
+                break;
+            }
+            attributes.push((*summary_index, record.attributes_json.clone()));
+            target_index += 1;
+        }
+        Ok(if target_index < targets.len() {
+            JsonlReadControl::Continue
+        } else {
+            JsonlReadControl::Stop
+        })
+    })?;
+
+    Ok(attributes)
+}
+
+fn apply_summary_attributes(
+    summary: &mut TraceSummaryRecord,
+    primary_status: StoredTraceStatus,
+    attributes_json: &str,
+) {
+    let attributes = parse_attributes(attributes_json);
+    if let Some(status) = status_from_attributes(attributes.as_ref()) {
+        summary.status = status;
+    } else if primary_status != StoredTraceStatus::Unspecified {
+        summary.status = primary_status;
+    }
+
+    summary.query = attributes
+        .as_ref()
+        .and_then(|attrs| attr_string(attrs, "sql"))
+        .unwrap_or_default();
+    let row_count = attributes
+        .as_ref()
+        .and_then(|attrs| attr_u64(attrs, "row_count"));
+    summary.row_count = row_count.unwrap_or_default();
+    summary.row_count_recorded = row_count.is_some();
 }
 
 fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
@@ -1383,7 +1487,7 @@ fn duration_nanos(start: SystemTime, end: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use std::fs::{self, FileTimes};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
 
     use opentelemetry::KeyValue;
@@ -1399,54 +1503,33 @@ mod tests {
 
     const TRACE_RETENTION: Duration = Duration::from_hours(7 * 24);
 
-    #[test]
-    fn exports_finished_spans_to_jsonl() {
+    fn trace_dir() -> (TempDir, PathBuf) {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
-        let exporter =
-            JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
-        let provider = SdkTracerProvider::builder()
-            .with_resource(
-                opentelemetry_sdk::Resource::builder_empty()
-                    .with_attribute(KeyValue::new("service.name", "coral-test"))
-                    .build(),
-            )
-            .with_simple_exporter(exporter)
-            .build();
-        let tracer = provider.tracer("local-store-test");
-        let mut span = tracer
-            .span_builder("coral.query")
-            .with_kind(SpanKind::Internal)
-            .with_attributes([
-                KeyValue::new("test.attribute", "value"),
-                KeyValue::new("sql", "SELECT 1"),
-                KeyValue::new("status", "ok"),
-                KeyValue::new("row_count", 1_i64),
-            ])
-            .start(&tracer);
-        span.end();
-        provider.shutdown().expect("provider shutdown");
+        (temp, dir)
+    }
 
-        assert_eq!(jsonl_file_count(&dir), 1);
+    fn span_exporter(dir: &Path) -> JsonlSpanExporter {
+        JsonlSpanExporter::new(dir.to_path_buf(), TRACE_RETENTION).expect("jsonl span exporter")
+    }
 
-        let store = TraceStore::new(dir);
-        let trace_id = store
-            .list_traces_sync(10, 0)
-            .expect("list traces")
-            .into_iter()
-            .next()
-            .expect("trace summary")
-            .trace_id;
-        let detail = store.get_trace_sync(&trace_id).expect("trace detail");
-        let span = detail.spans.first().expect("trace span");
+    fn trace_provider(dir: &Path) -> SdkTracerProvider {
+        SdkTracerProvider::builder()
+            .with_simple_exporter(span_exporter(dir))
+            .build()
+    }
 
-        assert_eq!(span.name, "coral.query");
-        assert!(span.attributes_json.contains(r#""test.attribute":"value""#));
-        assert!(!span.attributes_json.contains("coral.http.request.body"));
-        assert!(
-            span.resource_json
-                .contains(r#""service.name":"coral-test""#)
-        );
+    fn expired_and_fresh_jsonl_paths(dir: &Path) -> (PathBuf, PathBuf) {
+        (
+            dir.join(timestamped_jsonl_path(SystemTime::now())),
+            dir.join(timestamped_jsonl_path(
+                SystemTime::now() - Duration::from_hours(8 * 24),
+            )),
+        )
+    }
+
+    fn mark_expired(path: &Path) {
+        set_modified_time(path, SystemTime::now() - Duration::from_hours(8 * 24));
     }
 
     #[cfg(unix)]
@@ -1454,8 +1537,7 @@ mod tests {
     fn rolling_writer_creates_private_dir_and_file() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
+        let (_temp, dir) = trace_dir();
         fs::create_dir_all(&dir).expect("trace dir");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755))
             .expect("make trace dir permissive");
@@ -1474,13 +1556,8 @@ mod tests {
 
     #[test]
     fn repeated_exports_append_to_one_jsonl_file() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
-        let exporter =
-            JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter)
-            .build();
+        let (_temp, dir) = trace_dir();
+        let provider = trace_provider(&dir);
         let tracer = provider.tracer("local-store-test");
 
         tracer.start("first").end();
@@ -1496,18 +1573,21 @@ mod tests {
 
     #[test]
     fn reads_trace_summaries_and_details_from_jsonl() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
-        let exporter =
-            JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
+        let (_temp, dir) = trace_dir();
         let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter)
+            .with_resource(
+                opentelemetry_sdk::Resource::builder_empty()
+                    .with_attribute(KeyValue::new("service.name", "coral-test"))
+                    .build(),
+            )
+            .with_simple_exporter(span_exporter(&dir))
             .build();
         let tracer = provider.tracer("local-store-test");
         let mut span = tracer
             .span_builder("coral.query")
             .with_kind(SpanKind::Internal)
             .with_attributes([
+                KeyValue::new("test.attribute", "value"),
                 KeyValue::new("sql", "SELECT 1"),
                 KeyValue::new("status", "ok"),
                 KeyValue::new("row_count", 1_i64),
@@ -1515,6 +1595,8 @@ mod tests {
             .start(&tracer);
         span.end();
         provider.shutdown().expect("provider shutdown");
+
+        assert_eq!(jsonl_file_count(&dir), 1);
 
         let store = TraceStore::new(dir);
         let summaries = store.list_traces_sync(10, 0).expect("list traces");
@@ -1532,16 +1614,18 @@ mod tests {
             .expect("trace detail");
         assert_eq!(detail.summary, *summary);
         assert_eq!(detail.spans.len(), 1);
-        assert_eq!(
-            detail.spans.first().expect("trace span").span_id,
-            summary.root_span_id
+        let span = detail.spans.first().expect("trace span");
+        assert_eq!(span.span_id, summary.root_span_id);
+        assert!(span.attributes_json.contains(r#""test.attribute":"value""#));
+        assert!(
+            span.resource_json
+                .contains(r#""service.name":"coral-test""#)
         );
     }
 
     #[test]
     fn list_traces_ignores_unneeded_detail_field_types() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
+        let (_temp, dir) = trace_dir();
         fs::create_dir_all(&dir).expect("trace dir");
         let mut record = trace_record("trace-1", "span-1");
         record.attributes_json = r#"{"sql":"SELECT 1","status":"ok","row_count":1}"#.to_string();
@@ -1770,8 +1854,7 @@ mod tests {
 
     #[test]
     fn skips_incomplete_trailing_jsonl_record() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
+        let (_temp, dir) = trace_dir();
         fs::create_dir_all(&dir).expect("trace dir");
         fs::write(
             dir.join(timestamped_jsonl_path(SystemTime::now())),
@@ -1966,8 +2049,7 @@ mod tests {
 
     #[test]
     fn missing_trace_store_lists_empty_and_get_returns_not_found() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
+        let (_temp, dir) = trace_dir();
         let store = TraceStore::new(dir);
 
         assert!(
@@ -1981,19 +2063,12 @@ mod tests {
 
     #[test]
     fn exporter_prunes_expired_jsonl_files_on_startup() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
+        let (_temp, dir) = trace_dir();
         fs::create_dir_all(&dir).expect("trace dir");
-        let expired_path = dir.join(timestamped_jsonl_path(SystemTime::now()));
-        let old_name_fresh_path = dir.join(timestamped_jsonl_path(
-            SystemTime::now() - Duration::from_hours(8 * 24),
-        ));
+        let (expired_path, old_name_fresh_path) = expired_and_fresh_jsonl_paths(&dir);
         fs::write(&expired_path, "{}\n").expect("write expired trace file");
         fs::write(&old_name_fresh_path, "{}\n").expect("write fresh trace file");
-        set_modified_time(
-            &expired_path,
-            SystemTime::now() - Duration::from_hours(8 * 24),
-        );
+        mark_expired(&expired_path);
 
         let _exporter =
             JsonlSpanExporter::new(dir.clone(), TRACE_RETENTION).expect("jsonl span exporter");
@@ -2004,22 +2079,15 @@ mod tests {
 
     #[test]
     fn trace_store_prunes_expired_jsonl_files_on_read() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
+        let (_temp, dir) = trace_dir();
         fs::create_dir_all(&dir).expect("trace dir");
-        let expired_path = dir.join(timestamped_jsonl_path(SystemTime::now()));
-        let old_name_fresh_path = dir.join(timestamped_jsonl_path(
-            SystemTime::now() - Duration::from_hours(8 * 24),
-        ));
+        let (expired_path, old_name_fresh_path) = expired_and_fresh_jsonl_paths(&dir);
         write_record_file(&expired_path, &trace_record("old-trace", "old-span"));
         write_record_file(
             &old_name_fresh_path,
             &trace_record("fresh-trace", "fresh-span"),
         );
-        set_modified_time(
-            &expired_path,
-            SystemTime::now() - Duration::from_hours(8 * 24),
-        );
+        mark_expired(&expired_path);
         let store = TraceStore::with_retention(dir, TRACE_RETENTION);
 
         let traces = store.list_traces_sync(10, 0).expect("list traces");
@@ -2032,8 +2100,7 @@ mod tests {
 
     #[test]
     fn rolling_writer_rolls_stale_current_file() {
-        let temp = TempDir::new().expect("temp dir");
-        let dir = temp.path().join("telemetry").join("traces");
+        let (_temp, dir) = trace_dir();
         let mut writer =
             RollingJsonlWriter::new(dir.clone(), TRACE_RETENTION).expect("jsonl writer");
 
