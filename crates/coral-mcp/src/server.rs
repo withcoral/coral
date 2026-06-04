@@ -26,13 +26,13 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
-        describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, list_catalog_arguments, list_catalog_tool, list_catalog_value,
-        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
-        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        CatalogToolKind, build_tool_result, build_tool_result_with_text, catalog_items_text,
+        columns_text, describe_table_arguments, describe_table_tool, describe_table_value,
+        feedback_tool, guide_resource, guide_resource_content, initial_instructions,
+        list_catalog_arguments, list_catalog_tool, list_catalog_value, list_columns_arguments,
+        list_columns_tool, list_columns_value, required_string_argument, search_catalog_arguments,
+        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -44,7 +44,10 @@ const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 
 enum ToolCallOutcome {
-    Success(Value),
+    Success {
+        value: Value,
+        text: Option<String>,
+    },
     ToolError {
         operation: &'static str,
         status: tonic::Status,
@@ -68,9 +71,28 @@ fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
 }
 
 impl ToolCallOutcome {
+    fn success(value: Value) -> Self {
+        Self::Success { value, text: None }
+    }
+
+    fn success_with_text_if_smaller(value: Value, text: Option<String>) -> Self {
+        let Some(text) = text else {
+            return Self::success(value);
+        };
+        let compact_json = serde_json::to_string(&value).expect("tool value serializes");
+        if text.len() < compact_json.len() {
+            Self::Success {
+                value,
+                text: Some(text),
+            }
+        } else {
+            Self::success(value)
+        }
+    }
+
     fn from_value_result(operation: &'static str, result: Result<Value, tonic::Status>) -> Self {
         match result {
-            Ok(value) => Self::Success(value),
+            Ok(value) => Self::success(value),
             Err(status) => Self::ToolError { operation, status },
         }
     }
@@ -283,7 +305,10 @@ impl CoralMcpServer {
             .await
             .map(|response| search_catalog_value(&response.into_inner()))
         {
-            Ok(value) => Ok(ToolCallOutcome::Success(value)),
+            Ok(value) => {
+                let text = catalog_items_text(&value);
+                Ok(ToolCallOutcome::success_with_text_if_smaller(value, text))
+            }
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
@@ -312,10 +337,16 @@ impl CoralMcpServer {
             }))
             .await
             .map(|response| list_catalog_value(&response.into_inner()));
-        Ok(ToolCallOutcome::from_value_result(
-            "Catalog listing",
-            result,
-        ))
+        Ok(match result {
+            Ok(value) => {
+                let text = catalog_items_text(&value);
+                ToolCallOutcome::success_with_text_if_smaller(value, text)
+            }
+            Err(status) => ToolCallOutcome::ToolError {
+                operation: "Catalog listing",
+                status,
+            },
+        })
     }
 
     async fn describe_table_tool_result(
@@ -327,7 +358,7 @@ impl CoralMcpServer {
             .load_table_description(&arguments.schema, &arguments.table)
             .await
         {
-            Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
+            Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
                 &arguments.schema,
                 &arguments.table,
                 &response,
@@ -406,11 +437,12 @@ impl CoralMcpServer {
             }))
             .await
         {
-            Ok(response) => Ok(ToolCallOutcome::Success(list_columns_value(
-                &arguments.schema,
-                &arguments.table,
-                &response.into_inner(),
-            ))),
+            Ok(response) => {
+                let value =
+                    list_columns_value(&arguments.schema, &arguments.table, &response.into_inner());
+                let text = columns_text(&value);
+                Ok(ToolCallOutcome::success_with_text_if_smaller(value, text))
+            }
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
@@ -419,7 +451,7 @@ impl CoralMcpServer {
                     .load_table_description(&arguments.schema, &arguments.table)
                     .await
                 {
-                    Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
+                    Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
                         &arguments.schema,
                         &arguments.table,
                         &response,
@@ -557,8 +589,11 @@ fn finish_tool_call(
     outcome: Result<ToolCallOutcome, ErrorData>,
 ) -> Result<CallToolResult, ErrorData> {
     match outcome {
-        Ok(ToolCallOutcome::Success(value)) => {
-            let result = build_tool_result(value);
+        Ok(ToolCallOutcome::Success { value, text }) => {
+            let result = match text {
+                Some(text) => Ok(build_tool_result_with_text(value, text)),
+                None => build_tool_result(value),
+            };
             telemetry::record_protocol_result(span, &result);
             result
         }

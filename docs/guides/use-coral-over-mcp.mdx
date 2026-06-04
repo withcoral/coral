@@ -26,6 +26,8 @@ Clients see the same database catalog and query results as `coral sql`. You set 
 
 Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
 
+Successful tool responses include complete MCP `structuredContent`. The text fallback is compact for model context: general results use compact JSON, and catalog discovery pages may use tab-separated rows when that is shorter. Clients that need a stable machine-readable shape should read `structuredContent`, not parse the fallback text.
+
 ### Discovery tools
 
 **`list_catalog`**: paginated list of database tables and parameterized table functions.

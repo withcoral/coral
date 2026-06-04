@@ -7,6 +7,7 @@ use coral_api::v1::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::fmt::Write as _;
 
 use super::values::{
     format_schema_table_equivalent, format_sql_identifier, insert_pagination_fields,
@@ -161,6 +162,195 @@ pub(crate) fn list_columns_value(
     ]);
     insert_pagination_fields(&mut value, &pagination);
     Value::Object(value)
+}
+
+pub(crate) fn catalog_items_text(value: &Value) -> Option<String> {
+    let items = value.get("items")?.as_array()?;
+    let mut text = collection_header("items", items.len(), value);
+    text.push('\n');
+    text.push_str("kind\tname\tsql_reference\tdescription\tdetails\tmatched_fields");
+    for item in items {
+        let item = item.as_object()?;
+        text.push('\n');
+        write!(
+            text,
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            field_text(item, "kind"),
+            field_text(item, "name"),
+            field_text(item, "sql_reference"),
+            field_text(item, "description"),
+            catalog_item_details(item),
+            field_text(item, "matched_fields")
+        )
+        .expect("writing to String cannot fail");
+    }
+    Some(text)
+}
+
+pub(crate) fn columns_text(value: &Value) -> Option<String> {
+    let columns = value.get("columns")?.as_array()?;
+    let schema_name = value.get("schema_name").and_then(Value::as_str)?;
+    let table_name = value.get("table_name").and_then(Value::as_str)?;
+    let mut text = format!(
+        "table={}.{} {}",
+        sanitize_text(schema_name),
+        sanitize_text(table_name),
+        collection_header("columns", columns.len(), value)
+    );
+    text.push('\n');
+    text.push_str(
+        "ordinal\tcolumn_name\tdata_type\tis_nullable\tis_virtual\tis_required_filter\tdescription\tmatched_fields",
+    );
+    for column in columns {
+        let column = column.as_object()?;
+        text.push('\n');
+        write!(
+            text,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            field_text(column, "ordinal_position"),
+            field_text(column, "column_name"),
+            field_text(column, "data_type"),
+            field_text(column, "is_nullable"),
+            field_text(column, "is_virtual"),
+            field_text(column, "is_required_filter"),
+            field_text(column, "description"),
+            field_text(column, "matched_fields")
+        )
+        .expect("writing to String cannot fail");
+    }
+    Some(text)
+}
+
+fn collection_header(collection_name: &str, visible_count: usize, value: &Value) -> String {
+    let mut text = format!("{collection_name}={visible_count}");
+    for key in ["total", "limit", "offset", "has_more", "next_offset"] {
+        if let Some(value) = value.get(key) {
+            write!(text, " {key}={}", compact_value(value)).expect("writing to String cannot fail");
+        }
+    }
+    text
+}
+
+fn catalog_item_details(item: &Map<String, Value>) -> String {
+    if let Some(table) = item.get("table").and_then(Value::as_object) {
+        let mut details = format!("table_name={}", field_text(table, "table_name"));
+        let required_filters = field_text(table, "required_filters");
+        if !required_filters.is_empty() {
+            write!(details, ";required_filters=[{required_filters}]")
+                .expect("writing to String cannot fail");
+        }
+        let guide = field_text(table, "guide");
+        if !guide.is_empty() {
+            write!(details, ";guide={guide}").expect("writing to String cannot fail");
+        }
+        return details;
+    }
+
+    if let Some(function) = item.get("table_function").and_then(Value::as_object) {
+        let mut details = format!("function_name={}", field_text(function, "function_name"));
+        let call = field_text(item, "sql_call_example");
+        if !call.is_empty() {
+            write!(details, ";call={call}").expect("writing to String cannot fail");
+        }
+        let arguments = compact_table_function_arguments(function.get("arguments"));
+        if !arguments.is_empty() {
+            write!(details, ";args={arguments}").expect("writing to String cannot fail");
+        }
+        let result_columns = compact_table_function_result_columns(function.get("result_columns"));
+        if !result_columns.is_empty() {
+            write!(details, ";result_columns={result_columns}")
+                .expect("writing to String cannot fail");
+        }
+        return details;
+    }
+
+    String::new()
+}
+
+fn compact_table_function_arguments(arguments: Option<&Value>) -> String {
+    let Some(arguments) = arguments.and_then(Value::as_array) else {
+        return String::new();
+    };
+    arguments
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|argument| {
+            let name = field_text(argument, "name");
+            let required = if argument
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                "!"
+            } else {
+                ""
+            };
+            let values = field_text(argument, "values");
+            if values.is_empty() {
+                format!("{name}{required}")
+            } else {
+                format!("{name}{required}=[{values}]")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn compact_table_function_result_columns(columns: Option<&Value>) -> String {
+    let Some(columns) = columns.and_then(Value::as_array) else {
+        return String::new();
+    };
+    columns
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|column| {
+            let nullable = if column
+                .get("is_nullable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                "?"
+            } else {
+                ""
+            };
+            let mut text = format!(
+                "{}:{}{}",
+                field_text(column, "column_name"),
+                field_text(column, "data_type"),
+                nullable
+            );
+            let description = field_text(column, "description");
+            if !description.is_empty() {
+                write!(text, " {description}").expect("writing to String cannot fail");
+            }
+            text
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn field_text(object: &Map<String, Value>, key: &str) -> String {
+    object.get(key).map(compact_value).unwrap_or_default()
+}
+
+fn compact_value(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => sanitize_text(value),
+        Value::Array(values) => values
+            .iter()
+            .map(compact_value)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::Object(_) => sanitize_text(&value.to_string()),
+    }
+}
+
+fn sanitize_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn column_search_result_value(result: &ColumnSearchResult) -> Option<Value> {
@@ -376,5 +566,126 @@ impl<'a> From<&'a coral_api::v1::Column> for ColumnValue<'a> {
             description: &column.description,
             ordinal_position: column.ordinal_position,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{catalog_items_text, columns_text};
+
+    #[test]
+    fn catalog_items_text_renders_table_and_function_rows() {
+        let value = json!({
+            "items": [
+                {
+                    "kind": "table",
+                    "name": "github.pulls",
+                    "sql_reference": "github.pulls",
+                    "description": "Pull requests",
+                    "matched_fields": ["description", "table.name"],
+                    "table": {
+                        "table_name": "pulls",
+                        "guide": "Use owner\nand repo filters.",
+                        "required_filters": ["owner", "repo"]
+                    }
+                },
+                {
+                    "kind": "table_function",
+                    "name": "datadog.logs",
+                    "sql_reference": "datadog.logs",
+                    "sql_call_example": "datadog.logs(start => '<value>')",
+                    "description": "Datadog logs",
+                    "table_function": {
+                        "function_name": "logs",
+                        "arguments": [
+                            {"name": "start", "required": true, "values": []},
+                            {"name": "env", "required": false, "values": ["prod", "dev"]}
+                        ],
+                        "result_columns": [
+                            {
+                                "column_name": "message",
+                                "data_type": "Utf8",
+                                "is_nullable": false,
+                                "description": "Log message"
+                            },
+                            {
+                                "column_name": "host",
+                                "data_type": "Utf8",
+                                "is_nullable": true,
+                                "description": ""
+                            }
+                        ]
+                    }
+                }
+            ],
+            "total": 2,
+            "limit": 20,
+            "offset": 0,
+            "has_more": false
+        });
+
+        let text = catalog_items_text(&value).expect("catalog text");
+
+        assert_eq!(
+            text,
+            concat!(
+                "items=2 total=2 limit=20 offset=0 has_more=false\n",
+                "kind\tname\tsql_reference\tdescription\tdetails\tmatched_fields\n",
+                "table\tgithub.pulls\tgithub.pulls\tPull requests\t",
+                "table_name=pulls;required_filters=[owner,repo];guide=Use owner and repo filters.\t",
+                "description,table.name\n",
+                "table_function\tdatadog.logs\tdatadog.logs\tDatadog logs\t",
+                "function_name=logs;call=datadog.logs(start => '<value>');",
+                "args=start!,env=[prod,dev];result_columns=message:Utf8 Log message;host:Utf8?\t"
+            )
+        );
+    }
+
+    #[test]
+    fn columns_text_renders_column_flags() {
+        let value = json!({
+            "schema_name": "github",
+            "table_name": "pulls",
+            "columns": [
+                {
+                    "column_name": "number",
+                    "data_type": "Int64",
+                    "is_nullable": false,
+                    "is_virtual": false,
+                    "is_required_filter": false,
+                    "description": "Pull request number",
+                    "ordinal_position": 1
+                },
+                {
+                    "column_name": "owner",
+                    "data_type": "Utf8",
+                    "is_nullable": false,
+                    "is_virtual": true,
+                    "is_required_filter": true,
+                    "description": "Repository owner",
+                    "ordinal_position": 2,
+                    "matched_fields": ["name", "description"]
+                }
+            ],
+            "total": 2,
+            "limit": 50,
+            "offset": 0,
+            "has_more": false
+        });
+
+        let text = columns_text(&value).expect("columns text");
+
+        assert_eq!(
+            text,
+            concat!(
+                "table=github.pulls columns=2 total=2 limit=50 offset=0 has_more=false\n",
+                "ordinal\tcolumn_name\tdata_type\tis_nullable\tis_virtual\t",
+                "is_required_filter\tdescription\tmatched_fields\n",
+                "1\tnumber\tInt64\tfalse\tfalse\tfalse\tPull request number\t\n",
+                "2\towner\tUtf8\tfalse\ttrue\ttrue\tRepository owner\tname,description"
+            )
+        );
     }
 }
