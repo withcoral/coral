@@ -22,10 +22,11 @@ tables:
     request:
       method: GET
       path: "/{{input.OPENSEARCH_INDEX}}/_search"
-      query:
-        - name: size
-          from: literal
-          value: "100"
+      pagination:
+        type: offset
+        offset_param: from
+        limit_param: size
+        default_limit: 100
     response:
       rows_path:
         - hits
@@ -72,3 +73,7 @@ tables:
             - _source
             - kubernetes
             - pod_name
+
+test_queries:
+  - name: fetch_recent_logs
+    query: "SELECT timestamp, level, message FROM opensearch.logs LIMIT 5"
