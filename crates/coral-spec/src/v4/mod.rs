@@ -4,8 +4,8 @@
 )]
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 1;
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v2";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v3";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v3";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v4";
 
 mod artifacts;
 mod diagnostics;
