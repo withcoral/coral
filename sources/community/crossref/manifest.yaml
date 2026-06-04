@@ -36,7 +36,7 @@ test_queries:
   - SELECT id, label FROM crossref.types LIMIT 1
   - SELECT url, work_count FROM crossref.licenses LIMIT 1
   - SELECT doi, given, family, sequence FROM crossref.authors WHERE query = 'machine learning' LIMIT 5
-  - SELECT doi, article_title, unstructured FROM crossref.references WHERE query = 'machine learning' LIMIT 5
+  - SELECT source_doi, article_title, unstructured FROM crossref.references WHERE query = 'machine learning' LIMIT 5
 
 tables:
   # ---------------------------------------------------------------------------
@@ -85,7 +85,9 @@ tables:
     columns:
       - name: doi
         type: Utf8
-        expr: { kind: path, path: [DOI] }
+        expr:
+          kind: path
+          path: [DOI]
       - name: title
         type: Utf8
         expr:
@@ -95,7 +97,9 @@ tables:
           separator: ""
       - name: type
         type: Utf8
-        expr: { kind: path, path: [type] }
+        expr:
+          kind: path
+          path: [type]
       - name: created_date_parts
         type: Utf8
         description: >
@@ -116,10 +120,14 @@ tables:
           separator: ";"
       - name: is_referenced_by_count
         type: Int64
-        expr: { kind: path, path: [is-referenced-by-count] }
+        expr:
+          kind: path
+          path: [is-referenced-by-count]
       - name: publisher
         type: Utf8
-        expr: { kind: path, path: [publisher] }
+        expr:
+          kind: path
+          path: [publisher]
       - name: container_title
         type: Utf8
         expr:
@@ -143,21 +151,33 @@ tables:
           separator: ","
       - name: score
         type: Float64
-        expr: { kind: path, path: [score] }
+        description: >
+          Relevance score returned by Crossref. Only populated when a query=
+          filter is supplied; null for unfiltered scans.
+        expr:
+          kind: path
+          path: [score]
       - name: url
         type: Utf8
-        expr: { kind: path, path: [URL] }
+        expr:
+          kind: path
+          path: [URL]
 
   # ---------------------------------------------------------------------------
   # crossref.authors
   # — Surfaces author sub-fields directly from the works endpoint.
   #   Each row is one work; author data is joined as comma-separated strings.
+  #
+  # Note: the ORCID path key is uppercase ("ORCID") because that is how the
+  # Crossref API returns it. Do not change it to lowercase.
   # ---------------------------------------------------------------------------
   - name: authors
     description: >
       Author metadata surfaced from Crossref works. Each row is one work;
       the given, family, sequence, orcid, and affiliation columns contain
       comma-separated values across all authors on that work.
+      The query and filter columns echo the filter values you supplied —
+      they are not fields returned by the Crossref API.
       A query or filter is recommended to keep result sets manageable, but
       is not required — unfiltered scans are permitted up to Crossref's
       10,000-result offset cap.
@@ -188,13 +208,25 @@ tables:
     columns:
       - name: query
         type: Utf8
-        expr: { kind: path, path: [_query] }
+        description: >
+          Echoes the query filter value you supplied. Populated via
+          from_filter — not a field returned by the Crossref API.
+        expr:
+          kind: from_filter
+          key: query
       - name: filter
         type: Utf8
-        expr: { kind: path, path: [_filter] }
+        description: >
+          Echoes the filter filter value you supplied. Populated via
+          from_filter — not a field returned by the Crossref API.
+        expr:
+          kind: from_filter
+          key: filter
       - name: doi
         type: Utf8
-        expr: { kind: path, path: [DOI] }
+        expr:
+          kind: path
+          path: [DOI]
       - name: given
         type: Utf8
         description: Given (first) names of all authors, comma-separated.
@@ -221,7 +253,10 @@ tables:
           separator: ","
       - name: orcid
         type: Utf8
-        description: ORCID identifier URLs, comma-separated, if deposited.
+        description: >
+          ORCID identifier URLs, comma-separated, if deposited.
+          The Crossref API returns this field as "ORCID" (uppercase);
+          the path key below must remain uppercase to match.
         expr:
           kind: join_array_path
           path: [author]
@@ -240,12 +275,18 @@ tables:
   # crossref.references
   # — Surfaces reference sub-fields directly from the works endpoint.
   #   Each row is one work; reference data is joined as pipe-separated strings.
+  #
+  # Note: source_doi is the DOI of the citing work (the work whose reference
+  # list is being unpacked). The doi column contains pipe-separated DOIs of
+  # the works being cited, where resolved.
   # ---------------------------------------------------------------------------
   - name: references
     description: >
       Reference metadata surfaced from Crossref works. Each row is one work;
       the doi, article_title, author, journal_title, year, and unstructured
       columns contain pipe-separated values across all references in that work.
+      The query and filter columns echo the filter values you supplied —
+      they are not fields returned by the Crossref API.
       A query or filter is recommended to keep result sets manageable, but
       is not required — unfiltered scans are permitted up to Crossref's
       10,000-result offset cap.
@@ -276,16 +317,32 @@ tables:
     columns:
       - name: query
         type: Utf8
-        expr: { kind: path, path: [_query] }
+        description: >
+          Echoes the query filter value you supplied. Populated via
+          from_filter — not a field returned by the Crossref API.
+        expr:
+          kind: from_filter
+          key: query
       - name: filter
         type: Utf8
-        expr: { kind: path, path: [_filter] }
+        description: >
+          Echoes the filter filter value you supplied. Populated via
+          from_filter — not a field returned by the Crossref API.
+        expr:
+          kind: from_filter
+          key: filter
       - name: source_doi
         type: Utf8
-        expr: { kind: path, path: [DOI] }
+        description: DOI of the citing work whose reference list is being unpacked.
+        expr:
+          kind: path
+          path: [DOI]
       - name: doi
         type: Utf8
-        description: DOIs of referenced works, pipe-separated, where resolved.
+        description: >
+          DOIs of the referenced (cited) works, pipe-separated, where resolved.
+          Distinct from source_doi: source_doi is the citing work;
+          this column contains the works it cites.
         expr:
           kind: join_array_path
           path: [reference]
@@ -359,16 +416,24 @@ tables:
     columns:
       - name: id
         type: Int64
-        expr: { kind: path, path: [id] }
+        expr:
+          kind: path
+          path: [id]
       - name: primary_name
         type: Utf8
-        expr: { kind: path, path: [primary-name] }
+        expr:
+          kind: path
+          path: [primary-name]
       - name: location
         type: Utf8
-        expr: { kind: path, path: [location] }
+        expr:
+          kind: path
+          path: [location]
       - name: total_dois
         type: Int64
-        expr: { kind: path, path: [counts, total-dois] }
+        expr:
+          kind: path
+          path: [counts, total-dois]
 
   # ---------------------------------------------------------------------------
   # crossref.journals
@@ -404,10 +469,14 @@ tables:
           separator: ","
       - name: title
         type: Utf8
-        expr: { kind: path, path: [title] }
+        expr:
+          kind: path
+          path: [title]
       - name: publisher
         type: Utf8
-        expr: { kind: path, path: [publisher] }
+        expr:
+          kind: path
+          path: [publisher]
 
   # ---------------------------------------------------------------------------
   # crossref.funders
@@ -415,8 +484,11 @@ tables:
   - name: funders
     description: >
       Research funding bodies from the Crossref Funder Registry.
-      The /funders list endpoint does not return work_count;
-      use search_funders() for richer per-funder data.
+      The /funders list endpoint returns id, name, location, and uri only —
+      it does not return work_count or descendant counts. Those fields are
+      available on individual funder detail pages (/funders/{id}) but are
+      not exposed by this table or by search_funders(). Use search_funders()
+      to search funders by name.
     request:
       method: GET
       path: /funders
@@ -439,16 +511,24 @@ tables:
     columns:
       - name: id
         type: Utf8
-        expr: { kind: path, path: [id] }
+        expr:
+          kind: path
+          path: [id]
       - name: name
         type: Utf8
-        expr: { kind: path, path: [name] }
+        expr:
+          kind: path
+          path: [name]
       - name: location
         type: Utf8
-        expr: { kind: path, path: [location] }
+        expr:
+          kind: path
+          path: [location]
       - name: uri
         type: Utf8
-        expr: { kind: path, path: [uri] }
+        expr:
+          kind: path
+          path: [uri]
 
   # ---------------------------------------------------------------------------
   # crossref.types
@@ -463,10 +543,14 @@ tables:
     columns:
       - name: id
         type: Utf8
-        expr: { kind: path, path: [id] }
+        expr:
+          kind: path
+          path: [id]
       - name: label
         type: Utf8
-        expr: { kind: path, path: [label] }
+        expr:
+          kind: path
+          path: [label]
 
   # ---------------------------------------------------------------------------
   # crossref.licenses
@@ -499,10 +583,14 @@ tables:
     columns:
       - name: url
         type: Utf8
-        expr: { kind: path, path: [URL] }
+        expr:
+          kind: path
+          path: [URL]
       - name: work_count
         type: Int64
-        expr: { kind: path, path: [work-count] }
+        expr:
+          kind: path
+          path: [work-count]
 
 functions:
   - name: search_works
@@ -535,7 +623,9 @@ functions:
     columns:
       - name: doi
         type: Utf8
-        expr: { kind: path, path: [DOI] }
+        expr:
+          kind: path
+          path: [DOI]
       - name: title
         type: Utf8
         expr:
@@ -545,17 +635,27 @@ functions:
           separator: ""
       - name: score
         type: Float64
-        expr: { kind: path, path: [score] }
+        expr:
+          kind: path
+          path: [score]
       - name: publisher
         type: Utf8
-        expr: { kind: path, path: [publisher] }
+        expr:
+          kind: path
+          path: [publisher]
       - name: is_referenced_by_count
         type: Int64
-        expr: { kind: path, path: [is-referenced-by-count] }
+        expr:
+          kind: path
+          path: [is-referenced-by-count]
 
   - name: search_funders
     kind: search
-    description: Search the Crossref Funder Registry by funder name.
+    description: >
+      Search the Crossref Funder Registry by funder name. Returns id, name,
+      location, and uri — the same fields as crossref.funders. Use this
+      function to search funders by name; use crossref.funders to browse
+      or filter the full registry.
     search_limits:
       default_top_k: 20
       max_top_k: 100
@@ -583,13 +683,21 @@ functions:
     columns:
       - name: id
         type: Utf8
-        expr: { kind: path, path: [id] }
+        expr:
+          kind: path
+          path: [id]
       - name: name
         type: Utf8
-        expr: { kind: path, path: [name] }
+        expr:
+          kind: path
+          path: [name]
       - name: location
         type: Utf8
-        expr: { kind: path, path: [location] }
+        expr:
+          kind: path
+          path: [location]
       - name: uri
         type: Utf8
-        expr: { kind: path, path: [uri] }
+        expr:
+          kind: path
+          path: [uri]

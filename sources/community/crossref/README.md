@@ -12,8 +12,10 @@ Crossref indexes:
 - **Members** — publishers and learned societies that deposit works
 - **Journals** — every ISSN-identified title in the registry
 - **Funders** — funding bodies from the Crossref Funder Registry
-- **Licenses** — open-access metadata, embargo periods, content versions
+- **Licenses** — license URLs and aggregate work counts across all works
 - **Types** — controlled vocabulary for work types
+- **Authors** — author metadata surfaced from works (names, ORCIDs, affiliations)
+- **References** — reference lists surfaced from works (DOIs, titles, citation strings)
 
 ---
 
@@ -41,8 +43,10 @@ export CROSSREF_EMAIL=you@yourorg.org
 | `crossref.members` | Publisher and repository members of Crossref |
 | `crossref.journals` | ISSN-identified journal titles |
 | `crossref.funders` | Research funding bodies (Crossref Funder Registry) |
-| `crossref.licenses` | Content licenses declared on works |
+| `crossref.licenses` | License URLs and aggregate work counts declared on works |
 | `crossref.types` | Controlled vocabulary of work types |
+| `crossref.authors` | Author metadata surfaced from works (one row per work) |
+| `crossref.references` | Reference lists surfaced from works (one row per work) |
 
 ## Functions
 
@@ -67,17 +71,12 @@ Each row is one scholarly work.
 | `publisher` | text | Publisher name as deposited |
 | `container_title` | text | Journal or book series title |
 | `is_referenced_by_count` | integer | Number of Crossref works that cite this DOI |
-| `references_count` | integer | Number of references listed in this work |
-| `score` | float | Relevance score (present when `query=` is used) |
-| `published_print_year` | text | Print publication year |
-| `published_online_year` | text | Online publication year |
-| `issn` | text | ISSNs of the containing journal |
+| `score` | float | Relevance score; only populated when a `query=` filter is supplied, null otherwise |
+| `created_date_parts` | text | Deposit date as a date-parts string, e.g. `2024;3;15` |
+| `indexed_date_parts` | text | Last-indexed date as a date-parts string |
+| `issn` | text | ISSNs of the containing journal (comma-separated) |
 | `subject` | text | Discipline tags (comma-separated) |
-| `language` | text | BCP-47 language code |
-| `abstract` | text | Abstract text (may contain JATS XML) |
-| `license_url` | text | License URLs (comma-separated) |
-| `member` | text | Crossref member ID |
-| `prefix` | text | DOI prefix, e.g. `10.1038` |
+| `url` | text | Canonical URL for the work |
 
 **Available filters on `crossref.works`:**
 
@@ -98,11 +97,6 @@ Each row is one scholarly work.
 | `primary_name` | text | Name of the member organisation |
 | `location` | text | Country or city |
 | `total_dois` | integer | Total DOIs registered |
-| `current_dois` | integer | DOIs for content in the last two years |
-| `backfile_dois` | integer | DOIs for older backfile content |
-| `prefixes` | text | DOI prefixes owned (comma-separated) |
-| `coverage_orcids_current` | float | Fraction of current works with ORCID metadata |
-| `coverage_references_current` | float | Fraction of current works with reference lists |
 
 ---
 
@@ -113,34 +107,30 @@ Each row is one scholarly work.
 | `issn` | text | ISSNs (comma-separated) |
 | `title` | text | Journal title |
 | `publisher` | text | Publisher name |
-| `total_dois` | integer | Total DOIs registered for this journal |
-| `current_dois` | integer | DOIs for recent content |
-| `backfile_dois` | integer | DOIs for older content |
-| `coverage_abstracts_current` | float | Fraction of current articles with abstracts |
 
 ---
 
 ### `crossref.funders`
 
+Each row is one funding body from the Crossref Funder Registry. The `/funders` list endpoint returns id, name, location, and uri only — it does not expose work counts or descendant counts. Use `crossref.search_funders()` to search funders by name.
+
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | text | Funder DOI (e.g. `10.13039/100000001`) |
+| `id` | text | Numeric funder ID (e.g. `100000001`) |
 | `name` | text | Primary name of the funder |
-| `alt_names` | text | Alternative names (comma-separated) |
 | `location` | text | Country where the funder is based |
-| `work_count` | integer | Total works linked to this funder |
-| `descendant_work_count` | integer | Works linked to this funder and all descendants |
+| `uri` | text | Registry URI for this funder |
 
 ---
 
 ### `crossref.licenses`
 
+Each row is one distinct license URL with an aggregate work count. `content_version` and `delay_in_days` are per-work sub-fields and are not available at this aggregate endpoint.
+
 | Column | Type | Description |
 |--------|------|-------------|
-| `url` | text | Canonical URL of the license |
+| `url` | text | License URL as returned by the API (casing varies — may be uppercase or mixed case) |
 | `work_count` | integer | Number of works using this license |
-| `content_version` | text | `vor`, `am`, `tdm`, or `unspecified` |
-| `delay_in_days` | integer | Embargo period before the license applies |
 
 ---
 
@@ -150,6 +140,57 @@ Each row is one scholarly work.
 |--------|------|-------------|
 | `id` | text | Machine-readable type ID (e.g. `journal-article`) |
 | `label` | text | Human-readable label (e.g. `Journal Article`) |
+
+---
+
+### `crossref.authors`
+
+Each row is one work. Author fields contain comma-separated values across all authors on that work. The `query` and `filter` columns echo the filter values you supplied — they are not fields returned by the Crossref API.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `query` | text | Echoes the `query` filter value you supplied |
+| `filter` | text | Echoes the `filter` filter value you supplied |
+| `doi` | text | DOI of the work |
+| `given` | text | Given (first) names of all authors, comma-separated |
+| `family` | text | Family (last) names of all authors, comma-separated |
+| `sequence` | text | Author order values (`first`, `additional`), comma-separated |
+| `orcid` | text | ORCID identifier URLs, comma-separated, if deposited |
+| `affiliation` | text | Affiliation names across all authors, comma-separated |
+
+**Available filters on `crossref.authors`:**
+
+| Filter | Description |
+|--------|-------------|
+| `query` | Keyword search across titles, authors, and metadata |
+| `filter` | Raw Crossref filter string, e.g. `from-pub-date:2024-01` |
+
+---
+
+### `crossref.references`
+
+Each row is one work. Reference fields contain pipe-separated values across all references in that work. The `query` and `filter` columns echo the filter values you supplied — they are not fields returned by the Crossref API.
+
+`source_doi` is the DOI of the **citing** work (the work whose reference list is being unpacked). The `doi` column contains the DOIs of the **cited** works, pipe-separated where resolved.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `query` | text | Echoes the `query` filter value you supplied |
+| `filter` | text | Echoes the `filter` filter value you supplied |
+| `source_doi` | text | DOI of the citing work whose reference list is being unpacked |
+| `doi` | text | DOIs of the cited (referenced) works, pipe-separated, where resolved |
+| `article_title` | text | Titles of referenced articles, pipe-separated, where deposited |
+| `author` | text | First authors of referenced works, pipe-separated, where deposited |
+| `journal_title` | text | Journal titles of referenced works, pipe-separated, where deposited |
+| `year` | text | Publication years of referenced works, pipe-separated, where deposited |
+| `unstructured` | text | Raw citation strings, pipe-separated, where structured fields unavailable |
+
+**Available filters on `crossref.references`:**
+
+| Filter | Description |
+|--------|-------------|
+| `query` | Keyword search across titles, authors, and metadata |
+| `filter` | Raw Crossref filter string, e.g. `from-pub-date:2024-01` |
 
 ---
 
@@ -201,7 +242,7 @@ LIMIT 5;
 ### Look up a publisher
 
 ```sql
-SELECT id, primary_name, total_dois, current_dois
+SELECT id, primary_name, total_dois
 FROM crossref.members
 WHERE query = 'Elsevier'
 LIMIT 5;
@@ -209,12 +250,24 @@ LIMIT 5;
 
 ---
 
-### Find funders by country
+### Find authors on machine learning works
 
 ```sql
-SELECT id, name, location, work_count
-FROM crossref.search_funders(q => 'Japan')
-LIMIT 5;
+SELECT doi, given, family, sequence, orcid
+FROM crossref.authors
+WHERE query = 'machine learning'
+LIMIT 10;
+```
+
+---
+
+### Browse reference lists for recent works
+
+```sql
+SELECT source_doi, doi, article_title, year
+FROM crossref.references
+WHERE filter = 'from-pub-date:2024-01'
+LIMIT 10;
 ```
 
 ---
@@ -222,10 +275,20 @@ LIMIT 5;
 ### Check Creative Commons license coverage
 
 ```sql
-SELECT url, work_count, delay_in_days
+SELECT url, work_count
 FROM crossref.licenses
 WHERE query = 'creative commons'
 LIMIT 10;
+```
+
+---
+
+### Search funders by name
+
+```sql
+SELECT id, name, location
+FROM crossref.search_funders(q => 'Japan')
+LIMIT 5;
 ```
 
 ---
@@ -259,7 +322,8 @@ Quick checks:
 ```bash
 coral sql "SELECT doi, title FROM crossref.works LIMIT 1"
 coral sql "SELECT id, label FROM crossref.types LIMIT 5"
-coral sql "SELECT id, name FROM crossref.funders WHERE query = 'NIH' LIMIT 3"
+coral sql "SELECT doi, given, family FROM crossref.authors WHERE query = 'machine learning' LIMIT 3"
+coral sql "SELECT source_doi, article_title FROM crossref.references WHERE query = 'machine learning' LIMIT 3"
 ```
 
 ---
@@ -267,10 +331,12 @@ coral sql "SELECT id, name FROM crossref.funders WHERE query = 'NIH' LIMIT 3"
 ## Limitations
 
 - **Read-only.** No writes or mutations.
-- `work_count` on `crossref.funders` may return null for some entries — this is a Crossref API quirk.
-- The `abstract` field may contain raw JATS XML instead of plain text.
 - `is_referenced_by_count` only reflects works registered within Crossref, not all citations globally.
-- Large scans without filters can be slow. Use `query=`, `filter=`, or `LIMIT` to keep things efficient.
+- `score` in `crossref.works` is only populated when a `query=` filter is supplied; it is null for unfiltered or filter-only scans.
+- `crossref.funders` and `crossref.search_funders()` both expose id, name, location, and uri only. The `/funders` list endpoint does not return work counts or descendant counts; those are available only via individual funder detail pages (`/funders/{id}`), which this source does not expose.
+- `crossref.licenses` aggregates by license URL only; `content_version` and `delay_in_days` are per-work sub-fields not available at this endpoint.
+- Large scans without filters can be slow. Use a `query` filter, a `filter` filter, or `LIMIT` to keep things efficient.
+- Crossref caps offset-based pagination at 10,000 results on `/works`-backed tables (`crossref.works`, `crossref.authors`, `crossref.references`).
 
 ---
 
