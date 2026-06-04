@@ -1,8 +1,10 @@
 //! Native file table provider backed by local files or object-store URLs.
 
 mod error;
+mod file_groups;
 mod json;
 mod listing;
+mod metadata;
 mod parquet_schema;
 mod partitions;
 mod provider;

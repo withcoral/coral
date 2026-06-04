@@ -10,7 +10,7 @@
     ".": {
       "package-name": "coral",
       "extra-files": ["Cargo.toml"],
-      "exclude-paths": ["sources/community"]
+      "exclude-paths": ["sources/community", "sources/core-v4"]
     }
   },
   "bootstrap-sha": "51de7ec4e927d627e02ada30d258921eb258d8e8"
