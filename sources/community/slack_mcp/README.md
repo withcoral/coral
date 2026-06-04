@@ -4,7 +4,7 @@
 **Source:** Slack official remote MCP server
 **Backend:** MCP (Streamable HTTP, native)
 **Server URL:** `https://mcp.slack.com/mcp`
-**Surface:** 2 tables + 9 functions wrapping read-oriented MCP tools
+**Surface:** 1 table + 11 functions wrapping read-oriented MCP tools
 
 This connector exposes Slack's official MCP server as a Coral source. It is
 separate from the bundled `slack` HTTP source and keeps the MCP output intact:
@@ -95,12 +95,11 @@ Provide:
 Coral opens the Slack OAuth page, exchanges the authorization code for a user
 access token, and stores that token as the source secret.
 
-## Tables
+## Table
 
 | Table | MCP tool | Description |
 |---|---|---|
-| `channels` | `list_channels` | Channels visible to the authenticated user |
-| `emoji` | `list_emoji` | Custom emoji available in the workspace |
+| `user_profile` | `slack_read_user_profile` | Authenticated Slack user profile |
 
 ## Functions
 
@@ -108,15 +107,17 @@ All functions require named arguments.
 
 | Function | MCP tool | Required args | Description |
 |---|---|---|---|
-| `search_messages` | `search_messages` | `query` | Search messages visible to the authenticated user |
-| `search_channels` | `search_channels` | `query` | Search channels by name or description |
-| `search_users` | `search_users` | `query` | Search users by name, email, or user ID |
-| `search_files` | `search_files` | `query` | Search Slack files |
-| `read_channel` | `read_channel` | `channel_id` | Read recent messages from a channel or conversation |
-| `read_thread` | `read_thread` | `channel_id`, `message_ts` | Read replies in a thread |
-| `read_user_profile` | `read_user_profile` | `user_id` | Read a user profile |
-| `list_channel_members` | `list_channel_members` | `channel_id` | List channel members |
-| `canvas_read` | `canvas_read` | `canvas_id` | Read a canvas |
+| `search_public` | `slack_search_public` | `query` | Search messages and files in public channels |
+| `search_messages` | `slack_search_public_and_private` | `query` | Search messages and files visible to the authenticated user |
+| `search_channels` | `slack_search_channels` | `query` | Search channels by name or description |
+| `search_users` | `slack_search_users` | `query` | Search users by name, email, or profile attributes |
+| `search_emojis` | `slack_search_emojis` | `query` | Search custom emoji by name |
+| `read_channel` | `slack_read_channel` | `channel_id` | Read recent messages from a channel or conversation |
+| `read_thread` | `slack_read_thread` | `channel_id`, `message_ts` | Read replies in a thread |
+| `read_user_profile` | `slack_read_user_profile` | none | Read a user profile, defaulting to the authenticated user |
+| `list_channel_members` | `slack_list_channel_members` | `channel_id` | List channel members |
+| `read_canvas` | `slack_read_canvas` | `canvas_id` | Read a canvas |
+| `read_file` | `slack_read_file` | `file_id` | Read file content and metadata |
 
 ## Examples
 

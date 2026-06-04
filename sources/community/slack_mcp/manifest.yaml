@@ -91,28 +91,11 @@ test_queries:
   - SELECT result FROM slack_mcp.search_channels(query => 'general') LIMIT 1
 
 tables:
-  - name: channels
+  - name: user_profile
     description: >-
-      Slack channels visible to the authenticated user, returned by the
-      Slack MCP list_channels tool.
-    tool: list_channels
-    columns:
-      - name: result
-        type: Utf8
-        description: Slack MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw Slack MCP response row.
-        expr:
-          kind: current_row
-
-  - name: emoji
-    description: >-
-      Custom emoji available in the workspace, returned by the Slack MCP
-      list_emoji tool.
-    tool: list_emoji
+      Current authenticated Slack user's profile, returned by the Slack MCP
+      slack_read_user_profile tool.
+    tool: slack_read_user_profile
     columns:
       - name: result
         type: Utf8
@@ -126,29 +109,127 @@ tables:
           kind: current_row
 
 functions:
-  - name: search_messages
-    tool: search_messages
-    description: Search messages across Slack content visible to the authenticated user.
+  - name: search_public
+    tool: slack_search_public
+    description: Search messages and files in public Slack channels.
     args:
       - name: query
         required: true
         bind:
           arg: query
+      - name: content_types
+        bind:
+          arg: content_types
+      - name: context_channel_id
+        bind:
+          arg: context_channel_id
+      - name: cursor
+        bind:
+          arg: cursor
+      - name: limit
+        bind:
+          arg: limit
+      - name: after
+        bind:
+          arg: after
+      - name: before
+        bind:
+          arg: before
+      - name: include_bots
+        bind:
+          arg: include_bots
       - name: sort
         values:
-          - timestamp
           - score
+          - timestamp
         bind:
           arg: sort
       - name: sort_dir
         values:
-          - desc
           - asc
+          - desc
         bind:
           arg: sort_dir
-      - name: count
+      - name: response_format
+        values:
+          - detailed
+          - concise
         bind:
-          arg: count
+          arg: response_format
+      - name: include_context
+        bind:
+          arg: include_context
+      - name: max_context_length
+        bind:
+          arg: max_context_length
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_messages
+    tool: slack_search_public_and_private
+    description: Search messages and files visible to the authenticated user.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: channel_types
+        bind:
+          arg: channel_types
+      - name: content_types
+        bind:
+          arg: content_types
+      - name: context_channel_id
+        bind:
+          arg: context_channel_id
+      - name: cursor
+        bind:
+          arg: cursor
+      - name: limit
+        bind:
+          arg: limit
+      - name: after
+        bind:
+          arg: after
+      - name: before
+        bind:
+          arg: before
+      - name: include_bots
+        bind:
+          arg: include_bots
+      - name: sort
+        values:
+          - score
+          - timestamp
+        bind:
+          arg: sort
+      - name: sort_dir
+        values:
+          - asc
+          - desc
+        bind:
+          arg: sort_dir
+      - name: response_format
+        values:
+          - detailed
+          - concise
+        bind:
+          arg: response_format
+      - name: include_context
+        bind:
+          arg: include_context
+      - name: max_context_length
+        bind:
+          arg: max_context_length
     columns:
       - name: result
         type: Utf8
@@ -162,13 +243,31 @@ functions:
           kind: current_row
 
   - name: search_channels
-    tool: search_channels
+    tool: slack_search_channels
     description: Search Slack channels by name or description.
     args:
       - name: query
         required: true
         bind:
           arg: query
+      - name: channel_types
+        bind:
+          arg: channel_types
+      - name: cursor
+        bind:
+          arg: cursor
+      - name: limit
+        bind:
+          arg: limit
+      - name: response_format
+        values:
+          - detailed
+          - concise
+        bind:
+          arg: response_format
+      - name: include_archived
+        bind:
+          arg: include_archived
     columns:
       - name: result
         type: Utf8
@@ -182,13 +281,25 @@ functions:
           kind: current_row
 
   - name: search_users
-    tool: search_users
-    description: Search Slack users by name, email, or user ID.
+    tool: slack_search_users
+    description: Search Slack users by name, email, or profile attributes.
     args:
       - name: query
         required: true
         bind:
           arg: query
+      - name: cursor
+        bind:
+          arg: cursor
+      - name: limit
+        bind:
+          arg: limit
+      - name: response_format
+        values:
+          - detailed
+          - concise
+        bind:
+          arg: response_format
     columns:
       - name: result
         type: Utf8
@@ -201,9 +312,9 @@ functions:
         expr:
           kind: current_row
 
-  - name: search_files
-    tool: search_files
-    description: Search files shared in Slack.
+  - name: search_emojis
+    tool: slack_search_emojis
+    description: Search custom Slack emoji by name.
     args:
       - name: query
         required: true
@@ -222,22 +333,31 @@ functions:
           kind: current_row
 
   - name: read_channel
-    tool: read_channel
+    tool: slack_read_channel
     description: Read recent messages from a Slack channel or conversation.
     args:
       - name: channel_id
         required: true
         bind:
           arg: channel_id
+      - name: limit
+        bind:
+          arg: limit
+      - name: cursor
+        bind:
+          arg: cursor
       - name: oldest
         bind:
           arg: oldest
       - name: latest
         bind:
           arg: latest
-      - name: limit
+      - name: response_format
+        values:
+          - detailed
+          - concise
         bind:
-          arg: limit
+          arg: response_format
     columns:
       - name: result
         type: Utf8
@@ -251,7 +371,7 @@ functions:
           kind: current_row
 
   - name: read_thread
-    tool: read_thread
+    tool: slack_read_thread
     description: Read replies in a Slack thread.
     args:
       - name: channel_id
@@ -265,6 +385,21 @@ functions:
       - name: limit
         bind:
           arg: limit
+      - name: cursor
+        bind:
+          arg: cursor
+      - name: oldest
+        bind:
+          arg: oldest
+      - name: latest
+        bind:
+          arg: latest
+      - name: response_format
+        values:
+          - detailed
+          - concise
+        bind:
+          arg: response_format
     columns:
       - name: result
         type: Utf8
@@ -278,13 +413,21 @@ functions:
           kind: current_row
 
   - name: read_user_profile
-    tool: read_user_profile
-    description: Read a Slack user's profile.
+    tool: slack_read_user_profile
+    description: Read a Slack user's profile, defaulting to the authenticated user.
     args:
       - name: user_id
-        required: true
         bind:
           arg: user_id
+      - name: include_locale
+        bind:
+          arg: include_locale
+      - name: response_format
+        values:
+          - detailed
+          - concise
+        bind:
+          arg: response_format
     columns:
       - name: result
         type: Utf8
@@ -298,7 +441,7 @@ functions:
           kind: current_row
 
   - name: list_channel_members
-    tool: list_channel_members
+    tool: slack_list_channel_members
     description: List members in a Slack channel or conversation.
     args:
       - name: channel_id
@@ -308,6 +451,22 @@ functions:
       - name: limit
         bind:
           arg: limit
+      - name: cursor
+        bind:
+          arg: cursor
+      - name: response_format
+        values:
+          - detailed
+          - concise
+          - ids_only
+        bind:
+          arg: response_format
+      - name: include_deleted
+        bind:
+          arg: include_deleted
+      - name: include_bots
+        bind:
+          arg: include_bots
     columns:
       - name: result
         type: Utf8
@@ -320,14 +479,34 @@ functions:
         expr:
           kind: current_row
 
-  - name: canvas_read
-    tool: canvas_read
+  - name: read_canvas
+    tool: slack_read_canvas
     description: Read a Slack canvas.
     args:
       - name: canvas_id
         required: true
         bind:
           arg: canvas_id
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: read_file
+    tool: slack_read_file
+    description: Read a Slack file by file ID.
+    args:
+      - name: file_id
+        required: true
+        bind:
+          arg: file_id
     columns:
       - name: result
         type: Utf8
