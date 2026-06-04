@@ -217,7 +217,41 @@ components:
         .as_bytes(),
     )
     .expect("recursive schema imports");
-    assert!(ir.types.iter().any(|ty| ty.id == "tree"));
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.type_ref, "tree");
+
+    let types = ir
+        .types
+        .iter()
+        .map(|ty| (ty.id.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+    let tree = types.get("tree").expect("tree type");
+    let IrTypeShape::Object { fields } = &tree.shape else {
+        panic!("tree should import as an object: {:?}", tree.shape);
+    };
+    let fields = fields
+        .iter()
+        .map(|field| (field.name.as_str(), field))
+        .collect::<BTreeMap<_, _>>();
+
+    let id = fields.get("id").expect("id field");
+    assert_eq!(id.type_ref, "tree_id");
+    assert!(matches!(
+        types.get(id.type_ref.as_str()).expect("id type").shape,
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+
+    let children = fields.get("children").expect("children field");
+    let children_type = types
+        .get(children.type_ref.as_str())
+        .expect("children type");
+    let IrTypeShape::List { item_type_ref } = &children_type.shape else {
+        panic!(
+            "children should import as a list type: {:?}",
+            children_type.shape
+        );
+    };
+    assert_eq!(item_type_ref, "tree");
 }
 
 #[test]
