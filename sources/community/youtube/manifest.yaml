@@ -95,7 +95,10 @@ tables:
       - name: snippet__custom_url
         type: Utf8
         nullable: true
-        description: "Channel's unique handle (e.g. @channelname)"
+        description: >-
+          Channel's custom URL (legacy /c/ or /user/ slug, e.g.
+          "GoogleDevelopers"). NOT the @-handle — use forHandle /
+          channels_by_handle for that.
         expr:
           kind: path
           path:
@@ -173,9 +176,11 @@ tables:
     description: Look up a YouTube channel by @-handle
     guide: |
       Returns metadata, statistics, and content details for a YouTube
-      channel looked up by @-handle. `handle` is required and must be the
-      @-prefixed handle (e.g. `@DynamoGaming`). Returns at most one row;
-      returns 0 rows if the handle does not exist.
+      channel looked up by handle. `handle` is required and accepts the
+      handle either with or without a leading `@` — e.g. `@DynamoGaming`
+      or `DynamoGaming` both work (YouTube's `forHandle` parameter takes
+      either form). Returns at most one row; returns 0 rows if the handle
+      does not exist.
 
       To look up by channel ID instead (or multiple channels at once),
       use `youtube.channels`.
@@ -240,7 +245,10 @@ tables:
       - name: snippet__custom_url
         type: Utf8
         nullable: true
-        description: "Channel's unique handle (e.g. @channelname)"
+        description: >-
+          Channel's custom URL (legacy /c/ or /user/ slug, e.g.
+          "GoogleDevelopers"). NOT the @-handle — use forHandle /
+          channels_by_handle for that.
         expr:
           kind: path
           path:
@@ -737,6 +745,14 @@ tables:
       keep one query to one call; add an explicit LIMIT for larger scans. To
       browse a channel's videos against the general quota (1 unit/call), use
       `youtube.playlist_items` instead.
+
+      Provider cap on channel-restricted video search: YouTube caps results at
+      500 when `channel_id` is combined with `type = 'video'` (the
+      `forContentOwner` / `forDeveloper` / `forMine` escapes require OAuth and
+      are not exposed here). To enumerate every video in a channel, fetch the
+      uploads playlist ID from `youtube.channels` /
+      `youtube.channels_by_handle` and query `youtube.playlist_items` with it
+      — that path has no 500-row cap.
 
       The result `id__video_id`, `id__channel_id`, or `id__playlist_id`
       column will be populated depending on the result type; the others will

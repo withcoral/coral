@@ -149,7 +149,9 @@ comma-separated list of up to 50.
 Channel metadata and statistics, looked up by @-handle. Returns exactly
 one row — zero if the handle does not exist.
 
-**Required filter:** `handle` — @-prefixed channel handle, e.g. `@DynamoGaming`
+**Required filter:** `handle` — the channel's handle, with or without a
+leading `@`. YouTube's `forHandle` parameter accepts both forms — e.g.
+`@DynamoGaming` and `DynamoGaming` are equivalent.
 
 ### `youtube.playlist_items`
 
@@ -271,11 +273,17 @@ LIMIT 20;
 - **Read-only.** This source does not create, update, or delete YouTube
   resources.
 - **Public data only.** The API key only accesses public content. Owner-scoped
-  parameters (`mine=true`, `managedByMe=true`), private/unlisted videos you
-  don't own, watch history, and the authenticated user's likes/subscriptions
-  require OAuth 2.0 per the
+  parameters (`mine=true`, `managedByMe=true`), watch history, and the
+  authenticated user's likes/subscriptions require OAuth 2.0 per the
   [YouTube auth guide](https://developers.google.com/youtube/v3/guides/authentication)
   and are not supported in v1.
+  - **Private videos** require the owner's OAuth credentials — not accessible
+    with an API key at all.
+  - **Unlisted videos** *are* viewable by anyone with a direct link, so
+    `youtube.videos WHERE video_id = '<id>'` works with an API key once you
+    know the ID. What an API key cannot do is **discover** them: unlisted
+    videos don't appear in `youtube.search` results, channel uploads via
+    `youtube.playlist_items`, or other public listings.
 - **Fields hidden on otherwise-public content.** Some columns can come back
   empty or zero even with a valid API key:
   - `statistics__dislike_count` has been private since December 2021.
