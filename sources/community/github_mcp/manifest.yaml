@@ -1,0 +1,876 @@
+dsl_version: 3
+name: github_mcp
+version: 0.1.0
+description: >-
+  Query GitHub repositories, issues, pull requests, users, and repository
+  content through GitHub's official remote MCP server.
+backend: mcp
+
+inputs:
+  GITHUB_MCP_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Connect with GitHub OAuth or paste a personal access token. The OAuth
+      methods request the `repo`, `read:org`, `read:user`, and `user:email`
+      scopes used by the read-oriented GitHub MCP tools exposed by this source.
+
+      See GitHub's MCP server docs:
+      https://github.com/github/github-mcp-server
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitHub device code
+          description: Sign in to GitHub with a device code.
+          hint: |
+            Signs you in through GitHub, with no app setup or client secret
+            needed. Requests the `repo`, `read:org`, `read:user`, and
+            `user:email` scopes. To use your own GitHub app instead, set
+            GITHUB_MCP_OAUTH_CLIENT_ID to its Client ID and enable device flow
+            on the app.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://github.com/login/device/code
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Iv23liJHis6Bs8NO1DAI
+                input: GITHUB_MCP_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+        - type: oauth
+          label: Connect with GitHub OAuth app
+          description: Sign in through a GitHub OAuth app in your browser.
+          hint: |
+            Uses your own GitHub OAuth app. Register one with its Authorization
+            callback URL set to `http://127.0.0.1:53682/oauth/callback`, then
+            enter the app's Client ID and Client secret below. Requests the
+            `repo`, `read:org`, `read:user`, and `user:email` scopes.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://github.com/login/oauth/authorize
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Iv23liJHis6Bs8NO1DAI
+                input: GITHUB_MCP_OAUTH_CLIENT_ID
+              secret:
+                input: GITHUB_MCP_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+        - type: source_config
+          label: Paste GitHub token
+          description: Paste an existing GitHub token or provide GITHUB_MCP_ACCESS_TOKEN.
+          hint: |
+            If you use GitHub CLI, run `gh auth token`. Otherwise create a
+            personal access token with read access to the repositories and
+            organizations you query. Paste the raw token value, without a
+            `Bearer ` prefix.
+
+server:
+  transport: streamable_http
+  url: https://api.githubcopilot.com/mcp/x/all/readonly
+  auth:
+    type: bearer
+    from: input
+    key: GITHUB_MCP_ACCESS_TOKEN
+
+test_queries:
+  - SELECT result FROM github_mcp.me LIMIT 1
+
+tables:
+  - name: me
+    description: Authenticated GitHub user profile returned by the get_me tool.
+    tool: get_me
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+functions:
+  - name: get_teams
+    tool: get_teams
+    description: Get teams for a GitHub user, defaulting to the authenticated user.
+    args:
+      - name: user
+        bind:
+          arg: user
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: get_team_members
+    tool: get_team_members
+    description: Get members of a team in a GitHub organization.
+    args:
+      - name: org
+        required: true
+        bind:
+          arg: org
+      - name: team_slug
+        required: true
+        bind:
+          arg: team_slug
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: issue_read
+    tool: issue_read
+    description: Read issue details, comments, sub-issues, labels, or events.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: issue_number
+        required: true
+        bind:
+          arg: issue_number
+      - name: method
+        required: true
+        values:
+          - get
+          - get_comments
+          - get_sub_issues
+          - get_labels
+          - get_events
+        bind:
+          arg: method
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+      - name: after
+        bind:
+          arg: after
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: list_issues
+    tool: list_issues
+    description: List issues in a repository.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: state
+        values:
+          - open
+          - closed
+        bind:
+          arg: state
+      - name: since
+        bind:
+          arg: since
+      - name: order_by
+        bind:
+          arg: orderBy
+      - name: direction
+        values:
+          - ASC
+          - DESC
+        bind:
+          arg: direction
+      - name: per_page
+        bind:
+          arg: perPage
+      - name: after
+        bind:
+          arg: after
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_issues
+    tool: search_issues
+    description: Search issues using GitHub issue search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: owner
+        bind:
+          arg: owner
+      - name: repo
+        bind:
+          arg: repo
+      - name: sort
+        bind:
+          arg: sort
+      - name: order
+        values:
+          - asc
+          - desc
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: list_pull_requests
+    tool: list_pull_requests
+    description: List pull requests in a repository.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: state
+        values:
+          - open
+          - closed
+          - all
+        bind:
+          arg: state
+      - name: base
+        bind:
+          arg: base
+      - name: head
+        bind:
+          arg: head
+      - name: sort
+        bind:
+          arg: sort
+      - name: direction
+        values:
+          - asc
+          - desc
+        bind:
+          arg: direction
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: pull_request_read
+    tool: pull_request_read
+    description: Read pull request details, diff, files, comments, reviews, or checks.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: pull_number
+        required: true
+        bind:
+          arg: pullNumber
+      - name: method
+        required: true
+        values:
+          - get
+          - get_diff
+          - get_status
+          - get_files
+          - get_review_comments
+          - get_reviews
+          - get_comments
+          - get_check_runs
+        bind:
+          arg: method
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+      - name: after
+        bind:
+          arg: after
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_pull_requests
+    tool: search_pull_requests
+    description: Search pull requests using GitHub pull request search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: owner
+        bind:
+          arg: owner
+      - name: repo
+        bind:
+          arg: repo
+      - name: sort
+        bind:
+          arg: sort
+      - name: order
+        values:
+          - asc
+          - desc
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: get_repository_tree
+    tool: get_repository_tree
+    description: Get a repository tree, optionally filtered by path prefix.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: tree_sha
+        bind:
+          arg: tree_sha
+      - name: path_filter
+        bind:
+          arg: path_filter
+      - name: recursive
+        bind:
+          arg: recursive
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: get_commit
+    tool: get_commit
+    description: Get details for a repository commit.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: sha
+        required: true
+        bind:
+          arg: sha
+      - name: detail
+        values:
+          - none
+          - stats
+          - full_patch
+        bind:
+          arg: detail
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: get_file_contents
+    tool: get_file_contents
+    description: Get file or directory contents from a repository.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: path
+        bind:
+          arg: path
+      - name: ref
+        bind:
+          arg: ref
+      - name: sha
+        bind:
+          arg: sha
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: list_branches
+    tool: list_branches
+    description: List branches in a repository.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: list_commits
+    tool: list_commits
+    description: List repository commits.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: sha
+        bind:
+          arg: sha
+      - name: path
+        bind:
+          arg: path
+      - name: author
+        bind:
+          arg: author
+      - name: since
+        bind:
+          arg: since
+      - name: until
+        bind:
+          arg: until
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: list_releases
+    tool: list_releases
+    description: List repository releases.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: get_latest_release
+    tool: get_latest_release
+    description: Get the latest release for a repository.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: get_release_by_tag
+    tool: get_release_by_tag
+    description: Get a repository release by tag.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: tag
+        required: true
+        bind:
+          arg: tag
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: list_tags
+    tool: list_tags
+    description: List repository tags.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_code
+    tool: search_code
+    description: Search code using GitHub code search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: sort
+        values:
+          - indexed
+        bind:
+          arg: sort
+      - name: order
+        values:
+          - asc
+          - desc
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_commits
+    tool: search_commits
+    description: Search commits using GitHub commit search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: sort
+        bind:
+          arg: sort
+      - name: order
+        values:
+          - asc
+          - desc
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_repositories
+    tool: search_repositories
+    description: Search repositories using GitHub repository search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: minimal_output
+        bind:
+          arg: minimal_output
+      - name: sort
+        bind:
+          arg: sort
+      - name: order
+        values:
+          - asc
+          - desc
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_users
+    tool: search_users
+    description: Search users using GitHub user search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: sort
+        bind:
+          arg: sort
+      - name: order
+        values:
+          - asc
+          - desc
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    columns:
+      - name: result
+        type: Utf8
+        description: GitHub MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw GitHub MCP response row.
+        expr:
+          kind: current_row
