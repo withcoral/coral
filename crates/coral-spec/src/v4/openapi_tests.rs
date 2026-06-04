@@ -221,6 +221,66 @@ components:
 }
 
 #[test]
+fn importer_preserves_ref_backed_property_descriptions() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: property_descriptions
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items/{id}:
+    get:
+      operationId: items/get
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {$ref: '#/components/schemas/status'}
+components:
+  schemas:
+    status:
+      type: string
+      description: Current lifecycle status.
+"
+        .as_bytes(),
+    )
+    .expect("property descriptions import");
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("row type imported as {:?}", row_type.shape);
+    };
+    let status = fields
+        .iter()
+        .find(|field| field.name == "status")
+        .expect("status field");
+    assert_eq!(status.description, "Current lifecycle status.");
+}
+
+#[test]
 fn importer_resolves_referenced_response_objects() {
     let manifest = parse_source_manifest_yaml(
         r"

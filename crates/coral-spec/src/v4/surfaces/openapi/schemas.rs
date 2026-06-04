@@ -175,14 +175,28 @@ impl OpenApiImporter<'_> {
                     type_ref,
                     required: required.contains(name),
                     nullable: true,
-                    description: schema
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
+                    description: self.field_description(schema),
                 }
             })
             .collect()
+    }
+
+    fn field_description(&self, schema: &Value) -> String {
+        if let Some(description) = schema.get("description").and_then(Value::as_str) {
+            return description.to_string();
+        }
+        let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
+            return String::new();
+        };
+        let Some(pointer) = reference.strip_prefix('#') else {
+            return String::new();
+        };
+        self.document
+            .pointer(pointer)
+            .and_then(|resolved| resolved.get("description"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 }
 
