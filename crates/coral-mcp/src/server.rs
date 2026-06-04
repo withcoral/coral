@@ -7,8 +7,8 @@ use coral_api::v1::{
     TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
-    decode_execute_sql_response, default_workspace,
+    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient,
+    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -37,9 +37,8 @@ use crate::{
     telemetry,
 };
 
-const LIST_TABLES_COUNT_LIMIT: u32 = 1;
-const LIST_TABLE_FUNCTIONS_COUNT_LIMIT: u32 = 1;
 const LIST_CATALOG_UNBOUNDED_LIMIT: u32 = 0;
+const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
@@ -179,48 +178,33 @@ impl CoralMcpServer {
             .into_inner())
     }
 
-    async fn load_table_count(&self) -> Result<usize, tonic::Status> {
-        self.load_catalog(
-            None,
-            CATALOG_KIND_TABLE,
-            PaginationRequest {
-                limit: LIST_TABLES_COUNT_LIMIT,
-                offset: 0,
-            },
-        )
-        .await
-        .map(|response| {
-            response
-                .pagination
-                .map_or(0, |pagination| pagination.total_count as usize)
-        })
-    }
-
-    async fn load_table_function_count(&self) -> Result<usize, tonic::Status> {
-        self.load_catalog(
-            None,
-            CATALOG_KIND_TABLE_FUNCTION,
-            PaginationRequest {
-                limit: LIST_TABLE_FUNCTIONS_COUNT_LIMIT,
-                offset: 0,
-            },
-        )
-        .await
-        .map(|response| {
-            response
-                .pagination
-                .map_or(0, |pagination| pagination.total_count as usize)
-        })
+    async fn load_catalog_counts(&self) -> Result<(usize, usize), tonic::Status> {
+        // One item is enough: the app returns per-kind counts before pagination.
+        let response = self
+            .load_catalog(
+                None,
+                CATALOG_KIND_ALL,
+                PaginationRequest {
+                    limit: LIST_CATALOG_COUNT_LIMIT,
+                    offset: 0,
+                },
+            )
+            .await?;
+        let counts = response
+            .counts
+            .ok_or_else(|| tonic::Status::internal("catalog response missing counts"))?;
+        Ok((
+            usize::try_from(counts.table_count).unwrap_or(usize::MAX),
+            usize::try_from(counts.table_function_count).unwrap_or(usize::MAX),
+        ))
     }
 
     async fn load_sources_and_catalog_counts(
         &self,
     ) -> Result<(Vec<Source>, usize, usize), tonic::Status> {
-        tokio::try_join!(
-            self.load_sources(),
-            self.load_table_count(),
-            self.load_table_function_count()
-        )
+        let (sources, (table_count, table_function_count)) =
+            tokio::try_join!(self.load_sources(), self.load_catalog_counts())?;
+        Ok((sources, table_count, table_function_count))
     }
 
     async fn load_sources_and_guide_catalog(
@@ -242,7 +226,7 @@ impl CoralMcpServer {
             .into_inner();
         let result = decode_execute_sql_response(&response)
             .map_err(|error| tonic::Status::internal(error.to_string()))?;
-        batches_to_json_rows(result.batches())
+        batches_to_json_rows_json_safe_numbers(result.batches())
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
@@ -473,9 +457,10 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (visible_table_count, visible_function_count) =
-                tokio::try_join!(self.load_table_count(), self.load_table_function_count())
-                    .map_err(|status| status_to_error_data(&status))?;
+            let (visible_table_count, visible_function_count) = self
+                .load_catalog_counts()
+                .await
+                .map_err(|status| status_to_error_data(&status))?;
             let mut tools = vec![
                 sql_tool(visible_table_count),
                 list_catalog_tool(visible_table_count, visible_function_count),

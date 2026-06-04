@@ -58,6 +58,19 @@ For deeper introspection, query `coral.tables`, `coral.columns`, `coral.filters`
 
 Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
 
+## Query result format
+
+The `sql` tool returns rows as a JSON array of objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
+
+- `Int64` (`BIGINT`) and `UInt64`
+- `Decimal32`, `Decimal64`, `Decimal128`, and `Decimal256`
+
+This applies wherever these types appear, including nested inside `Struct`, `List`, and `Map` columns. The column's declared SQL type does not change — `describe_table`, `list_columns`, and `coral.columns` still report `Int64` or `Decimal(p, s)`; only the JSON encoding of the value is a string. A `BIGINT` `user_id`, for example, comes back as `{ "user_id": "-8504475857937456387" }`.
+
+Coral does this because MCP uses JSON-RPC, and many clients — JavaScript/TypeScript `JSON.parse` and most MCP hosts — decode JSON numbers as IEEE-754 doubles. Values beyond 2^53 silently lose precision when read as a number.
+
+The CLI is unaffected: `coral sql --format json` keeps emitting these types as JSON numbers.
+
 ## Client setup
 
 Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`.
