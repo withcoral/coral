@@ -1,0 +1,341 @@
+dsl_version: 3
+name: slack_mcp
+version: 0.1.0
+description: >-
+  Query Slack messages, channels, files, canvases, users, and workspace
+  metadata through Slack's official remote MCP server.
+backend: mcp
+
+inputs:
+  SLACK_MCP_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Slack MCP OAuth access token. Paste the token value itself, without a
+      `Bearer ` prefix, or choose "Connect with Slack MCP" during interactive
+      setup with a Slack app client ID and client secret.
+
+      See Slack's MCP server docs:
+      https://docs.slack.dev/ai/slack-mcp-server/
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Slack MCP
+          description: >-
+            Open a browser, authorize a Slack app with MCP enabled, and store
+            the resulting user access token.
+          hint: |
+            Provide the client ID and client secret from a Slack app that is
+            either internal or published in the Slack Marketplace, has Model
+            Context Protocol enabled under Agents & AI Apps, and has this
+            redirect URL registered:
+            http://localhost:53684/oauth/callback
+
+            The OAuth flow prompts for Slack user scopes covering the
+            read-oriented MCP tools exposed by this source: search:read.public,
+            search:read.private, search:read.mpim, search:read.im,
+            search:read.files, search:read.users, channels:history,
+            groups:history, mpim:history, im:history, channels:read,
+            groups:read, mpim:read, users:read, users:read.email, files:read,
+            emoji:read, and canvases:read.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://localhost:53684/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://slack.com/oauth/v2_user/authorize
+              token_url: https://slack.com/api/oauth.v2.user.access
+            client:
+              id:
+                input: SLACK_MCP_OAUTH_CLIENT_ID
+              secret:
+                input: SLACK_MCP_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: comma
+                values:
+                  - search:read.public
+                  - search:read.private
+                  - search:read.mpim
+                  - search:read.im
+                  - search:read.files
+                  - search:read.users
+                  - channels:history
+                  - groups:history
+                  - mpim:history
+                  - im:history
+                  - channels:read
+                  - groups:read
+                  - mpim:read
+                  - users:read
+                  - users:read.email
+                  - files:read
+                  - emoji:read
+                  - canvases:read
+        - type: source_config
+          label: Paste Slack MCP access token
+          description: Paste an existing Slack user OAuth access token.
+          hint: Paste the raw Slack user OAuth access token, without a `Bearer ` prefix.
+
+server:
+  transport: streamable_http
+  url: https://mcp.slack.com/mcp
+  auth:
+    type: bearer
+    from: input
+    key: SLACK_MCP_ACCESS_TOKEN
+
+test_queries:
+  - SELECT result FROM slack_mcp.search_channels(query => 'general') LIMIT 1
+
+tables:
+  - name: channels
+    description: >-
+      Slack channels visible to the authenticated user, returned by the
+      Slack MCP list_channels tool.
+    tool: list_channels
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: emoji
+    description: >-
+      Custom emoji available in the workspace, returned by the Slack MCP
+      list_emoji tool.
+    tool: list_emoji
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+functions:
+  - name: search_messages
+    tool: search_messages
+    description: Search messages across Slack content visible to the authenticated user.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: sort
+        values:
+          - timestamp
+          - score
+        bind:
+          arg: sort
+      - name: sort_dir
+        values:
+          - desc
+          - asc
+        bind:
+          arg: sort_dir
+      - name: count
+        bind:
+          arg: count
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_channels
+    tool: search_channels
+    description: Search Slack channels by name or description.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_users
+    tool: search_users
+    description: Search Slack users by name, email, or user ID.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: search_files
+    tool: search_files
+    description: Search files shared in Slack.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: read_channel
+    tool: read_channel
+    description: Read recent messages from a Slack channel or conversation.
+    args:
+      - name: channel_id
+        required: true
+        bind:
+          arg: channel_id
+      - name: oldest
+        bind:
+          arg: oldest
+      - name: latest
+        bind:
+          arg: latest
+      - name: limit
+        bind:
+          arg: limit
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: read_thread
+    tool: read_thread
+    description: Read replies in a Slack thread.
+    args:
+      - name: channel_id
+        required: true
+        bind:
+          arg: channel_id
+      - name: message_ts
+        required: true
+        bind:
+          arg: message_ts
+      - name: limit
+        bind:
+          arg: limit
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: read_user_profile
+    tool: read_user_profile
+    description: Read a Slack user's profile.
+    args:
+      - name: user_id
+        required: true
+        bind:
+          arg: user_id
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: list_channel_members
+    tool: list_channel_members
+    description: List members in a Slack channel or conversation.
+    args:
+      - name: channel_id
+        required: true
+        bind:
+          arg: channel_id
+      - name: limit
+        bind:
+          arg: limit
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row
+
+  - name: canvas_read
+    tool: canvas_read
+    description: Read a Slack canvas.
+    args:
+      - name: canvas_id
+        required: true
+        bind:
+          arg: canvas_id
+    columns:
+      - name: result
+        type: Utf8
+        description: Slack MCP response text or one stringified structured row.
+        expr:
+          kind: current_row
+      - name: raw
+        type: Json
+        description: Raw Slack MCP response row.
+        expr:
+          kind: current_row

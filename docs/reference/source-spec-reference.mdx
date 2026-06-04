@@ -660,7 +660,10 @@ server:
     key: MCP_ACCESS_TOKEN
 ```
 
-MCP tables call one tool and map the JSON result into rows:
+MCP tables call one tool and map the result into rows. When the tool returns
+`structuredContent`, Coral uses that JSON value. When the tool returns text
+content, Coral parses JSON text when possible and otherwise exposes the text as
+a single string row, which is useful for MCP servers that return Markdown:
 
 ```yaml
 tables:

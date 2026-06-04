@@ -44,14 +44,9 @@ pub(super) fn normalize_tool_result(
     let mut saw_non_text_content = false;
     for content in &result.content {
         if let Some(text) = extract_text_payload(content) {
-            return serde_json::from_str(text).map_err(|error| {
-                DataFusionError::External(Box::new(McpProviderQueryError::ResultDecode {
-                    source_schema: source_schema.to_string(),
-                    relation: relation.to_string(),
-                    tool: tool_name.to_string(),
-                    detail: error.to_string(),
-                }))
-            });
+            return Ok(
+                serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()))
+            );
         }
         saw_non_text_content = true;
     }
@@ -82,4 +77,42 @@ fn extract_text_payload(content: &rmcp::model::Content) -> Option<&str> {
         return Some(text.as_str());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use rmcp::model::{CallToolResult, Content};
+    use serde_json::json;
+
+    use super::normalize_tool_result;
+
+    fn text_result(text: &str) -> CallToolResult {
+        CallToolResult::success(vec![Content::text(text.to_string())])
+    }
+
+    #[test]
+    fn normalize_tool_result_decodes_json_text_content() {
+        let payload = normalize_tool_result(
+            "demo",
+            "messages",
+            "search_messages",
+            text_result(r#"{"items":[{"id":"1"}]}"#),
+        )
+        .expect("payload");
+
+        assert_eq!(payload, json!({ "items": [{ "id": "1" }] }));
+    }
+
+    #[test]
+    fn normalize_tool_result_preserves_plain_text_content() {
+        let payload = normalize_tool_result(
+            "demo",
+            "messages",
+            "search_messages",
+            text_result("## Results\n\nNo matching messages."),
+        )
+        .expect("payload");
+
+        assert_eq!(payload, json!("## Results\n\nNo matching messages."));
+    }
 }
