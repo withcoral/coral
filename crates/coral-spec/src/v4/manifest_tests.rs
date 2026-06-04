@@ -61,3 +61,114 @@ surfaces:
         ""
     );
 }
+
+#[test]
+fn rejects_v4_oauth_endpoint_templates_referencing_runtime_tokens() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      ACCESS_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:53682/oauth/callback
+                endpoints:
+                  authorization_url: https://provider.example.com/oauth/authorize
+                  token_url: https://provider.example.com/{{filter.tenant}}/oauth/token
+                client:
+                  id:
+                    default: demo-client
+",
+    )
+    .expect_err("runtime token in oauth endpoint should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("oauth.endpoints.token_url uses unsupported template token 'filter.tenant'")
+    );
+}
+
+#[test]
+fn rejects_v4_oauth_endpoint_templates_referencing_undeclared_surface_inputs() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      ACCESS_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:53682/oauth/callback
+                endpoints:
+                  authorization_url: https://provider.example.com/oauth/authorize
+                  token_url: https://provider.example.com/{{input.TENANT_ID}}/oauth/token
+                client:
+                  id:
+                    default: demo-client
+",
+    )
+    .expect_err("undeclared endpoint input should fail");
+
+    assert!(error.to_string().contains(
+        "manifest input 'TENANT_ID' is referenced but not declared under surface inputs"
+    ));
+}
+
+#[test]
+fn parses_v4_oauth_endpoint_templates_referencing_surface_variables() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      TENANT_ID:
+        kind: variable
+        default: organizations
+      ACCESS_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: oauth
+              oauth:
+                flow:
+                  type: authorization_code
+                  pkce: required
+                redirect_uri: http://127.0.0.1:53682/oauth/callback
+                endpoints:
+                  authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
+                  token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
+                client:
+                  id:
+                    default: demo-client
+",
+    )
+    .expect("v4 manifest");
+
+    assert_eq!(manifest.declared_inputs().len(), 2);
+}

@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::backends::http::{AuthSpec, RateLimitSpec};
-use crate::inputs::{collect_declared_inputs, validate_input_references};
+use crate::inputs::{
+    collect_declared_inputs, validate_input_references,
+    validate_oauth_endpoint_templates_with_scope,
+};
 use crate::{
     HeaderSpec, ManifestError, ManifestInputSpec, ParsedTemplate, Result, validate_test_queries,
 };
@@ -161,6 +164,7 @@ impl V4SourceManifest {
             }
             let inputs = collect_declared_inputs(surface_value)?;
             validate_input_references(surface_value, &inputs)?;
+            validate_oauth_endpoint_templates_with_scope(&inputs, "surface inputs")?;
             merge_surface_inputs(
                 &name,
                 &raw_surface.id,
