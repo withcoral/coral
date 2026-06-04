@@ -62,6 +62,7 @@ prost.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio.workspace = true
+wiremock.workspace = true
 
 [build-dependencies]
 serde_yaml.workspace = true

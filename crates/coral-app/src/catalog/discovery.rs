@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_engine::{ColumnInfo, TableFunctionInfo, TableInfo};
+use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
@@ -31,6 +31,18 @@ pub(crate) struct Page<T> {
     pub(crate) offset: u32,
     pub(crate) has_more: bool,
     pub(crate) next_offset: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CatalogCounts {
+    pub(crate) table_count: u32,
+    pub(crate) table_function_count: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CatalogPage {
+    pub(crate) items: Page<CatalogItem>,
+    pub(crate) counts: CatalogCounts,
 }
 
 #[derive(Clone, Debug)]
@@ -157,11 +169,17 @@ impl CatalogDiscovery {
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
-    ) -> Result<Page<CatalogItem>, QueryManagerError> {
-        let items = self
-            .catalog_items(workspace_name, schema_name, kind)
+    ) -> Result<CatalogPage, QueryManagerError> {
+        let catalog = self
+            .queries
+            .list_catalog(workspace_name, schema_name)
             .await?;
-        Ok(page_items(items, pagination))
+        let counts = catalog_counts(&catalog);
+        let items = catalog_items(catalog, kind);
+        Ok(CatalogPage {
+            items: page_items(items, pagination),
+            counts,
+        })
     }
 
     async fn catalog_items(
@@ -174,25 +192,72 @@ impl CatalogDiscovery {
             .queries
             .list_catalog(workspace_name, schema_name)
             .await?;
-        let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
-        if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
-            items.extend(catalog.tables.into_iter().map(|mut table| {
-                table.columns.clear();
-                CatalogItem::Table(table)
-            }));
-        }
-        if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
-            items.extend(
-                catalog
-                    .table_functions
-                    .into_iter()
-                    .map(CatalogItem::TableFunction),
-            );
-        }
-        items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
-        Ok(items)
+        Ok(catalog_items(catalog, kind))
     }
 
+    pub(crate) async fn describe_table(
+        &self,
+        workspace_name: &WorkspaceName,
+        table_ref: CatalogTableRef<'_>,
+    ) -> Result<DescribeTableResult, QueryManagerError> {
+        let table_lookup = self
+            .queries
+            .describe_table(workspace_name, table_ref.schema_name, table_ref.table_name)
+            .await?;
+        if let Some(table) = table_lookup.table {
+            return Ok(DescribeTableResult::Found(table));
+        }
+
+        let tables = table_lookup.missing_context_tables;
+        let available_schemas = tables
+            .iter()
+            .map(|table| table.schema_name.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let same_schema_tables = tables
+            .iter()
+            .filter(|table| table.schema_name == table_ref.schema_name)
+            .take(MISSING_TABLE_SUGGESTION_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>();
+        let suggestions = missing_table_suggestions(&tables, table_ref, &same_schema_tables);
+        Ok(DescribeTableResult::Missing(MissingTableContext {
+            suggestions,
+            available_schemas,
+            same_schema_tables,
+        }))
+    }
+}
+
+fn catalog_items(catalog: CatalogInfo, kind: Option<CatalogItemKind>) -> Vec<CatalogItem> {
+    let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
+    if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
+        items.extend(catalog.tables.into_iter().map(|mut table| {
+            table.columns.clear();
+            CatalogItem::Table(table)
+        }));
+    }
+    if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
+        items.extend(
+            catalog
+                .table_functions
+                .into_iter()
+                .map(CatalogItem::TableFunction),
+        );
+    }
+    items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
+    items
+}
+
+fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
+    CatalogCounts {
+        table_count: u32::try_from(catalog.tables.len()).unwrap_or(u32::MAX),
+        table_function_count: u32::try_from(catalog.table_functions.len()).unwrap_or(u32::MAX),
+    }
+}
+
+impl CatalogDiscovery {
     pub(crate) async fn search_catalog(
         &self,
         workspace_name: &WorkspaceName,
@@ -216,52 +281,6 @@ impl CatalogDiscovery {
             })
             .collect();
         Ok(page_items(matches, pagination))
-    }
-
-    pub(crate) async fn describe_table(
-        &self,
-        workspace_name: &WorkspaceName,
-        table_ref: CatalogTableRef<'_>,
-    ) -> Result<DescribeTableResult, QueryManagerError> {
-        let exact = self
-            .queries
-            .list_tables(
-                workspace_name,
-                Some(table_ref.schema_name),
-                Some(table_ref.table_name),
-            )
-            .await?
-            .into_iter()
-            .find(|table| {
-                table.schema_name == table_ref.schema_name
-                    && table.table_name == table_ref.table_name
-            });
-        if let Some(table) = exact {
-            return Ok(DescribeTableResult::Found(table));
-        }
-
-        let mut all_tables = self.queries.list_tables(workspace_name, None, None).await?;
-        for table in &mut all_tables {
-            table.columns.clear();
-        }
-        let available_schemas = all_tables
-            .iter()
-            .map(|table| table.schema_name.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let same_schema_tables = all_tables
-            .iter()
-            .filter(|table| table.schema_name == table_ref.schema_name)
-            .take(MISSING_TABLE_SUGGESTION_LIMIT)
-            .cloned()
-            .collect::<Vec<_>>();
-        let suggestions = missing_table_suggestions(&all_tables, table_ref, &same_schema_tables);
-        Ok(DescribeTableResult::Missing(MissingTableContext {
-            suggestions,
-            available_schemas,
-            same_schema_tables,
-        }))
     }
 
     pub(crate) async fn list_columns(

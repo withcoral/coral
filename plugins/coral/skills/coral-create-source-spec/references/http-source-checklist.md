@@ -58,7 +58,8 @@ Additional hint guidance:
 
 - Base URL inputs should clarify default behavior and self-hosted alternatives.
 - Secret inputs should name token type and any format constraints (for example token prefixes).
-- OAuth-backed secret hints should name the required scopes, client ID/secret expectations, and redirect URI registration requirement.
+- OAuth setup guidance — required scopes, client ID/secret expectations, and redirect URI registration — belongs in the OAuth method's `hint` (`credential.methods[].hint`), not the input-level hint, since that text renders next to the fields the method collects.
+- When a secret declares multiple `credential.methods`, write a focused `hint` on each method (`credential.methods[].hint`) instead of one long input-level hint; the fields shown change with the selected method, so each method's hint should cover only the inputs it collects.
 - For encoded credentials, include a short shell example (for example `printf ... | base64`).
 - Prefer official docs links and stable settings pages over brittle click-path instructions.
 
@@ -66,7 +67,10 @@ Additional hint guidance:
 
 - Prefer one table per collection endpoint.
 - Add detail routes only when item fetches are actually needed.
-- Keep table names stable and SQL-friendly.
+- Keep table and table-function names stable, SQL-friendly, and unique within
+  the source's case-insensitive relation namespace. Prefer plain `snake_case`
+  table names. Table-function names must start with an ASCII letter or
+  underscore and then use only ASCII letters, numbers, or underscores.
 - Preserve provider semantics when filter behavior matters.
 - Add `test_queries` once you know which simple query or queries should confirm the source basically works.
 

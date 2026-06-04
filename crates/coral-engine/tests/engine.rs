@@ -7,6 +7,8 @@
 
 #[path = "engine/catalog_tests.rs"]
 mod catalog_tests;
+#[path = "engine/composite_tests.rs"]
+mod composite_tests;
 #[path = "engine/file_format_tests.rs"]
 mod file_format_tests;
 #[path = "engine/harness.rs"]
