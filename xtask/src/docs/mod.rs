@@ -141,8 +141,6 @@ fn write_if_changed(path: &Path, body: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{Args, run};
 
@@ -190,7 +188,8 @@ tables:
 
     #[test]
     fn generate_docs_check_skips_community_catalog_when_requested() {
-        let root = unique_temp_dir("generate-docs-skip-community");
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let root = temp.path();
         let source_dir = root.join("sources/core/minimal");
         let docs_reference_dir = root.join("docs/reference");
         let docs_project_dir = root.join("docs/project");
@@ -223,15 +222,5 @@ tables:
 
         args.check = true;
         assert!(run(&args).expect("check generated docs"));
-
-        fs::remove_dir_all(&root).expect("remove temp dir");
-    }
-
-    fn unique_temp_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("coral-xtask-{name}-{}-{nonce}", std::process::id()))
     }
 }

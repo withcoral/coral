@@ -104,119 +104,90 @@ fn group_pages_mut<'a>(groups: &'a mut [Value], name: &str) -> Result<&'a mut Ve
 
 #[cfg(test)]
 mod tests {
-    use super::update_docs_json;
+    use super::{
+        BUNDLED_SOURCES_ENTRY, CHANGELOG_ENTRY, COMMUNITY_SOURCES_ENTRY, update_docs_json,
+    };
+    use serde_json::json;
 
-    const FIXTURE_DOCS_JSON: &str = r#"{
-  "name": "Coral Docs",
-  "navigation": {
-    "groups": [
-      {
-        "group": "Get started",
-        "pages": [
-          "index",
-          "getting-started/installation"
-        ]
-      },
-      {
-        "group": "Reference",
-        "pages": [
-          "reference/cli-reference",
-          "reference/bundled-sources",
-          "reference/sources/stale_manifest",
-          "reference/source-spec-reference"
-        ]
-      },
-      {
-        "group": "Project",
-        "pages": [
-          "project/roadmap"
-        ]
-      }
-    ]
-  }
-}
-"#;
+    fn fixture_docs_json(get_started_pages: &[&str], reference_pages: &[&str]) -> String {
+        serde_json::to_string_pretty(&json!({
+            "name": "Coral Docs",
+            "navigation": {
+                "groups": [
+                    {
+                        "group": "Get started",
+                        "pages": get_started_pages,
+                    },
+                    {
+                        "group": "Reference",
+                        "pages": reference_pages,
+                    },
+                    {
+                        "group": "Project",
+                        "pages": ["project/roadmap"],
+                    },
+                ],
+            },
+        }))
+        .expect("fixture docs json should serialize")
+    }
 
-    const FIXTURE_WITHOUT_BUNDLED_SOURCES: &str = r#"{
-  "name": "Coral Docs",
-  "navigation": {
-    "groups": [
-      {
-        "group": "Get started",
-        "pages": [
-          "index"
-        ]
-      },
-      {
-        "group": "Reference",
-        "pages": [
-          "reference/cli-reference",
-          "reference/source-spec-reference"
-        ]
-      },
-      {
-        "group": "Project",
-        "pages": [
-          "project/roadmap"
-        ]
-      }
-    ]
-  }
-}
-"#;
+    fn fixture_docs_json_with_stale_source() -> String {
+        fixture_docs_json(
+            &["index", "getting-started/installation"],
+            &[
+                "reference/cli-reference",
+                "reference/bundled-sources",
+                "reference/sources/stale_manifest",
+                "reference/source-spec-reference",
+            ],
+        )
+    }
+
+    fn fixture_docs_json_without_source_catalogs() -> String {
+        fixture_docs_json(
+            &["index"],
+            &["reference/cli-reference", "reference/source-spec-reference"],
+        )
+    }
+
+    fn assert_contains_entry(updated: &str, entry: &str) {
+        let needle = format!("\"{entry}\"");
+        assert!(
+            updated.contains(&needle),
+            "expected {entry} entry in docs nav: {updated}",
+        );
+    }
 
     #[test]
     fn update_docs_json_strips_generator_entries_and_preserves_others() {
-        let updated = update_docs_json(FIXTURE_DOCS_JSON).expect("update nav");
+        let updated = update_docs_json(&fixture_docs_json_with_stale_source()).expect("update nav");
         insta::assert_snapshot!("docs_json_nav_update", updated);
     }
 
     #[test]
-    fn update_docs_json_restores_missing_bundled_sources_entry() {
-        let updated =
-            update_docs_json(FIXTURE_WITHOUT_BUNDLED_SOURCES).expect("restore bundled-sources");
-        assert!(
-            updated.contains("\"reference/bundled-sources\""),
-            "expected bundled-sources to be restored: {updated}",
-        );
-    }
-
-    #[test]
-    fn update_docs_json_restores_missing_community_sources_entry() {
-        let updated =
-            update_docs_json(FIXTURE_WITHOUT_BUNDLED_SOURCES).expect("restore community-sources");
-        assert!(
-            updated.contains("\"reference/community-sources\""),
-            "expected community-sources to be restored: {updated}",
-        );
+    fn update_docs_json_restores_missing_source_catalog_entries() {
+        let updated = update_docs_json(&fixture_docs_json_without_source_catalogs())
+            .expect("restore source catalog entries");
+        for entry in [BUNDLED_SOURCES_ENTRY, COMMUNITY_SOURCES_ENTRY] {
+            assert_contains_entry(&updated, entry);
+        }
     }
 
     #[test]
     fn update_docs_json_normalizes_duplicate_or_misordered_source_catalog_entries() {
-        let input = r#"{
-  "name": "Coral Docs",
-  "navigation": {
-    "groups": [
-      {
-        "group": "Reference",
-        "pages": [
-          "reference/community-sources",
-          "reference/cli-reference",
-          "reference/source-spec-reference",
-          "reference/bundled-sources",
-          "reference/community-sources"
-        ]
-      },
-      {
-        "group": "Project",
-        "pages": []
-      }
-    ]
-  }
-}
-"#;
+        let input = fixture_docs_json(
+            &[],
+            &[
+                "reference/community-sources",
+                "reference/cli-reference",
+                "reference/source-spec-reference",
+                "reference/bundled-sources",
+                "reference/community-sources",
+            ],
+        );
 
-        let updated = update_docs_json(input).expect("normalize source catalog entries");
+        let updated = update_docs_json(&input).expect("normalize source catalog entries");
         let root: serde_json::Value = serde_json::from_str(&updated).expect("updated docs json");
         let groups = root
             .get("navigation")
@@ -248,11 +219,9 @@ mod tests {
 
     #[test]
     fn update_docs_json_appends_changelog_entry_to_project() {
-        let updated = update_docs_json(FIXTURE_DOCS_JSON).expect("append changelog");
-        assert!(
-            updated.contains("\"project/changelog\""),
-            "expected changelog entry in Project group: {updated}",
-        );
+        let updated =
+            update_docs_json(&fixture_docs_json_with_stale_source()).expect("append changelog");
+        assert_contains_entry(&updated, CHANGELOG_ENTRY);
     }
 
     #[test]
@@ -260,10 +229,10 @@ mod tests {
         // Running the reconciliation on its own output must not duplicate
         // the changelog entry — protects against a future bug where we
         // push unconditionally instead of only when absent.
-        let once = update_docs_json(FIXTURE_DOCS_JSON).expect("first pass");
+        let once = update_docs_json(&fixture_docs_json_with_stale_source()).expect("first pass");
         let twice = update_docs_json(&once).expect("second pass");
         assert_eq!(once, twice, "second pass changed the output");
-        let occurrences = twice.matches("\"project/changelog\"").count();
+        let occurrences = twice.matches(&format!("\"{CHANGELOG_ENTRY}\"")).count();
         assert_eq!(occurrences, 1, "changelog entry duplicated: {twice}");
     }
 }

@@ -91,13 +91,13 @@ fn find_manifest_file(dir: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
 
     use super::iter_manifest_files;
 
     #[test]
     fn iter_manifest_files_recurses_nested_source_groups() {
-        let root = unique_temp_dir("iter-manifests");
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let root = temp.path();
         let core_manifest = root.join("sources/core/github/manifest.yaml");
         let community_manifest = root.join("sources/community/hn/manifest.yaml");
         fs::create_dir_all(core_manifest.parent().expect("core parent")).expect("create core");
@@ -108,14 +108,14 @@ mod tests {
 
         let manifests = iter_manifest_files(&[root.join("sources")]);
 
-        fs::remove_dir_all(&root).expect("remove temp dir");
         assert_eq!(manifests, vec![community_manifest, core_manifest]);
     }
 
     #[cfg(unix)]
     #[test]
     fn iter_manifest_files_does_not_follow_symlinked_directories() {
-        let root = unique_temp_dir("iter-manifests-symlink");
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let root = temp.path();
         let real_manifest = root.join("real/manifest.yaml");
         let linked_manifest = root.join("sources/linked/manifest.yaml");
         fs::create_dir_all(real_manifest.parent().expect("real parent")).expect("create real");
@@ -126,18 +126,9 @@ mod tests {
 
         let manifests = iter_manifest_files(&[root.join("sources")]);
 
-        fs::remove_dir_all(&root).expect("remove temp dir");
         assert!(
             manifests.is_empty(),
             "symlinked manifest should not be traversed: {linked_manifest:?}"
         );
-    }
-
-    fn unique_temp_dir(name: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("time after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("coral-xtask-{name}-{}-{nonce}", std::process::id()))
     }
 }

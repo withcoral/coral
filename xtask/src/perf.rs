@@ -1,10 +1,8 @@
 //! Performance regression checks for user-visible Coral commands.
 
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -41,7 +39,10 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
     let coral_bin = absolute_path(&args.coral_bin)?;
     ensure_executable(&coral_bin)?;
 
-    let temp_dir = TempDir::create("coral-tables-perf")?;
+    let temp_dir = tempfile::Builder::new()
+        .prefix("coral-tables-perf")
+        .tempdir()
+        .context("creating temporary performance-check workspace")?;
     let config_dir = temp_dir.path().join("coral-config");
     fs::create_dir_all(&config_dir)
         .with_context(|| format!("creating {}", config_dir.display()))?;
@@ -232,45 +233,6 @@ fn shell_quote(value: &str) -> String {
 struct HyperfineResult {
     mean: f64,
     stddev: f64,
-}
-
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn create(prefix: &str) -> Result<Self> {
-        let base = std::env::temp_dir();
-        let pid = std::process::id();
-        for attempt in 0..100 {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .context("system clock is before unix epoch")?
-                .as_nanos();
-            let path = base.join(format!("{prefix}-{pid}-{nonce}-{attempt}"));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-                Err(error) => {
-                    return Err(error).with_context(|| format!("creating {}", path.display()));
-                }
-            }
-        }
-        bail!(
-            "failed to allocate temporary directory under {}",
-            base.display()
-        )
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        if let Err(_error) = fs::remove_dir_all(&self.path) {}
-    }
 }
 
 #[cfg(test)]
