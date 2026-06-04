@@ -92,8 +92,7 @@ tables:
           path: [attributes, slug]
       - name: domain
         type: Utf8
-        nullable: true
-        description: Custom domain for the store, if configured.
+        description: "Domain of the store — either {slug}.lemonsqueezy.com by default, or a custom domain if one has been configured."
         expr:
           kind: path
           path: [attributes, domain]
@@ -112,7 +111,7 @@ tables:
           path: [attributes, avatar_url]
       - name: plan
         type: Utf8
-        description: "Lemon Squeezy billing plan (fresh, sweet, tart, lemon, cantaloupe)."
+        description: "Lemon Squeezy billing plan name (e.g. fresh, sweet)."
         expr:
           kind: path
           path: [attributes, plan]
@@ -263,8 +262,7 @@ tables:
           path: [attributes, price]
       - name: price_formatted
         type: Utf8
-        nullable: true
-        description: Human-readable formatted price string.
+        description: Human-readable formatted price string (e.g. "$9.99").
         expr:
           kind: path
           path: [attributes, price_formatted]
@@ -607,29 +605,21 @@ tables:
       - name: unit_price
         type: Int64
         nullable: true
-        description: >
-          Price in store-currency cents. Null when usage-based billing is active
-          (usage_aggregation is non-null); use unit_price_decimal for arithmetic
-          in that case.
+        description: "Price in store-currency cents. Null when usage_aggregation is enabled or for volume and graduated pricing (use tiers instead). See also unit_price_decimal."
         expr:
           kind: path
           path: [attributes, unit_price]
       - name: unit_price_decimal
         type: Utf8
         nullable: true
-        description: >
-          Price in cents as a decimal string (e.g. "9.99"). When usage-based
-          billing is active (usage_aggregation is non-null), unit_price is null
-          and this field is the authoritative price; cast it to DECIMAL for
-          arithmetic (e.g. CAST(unit_price_decimal AS DECIMAL) / 100). For
-          standard pricing where unit_price is non-null, prefer that integer
-          column for SUM, AVG, and other aggregations.
+        description: "Price in cents as a decimal string (e.g. \"9.99\"). Null when usage_aggregation is not enabled. Use for display or sub-cent precision; use unit_price for arithmetic when available. See also unit_price."
         expr:
           kind: path
           path: [attributes, unit_price_decimal]
       - name: setup_fee_enabled
         type: Boolean
-        description: Whether this price has a setup fee.
+        nullable: true
+        description: Whether this price has a setup fee. Will be null for non-subscription pricing.
         expr:
           kind: path
           path: [attributes, setup_fee_enabled]
@@ -642,18 +632,14 @@ tables:
           path: [attributes, setup_fee]
       - name: package_size
         type: Int64
-        description: Number of units per package for package pricing.
+        description: Number of units per package for package pricing. Defaults to 1 for non-package schemes.
         expr:
           kind: path
           path: [attributes, package_size]
       - name: tiers
         type: Json
         nullable: true
-        description: >
-          Tier definitions for graduated and volume pricing. Each tier object
-          contains a unit_price integer and a unit_price_decimal string; when
-          unit_price is null within a tier, use unit_price_decimal (cast to
-          DECIMAL) as the authoritative tier price.
+        description: "Tier definitions for graduated and volume pricing. Each tier object contains: last_unit (top limit of tier, integer or \"inf\" for unlimited), unit_price (price per unit in cents, null if usage-based billing enabled), unit_price_decimal (price per unit as decimal string, null if usage-based billing not enabled), and fixed_fee (optional fixed charge alongside unit price). Null for standard and package pricing."
         expr:
           kind: path
           path: [attributes, tiers]
@@ -702,7 +688,7 @@ tables:
       - name: tax_code
         type: Utf8
         nullable: true
-        description: Tax category for the underlying product.
+        description: "Tax category for the underlying product: eservice, ebook, or saas."
         expr:
           kind: path
           path: [attributes, tax_code]
@@ -833,7 +819,6 @@ tables:
           path: [attributes, total_revenue_currency]
       - name: total_revenue_currency_formatted
         type: Utf8
-        nullable: true
         description: Human-readable total revenue from this customer (e.g. "$843.32").
         expr:
           kind: path
@@ -846,11 +831,17 @@ tables:
           path: [attributes, mrr]
       - name: mrr_formatted
         type: Utf8
-        nullable: true
         description: Human-readable monthly recurring revenue from this customer (e.g. "$19.99").
         expr:
           kind: path
           path: [attributes, mrr_formatted]
+      - name: urls__customer_portal
+        type: Utf8
+        nullable: true
+        description: Pre-signed URL to the Customer Portal for subscription and billing management. Valid for 24 hours. Null if the customer has not purchased a subscription.
+        expr:
+          kind: path
+          path: [attributes, urls, customer_portal]
       - name: created_at
         type: Timestamp
         description: When the customer record was first created.
@@ -1082,7 +1073,7 @@ tables:
       - name: refunded_at
         type: Timestamp
         nullable: true
-        description: When the order was fully refunded, if applicable. Null for partial refunds.
+        description: When the order was refunded, if applicable.
         expr:
           kind: format_timestamp
           input: iso8601
@@ -1091,35 +1082,30 @@ tables:
             path: [attributes, refunded_at]
       - name: subtotal_formatted
         type: Utf8
-        nullable: true
         description: Human-readable subtotal in the order currency (e.g. "$9.99").
         expr:
           kind: path
           path: [attributes, subtotal_formatted]
       - name: setup_fee_formatted
         type: Utf8
-        nullable: true
-        description: Human-readable setup fee in the order currency (e.g. "$9.99").
+        description: Human-readable setup fee in the order currency (e.g. "$0.00").
         expr:
           kind: path
           path: [attributes, setup_fee_formatted]
       - name: discount_total_formatted
         type: Utf8
-        nullable: true
         description: Human-readable total discount in the order currency (e.g. "$0.00").
         expr:
           kind: path
           path: [attributes, discount_total_formatted]
       - name: tax_formatted
         type: Utf8
-        nullable: true
         description: Human-readable tax amount in the order currency (e.g. "$2.00").
         expr:
           kind: path
           path: [attributes, tax_formatted]
       - name: total_formatted
         type: Utf8
-        nullable: true
         description: Human-readable grand total in the order currency (e.g. "$11.99").
         expr:
           kind: path
@@ -1414,7 +1400,8 @@ tables:
           path: [attributes, card_last_four]
       - name: payment_processor
         type: Utf8
-        description: Payment processor used (stripe or paypal).
+        nullable: true
+        description: Payment processor used (stripe or paypal). Null for subscriptions created before this field was recorded, or for free subscriptions with no payment method.
         expr:
           kind: path
           path: [attributes, payment_processor]
@@ -1529,11 +1516,7 @@ tables:
         description: "Filter by invoice status: pending, paid, void, refunded, partial_refund."
       - name: refunded
         type: Boolean
-        description: >
-          Filter by full-refund state: true returns only fully refunded invoices,
-          false excludes them. Partially refunded invoices carry
-          status = 'partial_refund' and are not captured by this filter; query
-          by status to include them.
+        description: "Filter by refund state: true to return only refunded invoices, false for non-refunded."
     columns:
       - name: id
         type: Utf8
@@ -1668,31 +1651,31 @@ tables:
           path: [attributes, refunded_amount_usd]
       - name: subtotal_formatted
         type: Utf8
-        description: Human-readable subtotal amount.
+        description: Human-readable subtotal amount (e.g. "$9.99").
         expr:
           kind: path
           path: [attributes, subtotal_formatted]
       - name: discount_total_formatted
         type: Utf8
-        description: Human-readable discount amount.
+        description: Human-readable discount amount (e.g. "$0.00").
         expr:
           kind: path
           path: [attributes, discount_total_formatted]
       - name: tax_formatted
         type: Utf8
-        description: Human-readable tax amount.
+        description: Human-readable tax amount (e.g. "$2.00").
         expr:
           kind: path
           path: [attributes, tax_formatted]
       - name: total_formatted
         type: Utf8
-        description: Human-readable total amount.
+        description: Human-readable total amount (e.g. "$11.99").
         expr:
           kind: path
           path: [attributes, total_formatted]
       - name: refunded_amount_formatted
         type: Utf8
-        description: Human-readable refunded amount.
+        description: Human-readable refunded amount (e.g. "$0.00").
         expr:
           kind: path
           path: [attributes, refunded_amount_formatted]
