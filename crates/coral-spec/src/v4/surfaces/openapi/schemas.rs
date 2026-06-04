@@ -78,11 +78,7 @@ impl OpenApiImporter<'_> {
             }
         } else if let Some(values) = resolved.get("enum").and_then(Value::as_array) {
             IrTypeShape::Enum {
-                values: values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToString::to_string)
-                    .collect(),
+                values: values.iter().map(enum_value).collect(),
             }
         } else {
             match resolved
@@ -195,6 +191,12 @@ fn required_fields(schema: &Value) -> BTreeSet<String> {
         .filter_map(Value::as_str)
         .map(ToString::to_string)
         .collect()
+}
+
+fn enum_value(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), ToString::to_string)
 }
 
 fn type_id_from_ref(reference: &str) -> String {
