@@ -14,7 +14,7 @@ pub(super) fn resolve_projection_name_collisions(
     manifest: &V4SourceManifest,
     surfaces: &[SemanticIr],
     projections: &mut [Projection],
-) {
+) -> Vec<Diagnostic> {
     let operations = surfaces
         .iter()
         .flat_map(|ir| {
@@ -59,6 +59,7 @@ pub(super) fn resolve_projection_name_collisions(
         }
     }
 
+    let mut diagnostics = Vec::new();
     for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
         for index in indexes {
             if keep_base_name.contains(index) {
@@ -88,16 +89,19 @@ pub(super) fn resolve_projection_name_collisions(
                 .get_mut(*index)
                 .expect("projection index came from projections");
             projection.name.clone_from(&name);
-            projection.diagnostics.push(Diagnostic {
+            let diagnostic = Diagnostic {
                 code: "PROJECTION_NAME_COLLISION_RESOLVED".to_string(),
                 severity: DiagnosticSeverity::Warning,
                 message: format!("projection name collision resolved as '{name}'"),
                 surface_id: Some(projection.surface_id.clone()),
                 operation_id: Some(projection.operation_id.clone()),
                 projection_name: Some(name),
-            });
+            };
+            projection.diagnostics.push(diagnostic.clone());
+            diagnostics.push(diagnostic);
         }
     }
+    diagnostics
 }
 
 fn projection_name_priority(
