@@ -6,12 +6,15 @@ use datafusion::sql::sqlparser::ast::{ObjectName, ObjectNamePart};
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 
+use crate::TableFunctionInfo;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
 use crate::{
     CoreError, QueryResultObserverError, SourceDecoratorError, SourceInputResolverError, TableInfo,
 };
+
+const DATAFUSION_DEFAULT_CATALOG: &str = "datafusion";
 
 pub(crate) fn datafusion_to_core(error: &DataFusionError, tables: &[TableInfo]) -> CoreError {
     datafusion_to_core_with_sql(error, tables, None)
@@ -22,6 +25,15 @@ pub(crate) fn datafusion_to_core_with_sql(
     tables: &[TableInfo],
     sql: Option<&str>,
 ) -> CoreError {
+    datafusion_to_core_with_sql_and_table_functions(error, tables, &[], sql)
+}
+
+pub(crate) fn datafusion_to_core_with_sql_and_table_functions(
+    error: &DataFusionError,
+    tables: &[TableInfo],
+    table_functions: &[TableFunctionInfo],
+    sql: Option<&str>,
+) -> CoreError {
     // Unwrap Context/Shared/Diagnostic wrappers so wrapped schema errors
     // get classified by their root variant instead of all landing in the
     // `Internal` bucket. Without `find_root()`, `SELECT bogus FROM wide`
@@ -30,7 +42,9 @@ pub(crate) fn datafusion_to_core_with_sql(
     // from the match arms below.
     match error.find_root() {
         DataFusionError::SQL(detail, _) => CoreError::InvalidInput(detail.to_string()),
-        DataFusionError::Plan(detail) => plan_error_to_core(detail, error, tables, sql),
+        DataFusionError::Plan(detail) => {
+            plan_error_to_core(detail, error, tables, table_functions, sql)
+        }
         DataFusionError::SchemaError(schema_error, _) => schema_error_to_core(schema_error),
         DataFusionError::NotImplemented(detail) => CoreError::Unimplemented(detail.clone()),
         DataFusionError::External(inner) => {
@@ -85,9 +99,15 @@ fn plan_error_to_core(
     detail: &str,
     error: &DataFusionError,
     tables: &[TableInfo],
+    table_functions: &[TableFunctionInfo],
     sql: Option<&str>,
 ) -> CoreError {
     if let Some(table_ref) = table_not_found_ref(error, detail, sql) {
+        if let Some(function) = table_function_for_ref(&table_ref, table_functions) {
+            return CoreError::QueryFailure(Box::new(
+                StructuredQueryError::table_function_not_table(function),
+            ));
+        }
         return CoreError::QueryFailure(Box::new(StructuredQueryError::table_not_found(
             &table_ref, tables,
         )));
@@ -237,6 +257,70 @@ fn table_ref_parts_from_object_name(object_name: ObjectName) -> Option<TableRefP
     Some(TableRefParts::new(parts))
 }
 
+fn table_function_for_ref<'a>(
+    reference: &TableRefParts,
+    table_functions: &'a [TableFunctionInfo],
+) -> Option<&'a TableFunctionInfo> {
+    let parts = reference.parts.as_slice();
+
+    resolve_table_function(parts, table_functions).or_else(|| {
+        let without_catalog = without_default_catalog(parts);
+        (without_catalog.len() != parts.len())
+            .then(|| resolve_table_function(without_catalog, table_functions))
+            .flatten()
+    })
+}
+
+fn resolve_table_function<'a>(
+    parts: &[String],
+    table_functions: &'a [TableFunctionInfo],
+) -> Option<&'a TableFunctionInfo> {
+    if parts.len() < 2 {
+        return None;
+    }
+
+    for candidate in SchemaQualifiedName::candidates(parts) {
+        if let Some(function) = table_functions
+            .iter()
+            .find(|function| candidate.matches(function))
+        {
+            return Some(function);
+        }
+    }
+    None
+}
+
+fn without_default_catalog(parts: &[String]) -> &[String] {
+    match parts {
+        [first, rest @ ..] if first.eq_ignore_ascii_case(DATAFUSION_DEFAULT_CATALOG) => rest,
+        _ => parts,
+    }
+}
+
+struct SchemaQualifiedName {
+    schema: String,
+    name: String,
+}
+
+impl SchemaQualifiedName {
+    fn candidates(parts: &[String]) -> impl Iterator<Item = Self> + '_ {
+        // Prefer the longest possible schema prefix so dotted source names
+        // like `"foo.bar".metrics` resolve as schema `foo.bar`.
+        (1..parts.len()).rev().map(|schema_len| {
+            let (schema_parts, name_parts) = parts.split_at(schema_len);
+            Self {
+                schema: schema_parts.join("."),
+                name: name_parts.join("."),
+            }
+        })
+    }
+
+    fn matches(&self, function: &TableFunctionInfo) -> bool {
+        function.schema_name.eq_ignore_ascii_case(&self.schema)
+            && function.function_name.eq_ignore_ascii_case(&self.name)
+    }
+}
+
 fn provider_error_to_core(error: &ProviderQueryError) -> CoreError {
     CoreError::QueryFailure(Box::new(error.to_structured()))
 }
@@ -249,6 +333,20 @@ fn mcp_provider_error_to_core(error: &McpProviderQueryError) -> CoreError {
 mod tests {
     use super::*;
     use crate::contracts::UNKNOWN_COLUMN_REASON;
+
+    fn table_function(schema: &str, name: &str) -> TableFunctionInfo {
+        TableFunctionInfo {
+            schema_name: schema.to_string(),
+            function_name: name.to_string(),
+            description: String::new(),
+            arguments: vec![],
+            result_columns: vec![],
+        }
+    }
+
+    fn table_ref(parts: &[&str]) -> TableRefParts {
+        TableRefParts::new(parts.iter().map(ToString::to_string).collect())
+    }
 
     #[test]
     fn datafusion_to_core_unwraps_context_wrapped_schema_error_to_structured() {
@@ -289,10 +387,49 @@ mod tests {
     #[test]
     fn plan_error_without_table_prefix_is_invalid_input() {
         let error = DataFusionError::Plan("syntax error at position 12".to_string());
-        let core = plan_error_to_core("syntax error at position 12", &error, &[], None);
+        let core = plan_error_to_core("syntax error at position 12", &error, &[], &[], None);
         match core {
             CoreError::InvalidInput(detail) => assert!(detail.contains("syntax error")),
             other => panic!("expected CoreError::InvalidInput, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn table_function_ref_matches_qualified_function() {
+        let functions = vec![table_function("datadog", "metrics")];
+        let function = table_function_for_ref(
+            &table_ref(&["datafusion", "datadog", "metrics"]),
+            &functions,
+        )
+        .expect("qualified table function should match");
+
+        assert_eq!(function.schema_name, "datadog");
+        assert_eq!(function.function_name, "metrics");
+    }
+
+    #[test]
+    fn table_function_ref_preserves_datafusion_schema_name() {
+        let functions = vec![table_function("datafusion", "metrics")];
+
+        for parts in [
+            ["datafusion", "metrics"].as_slice(),
+            ["datafusion", "datafusion", "metrics"].as_slice(),
+        ] {
+            let function = table_function_for_ref(&table_ref(parts), &functions)
+                .expect("datafusion schema name should match");
+
+            assert_eq!(function.schema_name, "datafusion");
+            assert_eq!(function.function_name, "metrics");
+        }
+    }
+
+    #[test]
+    fn table_function_ref_ignores_unqualified_function() {
+        let functions = vec![table_function("datadog", "metrics")];
+
+        assert!(
+            table_function_for_ref(&table_ref(&["datafusion", "public", "metrics"]), &functions,)
+                .is_none()
+        );
     }
 }

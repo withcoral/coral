@@ -289,6 +289,82 @@ components:
 }
 
 #[test]
+fn importer_handles_2xx_response_range_success_codes() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: response_ranges
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /range-items:
+    get:
+      operationId: range/list
+      responses:
+        '2XX':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+  /numeric-items:
+    get:
+      operationId: numeric/list
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+        '2XX':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("response range imports");
+    let operations = ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation))
+        .collect::<BTreeMap<_, _>>();
+
+    let range = operations.get("range_list").expect("range operation");
+    assert_eq!(range.output.cardinality, OutputCardinality::List);
+    let IrExecutionAttachment::Rest(range_rest) = &range.execution;
+    assert_eq!(range_rest.response.status_code, 200);
+
+    let numeric = operations.get("numeric_list").expect("numeric operation");
+    assert_eq!(numeric.output.cardinality, OutputCardinality::List);
+    let IrExecutionAttachment::Rest(numeric_rest) = &numeric.execution;
+    assert_eq!(numeric_rest.response.status_code, 201);
+}
+
+#[test]
 fn importer_warns_for_unresolved_response_object_refs() {
     let manifest = parse_source_manifest_yaml(
         r"
