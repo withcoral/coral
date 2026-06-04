@@ -408,34 +408,60 @@ impl ConfigStore {
         Ok(())
     }
 
-    fn lock_shared(&self) -> Result<FileLock, AppError> {
+    pub(crate) fn state_lock_shared(&self) -> Result<FileLock, AppError> {
         FileLock::shared(self.layout.state_lock()).map_err(Into::into)
     }
 
-    fn lock_exclusive(&self) -> Result<FileLock, AppError> {
+    pub(crate) fn state_lock_exclusive(&self) -> Result<FileLock, AppError> {
         FileLock::exclusive(self.layout.state_lock()).map_err(Into::into)
     }
 
-    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
-        let _lock = self.lock_shared()?;
+    /// Loads the app config without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in shared or exclusive mode
+    /// while using any filesystem-backed source artifacts derived from the
+    /// returned config.
+    pub(crate) fn load_config_unlocked(&self) -> Result<AppConfig, AppError> {
         self.load_unlocked()
+    }
+
+    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
+        let _lock = self.state_lock_shared()?;
+        self.load_config_unlocked()
+    }
+
+    /// Loads the source catalog without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in shared or exclusive mode
+    /// while using any filesystem-backed source artifacts derived from the
+    /// returned catalog.
+    pub(crate) fn load_catalog_unlocked(&self) -> Result<SourceCatalog, AppError> {
+        self.load_config_unlocked().map(|config| config.catalog)
     }
 
     pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
         let span = info_span!("coral.app.config.load_catalog");
         let _guard = span.enter();
-        self.load_config().map(|config| config.catalog)
+        let _lock = self.state_lock_shared()?;
+        self.load_catalog_unlocked()
+    }
+
+    fn update_catalog_unlocked<T>(
+        &self,
+        update: impl FnOnce(&mut SourceCatalog) -> T,
+    ) -> Result<T, AppError> {
+        let mut config = self.load_unlocked()?;
+        let result = update(&mut config.catalog);
+        self.save_unlocked(&config)?;
+        Ok(result)
     }
 
     fn update_catalog<T>(
         &self,
         update: impl FnOnce(&mut SourceCatalog) -> T,
     ) -> Result<T, AppError> {
-        let _lock = self.lock_exclusive()?;
-        let mut config = self.load_unlocked()?;
-        let result = update(&mut config.catalog);
-        self.save_unlocked(&config)?;
-        Ok(result)
+        let _lock = self.state_lock_exclusive()?;
+        self.update_catalog_unlocked(update)
     }
 
     pub(crate) fn list_workspace_sources(
@@ -454,14 +480,38 @@ impl ConfigStore {
             .map(|catalog| catalog.workspace_source_names(workspace_name))
     }
 
+    /// Loads one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock while using source artifacts
+    /// associated with the returned config entry.
+    pub(crate) fn get_source_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        self.load_catalog_unlocked()?
+            .get_source(workspace_name, source_name)
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+    }
+
     pub(crate) fn get_source(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        self.load_catalog()?
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+        let _lock = self.state_lock_shared()?;
+        self.get_source_unlocked(workspace_name, source_name)
+    }
+
+    /// Upserts one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn upsert_source_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<(), AppError> {
+        self.update_catalog_unlocked(|catalog| catalog.upsert_source(workspace_name, source))
     }
 
     pub(crate) fn upsert_source(

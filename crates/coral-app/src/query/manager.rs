@@ -84,12 +84,8 @@ impl QueryManager {
             &trace_sql,
             attribution.episode_id.as_ref(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
+                let (sources, config) = self
+                    .load_query_sources_with_config(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &sources, &config)
@@ -117,12 +113,8 @@ impl QueryManager {
             &trace_sql,
             attribution.episode_id.as_ref(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
+                let (sources, config) = self
+                    .load_query_sources_with_config(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &sources, &config)
@@ -161,12 +153,8 @@ impl QueryManager {
             &trace_sql,
             attribution.episode_id.as_ref(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
+                let (sources, config) = self
+                    .load_query_sources_with_config(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &sources, &config)
@@ -193,12 +181,8 @@ impl QueryManager {
             sql,
             attribution.episode_id.as_ref(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
+                let (sources, config) = self
+                    .load_query_sources_with_config(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &sources, &config)
@@ -225,12 +209,8 @@ impl QueryManager {
             sql,
             attribution.episode_id.as_ref(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
+                let (sources, config) = self
+                    .load_query_sources_with_config(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &sources, &config)
@@ -250,17 +230,24 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
-        let config = self
-            .config_store
-            .load_config()
-            .map_err(QueryManagerError::App)?;
-        let source = config
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
-            .map_err(QueryManagerError::App)?;
-        let (query_source, version) = self
-            .load_query_source(workspace_name, &source)
-            .map_err(QueryManagerError::App)?;
+        let (source, query_source, version, config) = {
+            let _state_lock = self
+                .config_store
+                .state_lock_shared()
+                .map_err(QueryManagerError::App)?;
+            let config = self
+                .config_store
+                .load_config_unlocked()
+                .map_err(QueryManagerError::App)?;
+            let source = config
+                .get_source(workspace_name, source_name)
+                .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+                .map_err(QueryManagerError::App)?;
+            let (query_source, version) = self
+                .load_query_source(workspace_name, &source)
+                .map_err(QueryManagerError::App)?;
+            (source, query_source, version, config)
+        };
         let runtime = self
             .runtime_config(workspace_name, std::slice::from_ref(&query_source), &config)
             .map_err(QueryManagerError::App)?;
@@ -272,6 +259,16 @@ impl QueryManager {
         source.version = version;
 
         Ok(ValidatedSource { source, report })
+    }
+
+    fn load_query_sources_with_config(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(Vec<QuerySource>, AppConfig), AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
+        let config = self.config_store.load_config_unlocked()?;
+        let sources = self.load_query_sources(workspace_name, &config)?;
+        Ok((sources, config))
     }
 
     fn load_query_sources(
