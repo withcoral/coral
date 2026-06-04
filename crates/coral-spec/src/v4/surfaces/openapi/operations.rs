@@ -4,8 +4,8 @@ use serde_json::{Map, Value};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
-    HttpMethod, IrExecutionAttachment, IrOperation, IrOperationInput, IrScalarType,
-    OpenApiParameterLocation, RestExecutionAttachment, RestParameterBinding, RestRequestBody,
+    HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
+    IrScalarType, RestExecutionAttachment, RestParameterBinding, RestRequestBody,
 };
 use crate::v4::naming::normalize_identifier;
 use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
@@ -89,7 +89,7 @@ impl OpenApiImporter<'_> {
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Vec<IrOperationInput> {
-        let mut merged: BTreeMap<(OpenApiParameterLocation, String), Value> = BTreeMap::new();
+        let mut merged: BTreeMap<(IrInputLocation, String), Value> = BTreeMap::new();
         for parameter in path_item
             .get("parameters")
             .and_then(Value::as_array)
@@ -255,21 +255,18 @@ fn parse_http_method(method: &str) -> HttpMethod {
     }
 }
 
-fn parse_parameter_location(location: &str) -> Option<OpenApiParameterLocation> {
+fn parse_parameter_location(location: &str) -> Option<IrInputLocation> {
     match location {
-        "path" => Some(OpenApiParameterLocation::Path),
-        "query" => Some(OpenApiParameterLocation::Query),
-        "header" => Some(OpenApiParameterLocation::Header),
-        "cookie" => Some(OpenApiParameterLocation::Cookie),
+        "path" => Some(IrInputLocation::Path),
+        "query" => Some(IrInputLocation::Query),
+        "header" => Some(IrInputLocation::Header),
+        "cookie" => Some(IrInputLocation::Cookie),
         _ => None,
     }
 }
 
-fn parameter_is_required(
-    parameter_obj: &Map<String, Value>,
-    location: OpenApiParameterLocation,
-) -> bool {
-    if location == OpenApiParameterLocation::Path {
+fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLocation) -> bool {
+    if location == IrInputLocation::Path {
         return true;
     }
     parameter_obj
@@ -290,10 +287,10 @@ fn openapi_default_to_string(value: &Value) -> String {
 fn detect_pagination(inputs: &[IrOperationInput]) -> PaginationSpec {
     let has_page = inputs
         .iter()
-        .any(|input| input.location == OpenApiParameterLocation::Query && input.name == "page");
+        .any(|input| input.location == IrInputLocation::Query && input.name == "page");
     let has_per_page = inputs
         .iter()
-        .any(|input| input.location == OpenApiParameterLocation::Query && input.name == "per_page");
+        .any(|input| input.location == IrInputLocation::Query && input.name == "per_page");
     if has_page && has_per_page {
         PaginationSpec {
             mode: PaginationMode::Page,
