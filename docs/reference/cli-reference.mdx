@@ -11,7 +11,9 @@ top-level flags:
 ```shellscript
 coral --enable-<FEATURE> <COMMAND>
 coral --disable-<FEATURE> <COMMAND>
+coral --enable-sql-codemode mcp-stdio
 coral --enable-feedback mcp-stdio
+coral --disable-sql-codemode mcp-stdio
 coral --disable-feedback mcp-stdio
 ```
 
@@ -56,6 +58,55 @@ Batch JSON output is an array of result-set objects:
 
 Statements that only create batch-local temporary tables do not appear in the
 result-set array.
+
+## `coral codemode sql`
+
+Execute one SQL codemode body against Coral and exit.
+
+```shellscript
+coral codemode sql --code 'SELECT 1 AS value'
+coral codemode sql --file ./analysis.sql --format json
+```
+
+SQL codemode executes semicolon-delimited statements sequentially in one private
+query session. It accepts read-only query statements plus
+`CREATE TEMP TABLE ... AS SELECT` for session-local temporary tables. Temporary
+table creation statements do not appear in the result-set array.
+
+The CLI command is explicit and does not require the `sql_codemode` runtime
+feature flag. That feature only controls whether MCP exposes the
+`sql_codemode` tool.
+
+### Options
+
+| Option     | Type              | Default | Description                                |
+| ---------- | ----------------- | ------- | ------------------------------------------ |
+| `--code`   | string            |         | SQL statements to execute                  |
+| `--file`   | path              |         | SQL file to execute                        |
+| `--format` | `table` \| `json` | `table` | Output format                              |
+
+Run codemode directly from the CLI:
+
+```shellscript
+coral codemode sql --code 'SELECT 1 AS value'
+```
+
+Run a file and emit structured JSON:
+
+```shellscript
+coral codemode sql --file ./analysis.sql --format json
+```
+
+Use catalog tables before querying:
+
+```shellscript
+coral codemode sql --format json --code '
+CREATE TEMP TABLE catalog_sample AS
+SELECT schema_name, table_name FROM coral.tables LIMIT 5;
+SELECT COUNT(*) AS catalog_total FROM catalog_sample;
+SELECT * FROM catalog_sample;
+'
+```
 
 ## `coral source`
 
@@ -194,6 +245,7 @@ Persistently enables an experimental runtime feature. The default for each
 feature is listed in [Configuration](/reference/configuration#runtime-features).
 
 ```shellscript
+coral features enable sql_codemode
 coral features enable feedback
 ```
 
@@ -202,6 +254,7 @@ coral features enable feedback
 Persistently disables an experimental runtime feature.
 
 ```shellscript
+coral features disable sql_codemode
 coral features disable feedback
 ```
 
@@ -242,6 +295,7 @@ This server exposes:
 | Type     | Name             | Description                      |
 | -------- | ---------------- | -------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database |
+| Tool     | `sql_codemode`   | Optional SQL codemode execution in one private query session |
 | Tool     | `list_catalog`   | List database tables and table functions |
 | Tool     | `search_catalog` | Search database catalog metadata by regex |
 | Tool     | `describe_table` | Show compact database table metadata |

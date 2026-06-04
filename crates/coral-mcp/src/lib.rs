@@ -11,7 +11,7 @@
 //!
 //! The exposed MCP surface is intentionally small:
 //!
-//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally `feedback`
+//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally `sql_codemode` and `feedback`
 //! - resources: `coral://guide`, `coral://tables`
 //!
 //! Protocol lifecycle, initialization, and stdio transport behavior should stay
@@ -39,6 +39,8 @@ pub(crate) use server::CoralMcpServer;
 /// Optional MCP surface features.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {
+    /// Expose the SQL codemode execution tool.
+    pub sql_codemode_enabled: bool,
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.

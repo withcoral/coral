@@ -207,6 +207,85 @@ async fn sql_file_command_renders_json_result_sets() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn codemode_sql_code_sends_batch_request() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args([
+            "codemode",
+            "sql",
+            "--code",
+            "CREATE TEMP TABLE selected AS SELECT * FROM coral.tables LIMIT 5; SELECT COUNT(*) AS total FROM selected",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("-- Query 2"),
+        "expected query heading for returned result set: {stdout}"
+    );
+
+    assert!(
+        server.execute_sql_requests().is_empty(),
+        "codemode SQL should not call unary execute_sql"
+    );
+    let requests = server.execute_sql_batch_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql_batch call");
+    assert_eq!(
+        requests[0].sql,
+        vec![
+            "CREATE TEMPORARY TABLE selected AS SELECT * FROM coral.tables LIMIT 5".to_string(),
+            "SELECT COUNT(*) AS total FROM selected".to_string()
+        ]
+    );
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codemode_sql_file_renders_json_result_sets() {
+    let server = MockServer::start().await;
+    let file = tempfile::NamedTempFile::new().expect("temp sql file");
+    fs::write(
+        file.path(),
+        "CREATE TEMP TABLE selected AS SELECT * FROM coral.tables LIMIT 5;\nSELECT COUNT(*) AS total FROM selected;",
+    )
+    .expect("write sql file");
+
+    let assert = server
+        .cmd()
+        .args([
+            "codemode",
+            "sql",
+            "--file",
+            file.path().to_str().expect("utf-8 path"),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let result_sets: Vec<serde_json::Value> =
+        serde_json::from_str(stdout.trim()).expect("codemode SQL JSON should parse");
+    assert_eq!(result_sets.len(), 1);
+    assert_eq!(result_sets[0]["index"], serde_json::json!(2));
+    assert_eq!(
+        result_sets[0]["sql"],
+        serde_json::json!("SELECT COUNT(*) AS total FROM selected")
+    );
+
+    let requests = server.execute_sql_batch_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql_batch call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn sql_file_command_rejects_stdin_placeholder() {
     let server = MockServer::start().await;
 

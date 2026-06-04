@@ -1015,6 +1015,91 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
 }
 
 #[tokio::test]
+async fn mcp_sql_codemode_tool_is_disabled_by_default() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert!(
+        tools.iter().all(|tool| tool.name != "sql_codemode"),
+        "sql_codemode should be hidden by default"
+    );
+
+    let codemode = client
+        .call_tool(
+            CallToolRequestParams::new("sql_codemode").with_arguments(json_object(&json!({
+                "sql": ["SELECT 1 AS value"]
+            }))),
+        )
+        .await
+        .expect_err("sql_codemode should not be exposed by default");
+    assert!(
+        codemode
+            .to_string()
+            .contains("tool 'sql_codemode' not found")
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_sql_codemode_tool_executes_private_session_when_enabled() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session_with_options(
+        &temp,
+        McpOptions {
+            sql_codemode_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    let sql_codemode_tool = tool_by_name(&tools, "sql_codemode");
+    assert!(
+        sql_codemode_tool
+            .description
+            .as_deref()
+            .expect("sql_codemode description")
+            .contains("3 table(s) are currently visible")
+    );
+
+    let codemode = client
+        .call_tool(
+            CallToolRequestParams::new("sql_codemode").with_arguments(json_object(&json!({
+                "sql": [
+                    "CREATE TEMP TABLE selected_messages AS SELECT text FROM local_messages.messages WHERE type = 'user'",
+                    "SELECT text FROM selected_messages ORDER BY text",
+                    "SELECT COUNT(*) AS total FROM selected_messages"
+                ]
+            }))),
+        )
+        .await
+        .expect("sql codemode");
+    assert_eq!(codemode.is_error, Some(false));
+
+    let structured = codemode.structured_content.expect("structured content");
+    assert_eq!(structured["results"].as_array().expect("results").len(), 2);
+    assert_eq!(structured["results"][0]["index"], 2);
+    assert_eq!(
+        structured["results"][0]["sql"],
+        "SELECT text FROM selected_messages ORDER BY text"
+    );
+    assert_eq!(structured["results"][0]["rows"][0]["text"], "hello");
+    assert_eq!(structured["results"][1]["index"], 3);
+    assert_eq!(structured["results"][1]["rows"][0]["total"], 1);
+    assert_matches_output_schema(sql_codemode_tool, &structured);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_tool_error_does_not_end_session() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_fixture_manifest(temp.path());

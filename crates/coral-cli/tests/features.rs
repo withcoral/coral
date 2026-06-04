@@ -64,7 +64,7 @@ fn features_without_subcommand_requires_explicit_action() {
 }
 
 #[test]
-fn features_list_shows_feedback_status_without_state_creation() {
+fn features_list_shows_known_feature_status_without_state_creation() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("missing-config");
 
@@ -81,6 +81,10 @@ fn features_list_shows_feedback_status_without_state_creation() {
     );
     assert!(stdout.contains("Enabled"), "missing table header: {stdout}");
     assert!(
+        stdout.contains("sql_codemode"),
+        "missing sql_codemode row: {stdout}"
+    );
+    assert!(
         stdout.contains("feedback"),
         "missing feedback row: {stdout}"
     );
@@ -91,6 +95,10 @@ fn features_list_shows_feedback_status_without_state_creation() {
     assert!(
         stdout.contains("false"),
         "missing disabled effective state: {stdout}"
+    );
+    assert!(
+        stdout.contains("Exposes the MCP sql_codemode tool when enabled. SQL codemode runs ordered read-only queries and session-local temporary-table CTAS statements in one private query session."),
+        "feature list should match documented sql_codemode text: {stdout}"
     );
     assert!(
         stdout.contains("Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral."),
@@ -108,14 +116,14 @@ fn features_list_applies_global_process_override_without_state_creation() {
     let config_dir = temp.path().join("missing-config");
 
     let assert = coral_cmd(&config_dir)
-        .args(["--enable-feedback", "features", "list"])
+        .args(["--enable-sql-codemode", "features", "list"])
         .assert()
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        stdout.contains("feedback"),
-        "missing feedback row: {stdout}"
+        stdout.contains("sql_codemode"),
+        "missing sql_codemode row: {stdout}"
     );
     assert!(
         stdout.contains("default"),
@@ -224,6 +232,10 @@ fn features_unknown_key_fails_without_writing_config() {
     assert!(
         stderr.contains("unknown feature 'unknown'"),
         "missing unknown feature error: {stderr}"
+    );
+    assert!(
+        stderr.contains("sql_codemode"),
+        "error should mention valid feature keys: {stderr}"
     );
     assert!(
         stderr.contains("feedback"),

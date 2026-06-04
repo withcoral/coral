@@ -2,13 +2,13 @@
 
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
-    ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, PaginationRequest, SearchCatalogRequest, Source, SubmitFeedbackRequest,
-    TableSummary as ProtoTableSummary, catalog_item,
+    ExecuteSqlBatchRequest, ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, ListSourcesRequest, PaginationRequest, SearchCatalogRequest, Source,
+    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
-    decode_execute_sql_response, default_workspace,
+    decode_execute_sql_batch_response, decode_execute_sql_response, default_workspace,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -31,8 +31,9 @@ use crate::{
         initial_instructions, internal_status, list_catalog_arguments, list_catalog_tool,
         list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
         required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        search_catalog_value, sql_codemode_arguments, sql_codemode_tool, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -54,6 +55,18 @@ enum ToolCallOutcome {
 
 #[derive(Serialize)]
 struct SqlRowsValue {
+    rows: Vec<Value>,
+}
+
+#[derive(Serialize)]
+struct SqlCodemodeValue {
+    results: Vec<SqlCodemodeResultValue>,
+}
+
+#[derive(Serialize)]
+struct SqlCodemodeResultValue {
+    index: usize,
+    sql: String,
     rows: Vec<Value>,
 }
 
@@ -259,6 +272,31 @@ impl CoralMcpServer {
         })
     }
 
+    async fn execute_sql_codemode_value(&self, sql: Vec<String>) -> Result<Value, tonic::Status> {
+        let mut query_client = self.query.clone();
+        let response = query_client
+            .execute_sql_batch(Request::new(ExecuteSqlBatchRequest {
+                workspace: Some(default_workspace()),
+                sql,
+            }))
+            .await?
+            .into_inner();
+        let results = decode_execute_sql_batch_response(&response)
+            .map_err(|error| tonic::Status::internal(error.to_string()))?
+            .into_iter()
+            .map(|result| {
+                let rows = batches_to_json_rows(result.result().batches())
+                    .map_err(|error| tonic::Status::internal(error.to_string()))?;
+                Ok(SqlCodemodeResultValue {
+                    index: result.index(),
+                    sql: result.sql().to_string(),
+                    rows,
+                })
+            })
+            .collect::<Result<Vec<_>, tonic::Status>>()?;
+        serialize_tool_value(SqlCodemodeValue { results })
+    }
+
     async fn submit_feedback_value(
         &self,
         trying_to_do: &str,
@@ -372,6 +410,13 @@ impl CoralMcpServer {
                 Ok(ToolCallOutcome::from_value_result(
                     "Query",
                     self.execute_sql_value(&sql).await,
+                ))
+            }
+            "sql_codemode" if self.options.sql_codemode_enabled => {
+                let arguments = sql_codemode_arguments(request.arguments.as_ref())?;
+                Ok(ToolCallOutcome::from_value_result(
+                    "SQL codemode",
+                    self.execute_sql_codemode_value(arguments.sql).await,
                 ))
             }
             "list_catalog" => {
@@ -491,6 +536,9 @@ impl ServerHandler for CoralMcpServer {
                 describe_table_tool(),
                 list_columns_tool(),
             ];
+            if self.options.sql_codemode_enabled {
+                tools.insert(1, sql_codemode_tool(visible_table_count));
+            }
             if self.options.feedback_enabled {
                 tools.push(feedback_tool());
             }

@@ -21,6 +21,7 @@ Experimental runtime features are configured under `[features]`.
 
 ```toml
 [features]
+sql_codemode = true
 feedback = true
 ```
 
@@ -33,7 +34,9 @@ coral features list
 Enable or disable a feature with:
 
 ```shellscript
+coral features enable sql_codemode
 coral features enable feedback
+coral features disable sql_codemode
 coral features disable feedback
 ```
 
@@ -41,6 +44,7 @@ Feature values must be booleans. Unknown feature keys are preserved in `config.t
 
 | Feature | Default | Description |
 | ------- | ------- | ----------- |
+| `sql_codemode` | `false` | Experimental. Exposes the MCP `sql_codemode` tool when enabled. SQL codemode runs ordered read-only queries and session-local temporary-table CTAS statements in one private query session. |
 | `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
 
 ## OpenTelemetry

@@ -13,6 +13,8 @@ use crate::state::{
 /// Runtime feature keys recognized by Coral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Expose the optional MCP `sql_codemode` tool.
+    SqlCodemode,
     /// Expose the optional MCP `feedback` tool.
     Feedback,
 }
@@ -65,14 +67,24 @@ struct FeatureSpec {
     disable_flag: &'static str,
 }
 
-const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
-    feature: Feature::Feedback,
-    key: "feedback",
-    default_enabled: false,
-    description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
-    enable_flag: "enable-feedback",
-    disable_flag: "disable-feedback",
-}];
+const FEATURE_SPECS: &[FeatureSpec] = &[
+    FeatureSpec {
+        feature: Feature::SqlCodemode,
+        key: "sql_codemode",
+        default_enabled: false,
+        description: "Exposes the MCP sql_codemode tool when enabled. SQL codemode runs ordered read-only queries and session-local temporary-table CTAS statements in one private query session.",
+        enable_flag: "enable-sql-codemode",
+        disable_flag: "disable-sql-codemode",
+    },
+    FeatureSpec {
+        feature: Feature::Feedback,
+        key: "feedback",
+        default_enabled: false,
+        description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
+        enable_flag: "enable-feedback",
+        disable_flag: "disable-feedback",
+    },
+];
 
 /// How a feature's value is configured in Coral's local config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,21 +359,22 @@ mod tests {
     }
 
     #[test]
-    fn defaults_disable_feedback() {
+    fn defaults_disable_optional_mcp_features() {
         let features = Features::default();
 
+        assert!(!features.enabled(Feature::SqlCodemode));
         assert!(!features.enabled(Feature::Feedback));
     }
 
     #[test]
     fn process_overrides_enable_default_disabled_feature() {
         let mut overrides = FeatureOverrides::default();
-        overrides.set(Feature::Feedback, true);
+        overrides.set(Feature::SqlCodemode, true);
         let mut features = Features::default();
 
         features.apply_overrides(&overrides);
 
-        assert!(features.enabled(Feature::Feedback));
+        assert!(features.enabled(Feature::SqlCodemode));
     }
 
     #[test]
@@ -397,6 +410,7 @@ mod tests {
         let raw = raw([("future_flag", RawFeatureValue::Bool(true))]);
         let features = Features::from_raw_overrides(&raw);
 
+        assert!(!features.enabled(Feature::SqlCodemode));
         assert!(!features.enabled(Feature::Feedback));
     }
 
@@ -417,7 +431,10 @@ mod tests {
             .iter()
             .map(|spec| status_from_raw(spec, &raw, &features))
             .collect::<Vec<_>>();
-        let status = statuses.first().expect("feedback status");
+        let status = statuses
+            .iter()
+            .find(|status| status.key == "feedback")
+            .expect("feedback status");
 
         assert_eq!(status.key, "feedback");
         assert_eq!(status.configured, FeatureConfiguredState::InvalidValue);
@@ -429,6 +446,7 @@ mod tests {
         let error = unknown_feature_error("nope");
 
         assert!(error.to_string().contains("unknown feature 'nope'"));
+        assert!(error.to_string().contains("sql_codemode"));
         assert!(error.to_string().contains("feedback"));
     }
 }

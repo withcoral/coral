@@ -43,6 +43,10 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct SqlCodemodeArguments {
+    pub(crate) sql: Vec<String>,
+}
+
 pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
     Tool::new(
         "sql",
@@ -60,6 +64,36 @@ pub(crate) fn sql_tool(sources: &[Source], visible_table_count: usize) -> Tool {
     )
     .with_annotations(
         ToolAnnotations::with_title("Run SQL")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
+    )
+}
+
+pub(crate) fn sql_codemode_tool(visible_table_count: usize) -> Tool {
+    Tool::new(
+        "sql_codemode",
+        sql_codemode_tool_description(visible_table_count),
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["sql"],
+            "properties": {
+                "sql": {
+                    "type": "array",
+                    "description": "Ordered SQL statements to execute in one private codemode session. Each item must contain exactly one statement. SQL codemode permits read-only queries and CREATE TEMP TABLE ... AS SELECT for session-local temporary tables.",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(sql_codemode_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Run SQL Codemode")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -371,6 +405,14 @@ pub(crate) fn list_columns_arguments(
     })
 }
 
+pub(crate) fn sql_codemode_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<SqlCodemodeArguments, ErrorData> {
+    Ok(SqlCodemodeArguments {
+        sql: required_string_array_argument(arguments, "sql")?,
+    })
+}
+
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
     let pretty = serde_json::to_string_pretty(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -390,10 +432,56 @@ fn sql_tool_description(_sources: &[Source], visible_table_count: usize) -> Stri
     }
 }
 
+fn sql_codemode_tool_description(visible_table_count: usize) -> String {
+    if visible_table_count == 0 {
+        "Execute SQL codemode against the Coral database in one private session. No user tables are currently visible.".to_string()
+    } else {
+        format!(
+            "Execute SQL codemode against the Coral database in one private session. {visible_table_count} table(s) are currently visible. SQL codemode can create session-local temporary tables with CREATE TEMP TABLE ... AS SELECT, then query them in later statements."
+        )
+    }
+}
+
 fn search_catalog_description(visible_table_count: usize, visible_function_count: usize) -> String {
     format!(
         "Search database catalog metadata with a Rust regex. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
     )
+}
+
+fn sql_codemode_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["results"],
+        "additionalProperties": false,
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["index", "sql", "rows"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "index": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "1-based statement index from the original codemode request."
+                        },
+                        "sql": {
+                            "type": "string",
+                            "description": "SQL text for the statement that produced this result set."
+                        },
+                        "rows": {
+                            "type": "array",
+                            "description": "Rows returned by this statement as JSON objects.",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }))
 }
 
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
@@ -774,6 +862,40 @@ fn optional_non_empty_string_argument(
     } else {
         Ok(Some(value.to_string()))
     }
+}
+
+fn required_string_array_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Vec<String>, ErrorData> {
+    let values = arguments
+        .and_then(|arguments| arguments.get(key))
+        .and_then(Value::as_array)
+        .filter(|values| !values.is_empty())
+        .ok_or_else(|| {
+            ErrorData::invalid_params(format!("missing array argument '{key}'"), None)
+        })?;
+
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        format!(
+                            "argument '{key}' item {} must be a non-empty string",
+                            index + 1
+                        ),
+                        None,
+                    )
+                })
+        })
+        .collect()
 }
 
 fn optional_bool_argument(

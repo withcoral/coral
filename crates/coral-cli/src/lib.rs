@@ -68,6 +68,8 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
+    /// Execute codemode against Coral
+    Codemode(CodemodeArgs),
     /// Manage data sources
     Source(SourceArgs),
     /// Interactive wizard to set up Coral and explore use cases
@@ -121,6 +123,40 @@ struct SqlArgs {
     /// SQL query to execute
     #[arg(required_unless_present = "file")]
     sql: Option<String>,
+}
+
+#[derive(Debug, Args)]
+/// Execute codemode against Coral
+struct CodemodeArgs {
+    #[command(subcommand)]
+    command: CodemodeCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CodemodeCommand {
+    /// Execute SQL codemode in one private query session
+    Sql(SqlCodemodeArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("codemode_sql_input")
+        .args(["code", "file"])
+        .required(true)
+        .multiple(false)
+))]
+struct SqlCodemodeArgs {
+    /// SQL statements to execute as an ordered codemode body
+    #[arg(long)]
+    code: Option<String>,
+
+    /// SQL file to execute as an ordered codemode body
+    #[arg(long, value_name = "PATH")]
+    file: Option<PathBuf>,
+
+    /// Output format for codemode results
+    #[arg(long, value_enum, default_value = "table")]
+    format: OutputFormat,
 }
 
 #[derive(Debug, Default)]
@@ -300,7 +336,7 @@ enum SourceCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     Table,
     Json,
@@ -367,9 +403,11 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
-                RequiredRuntime::AppClient
-            }
+            Command::Sql(_)
+            | Command::Codemode(_)
+            | Command::Source(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => RequiredRuntime::AppClient,
             Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
@@ -568,7 +606,11 @@ async fn run_no_runtime_command(
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Sql(_)
+        | Command::Codemode(_)
+        | Command::Source(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -584,6 +626,7 @@ async fn run_app_command(
         Command::Sql(args) => {
             run_sql_command(&app, args).await?;
         }
+        Command::Codemode(args) => run_codemode_command(&app, args).await?,
         Command::Source(args) => run_source(&app, args).await?,
         Command::Onboard => {
             onboard::run(&app).await?;
@@ -595,6 +638,8 @@ async fn run_app_command(
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
+                    sql_codemode_enabled: features
+                        .enabled(coral_app::features::Feature::SqlCodemode),
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                 },
@@ -788,19 +833,7 @@ async fn run_sql_command(app: &AppClient, args: SqlArgs) -> Result<(), CliError>
         }
         (None, Some(path)) => {
             let statements = read_batch_sql_file(&path)?;
-            let response = match app
-                .query_client()
-                .execute_sql_batch(Request::new(ExecuteSqlBatchRequest {
-                    workspace: Some(default_workspace()),
-                    sql: statements,
-                }))
-                .await
-            {
-                Ok(response) => response.into_inner(),
-                Err(status) => return Err(query_status_to_cli_error(&status)),
-            };
-            let results =
-                decode_execute_sql_batch_response(&response).map_err(anyhow::Error::from)?;
+            let results = execute_sql_batch(app, statements).await?;
             print_batch_results(&results, args.format)?;
         }
         (Some(_), Some(_)) => {
@@ -811,6 +844,44 @@ async fn run_sql_command(app: &AppClient, args: SqlArgs) -> Result<(), CliError>
         }
     }
     Ok(())
+}
+
+async fn run_codemode_command(app: &AppClient, args: CodemodeArgs) -> Result<(), CliError> {
+    match args.command {
+        CodemodeCommand::Sql(args) => run_sql_codemode_command(app, args).await,
+    }
+}
+
+async fn run_sql_codemode_command(app: &AppClient, args: SqlCodemodeArgs) -> Result<(), CliError> {
+    let statements = codemode_sql_statements(&args).map_err(CliError::Internal)?;
+    let results = execute_sql_batch(app, statements).await?;
+    print_batch_results(&results, args.format).map_err(CliError::Internal)
+}
+
+fn codemode_sql_statements(args: &SqlCodemodeArgs) -> Result<Vec<String>, anyhow::Error> {
+    match (&args.code, &args.file) {
+        (Some(code), None) => parse_batch_sql("inline SQL codemode", code),
+        (None, Some(path)) => read_batch_sql_file(path),
+        _ => unreachable!("clap enforces exactly one codemode SQL input"),
+    }
+}
+
+async fn execute_sql_batch(
+    app: &AppClient,
+    statements: Vec<String>,
+) -> Result<Vec<coral_client::CollectedBatchQueryResult>, CliError> {
+    let response = match app
+        .query_client()
+        .execute_sql_batch(Request::new(ExecuteSqlBatchRequest {
+            workspace: Some(default_workspace()),
+            sql: statements,
+        }))
+        .await
+    {
+        Ok(response) => response.into_inner(),
+        Err(status) => return Err(query_status_to_cli_error(&status)),
+    };
+    decode_execute_sql_batch_response(&response).map_err(|error| CliError::Internal(error.into()))
 }
 
 fn query_status_to_cli_error(status: &tonic::Status) -> CliError {
@@ -828,17 +899,18 @@ fn read_batch_sql_file(path: &PathBuf) -> Result<Vec<String>, anyhow::Error> {
     let contents = fs::read_to_string(path).map_err(|error| {
         anyhow::anyhow!("failed to read SQL file '{}': {error}", path.display())
     })?;
+    parse_batch_sql(&format!("SQL file '{}'", path.display()), &contents)
+}
+
+fn parse_batch_sql(label: &str, contents: &str) -> Result<Vec<String>, anyhow::Error> {
     let dialect = GenericDialect {};
-    let statements = SqlParser::parse_sql(&dialect, &contents)
-        .map_err(|error| anyhow::anyhow!("failed to parse SQL file '{}': {error}", path.display()))?
+    let statements = SqlParser::parse_sql(&dialect, contents)
+        .map_err(|error| anyhow::anyhow!("failed to parse {label}: {error}"))?
         .into_iter()
         .map(|statement| statement.to_string())
         .collect::<Vec<_>>();
     if statements.is_empty() {
-        anyhow::bail!(
-            "SQL file '{}' does not contain any statements",
-            path.display()
-        );
+        anyhow::bail!("{label} does not contain any statements");
     }
     Ok(statements)
 }
@@ -1021,6 +1093,44 @@ mod tests {
         let cli = Cli::try_parse_from(["coral", "source", "list"]).expect("source list parses");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn codemode_sql_uses_normal_app_bootstrap() {
+        let cli = Cli::try_parse_from([
+            "coral",
+            "codemode",
+            "sql",
+            "--code",
+            "SELECT 1 AS value",
+            "--format",
+            "json",
+        ])
+        .expect("codemode SQL args should parse");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+        let super::Command::Codemode(args) = cli.command else {
+            panic!("expected codemode command");
+        };
+        let super::CodemodeCommand::Sql(args) = args.command;
+        assert_eq!(args.code.as_deref(), Some("SELECT 1 AS value"));
+        assert_eq!(args.format, super::OutputFormat::Json);
+    }
+
+    #[test]
+    fn codemode_sql_rejects_file_and_code_together() {
+        let error = Cli::try_parse_from([
+            "coral",
+            "codemode",
+            "sql",
+            "--code",
+            "SELECT 1",
+            "--file",
+            "analysis.sql",
+        ])
+        .expect_err("conflicting codemode SQL inputs should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
