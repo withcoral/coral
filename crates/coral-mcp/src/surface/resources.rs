@@ -86,7 +86,7 @@ FROM coral.columns WHERE schema_name = '{schema_name}' AND table_name = '{table_
 pub(crate) fn tables_resource_content(
     tables: &[TableSummary],
 ) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&TablesResourceContent {
+    serde_json::to_string(&TablesResourceContent {
         tables: queryable_table_summary_values(tables),
     })
 }
@@ -126,7 +126,7 @@ fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
 mod tests {
     use coral_api::v1::{Source, SourceCredentialStorage, TableSummary, Workspace};
 
-    use super::{guide_resource_content, initial_instructions};
+    use super::{guide_resource_content, initial_instructions, tables_resource_content};
     use crate::surface::values::format_schema_table_equivalent;
 
     fn source(name: &str) -> Source {
@@ -201,6 +201,17 @@ mod tests {
         assert!(content.contains("Visible schemas:"));
         assert!(content.contains("- searchy"));
         assert!(!content.contains("No user-visible schemas are currently available."));
+    }
+
+    #[test]
+    fn tables_resource_content_uses_compact_json() {
+        let content = tables_resource_content(&[table("slack", "messages")])
+            .expect("tables resource content serializes");
+
+        assert!(content.starts_with("{\"tables\":[{\"schema_name\":\"slack\""));
+        assert!(!content.contains('\n'));
+        assert!(content.contains("\"sql_reference\":\"slack.messages\""));
+        assert!(content.contains("\"guide\":\"Query messages.\""));
     }
 
     #[test]
