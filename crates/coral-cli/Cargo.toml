@@ -35,6 +35,7 @@ url.workspace = true
 coral-api.workspace = true
 coral-app.workspace = true
 coral-client.workspace = true
+coral-codemode.workspace = true
 coral-mcp.workspace = true
 coral-spec.workspace = true
 

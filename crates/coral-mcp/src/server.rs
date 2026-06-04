@@ -10,6 +10,7 @@ use coral_client::{
     AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient,
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
 };
+use coral_codemode::{CodemodeClients, PythonCodemodeRequest};
 use rmcp::{
     ErrorData, ServerHandler,
     model::{
@@ -26,13 +27,13 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
-        describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, list_catalog_arguments, list_catalog_tool, list_catalog_value,
-        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
-        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        CatalogToolKind, build_tool_result, codemode_arguments, codemode_tool,
+        describe_table_arguments, describe_table_tool, describe_table_value, feedback_tool,
+        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
+        list_catalog_tool, list_catalog_value, list_columns_arguments, list_columns_tool,
+        list_columns_value, required_string_argument, search_catalog_arguments,
+        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -236,6 +237,17 @@ impl CoralMcpServer {
         })
     }
 
+    async fn execute_codemode_value(
+        &self,
+        request: PythonCodemodeRequest,
+    ) -> Result<Value, tonic::Status> {
+        let clients = CodemodeClients::new(self.query.clone(), self.catalog.clone());
+        let result = coral_codemode::run_python(clients, request)
+            .await
+            .map_err(coral_codemode::CodemodeError::into_status)?;
+        serialize_tool_value(result)
+    }
+
     async fn submit_feedback_value(
         &self,
         trying_to_do: &str,
@@ -367,6 +379,19 @@ impl CoralMcpServer {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await
             }
+            "codemode" if self.options.codemode_enabled => {
+                let arguments = codemode_arguments(request.arguments.as_ref())?;
+                let request = PythonCodemodeRequest {
+                    code: arguments.code,
+                    type_check: arguments.type_check,
+                    timeout_ms: arguments.timeout_ms,
+                    max_sql_calls: arguments.max_sql_calls,
+                };
+                Ok(ToolCallOutcome::from_value_result(
+                    "Codemode",
+                    self.execute_codemode_value(request).await,
+                ))
+            }
             "feedback" if self.options.feedback_enabled => {
                 let trying_to_do =
                     required_string_argument(request.arguments.as_ref(), "trying_to_do")?;
@@ -468,6 +493,9 @@ impl ServerHandler for CoralMcpServer {
                 describe_table_tool(),
                 list_columns_tool(),
             ];
+            if self.options.codemode_enabled {
+                tools.push(codemode_tool(visible_table_count));
+            }
             if self.options.feedback_enabled {
                 tools.push(feedback_tool());
             }

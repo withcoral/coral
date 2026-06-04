@@ -19,6 +19,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
+| Tool     | `codemode`       | Optional experimental Monty Python execution with SQL and catalog host functions |
 | Resource | `coral://guide`  | Database workflow guide for agents                     |
 | Resource | `coral://tables` | JSON summaries of database tables and required filters  |
 
@@ -53,6 +54,22 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 ### Richer metadata via SQL
 
 For deeper introspection, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
+
+### Codemode tool
+
+`codemode` is experimental and disabled by default. Enable it persistently with:
+
+```shellscript
+coral features enable codemode
+```
+
+Or expose it for one MCP process:
+
+```shellscript
+coral --enable-codemode mcp-stdio
+```
+
+The tool runs one Monty Python body and returns `output`, captured `stdout`, and `query_count`. Code can call `sql(query)`, `list_catalog()`, `search_catalog(pattern)`, `describe_table(schema, table)`, and `list_columns(schema, table)`. SQL calls are capped by `max_sql_calls`; filesystem, environment, and network host functions are not exposed.
 
 ### Searching a provider's data
 

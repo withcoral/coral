@@ -34,6 +34,7 @@ use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
     format_batches_table, manifest_input_from_proto,
 };
+use coral_codemode::{CodemodeClients, PythonCodemodeRequest};
 use dialoguer::console::measure_text_width;
 use tonic::Request;
 
@@ -63,6 +64,8 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
+    /// Execute codemode against Coral
+    Codemode(CodemodeArgs),
     /// Manage data sources
     Source(SourceArgs),
     /// Interactive wizard to set up Coral and explore use cases
@@ -112,6 +115,52 @@ struct SqlArgs {
     format: OutputFormat,
     /// SQL query to execute
     sql: String,
+}
+
+#[derive(Debug, Args)]
+/// Execute codemode against Coral
+struct CodemodeArgs {
+    #[command(subcommand)]
+    command: CodemodeCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CodemodeCommand {
+    /// Execute Monty Python with Coral host functions
+    Python(PythonCodemodeArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("code_input")
+        .args(["code", "file"])
+        .required(true)
+        .multiple(false)
+))]
+struct PythonCodemodeArgs {
+    /// Python code to execute
+    #[arg(long)]
+    code: Option<String>,
+
+    /// Path to a Python file to execute
+    #[arg(long)]
+    file: Option<PathBuf>,
+
+    /// Output format for codemode results
+    #[arg(long, value_enum, default_value = "text")]
+    format: CodemodeOutputFormat,
+
+    /// Maximum Monty execution time in milliseconds
+    #[arg(long = "timeout-ms", default_value_t = coral_codemode::DEFAULT_TIMEOUT_MS)]
+    timeout_ms: u64,
+
+    /// Maximum number of `sql()` host-function calls
+    #[arg(long = "max-sql-calls", default_value_t = coral_codemode::DEFAULT_MAX_SQL_CALLS)]
+    max_sql_calls: usize,
+
+    /// Skip Monty's static type checker
+    #[arg(long = "no-type-check")]
+    no_type_check: bool,
 }
 
 #[derive(Debug, Default)]
@@ -297,6 +346,12 @@ enum OutputFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CodemodeOutputFormat {
+    Text,
+    Json,
+}
+
 /// Typed CLI error whose stderr rendering and exit code are owned by the binary.
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
@@ -308,6 +363,16 @@ pub enum CliError {
         /// Low-cardinality query failure class for telemetry.
         error_type: String,
         /// Human-readable query failure summary for telemetry.
+        error_message: String,
+    },
+    /// Codemode failed with a structured, user-facing diagnostic.
+    #[error("codemode failed")]
+    Codemode {
+        /// Complete stderr diagnostic rendered for the codemode failure.
+        rendered_stderr: String,
+        /// Low-cardinality codemode failure class for telemetry.
+        error_type: String,
+        /// Human-readable codemode failure summary for telemetry.
         error_message: String,
     },
     /// A source was available as a bundled source but has not been installed.
@@ -340,6 +405,9 @@ impl CliError {
         match self {
             Self::Query {
                 rendered_stderr, ..
+            }
+            | Self::Codemode {
+                rendered_stderr, ..
             } => Some(rendered_stderr.clone()),
             Self::SourceNotInstalled { source_name } => Some(format!(
                 "source '{source_name}' is not installed. Run `coral source add {source_name}` to install it, then retry `coral source test {source_name}`.\n"
@@ -358,9 +426,11 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
-                RequiredRuntime::AppClient
-            }
+            Command::Sql(_)
+            | Command::Codemode(_)
+            | Command::Source(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => RequiredRuntime::AppClient,
             Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
@@ -375,7 +445,9 @@ impl Command {
 impl coral_app::RunErrorTelemetry for CliError {
     fn telemetry_error_type(&self) -> Cow<'_, str> {
         match self {
-            Self::Query { error_type, .. } => Cow::Borrowed(error_type.as_str()),
+            Self::Query { error_type, .. } | Self::Codemode { error_type, .. } => {
+                Cow::Borrowed(error_type.as_str())
+            }
             Self::SourceNotInstalled { .. } => Cow::Borrowed("SOURCE_NOT_INSTALLED"),
             Self::SourceNotFound { .. } | Self::SourceRemoveNotFound { .. } => {
                 Cow::Borrowed("SOURCE_NOT_FOUND")
@@ -386,7 +458,9 @@ impl coral_app::RunErrorTelemetry for CliError {
 
     fn telemetry_error_message(&self) -> Cow<'_, str> {
         match self {
-            Self::Query { error_message, .. } => Cow::Borrowed(error_message.as_str()),
+            Self::Query { error_message, .. } | Self::Codemode { error_message, .. } => {
+                Cow::Borrowed(error_message.as_str())
+            }
             Self::SourceNotInstalled { source_name } => {
                 Cow::Owned(format!("source '{source_name}' is not installed"))
             }
@@ -520,7 +594,11 @@ async fn run_no_runtime_command(
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Sql(_)
+        | Command::Codemode(_)
+        | Command::Source(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -554,6 +632,7 @@ async fn run_app_command(
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
         }
+        Command::Codemode(args) => run_codemode(&app, args).await?,
         Command::Source(args) => run_source(&app, args).await?,
         Command::Onboard => {
             onboard::run(&app).await?;
@@ -565,6 +644,7 @@ async fn run_app_command(
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
+                    codemode_enabled: features.enabled(coral_app::features::Feature::Codemode),
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                 },
@@ -617,6 +697,83 @@ fn run_features(
         }
     }
     Ok(())
+}
+
+async fn run_codemode(app: &AppClient, args: CodemodeArgs) -> Result<(), CliError> {
+    match args.command {
+        CodemodeCommand::Python(args) => run_python_codemode(app, args).await,
+    }
+}
+
+async fn run_python_codemode(app: &AppClient, args: PythonCodemodeArgs) -> Result<(), CliError> {
+    let code = codemode_code(&args).map_err(CliError::Internal)?;
+    let request = PythonCodemodeRequest {
+        code,
+        type_check: !args.no_type_check,
+        timeout_ms: args.timeout_ms,
+        max_sql_calls: args.max_sql_calls,
+    };
+    let clients = CodemodeClients::new(app.query_client(), app.catalog_client());
+    let result = coral_codemode::run_python(clients, request)
+        .await
+        .map_err(codemode_cli_error)?;
+    print_codemode_result(result, args.format).map_err(CliError::Internal)
+}
+
+fn codemode_code(args: &PythonCodemodeArgs) -> Result<String, anyhow::Error> {
+    match (&args.code, &args.file) {
+        (Some(code), None) => Ok(code.clone()),
+        (None, Some(file)) => std::fs::read_to_string(file)
+            .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", file.display())),
+        _ => unreachable!("clap enforces exactly one codemode code input"),
+    }
+}
+
+fn print_codemode_result(
+    result: coral_codemode::CodemodeResult,
+    format: CodemodeOutputFormat,
+) -> Result<(), anyhow::Error> {
+    match format {
+        CodemodeOutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        CodemodeOutputFormat::Text => {
+            if !result.stdout.is_empty() {
+                print!("{}", result.stdout);
+            }
+            match result.output {
+                serde_json::Value::String(value) => println!("{value}"),
+                value => println!("{}", serde_json::to_string_pretty(&value)?),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn codemode_cli_error(error: coral_codemode::CodemodeError) -> CliError {
+    match error {
+        coral_codemode::CodemodeError::Query(status) => CliError::Query {
+            error_message: query_error::telemetry_error_message(&status),
+            error_type: query_error::telemetry_error_type(&status),
+            rendered_stderr: query_error::render_query_error(&status),
+        },
+        coral_codemode::CodemodeError::Catalog(status) => {
+            let error_message = status.message().to_string();
+            CliError::Codemode {
+                rendered_stderr: format!("codemode catalog lookup failed: {error_message}\n"),
+                error_type: format!("CODEMODE_CATALOG_{:?}", status.code()),
+                error_message,
+            }
+        }
+        coral_codemode::CodemodeError::Invalid(message) => CliError::Codemode {
+            rendered_stderr: format!("codemode failed: {message}\n"),
+            error_type: "CODEMODE_INVALID".to_string(),
+            error_message: message,
+        },
+        coral_codemode::CodemodeError::Internal(message) => {
+            CliError::Internal(anyhow::anyhow!("codemode internal error: {message}"))
+        }
+    }
 }
 
 async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
@@ -886,6 +1043,45 @@ mod tests {
         let cli = Cli::try_parse_from(["coral", "source", "list"]).expect("source list parses");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn codemode_python_uses_normal_app_bootstrap() {
+        let cli = Cli::try_parse_from([
+            "coral",
+            "codemode",
+            "python",
+            "--code",
+            "rows = sql('SELECT 1')\nrows",
+            "--format",
+            "json",
+        ])
+        .expect("codemode args should parse");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+        let super::Command::Codemode(args) = cli.command else {
+            panic!("expected codemode command");
+        };
+        let super::CodemodeCommand::Python(args) = args.command;
+        assert_eq!(args.code.as_deref(), Some("rows = sql('SELECT 1')\nrows"));
+        assert_eq!(args.format, super::CodemodeOutputFormat::Json);
+        assert!(!args.no_type_check);
+    }
+
+    #[test]
+    fn codemode_python_rejects_file_and_code_together() {
+        let error = Cli::try_parse_from([
+            "coral",
+            "codemode",
+            "python",
+            "--code",
+            "1 + 1",
+            "--file",
+            "script.py",
+        ])
+        .expect_err("file and code together should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

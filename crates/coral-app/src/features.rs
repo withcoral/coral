@@ -13,6 +13,8 @@ use crate::state::{
 /// Runtime feature keys recognized by Coral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Expose the optional MCP `codemode` tool.
+    Codemode,
     /// Expose the optional MCP `feedback` tool.
     Feedback,
 }
@@ -65,14 +67,24 @@ struct FeatureSpec {
     disable_flag: &'static str,
 }
 
-const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
-    feature: Feature::Feedback,
-    key: "feedback",
-    default_enabled: false,
-    description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
-    enable_flag: "enable-feedback",
-    disable_flag: "disable-feedback",
-}];
+const FEATURE_SPECS: &[FeatureSpec] = &[
+    FeatureSpec {
+        feature: Feature::Codemode,
+        key: "codemode",
+        default_enabled: false,
+        description: "Exposes the MCP codemode tool when enabled. Codemode runs Monty Python with read-only Coral SQL available as an explicit host function.",
+        enable_flag: "enable-codemode",
+        disable_flag: "disable-codemode",
+    },
+    FeatureSpec {
+        feature: Feature::Feedback,
+        key: "feedback",
+        default_enabled: false,
+        description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
+        enable_flag: "enable-feedback",
+        disable_flag: "disable-feedback",
+    },
+];
 
 /// How a feature's value is configured in Coral's local config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,9 +338,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_disable_feedback() {
+    fn defaults_disable_experimental_features() {
         let features = Features::default();
 
+        assert!(!features.enabled(Feature::Codemode));
         assert!(!features.enabled(Feature::Feedback));
     }
 
@@ -376,6 +389,7 @@ mod tests {
         let raw = raw([("future_flag", RawFeatureValue::Bool(true))]);
         let features = Features::from_raw_overrides(&raw);
 
+        assert!(!features.enabled(Feature::Codemode));
         assert!(!features.enabled(Feature::Feedback));
     }
 
@@ -396,7 +410,10 @@ mod tests {
             .iter()
             .map(|spec| status_from_raw(spec, &raw, &features))
             .collect::<Vec<_>>();
-        let status = statuses.first().expect("feedback status");
+        let status = statuses
+            .iter()
+            .find(|status| status.key == "feedback")
+            .expect("feedback status");
 
         assert_eq!(status.key, "feedback");
         assert_eq!(status.configured, FeatureConfiguredState::InvalidValue);
@@ -408,6 +425,7 @@ mod tests {
         let error = unknown_feature_error("nope");
 
         assert!(error.to_string().contains("unknown feature 'nope'"));
+        assert!(error.to_string().contains("codemode"));
         assert!(error.to_string().contains("feedback"));
     }
 }

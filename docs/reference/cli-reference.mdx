@@ -12,6 +12,7 @@ top-level flags:
 coral --enable-<FEATURE> <COMMAND>
 coral --disable-<FEATURE> <COMMAND>
 coral --enable-feedback mcp-stdio
+coral --enable-codemode mcp-stdio
 coral --disable-feedback mcp-stdio
 ```
 
@@ -33,6 +34,40 @@ coral sql "<SQL>"
 | `--format` | `table` \| `json` | `table` | Output format |
 
 JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
+
+## `coral codemode python`
+
+Execute one Monty Python body against Coral and exit.
+
+```shellscript
+coral codemode python --file ./analysis.py
+coral codemode python --code 'rows = sql("SELECT 1 AS value"); rows'
+```
+
+Python codemode exposes explicit read-only host functions: `sql(query)`, `list_catalog()`, `search_catalog(pattern)`, `describe_table(schema, table)`, and `list_columns(schema, table)`.
+
+The CLI command is explicit and does not require the `codemode` runtime feature flag. That feature only controls whether MCP exposes the `codemode` tool.
+
+### Options
+
+| Option | Type | Default | Description |
+| ------ | ---- | ------- | ----------- |
+| `--code` | string | none | Python code to execute. Mutually exclusive with `--file`. |
+| `--file` | path | none | Python file to execute. Mutually exclusive with `--code`. |
+| `--format` | `text` \| `json` | `text` | Output format |
+| `--timeout-ms` | integer | `60000` | Maximum Monty execution time in milliseconds |
+| `--max-sql-calls` | integer | `20` | Maximum number of `sql()` host-function calls |
+| `--no-type-check` | boolean flag | unset | Skip Monty's static type checker |
+
+JSON output mirrors the MCP structured result:
+
+```json
+{
+  "output": [{ "value": 1 }],
+  "stdout": "",
+  "query_count": 1
+}
+```
 
 ## `coral source`
 
@@ -227,6 +262,7 @@ This server exposes:
 | Tool     | `search_catalog` | Search database catalog metadata by regex |
 | Tool     | `describe_table` | Show compact database table metadata |
 | Tool     | `list_columns`   | List columns for one database table |
+| Tool     | `codemode`       | Experimental. Execute Monty Python with SQL and catalog host functions when the `codemode` feature is enabled |
 | Resource | `coral://guide`  | Database workflow guide for agents |
 | Resource | `coral://tables` | Database table summaries         |
 

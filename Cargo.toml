@@ -72,6 +72,8 @@ keyring-core = { version = "1.0.0", default-features = false }
 apple-native-keyring-store = { version = "1.0.0", default-features = false, features = ["keychain"] }
 windows-native-keyring-store = { version = "1.0.0", default-features = false }
 zbus-secret-service-keyring-store = { version = "1.0.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
+monty = { git = "https://github.com/pydantic/monty.git", rev = "e868c802c83d4fa36e44845ee08549061455cf74", package = "monty" }
+monty_type_checking = { git = "https://github.com/pydantic/monty.git", rev = "e868c802c83d4fa36e44845ee08549061455cf74", package = "monty_type_checking" }
 object_store = { version = "0.13.2", features = ["aws"] }
 opentelemetry = "0.31.0"
 opentelemetry-appender-tracing = "0.31.0"
@@ -116,6 +118,7 @@ coral-api = { path = "crates/coral-api" }
 coral-app = { path = "crates/coral-app" }
 coral-cli = { path = "crates/coral-cli" }
 coral-client = { path = "crates/coral-client" }
+coral-codemode = { path = "crates/coral-codemode" }
 coral-engine = { path = "crates/coral-engine" }
 coral-mcp = { path = "crates/coral-mcp" }
 coral-spec = { path = "crates/coral-spec" }

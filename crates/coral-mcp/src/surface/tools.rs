@@ -42,6 +42,13 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct CodemodeArguments {
+    pub(crate) code: String,
+    pub(crate) type_check: bool,
+    pub(crate) timeout_ms: u64,
+    pub(crate) max_sql_calls: usize,
+}
+
 pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
     Tool::new(
         "sql",
@@ -59,6 +66,50 @@ pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
     )
     .with_annotations(
         ToolAnnotations::with_title("Run SQL")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
+    )
+}
+
+pub(crate) fn codemode_tool(visible_table_count: usize) -> Tool {
+    Tool::new(
+        "codemode",
+        codemode_tool_description(visible_table_count),
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["code"],
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code to execute inside Monty. The final expression is returned as `output`. Host functions include sql(), list_catalog(), search_catalog(), describe_table(), and list_columns()."
+                },
+                "type_check": {
+                    "type": "boolean",
+                    "description": "Whether to run Monty's static type checker before execution. Defaults to true.",
+                    "default": true
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Maximum Monty execution time in milliseconds, from 100 to 60000. Defaults to 60000.",
+                    "minimum": 100,
+                    "maximum": 60000,
+                    "default": 60000
+                },
+                "max_sql_calls": {
+                    "type": "integer",
+                    "description": "Maximum number of sql() host-function calls allowed, from 0 to 100. Defaults to 20.",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 20
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(codemode_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Run Codemode")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -370,6 +421,30 @@ pub(crate) fn list_columns_arguments(
     })
 }
 
+pub(crate) fn codemode_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<CodemodeArguments, ErrorData> {
+    Ok(CodemodeArguments {
+        code: required_string_argument(arguments, "code")?,
+        type_check: optional_bool_argument(arguments, "type_check", true)?,
+        timeout_ms: optional_u64_argument(
+            arguments,
+            "timeout_ms",
+            coral_codemode::DEFAULT_TIMEOUT_MS,
+            coral_codemode::MIN_TIMEOUT_MS,
+            coral_codemode::MAX_TIMEOUT_MS,
+        )?,
+        max_sql_calls: usize::try_from(optional_u64_argument(
+            arguments,
+            "max_sql_calls",
+            20,
+            0,
+            100,
+        )?)
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?,
+    })
+}
+
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
     let pretty = serde_json::to_string_pretty(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -389,10 +464,42 @@ fn sql_tool_description(visible_table_count: usize) -> String {
     }
 }
 
+fn codemode_tool_description(visible_table_count: usize) -> String {
+    if visible_table_count == 0 {
+        "Execute Monty Python in a sandbox. Coral SQL and catalog helpers are available inside the code, but no user tables are currently visible.".to_string()
+    } else {
+        format!(
+            "Execute Monty Python in a sandbox. Host functions include `sql(query)`, `list_catalog()`, `search_catalog(pattern)`, `describe_table(schema, table)`, and `list_columns(schema, table)`. {visible_table_count} table(s) are currently visible."
+        )
+    }
+}
+
 fn search_catalog_description(visible_table_count: usize, visible_function_count: usize) -> String {
     format!(
         "Search database catalog metadata with a Rust regex. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
     )
+}
+
+fn codemode_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["output", "stdout", "query_count"],
+        "additionalProperties": false,
+        "properties": {
+            "output": {
+                "description": "Natural JSON representation of the final Monty Python value."
+            },
+            "stdout": {
+                "type": "string",
+                "description": "Text captured from Python print() calls."
+            },
+            "query_count": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of Coral SQL queries executed through sql()."
+            }
+        }
+    }))
 }
 
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
@@ -786,6 +893,31 @@ fn optional_bool_argument(
     value.as_bool().ok_or_else(|| {
         ErrorData::invalid_params(format!("argument '{key}' must be a boolean"), None)
     })
+}
+
+fn optional_u64_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+    default: u64,
+    min: u64,
+    max: u64,
+) -> Result<u64, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(default);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be an unsigned integer"),
+            None,
+        ));
+    };
+    if value < min || value > max {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
+            None,
+        ));
+    }
+    Ok(value)
 }
 
 fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {

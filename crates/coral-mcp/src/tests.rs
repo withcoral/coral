@@ -883,6 +883,117 @@ async fn list_catalog_surfaces_table_functions() {
 }
 
 #[tokio::test]
+async fn mcp_codemode_tool_runs_monty_with_coral_sql_host_function() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session_with_options(
+        &temp,
+        McpOptions {
+            codemode_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "list_catalog",
+            "search_catalog",
+            "describe_table",
+            "list_columns",
+            "codemode"
+        ]
+    );
+    let codemode_tool = tool_by_name(&tools, "codemode");
+    let annotations = codemode_tool
+        .annotations
+        .as_ref()
+        .expect("codemode annotations");
+    assert_eq!(annotations.read_only_hint, Some(true));
+    assert_eq!(annotations.destructive_hint, Some(false));
+    assert_eq!(annotations.idempotent_hint, Some(true));
+    assert_eq!(annotations.open_world_hint, Some(true));
+
+    let code = r#"
+catalog = list_catalog(schema="local_messages", kind="table")
+columns = list_columns("local_messages", "messages")
+rows = sql("SELECT text FROM local_messages.messages ORDER BY text")
+print("rows", len(rows))
+{"texts": [row["text"] for row in rows], "count": len(rows), "first_table": catalog["items"][0]["name"], "column_total": columns["total"]}
+"#;
+    let codemode = client
+        .call_tool(
+            CallToolRequestParams::new("codemode").with_arguments(json_object(&json!({
+                "code": code
+            }))),
+        )
+        .await
+        .expect("codemode");
+    assert_eq!(codemode.is_error, Some(false));
+    let structured = codemode.structured_content.expect("structured content");
+    assert_eq!(structured["output"]["texts"][0], "hello");
+    assert_eq!(structured["output"]["texts"][1], "world");
+    assert_eq!(structured["output"]["count"], 2);
+    assert_eq!(structured["output"]["first_table"], "local_messages.events");
+    assert_eq!(structured["output"]["column_total"], 3);
+    assert_eq!(structured["stdout"], "rows 2\n");
+    assert_eq!(structured["query_count"], 1);
+    assert_matches_output_schema(codemode_tool, &structured);
+
+    let rejected = client
+        .call_tool(
+            CallToolRequestParams::new("codemode").with_arguments(json_object(&json!({
+                "code": "sql('SELECT 1')",
+                "max_sql_calls": 0
+            }))),
+        )
+        .await
+        .expect("codemode query cap should return a tool error");
+    assert_eq!(rejected.is_error, Some(true));
+    assert!(
+        rejected.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .contains("max_sql_calls")
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_codemode_tool_is_disabled_by_default() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert!(tools.iter().all(|tool| tool.name != "codemode"));
+
+    let codemode = client
+        .call_tool(
+            CallToolRequestParams::new("codemode").with_arguments(json_object(&json!({
+                "code": "1 + 1"
+            }))),
+        )
+        .await
+        .expect_err("codemode should not be exposed by default");
+    assert!(codemode.to_string().contains("tool 'codemode' not found"));
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session_with_options(

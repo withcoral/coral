@@ -29,6 +29,8 @@ use tokio::{
     time::timeout,
 };
 
+const RAW_JSONRPC_TIMEOUT: Duration = Duration::from_secs(15);
+
 fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
@@ -114,7 +116,7 @@ async fn read_jsonrpc_response(
     let mut line = String::new();
     loop {
         line.clear();
-        let bytes_read = timeout(Duration::from_secs(5), stdout.read_line(&mut line)).await??;
+        let bytes_read = timeout(RAW_JSONRPC_TIMEOUT, stdout.read_line(&mut line)).await??;
         if bytes_read == 0 {
             return Err(format!("mcp stdio closed before response id {id}").into());
         }
@@ -359,6 +361,76 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_enable_codemode_flag_lists_codemode_tool()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-codemode"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "list_catalog",
+            "search_catalog",
+            "describe_table",
+            "list_columns",
+            "codemode"
+        ]
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_codemode_python_cli_runs_sql_and_catalog_helpers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let code = r#"
+catalog = list_catalog(schema="local_messages", kind="table")
+rows = sql("SELECT text FROM local_messages.messages ORDER BY text")
+{"first_table": catalog["items"][0]["name"], "first_text": rows[0]["text"]}
+"#;
+
+    let output = StdCommand::new(env!("CARGO_BIN_EXE_coral"))
+        .args([
+            "codemode",
+            "python",
+            "--code",
+            code,
+            "--format",
+            "json",
+            "--no-type-check",
+        ])
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", server.config_dir())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "codemode command failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let structured: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(structured["output"]["first_table"], "local_messages.events");
+    assert_eq!(structured["output"]["first_text"], "hello");
+    assert_eq!(structured["query_count"], 1);
+    assert_eq!(server.execute_sql_requests().len(), 1);
+    assert!(
+        !server.list_catalog_requests().is_empty(),
+        "codemode list_catalog() should call catalog service"
+    );
+
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_feature_config_enables_feedback_tool() -> Result<(), Box<dyn std::error::Error>>
 {
     let server = MockServer::start().await;
@@ -393,6 +465,24 @@ async fn mcp_stdio_features_enable_command_enables_feedback_tool()
     assert!(
         tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
         "feedback tool should be listed after `coral features enable feedback`"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_features_enable_command_enables_codemode_tool()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    run_features_command(&server, &["enable", "codemode"])?;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "codemode"),
+        "codemode tool should be listed after `coral features enable codemode`"
     );
 
     client.cancel().await?;
@@ -569,6 +659,12 @@ future_flag = true
             .iter()
             .all(|tool| tool.get("name").and_then(Value::as_str) != Some("feedback")),
         "invalid feature config must not enable feedback: {tools_list}"
+    );
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("name").and_then(Value::as_str) != Some("codemode")),
+        "invalid feature config must not enable codemode: {tools_list}"
     );
 
     drop(stdin);
