@@ -9,6 +9,7 @@
 //!   - `export-skills` exports installable agent skills from the canonical
 //!     plugin tree into a distribution checkout.
 //!   - `perf-check` runs command-level performance regression checks.
+//!   - `mcp-token-bench` measures MCP model-surface token counts.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 
 #![allow(
@@ -50,6 +51,8 @@ enum Command {
     ExportSkills(ExportSkillsArgs),
     /// Run command-level performance regression checks.
     PerfCheck(perf::Args),
+    /// Measure MCP tool result token counts against a live Coral config.
+    McpTokenBench(perf::McpTokenBenchArgs),
     /// Regenerate checked-in generated JSON schemas.
     GenerateSchemas(schemas::Args),
 }
@@ -99,6 +102,7 @@ fn run(command: &Command) -> Result<bool> {
         }
         Command::ExportSkills(args) => skills::export(&args.dest),
         Command::PerfCheck(args) => perf::run(args),
+        Command::McpTokenBench(args) => perf::run_mcp_token_bench(args),
         Command::GenerateSchemas(args) => schemas::run(args),
     }
 }
