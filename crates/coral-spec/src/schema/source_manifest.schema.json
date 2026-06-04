@@ -408,6 +408,35 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "description", "format", "source"],
+      "allOf": [
+        {
+          "if": {
+            "required": ["format"],
+            "properties": {
+              "format": { "not": { "const": "jsonl" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "metadata": {
+                    "not": {
+                      "contains": {
+                        "type": "object",
+                        "required": ["kind"],
+                        "properties": {
+                          "kind": { "const": "line_number" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
@@ -439,6 +468,10 @@
         "partitions": {
           "type": "array",
           "items": { "$ref": "#/$defs/partition_column" }
+        },
+        "metadata": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/file_metadata_column" }
         },
         "object_store": { "$ref": "#/$defs/object_store" }
       }
@@ -526,6 +559,18 @@
           }
         }
       ]
+    },
+    "file_metadata_column": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["relative_path", "file_name", "file_stem", "line_number"]
+        }
+      }
     },
     "manifest_data_type": {
       "type": "string",
