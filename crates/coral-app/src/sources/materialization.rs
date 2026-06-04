@@ -340,6 +340,23 @@ fn require_file(source_name: &SourceName, path: &Path) -> Result<(), AppError> {
     }
 }
 
+fn read_raw_source_document_artifact(
+    source_name: &SourceName,
+    surface: &coral_spec::v4::V4Surface,
+    path: &Path,
+) -> Result<Vec<u8>, AppError> {
+    std::fs::read(path).map_err(|error| {
+        incompatible_materialization_error(
+            source_name,
+            format!(
+                "failed to read raw source document artifact for surface '{}' '{}': {error}",
+                surface.id,
+                path.display()
+            ),
+        )
+    })
+}
+
 fn validate_loaded_materialization(
     source_name: &SourceName,
     manifest: &V4SourceManifest,
@@ -370,7 +387,11 @@ fn validate_loaded_materialization(
                 format!("fingerprint is missing surface '{}'", surface.id),
             ));
         };
-        let raw_bytes = std::fs::read(&materialized_surface.raw_source_document_path)?;
+        let raw_bytes = read_raw_source_document_artifact(
+            source_name,
+            surface,
+            &materialized_surface.raw_source_document_path,
+        )?;
         let observed_raw_hash = sha256_hex(&raw_bytes);
         if observed_raw_hash != fingerprint_surface.descriptor_sha256 {
             return Err(incompatible_materialization_error(
@@ -1014,6 +1035,55 @@ surfaces:
                 .to_string()
                 .contains("raw source document hash does not match"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_v4_materialization_rejects_unreadable_raw_source_document_with_readd_guidance() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let raw_path = layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("source-document.raw");
+        let original_permissions = std::fs::metadata(&raw_path)
+            .expect("raw descriptor metadata")
+            .permissions();
+        let mut unreadable_permissions = original_permissions.clone();
+        unreadable_permissions.set_mode(0o000);
+        std::fs::set_permissions(&raw_path, unreadable_permissions)
+            .expect("make raw descriptor unreadable");
+        if std::fs::read(&raw_path).is_ok() {
+            std::fs::set_permissions(&raw_path, original_permissions)
+                .expect("restore raw descriptor permissions");
+            return;
+        }
+
+        let result = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        );
+
+        std::fs::set_permissions(&raw_path, original_permissions)
+            .expect("restore raw descriptor permissions");
+        let message = result
+            .expect_err("unreadable raw descriptor should fail")
+            .to_string();
+        assert!(
+            message.contains("missing or incompatible DSL v4 materialized artifacts"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("failed to read raw source document artifact"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("Re-add the source"),
+            "unexpected error: {message}"
         );
     }
 
