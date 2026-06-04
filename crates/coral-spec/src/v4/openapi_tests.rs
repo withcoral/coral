@@ -365,6 +365,57 @@ paths:
 }
 
 #[test]
+fn importer_preserves_non_string_schema_enum_values() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: enum_values
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /status:
+    get:
+      operationId: enum/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                enum:
+                  - active
+                  - 0
+                  - true
+                  - null
+"
+        .as_bytes(),
+    )
+    .expect("enum import");
+    let operation = ir.operations.first().expect("operation");
+    let ty = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("enum type");
+    let IrTypeShape::Enum { values } = &ty.shape else {
+        panic!("enum imported as {:?}", ty.shape);
+    };
+    assert_eq!(values, &["active", "0", "true", "null"]);
+}
+
+#[test]
 fn importer_warns_for_unresolved_response_object_refs() {
     let manifest = parse_source_manifest_yaml(
         r"
