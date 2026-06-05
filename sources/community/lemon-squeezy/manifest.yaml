@@ -613,9 +613,9 @@ tables:
         type: Utf8
         nullable: true
         description: >-
-          "Cents as a decimal string (\"999.0\"=$9.99).
-           Null unless usage_aggregation is set;authoritative price when unit_price is null.
-           Cast to DECIMAL and divide by 100".
+          Cents as a decimal string ("999.0"=$9.99).
+          Null unless usage_aggregation is set; authoritative price when unit_price is null.
+          Cast to DECIMAL and divide by 100.
         expr:
           kind: path
           path: [attributes, unit_price_decimal]
