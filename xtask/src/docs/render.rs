@@ -5,7 +5,10 @@
 
 use std::fmt::Write as _;
 
-use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
+use coral_spec::{
+    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputSpec,
+    ValidatedSourceManifest,
+};
 
 /// Render the `changelog.mdx` page from a raw `CHANGELOG.md`.
 ///
@@ -196,6 +199,58 @@ fn render_input_block(out: &mut String, input: &ManifestInputSpec) {
             out.push_str(&escape_mdx(hint));
             out.push('\n');
         }
+    }
+
+    if let Some(credential) = input.credential.as_ref() {
+        render_credential_methods(out, &credential.methods);
+    }
+}
+
+/// Render the credential retrieval methods declared on a secret input.
+///
+/// The interactive CLI and UI surface each method's hint contextually when
+/// the user picks it; the static docs can't, so we list every method with
+/// its label and authored hint (falling back to its short description) as a
+/// compact bullet list. Hints are freeform markdown, so each one is
+/// flattened to a single line and run through [`escape_mdx`].
+fn render_credential_methods(out: &mut String, methods: &[ManifestCredentialMethod]) {
+    if methods.is_empty() {
+        return;
+    }
+    out.push_str("\nCredential methods:\n\n");
+    for method in methods {
+        let label = method
+            .label
+            .as_deref()
+            .map_or_else(|| default_method_label(method.kind), str::trim);
+        write!(out, "- **{}**", escape_mdx(label)).expect("writing to String is infallible");
+
+        let detail = method
+            .hint
+            .as_deref()
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+            .or_else(|| {
+                method
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|detail| !detail.is_empty())
+            });
+        if let Some(detail) = detail {
+            write!(out, " — {}", escape_mdx(&flatten_for_table_cell(detail)))
+                .expect("writing to String is infallible");
+        }
+        out.push('\n');
+    }
+}
+
+/// Fallback display label for a credential method with no authored label,
+/// mirroring the interactive CLI/UI defaults.
+fn default_method_label(kind: ManifestCredentialMethodKind) -> &'static str {
+    match kind {
+        ManifestCredentialMethodKind::SourceConfig => "Paste token",
+        ManifestCredentialMethodKind::OAuth => "Connect with OAuth",
     }
 }
 
@@ -422,8 +477,12 @@ const COMMUNITY_OUTRO: &str = concat!(
 
 #[cfg(test)]
 mod tests {
-    use super::{changelog_page, community_sources_page, escape_mdx, index_page};
-    use coral_spec::parse_source_manifest_yaml;
+    use super::{
+        changelog_page, community_sources_page, escape_mdx, index_page, render_credential_methods,
+    };
+    use coral_spec::{
+        ManifestCredentialMethod, ManifestCredentialMethodKind, parse_source_manifest_yaml,
+    };
 
     const SAMPLE_MANIFEST: &str = r#"
 name: demo
@@ -441,6 +500,24 @@ inputs:
   DEMO_TOKEN:
     kind: secret
     hint: Create an API token in Settings → Tokens
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with demo
+          description: Authorize with OAuth.
+          hint: Sign in through the demo provider in your browser.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://demo.example.com/device/code
+              token_url: https://demo.example.com/token
+            client:
+              id:
+                default: demo-client
+        - type: source_config
+          label: Paste token
+          hint: Create a read-only API token in Settings.
 base_url: "{{input.DEMO_API_BASE}}"
 auth:
   type: HeaderAuth
@@ -634,5 +711,60 @@ tables:
             "community_sources_page_renders_catalog",
             community_sources_page(&[demo, minimal])
         );
+    }
+
+    fn method(
+        kind: ManifestCredentialMethodKind,
+        label: Option<&str>,
+        description: Option<&str>,
+        hint: Option<&str>,
+    ) -> ManifestCredentialMethod {
+        ManifestCredentialMethod {
+            kind,
+            label: label.map(ToString::to_string),
+            description: description.map(ToString::to_string),
+            hint: hint.map(ToString::to_string),
+            oauth: None,
+        }
+    }
+
+    #[test]
+    fn credential_method_detail_prefers_hint_then_falls_back_to_description() {
+        let mut out = String::new();
+        render_credential_methods(
+            &mut out,
+            &[
+                // Real hint wins over description.
+                method(
+                    ManifestCredentialMethodKind::SourceConfig,
+                    Some("Paste token"),
+                    Some("short blurb"),
+                    Some("Create a read-only token."),
+                ),
+                // Blank hint must fall back to the description, not suppress it.
+                method(
+                    ManifestCredentialMethodKind::OAuth,
+                    Some("Connect"),
+                    Some("Authorize in your browser."),
+                    Some("   "),
+                ),
+            ],
+        );
+        assert!(out.contains("- **Paste token** — Create a read-only token."));
+        assert!(out.contains("- **Connect** — Authorize in your browser."));
+    }
+
+    #[test]
+    fn credential_method_label_falls_back_to_cli_defaults() {
+        let mut out = String::new();
+        render_credential_methods(
+            &mut out,
+            &[
+                method(ManifestCredentialMethodKind::OAuth, None, None, None),
+                method(ManifestCredentialMethodKind::SourceConfig, None, None, None),
+            ],
+        );
+        assert!(out.contains("- **Connect with OAuth**"));
+        assert!(out.contains("- **Paste token**"));
     }
 }
