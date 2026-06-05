@@ -26,7 +26,12 @@ use crate::bootstrap::{AppError, app_status};
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::search::index::{
     CatalogSearchFieldRole, CatalogSearchHit, CatalogSearchResultType, CatalogSearchSurfaceKind,
-    ObservedValueSearchHit, ObservedValueSurfaceKind, SearchIndexError, SearchIndexStore,
+    ObservedQueueDrain, ObservedValueSearchHit, ObservedValueSurfaceKind, SearchIndexError,
+    SearchIndexStore,
+};
+use crate::search::observed::{
+    mark_observed_source_generation, observed_queue_foreground_drain_budget,
+    observed_storage_budget_bytes,
 };
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
@@ -220,28 +225,27 @@ impl SearchIndexRefresher {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) {
-        match SearchIndexStore::open_existing_workspace(&self.layout, workspace_name) {
-            Ok(Some(index)) => {
-                if let Err(error) =
-                    index.delete_observed_values_for_source(workspace_name, source_name)
-                {
-                    tracing::warn!(
-                        workspace = %workspace_name,
-                        source = %source_name,
-                        error = %error,
-                        "failed to discard observed values for mutated source"
-                    );
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(
-                    workspace = %workspace_name,
-                    source = %source_name,
-                    error = %error,
-                    "failed to open search index while discarding observed values"
-                );
-            }
+        if let Err(error) =
+            mark_observed_source_generation(&self.layout, workspace_name, source_name)
+        {
+            tracing::warn!(
+                workspace = %workspace_name,
+                source = %source_name,
+                error = %error,
+                "failed to mark observed-value source generation"
+            );
+        }
+        if let Err(error) = SearchIndexStore::discard_observed_values_for_source(
+            &self.layout,
+            workspace_name,
+            source_name,
+        ) {
+            tracing::warn!(
+                workspace = %workspace_name,
+                source = %source_name,
+                error = %error,
+                "failed to discard observed values for mutated source"
+            );
         }
     }
 }
@@ -296,8 +300,15 @@ impl UniversalSearch {
         let (mut candidates, catalog_status) = self
             .catalog_metadata_candidates(workspace_name, &catalog, &terms, limit)
             .await;
-        let (observed_candidates, observed_status) =
-            self.observed_value_candidates(workspace_name, &catalog, &terms, limit);
+        let observed_queue_drain =
+            self.drain_observed_value_queue_with_foreground_budget(workspace_name);
+        let (observed_candidates, observed_status) = self.observed_value_candidates(
+            workspace_name,
+            &catalog,
+            &terms,
+            limit,
+            observed_queue_drain,
+        );
         candidates.extend(observed_candidates);
         candidates.sort();
 
@@ -386,32 +397,47 @@ impl UniversalSearch {
         catalog: &CatalogInfo,
         terms: &QueryTerms,
         limit: u32,
+        queue_drain: Option<ObservedQueueDrain>,
     ) -> (Vec<Candidate>, ObservedProviderStatus) {
-        let index = match SearchIndexStore::open_workspace(&self.indexes.layout, workspace_name) {
-            Ok(index) => index,
-            Err(error) => return (Vec::new(), observed_index_error_status(&error)),
-        };
+        let index =
+            match SearchIndexStore::open_existing_workspace(&self.indexes.layout, workspace_name) {
+                Ok(Some(index)) => index,
+                Ok(None) => {
+                    return (
+                        Vec::new(),
+                        ObservedProviderStatus {
+                            state: SearchProviderState::Empty,
+                            note: observed_provider_note(
+                                SearchProviderState::Empty,
+                                0,
+                                queue_drain,
+                            ),
+                        },
+                    );
+                }
+                Err(error) => return (Vec::new(), observed_index_error_status(&error)),
+            };
         let retention_cutoff = observed_value_retention_cutoff();
-        if let Err(error) = index.purge_observed_values_before(workspace_name, &retention_cutoff) {
-            tracing::warn!(
-                workspace = %workspace_name,
-                error = %error,
-                "failed to purge stale observed values before search"
-            );
-        }
+        let live_sources = catalog_source_names(catalog);
         let search_limit = usize::try_from(limit)
             .unwrap_or(usize::MAX)
             .saturating_mul(3)
             .max(25);
-        let hits = match index.search_observed_values(workspace_name, &terms.terms, search_limit) {
+        let hits = match index.search_observed_values_filtered(
+            workspace_name,
+            &terms.terms,
+            search_limit,
+            &live_sources,
+            &retention_cutoff,
+        ) {
             Ok(hits) => hits,
             Err(error) => return (Vec::new(), observed_index_error_status(&error)),
         };
-        let live_sources = catalog_source_names(catalog);
         let candidates = observed_value_candidates_from_hits(
             workspace_name,
             terms,
             hits.into_iter()
+                .filter(|hit| hit.last_observed_at.as_str() >= retention_cutoff.as_str())
                 .filter(|hit| live_sources.contains(&hit.source_name)),
         );
         let state = if candidates.is_empty() {
@@ -419,8 +445,66 @@ impl UniversalSearch {
         } else {
             SearchProviderState::ResultsFound
         };
-        let note = observed_provider_note(state, candidates.len());
+        let note = observed_provider_note(state, candidates.len(), queue_drain);
         (candidates, ObservedProviderStatus { state, note })
+    }
+
+    fn drain_observed_value_queue_with_foreground_budget(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Option<ObservedQueueDrain> {
+        let budget = observed_queue_foreground_drain_budget(&self.indexes.layout);
+        let storage_budget_bytes = observed_storage_budget_bytes(&self.indexes.layout);
+        match SearchIndexStore::open_existing_workspace(&self.indexes.layout, workspace_name) {
+            Ok(Some(index)) => {
+                let mut storage_budget_exceeded =
+                    match index.enforce_observed_storage_budget(storage_budget_bytes) {
+                        Ok(enforcement) => enforcement.budget_exceeded,
+                        Err(error) => {
+                            tracing::warn!(
+                                workspace = %workspace_name,
+                                error = %error,
+                                "failed to enforce observed-value storage budget before search"
+                            );
+                            return None;
+                        }
+                    };
+                let mut drain = match index.drain_observed_value_queue_for(budget) {
+                    Ok(drain) => drain,
+                    Err(error) => {
+                        tracing::warn!(
+                            workspace = %workspace_name,
+                            error = %error,
+                            "failed to drain observed-value queue before search"
+                        );
+                        return None;
+                    }
+                };
+                storage_budget_exceeded |=
+                    match index.enforce_observed_storage_budget(storage_budget_bytes) {
+                        Ok(enforcement) => enforcement.budget_exceeded,
+                        Err(error) => {
+                            tracing::warn!(
+                                workspace = %workspace_name,
+                                error = %error,
+                                "failed to enforce observed-value storage budget after search drain"
+                            );
+                            return None;
+                        }
+                    };
+                drain.storage_budget_exceeded = storage_budget_exceeded;
+                Some(drain)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    error = %error,
+                    "failed to open search index while draining observed-value queue before search"
+                );
+                None
+            }
+        }
     }
 }
 
@@ -788,9 +872,9 @@ fn catalog_table_candidate(
         Ok(item) => item,
         Err(status) => {
             tracing::warn!(
-                schema = %table.schema_name,
-                table = %table.table_name,
                 error = %status.message(),
+                schema_name = %table.schema_name,
+                table_name = %table.table_name,
                 "skipping catalog table search result with invalid metadata"
             );
             return None;
@@ -825,9 +909,9 @@ fn catalog_function_candidate(
         Ok(item) => item,
         Err(status) => {
             tracing::warn!(
-                schema = %function.schema_name,
-                table_function = %function.function_name,
                 error = %status.message(),
+                schema_name = %function.schema_name,
+                function_name = %function.function_name,
                 "skipping catalog table-function search result with invalid metadata"
             );
             return None;
@@ -1197,9 +1281,9 @@ fn native_search_path_candidate(
         Ok(table_function) => table_function,
         Err(status) => {
             tracing::warn!(
-                schema = %function.schema_name,
-                table_function = %function.function_name,
                 error = %status.message(),
+                schema_name = %function.schema_name,
+                function_name = %function.function_name,
                 "skipping native search path with invalid metadata"
             );
             return None;
@@ -1497,14 +1581,55 @@ fn catalog_provider_note(state: SearchProviderState, total_count: usize, has_mor
     }
 }
 
-fn observed_provider_note(state: SearchProviderState, total_count: usize) -> String {
+fn observed_provider_note(
+    state: SearchProviderState,
+    total_count: usize,
+    queue_drain: Option<ObservedQueueDrain>,
+) -> String {
     match state {
-        SearchProviderState::ResultsFound => {
-            format!("Observed values returned {total_count} candidate search hints")
-        }
-        SearchProviderState::Empty => "Observed values returned no search hints".to_string(),
+        SearchProviderState::ResultsFound => append_observed_queue_note(
+            format!("Observed values returned {total_count} candidate search hints"),
+            queue_drain,
+        ),
+        SearchProviderState::Empty => append_observed_queue_note(
+            "Observed values returned no search hints".to_string(),
+            queue_drain,
+        ),
         _ => String::new(),
     }
+}
+
+fn append_observed_queue_note(mut note: String, queue_drain: Option<ObservedQueueDrain>) -> String {
+    let Some(queue_drain) =
+        queue_drain.filter(|drain| drain.has_pending() || drain.storage_budget_exceeded)
+    else {
+        return note;
+    };
+    let mut parts = Vec::new();
+    if queue_drain.storage_budget_exceeded {
+        parts.push(
+            "observed-value indexing is paused because the storage budget is exhausted".to_string(),
+        );
+    }
+    if queue_drain.has_pending() {
+        let pending_note = if queue_drain.lock_busy {
+            format!(
+                "{} queued indexing jobs remain because another search-index mutation is running",
+                queue_drain.pending_jobs
+            )
+        } else if queue_drain.budget_exhausted {
+            format!(
+                "{} queued indexing jobs remain after draining {} jobs within the foreground budget",
+                queue_drain.pending_jobs, queue_drain.processed_jobs
+            )
+        } else {
+            format!("{} queued indexing jobs remain", queue_drain.pending_jobs)
+        };
+        parts.push(pending_note);
+    }
+    note.push_str("; ");
+    note.push_str(&parts.join("; "));
+    note
 }
 
 fn catalog_index_error_status(error: &SearchIndexError) -> CatalogProviderStatus {

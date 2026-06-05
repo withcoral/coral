@@ -22,7 +22,10 @@ use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
-use crate::search::observed::ObservedValueIndexer;
+use crate::search::index::SearchIndexStore;
+use crate::search::observed::{
+    ObservedValueIndexer, observed_queue_foreground_drain_budget, observed_storage_budget_bytes,
+};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
@@ -152,7 +155,7 @@ impl QueryManager {
         sql: &str,
         attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
-        run_query_operation(
+        let result = run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
@@ -174,7 +177,11 @@ impl QueryManager {
             },
             |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
         )
-        .await
+        .await;
+        if result.is_ok() {
+            self.drain_observed_value_queue_with_foreground_budget(workspace_name);
+        }
+        result
     }
 
     pub(crate) async fn explain_sql(
@@ -428,6 +435,57 @@ impl QueryManager {
                 selected_sources,
             )));
         Ok(runtime)
+    }
+
+    fn drain_observed_value_queue_with_foreground_budget(&self, workspace_name: &WorkspaceName) {
+        let budget = observed_queue_foreground_drain_budget(&self.layout);
+        let storage_budget_bytes = observed_storage_budget_bytes(&self.layout);
+        match SearchIndexStore::open_existing_workspace(&self.layout, workspace_name) {
+            Ok(Some(index)) => {
+                if let Err(error) = index.enforce_observed_storage_budget(storage_budget_bytes) {
+                    tracing::warn!(
+                        workspace = %workspace_name,
+                        error = %error,
+                        "failed to enforce observed-value storage budget before SQL foreground drain"
+                    );
+                }
+                match index.drain_observed_value_queue_for(budget) {
+                    Ok(drain) if drain.has_pending() => {
+                        tracing::debug!(
+                            workspace = %workspace_name,
+                            processed_jobs = drain.processed_jobs,
+                            pending_jobs = drain.pending_jobs,
+                            budget_exhausted = drain.budget_exhausted,
+                            lock_busy = drain.lock_busy,
+                            "observed-value queue still has pending jobs after SQL foreground drain"
+                        );
+                    }
+                    Ok(_drain) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            workspace = %workspace_name,
+                            error = %error,
+                            "failed to drain observed-value queue after SQL execution"
+                        );
+                    }
+                }
+                if let Err(error) = index.enforce_observed_storage_budget(storage_budget_bytes) {
+                    tracing::warn!(
+                        workspace = %workspace_name,
+                        error = %error,
+                        "failed to enforce observed-value storage budget after SQL foreground drain"
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    error = %error,
+                    "failed to open search index while draining observed-value queue"
+                );
+            }
+        }
     }
 }
 

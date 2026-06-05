@@ -378,6 +378,107 @@ async fn search_returns_observed_values_after_successful_sql() {
 }
 
 #[tokio::test]
+async fn search_does_not_mark_observed_values_partial_for_pending_queue_work() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[search]\nobserved_queue_foreground_drain_ms = 0\n",
+    )
+    .expect("write config");
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    harness
+        .import_source(
+            fixture_manifest_with_test_queries_yaml(harness.temp_path(), &[]),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let rows = harness
+        .execute_sql_rows("SELECT text FROM local_messages.messages WHERE text = 'hello'")
+        .await;
+    assert_eq!(rows.len(), 1);
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "hello".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert_provider_state(
+        &response,
+        SearchProvider::ObservedValues,
+        SearchProviderState::Empty,
+    );
+    let observed_status = response
+        .provider_statuses
+        .iter()
+        .find(|status| status.provider == SearchProvider::ObservedValues as i32)
+        .expect("observed values provider status");
+    assert!(observed_status.note.contains("queued indexing jobs remain"));
+    assert!(
+        !response
+            .results
+            .iter()
+            .any(|result| result.provider == SearchProvider::ObservedValues as i32)
+    );
+}
+
+#[tokio::test]
+async fn search_reports_observed_storage_budget_exhaustion() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[search]\nobserved_max_storage_mb = 0\n",
+    )
+    .expect("write config");
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    harness
+        .import_source(
+            fixture_manifest_with_test_queries_yaml(harness.temp_path(), &[]),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "hello".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert_provider_state(
+        &response,
+        SearchProvider::ObservedValues,
+        SearchProviderState::Empty,
+    );
+    let observed_status = response
+        .provider_statuses
+        .iter()
+        .find(|status| status.provider == SearchProvider::ObservedValues as i32)
+        .expect("observed values provider status");
+    assert!(
+        observed_status
+            .note
+            .contains("observed-value indexing is paused because the storage budget is exhausted")
+    );
+}
+
+#[tokio::test]
 async fn search_applies_limit_and_reports_truncation() {
     let harness = GrpcHarness::new().await;
     harness

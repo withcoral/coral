@@ -43,6 +43,7 @@ tower.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
+zstd.workspace = true
 url.workspace = true
 uuid.workspace = true
 

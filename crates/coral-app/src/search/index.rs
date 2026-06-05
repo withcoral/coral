@@ -1,7 +1,11 @@
 //! Workspace-scoped Tantivy storage for Universal Search retrieval.
 
+use std::collections::{BTreeMap as StdBTreeMap, BTreeSet};
 use std::fs;
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
+use std::time::{Duration as StdDuration, Instant as StdInstant};
 
 use chrono::{SecondsFormat, Utc};
 use coral_engine::{
@@ -11,7 +15,7 @@ use coral_engine::{
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value as _,
 };
@@ -26,15 +30,25 @@ use crate::workspaces::WorkspaceName;
 
 const OBSERVED_STATE_FILE_NAME: &str = "observed_values.redb";
 const OBSERVED_RECORDS_TABLE: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("observed_records");
+    TableDefinition::new("observed_records_v1");
 const OBSERVED_SOURCE_INDEX_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("observed_source_index");
 const OBSERVED_LAST_OBSERVED_INDEX_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("observed_last_observed_index");
+const OBSERVED_QUEUE_TABLE: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("observed_queue_v1");
 const TRIGRAM_TOKENIZER: &str = "coral_trigram";
 const TANTIVY_VERSION: &str = "0.26.1";
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
 const MAX_RANK_SCORE: u32 = 1_000;
+const OBSERVED_RECORD_ENCODING_RAW: u8 = 0;
+const OBSERVED_RECORD_ENCODING_ZSTD: u8 = 1;
+const OBSERVED_RECORD_ZSTD_LEVEL: i32 = 3;
+const OBSERVED_RECORD_ZSTD_LENGTH_BYTES: usize = 8;
+const OBSERVED_QUEUE_JOB_RECORD_LIMIT: usize = 256;
+
+static INDEX_MUTATION_LOCKS: OnceLock<Mutex<StdBTreeMap<PathBuf, Arc<Mutex<()>>>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(crate) struct SearchIndexStore {
@@ -42,6 +56,7 @@ pub(crate) struct SearchIndexStore {
     index: Index,
     fields: SearchIndexFields,
     capabilities: TantivySearchCapabilities,
+    mutation_lock: Arc<Mutex<()>>,
 }
 
 impl SearchIndexStore {
@@ -81,10 +96,45 @@ impl SearchIndexStore {
         workspace_name: &WorkspaceName,
     ) -> Result<Option<Self>, SearchIndexError> {
         let path = layout.search_index_dir(workspace_name);
-        if !path.exists() {
+        let Some(index) = open_existing_index(&path)? else {
             return Ok(None);
+        };
+        Self::from_index(&path, index).map(Some)
+    }
+
+    pub(crate) fn discard_observed_values_for_source(
+        layout: &AppStateLayout,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), SearchIndexError> {
+        let path = layout.search_index_dir(workspace_name);
+        let mutation_lock = index_mutation_lock(&path);
+        let _guard = mutation_lock
+            .lock()
+            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
+
+        remove_observed_queue_records_for_source_at(&path, source_name.as_str())?;
+        let removed = remove_observed_records_for_source_at(&path, source_name.as_str())?;
+        if removed.is_empty() {
+            return Ok(());
         }
-        Self::open(path).map(Some)
+
+        let index = match open_existing_index(&path) {
+            Ok(Some(index)) => index,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    source = %source_name,
+                    path = %path.display(),
+                    error = %error,
+                    "deleted durable observed values but could not open Tantivy projection"
+                );
+                return Ok(());
+            }
+        };
+        let store = Self::from_index(&path, index)?;
+        store.delete_observed_projection_records(&removed)
     }
 
     pub(crate) fn open(path: impl Into<PathBuf>) -> Result<Self, SearchIndexError> {
@@ -106,6 +156,7 @@ impl SearchIndexStore {
                 tantivy_version: TANTIVY_VERSION.to_string(),
                 tokenizer: TRIGRAM_TOKENIZER.to_string(),
             },
+            mutation_lock: index_mutation_lock(path),
         })
     }
 
@@ -191,6 +242,7 @@ impl SearchIndexStore {
         Ok(CatalogSearchPage { hits, has_more })
     }
 
+    #[cfg(test)]
     pub(crate) fn upsert_observed_values(
         &self,
         _workspace_name: &WorkspaceName,
@@ -200,9 +252,12 @@ impl SearchIndexStore {
             return Ok(());
         }
 
-        let updated = self.upsert_observed_records(records)?;
-
+        let _guard = self
+            .mutation_lock
+            .lock()
+            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
         let mut writer = self.writer()?;
+        let updated = self.upsert_observed_records(records)?;
         for record in &updated {
             let key = record.doc_key();
             let _opstamp = writer.delete_term(Term::from_field_text(self.fields.doc_key, &key));
@@ -212,6 +267,165 @@ impl SearchIndexStore {
         Ok(())
     }
 
+    pub(crate) fn enqueue_observed_values(
+        &self,
+        _workspace_name: &WorkspaceName,
+        records: Vec<ObservedValueRecord>,
+    ) -> Result<(), SearchIndexError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let database = self.observed_database()?;
+        let write_txn = database.begin_write()?;
+        {
+            let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+            let mut chunk = Vec::with_capacity(OBSERVED_QUEUE_JOB_RECORD_LIMIT);
+            for record in records {
+                chunk.push(ObservedValueQueuedRecord::from(record));
+                if chunk.len() < OBSERVED_QUEUE_JOB_RECORD_LIMIT {
+                    continue;
+                }
+                let job = ObservedValueQueueJob {
+                    state: ObservedValueQueueJobState::Pending {
+                        records: std::mem::take(&mut chunk),
+                    },
+                    created_at: now_timestamp(),
+                    last_attempt_at: None,
+                    attempts: 0,
+                };
+                let encoded = encode_observed_queue_job(&job)?;
+                let key = observed_queue_job_key();
+                queue.insert(key.as_str(), encoded.as_slice())?;
+            }
+            if !chunk.is_empty() {
+                let job = ObservedValueQueueJob {
+                    state: ObservedValueQueueJobState::Pending { records: chunk },
+                    created_at: now_timestamp(),
+                    last_attempt_at: None,
+                    attempts: 0,
+                };
+                let encoded = encode_observed_queue_job(&job)?;
+                let key = observed_queue_job_key();
+                queue.insert(key.as_str(), encoded.as_slice())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn drain_observed_value_queue_for(
+        &self,
+        budget: StdDuration,
+    ) -> Result<ObservedQueueDrain, SearchIndexError> {
+        let _guard = match self.mutation_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                let pending_jobs = self.observed_queue_job_count()?;
+                return Ok(ObservedQueueDrain {
+                    processed_jobs: 0,
+                    pending_jobs,
+                    budget_exhausted: pending_jobs > 0,
+                    lock_busy: true,
+                    storage_budget_exceeded: false,
+                });
+            }
+            Err(TryLockError::Poisoned(_poisoned)) => {
+                return Err(SearchIndexError::MutationLockPoisoned);
+            }
+        };
+
+        if budget.is_zero() {
+            let pending_jobs = self.observed_queue_job_count()?;
+            return Ok(ObservedQueueDrain {
+                processed_jobs: 0,
+                pending_jobs,
+                budget_exhausted: pending_jobs > 0,
+                lock_busy: false,
+                storage_budget_exceeded: false,
+            });
+        }
+
+        let started_at = StdInstant::now();
+        let mut processed_jobs = 0;
+        while started_at.elapsed() < budget {
+            let Some(prepared) = self.prepare_next_observed_queue_job()? else {
+                return Ok(ObservedQueueDrain {
+                    processed_jobs,
+                    pending_jobs: 0,
+                    budget_exhausted: false,
+                    lock_busy: false,
+                    storage_budget_exceeded: false,
+                });
+            };
+
+            let mut writer = self.writer()?;
+            for record in &prepared.records {
+                let key = record.doc_key();
+                let _opstamp = writer.delete_term(Term::from_field_text(self.fields.doc_key, &key));
+                writer.add_document(self.observed_document(record))?;
+            }
+            writer.commit()?;
+            self.remove_observed_queue_job(&prepared.key)?;
+            processed_jobs += 1;
+        }
+
+        let pending_jobs = self.observed_queue_job_count()?;
+        Ok(ObservedQueueDrain {
+            processed_jobs,
+            pending_jobs,
+            budget_exhausted: pending_jobs > 0,
+            lock_busy: false,
+            storage_budget_exceeded: false,
+        })
+    }
+
+    pub(crate) fn observed_storage_bytes(&self) -> Result<u64, SearchIndexError> {
+        Ok(observed_database_payload_bytes_for_index(&self.path)?
+            .saturating_add(observed_search_tree_file_bytes_for_index(&self.path)?))
+    }
+
+    pub(crate) fn enforce_observed_storage_budget(
+        &self,
+        max_bytes: u64,
+    ) -> Result<ObservedStorageBudgetEnforcement, SearchIndexError> {
+        let _guard = self
+            .mutation_lock
+            .lock()
+            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
+        let mut storage_bytes = self.observed_storage_bytes()?;
+        let mut removed_queue_jobs = 0;
+        let mut removed_records = Vec::new();
+        let mut removed_record_count = 0;
+
+        while storage_bytes > max_bytes {
+            if remove_oldest_observed_queue_job_at(&self.path)? {
+                removed_queue_jobs += 1;
+                storage_bytes = self.observed_storage_bytes()?;
+                continue;
+            }
+
+            let Some(record) = remove_oldest_observed_record_at(&self.path)? else {
+                break;
+            };
+            removed_record_count += 1;
+            if let RemovedObservedRecord::Decoded(record) = record {
+                removed_records.push(*record);
+            }
+            storage_bytes = self.observed_storage_bytes()?;
+        }
+
+        self.delete_observed_projection_records(&removed_records)?;
+        storage_bytes = self.observed_storage_bytes()?;
+        Ok(ObservedStorageBudgetEnforcement {
+            removed_queue_jobs,
+            removed_records: removed_record_count,
+            storage_bytes,
+            budget_exceeded: storage_bytes > max_bytes,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn search_observed_values(
         &self,
         _workspace_name: &WorkspaceName,
@@ -222,8 +436,68 @@ impl SearchIndexStore {
             return Ok(Vec::new());
         };
         let docs = self.search_documents(&query, limit)?;
-        let mut hits = docs
-            .into_iter()
+        let mut hits = self.observed_hits_from_documents(docs);
+        assign_rank_scores(&mut hits, |hit, score| hit.score = score);
+        Ok(hits)
+    }
+
+    pub(crate) fn search_observed_values_filtered(
+        &self,
+        _workspace_name: &WorkspaceName,
+        terms: &[String],
+        limit: usize,
+        live_sources: &BTreeSet<String>,
+        retention_cutoff: &str,
+    ) -> Result<Vec<ObservedValueSearchHit>, SearchIndexError> {
+        if live_sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(query) = self.scoped_query("observed_value", terms) else {
+            return Ok(Vec::new());
+        };
+        let source_query = self.observed_live_source_query(live_sources);
+        let retention_query = Box::new(RangeQuery::new(
+            Bound::Included(Term::from_field_text(
+                self.fields.last_observed_at,
+                retention_cutoff,
+            )),
+            Bound::Unbounded,
+        ));
+        let query = BooleanQuery::new(vec![
+            (Occur::Must, query),
+            (Occur::Must, source_query),
+            (Occur::Must, retention_query),
+        ]);
+        let docs = self.search_documents(&query, limit)?;
+        let mut hits = self.observed_hits_from_documents(docs);
+        assign_rank_scores(&mut hits, |hit, score| hit.score = score);
+        Ok(hits)
+    }
+
+    fn observed_live_source_query(&self, live_sources: &BTreeSet<String>) -> Box<dyn Query> {
+        let mut clauses = live_sources
+            .iter()
+            .map(|source_name| {
+                (
+                    Occur::Should,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(self.fields.source_name, source_name),
+                        IndexRecordOption::Basic,
+                    )) as Box<dyn Query>,
+                )
+            })
+            .collect::<Vec<_>>();
+        if clauses.len() == 1 {
+            return clauses.pop().expect("one source query").1;
+        }
+        Box::new(BooleanQuery::new(clauses))
+    }
+
+    fn observed_hits_from_documents(
+        &self,
+        docs: Vec<TantivyDocument>,
+    ) -> Vec<ObservedValueSearchHit> {
+        docs.into_iter()
             .filter(|doc| doc_text(doc, self.fields.entity_kind) == "observed_value")
             .map(|doc| ObservedValueSearchHit {
                 source_name: doc_text(&doc, self.fields.source_name),
@@ -242,44 +516,70 @@ impl SearchIndexStore {
                     .unwrap_or(0),
                 score: 0,
             })
-            .collect::<Vec<_>>();
-        assign_rank_scores(&mut hits, |hit, score| hit.score = score);
-        Ok(hits)
+            .collect::<Vec<_>>()
     }
 
+    #[cfg(test)]
     pub(crate) fn delete_observed_values_for_source(
         &self,
         _workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<(), SearchIndexError> {
+        let _guard = self
+            .mutation_lock
+            .lock()
+            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
+        self.remove_observed_queue_records_for_source(source_name.as_str())?;
         let removed = self.remove_observed_records_for_source(source_name.as_str())?;
-        if removed.is_empty() {
-            return Ok(());
-        }
-
-        let mut writer = self.writer()?;
-        for record in &removed {
-            let _opstamp = writer.delete_term(Term::from_field_text(
-                self.fields.doc_key,
-                &record.doc_key(),
-            ));
-        }
-        writer.commit()?;
-        Ok(())
+        self.delete_observed_projection_records(&removed)
     }
 
+    #[cfg(test)]
     pub(crate) fn purge_observed_values_before(
         &self,
         _workspace_name: &WorkspaceName,
         cutoff: &str,
     ) -> Result<(), SearchIndexError> {
+        let _guard = self
+            .mutation_lock
+            .lock()
+            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
         let removed = self.remove_observed_records_before(cutoff)?;
+        self.delete_observed_projection_records(&removed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reconcile_observed_values(
+        &self,
+        live_sources: &BTreeSet<String>,
+        retention_cutoff: &str,
+    ) -> Result<(), SearchIndexError> {
+        let _guard = self
+            .mutation_lock
+            .lock()
+            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
+        self.remove_observed_queue_records_not_in_sources(live_sources)?;
+
+        let mut removed = self.remove_observed_records_before(retention_cutoff)?;
+        let source_names = self.observed_source_names()?;
+        for source_name in source_names {
+            if live_sources.contains(&source_name) {
+                continue;
+            }
+            removed.extend(self.remove_observed_records_for_source(&source_name)?);
+        }
+        self.delete_observed_projection_records(&removed)
+    }
+
+    fn delete_observed_projection_records(
+        &self,
+        removed: &[ObservedValueStoredRecord],
+    ) -> Result<(), SearchIndexError> {
         if removed.is_empty() {
             return Ok(());
         }
-
         let mut writer = self.writer()?;
-        for record in &removed {
+        for record in removed {
             let _opstamp = writer.delete_term(Term::from_field_text(
                 self.fields.doc_key,
                 &record.doc_key(),
@@ -370,6 +670,7 @@ impl SearchIndexStore {
             (self.fields.name, 12.0),
             (self.fields.qualified_name, 10.0),
             (self.fields.normalized_value_key, 10.0),
+            (self.fields.display_value_exact, 10.0),
             (self.fields.data_type, 4.0),
         ];
         terms
@@ -456,6 +757,7 @@ impl SearchIndexStore {
             &record.normalized_value_key,
         );
         doc.add_text(self.fields.display_value, &record.display_value);
+        doc.add_text(self.fields.display_value_exact, &record.display_value);
         doc.add_text(self.fields.searchable_text, &record.searchable_text);
         doc.add_text(self.fields.last_observed_at, &record.last_observed_at);
         doc.add_text(
@@ -489,12 +791,162 @@ impl SearchIndexStore {
         observed_database_for_index(&self.path)
     }
 
+    fn observed_queue_job_count(&self) -> Result<usize, SearchIndexError> {
+        let database = self.observed_database()?;
+        let read_txn = database.begin_read()?;
+        let queue = read_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+        let mut count = 0;
+        for entry in queue.iter()? {
+            let _entry = entry?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn prepare_next_observed_queue_job(
+        &self,
+    ) -> Result<Option<PreparedObservedQueueJob>, SearchIndexError> {
+        loop {
+            let database = self.observed_database()?;
+            let write_txn = database.begin_write()?;
+            let next = {
+                let queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+                queue
+                    .iter()?
+                    .next()
+                    .transpose()?
+                    .map(|(key, value)| (key.value().to_string(), value.value().to_vec()))
+            };
+            let Some((key, value)) = next else {
+                write_txn.commit()?;
+                return Ok(None);
+            };
+
+            let mut job = match decode_observed_queue_job(&value) {
+                Ok(job) => job,
+                Err(error) => {
+                    tracing::warn!(
+                        queue_key = %key,
+                        error = %error,
+                        "discarding malformed observed-value queue job"
+                    );
+                    {
+                        let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+                        queue.remove(key.as_str())?;
+                    }
+                    write_txn.commit()?;
+                    continue;
+                }
+            };
+            job.attempts = job.attempts.saturating_add(1);
+            job.last_attempt_at = Some(now_timestamp());
+
+            let records = match job.state {
+                ObservedValueQueueJobState::Pending { records } => {
+                    let records = records.into_iter().map(ObservedValueRecord::from).collect();
+                    let stored = Self::upsert_observed_records_in_txn(&write_txn, records)?;
+                    job.state = ObservedValueQueueJobState::ProjectionPending {
+                        records: stored.clone(),
+                    };
+                    let encoded = encode_observed_queue_job(&job)?;
+                    let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+                    queue.insert(key.as_str(), encoded.as_slice())?;
+                    stored
+                }
+                ObservedValueQueueJobState::ProjectionPending { records } => {
+                    job.state = ObservedValueQueueJobState::ProjectionPending {
+                        records: records.clone(),
+                    };
+                    let encoded = encode_observed_queue_job(&job)?;
+                    let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+                    queue.insert(key.as_str(), encoded.as_slice())?;
+                    records
+                }
+            };
+
+            write_txn.commit()?;
+            return Ok(Some(PreparedObservedQueueJob { key, records }));
+        }
+    }
+
+    fn remove_observed_queue_job(&self, key: &str) -> Result<(), SearchIndexError> {
+        let database = self.observed_database()?;
+        let write_txn = database.begin_write()?;
+        {
+            let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+            queue.remove(key)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn remove_observed_queue_records_for_source(
+        &self,
+        source_name: &str,
+    ) -> Result<(), SearchIndexError> {
+        remove_observed_queue_records_for_source_at(&self.path, source_name)
+    }
+
+    #[cfg(test)]
+    fn remove_observed_queue_records_not_in_sources(
+        &self,
+        live_sources: &BTreeSet<String>,
+    ) -> Result<(), SearchIndexError> {
+        let database = self.observed_database()?;
+        let write_txn = database.begin_write()?;
+        let jobs = {
+            let queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+            queue
+                .iter()?
+                .map(|entry| {
+                    entry.map(|(key, value)| (key.value().to_string(), value.value().to_vec()))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        if jobs.is_empty() {
+            write_txn.commit()?;
+            return Ok(());
+        }
+
+        {
+            let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+            for (key, value) in jobs {
+                let Ok(job) = decode_observed_queue_job(&value) else {
+                    queue.remove(key.as_str())?;
+                    continue;
+                };
+                let filtered = job.only_sources(live_sources);
+                if filtered.is_empty() {
+                    queue.remove(key.as_str())?;
+                } else {
+                    let encoded = encode_observed_queue_job(&filtered)?;
+                    queue.insert(key.as_str(), encoded.as_slice())?;
+                }
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn upsert_observed_records(
         &self,
         records: Vec<ObservedValueRecord>,
     ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
         let database = self.observed_database()?;
         let write_txn = database.begin_write()?;
+        let updated = Self::upsert_observed_records_in_txn(&write_txn, records)?;
+        write_txn.commit()?;
+        Ok(updated)
+    }
+
+    fn upsert_observed_records_in_txn(
+        write_txn: &redb::WriteTransaction,
+        records: Vec<ObservedValueRecord>,
+    ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
         let now = now_timestamp();
         let mut updated = Vec::new();
         let mut old_last_index_keys = Vec::new();
@@ -510,34 +962,30 @@ impl SearchIndexStore {
                     &record.normalized_value_key,
                 );
                 let stored = match table.get(key.as_str())? {
-                    Some(existing) => {
-                        let mut existing = decode_observed_record(existing.value())?;
-                        old_last_index_keys.push(observed_last_observed_index_key(&existing, &key));
-                        existing.display_value = record.display_value;
-                        existing.searchable_text = record.searchable_text;
-                        existing.sensitivity_tier = record.sensitivity_tier.as_str().to_string();
-                        existing.suggested_operator =
-                            record.suggested_operator.as_str().to_string();
-                        existing.last_observed_at.clone_from(&now);
-                        existing.observed_count = existing
-                            .observed_count
-                            .saturating_add(record.observed_count);
-                        existing
-                    }
-                    None => ObservedValueStoredRecord {
-                        source_name: record.source_name,
-                        surface_kind: record.surface_kind.as_str().to_string(),
-                        surface_name: record.surface_name,
-                        column_name: record.column_name,
-                        normalized_value_key: record.normalized_value_key,
-                        display_value: record.display_value,
-                        searchable_text: record.searchable_text,
-                        sensitivity_tier: record.sensitivity_tier.as_str().to_string(),
-                        suggested_operator: record.suggested_operator.as_str().to_string(),
-                        first_observed_at: now.clone(),
-                        last_observed_at: now.clone(),
-                        observed_count: record.observed_count,
+                    Some(existing) => match decode_observed_record(existing.value()) {
+                        Ok(mut existing) => {
+                            old_last_index_keys
+                                .push(observed_last_observed_index_key(&existing, &key));
+                            existing.display_value = record.display_value;
+                            existing.searchable_text = record.searchable_text;
+                            existing.suggested_operator =
+                                record.suggested_operator.as_str().to_string();
+                            existing.last_observed_at.clone_from(&now);
+                            existing.observed_count = existing
+                                .observed_count
+                                .saturating_add(record.observed_count);
+                            existing
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                record_key = %key,
+                                error = %error,
+                                "discarding malformed observed-value state record during upsert"
+                            );
+                            new_observed_stored_record(record, &now)
+                        }
                     },
+                    None => new_observed_stored_record(record, &now),
                 };
                 let encoded = encode_observed_record(&stored)?;
                 table.insert(key.as_str(), encoded.as_slice())?;
@@ -569,99 +1017,182 @@ impl SearchIndexStore {
             }
         }
 
-        write_txn.commit()?;
         Ok(updated)
     }
 
+    #[cfg(test)]
     fn remove_observed_records_for_source(
         &self,
         source_name: &str,
     ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
-        let prefix = observed_source_index_prefix(source_name);
-        self.remove_observed_records_from_index_range(OBSERVED_SOURCE_INDEX_TABLE, &prefix, true)
+        remove_observed_records_for_source_at(&self.path, source_name)
     }
 
+    #[cfg(test)]
     fn remove_observed_records_before(
         &self,
         cutoff: &str,
     ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
-        self.remove_observed_records_from_index_range(
-            OBSERVED_LAST_OBSERVED_INDEX_TABLE,
-            cutoff,
-            false,
-        )
+        remove_observed_records_before_at(&self.path, cutoff)
     }
 
-    fn remove_observed_records_from_index_range(
-        &self,
-        index_table_definition: TableDefinition<&str, &str>,
-        prefix_or_cutoff: &str,
-        prefix_range: bool,
-    ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+    #[cfg(test)]
+    fn observed_source_names(&self) -> Result<BTreeSet<String>, SearchIndexError> {
         let database = self.observed_database()?;
-        let write_txn = database.begin_write()?;
-        let index_entries = {
-            let index = write_txn.open_table(index_table_definition)?;
-            let (lower_bound, upper_bound) = if prefix_range {
-                (
-                    prefix_or_cutoff.to_string(),
-                    prefix_range_end(prefix_or_cutoff),
-                )
-            } else {
-                (String::new(), format!("{prefix_or_cutoff}\0"))
-            };
-            index
-                .range(lower_bound.as_str()..upper_bound.as_str())?
-                .map(|entry| {
-                    entry.map(|(index_key, doc_key)| {
-                        (index_key.value().to_string(), doc_key.value().to_string())
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        if index_entries.is_empty() {
-            return Ok(Vec::new());
+        let read_txn = database.begin_read()?;
+        let source_index = read_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
+        let mut source_names = BTreeSet::new();
+        for entry in source_index.iter()? {
+            let (key, _doc_key) = entry?;
+            if let Some((source_name, _doc_key)) = key.value().split_once('\0') {
+                source_names.insert(source_name.to_string());
+            }
         }
+        Ok(source_names)
+    }
+}
 
-        let mut removed = Vec::new();
-        {
-            let mut records = write_txn.open_table(OBSERVED_RECORDS_TABLE)?;
-            for (_index_key, key) in &index_entries {
-                if let Some(record) = records.remove(key.as_str())? {
-                    removed.push(decode_observed_record(record.value())?);
-                }
-            }
-        }
-        {
-            let mut index = write_txn.open_table(index_table_definition)?;
-            for (index_key, _doc_key) in &index_entries {
-                index.remove(index_key.as_str())?;
-            }
-        }
-        {
-            let mut source_index = write_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
-            if !prefix_range {
-                for record in &removed {
-                    source_index.remove(observed_source_index_key(record).as_str())?;
-                }
-            }
-        }
-        {
-            let mut last_observed_index =
-                write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
-            if prefix_range {
-                for record in &removed {
-                    last_observed_index.remove(
-                        observed_last_observed_index_key(record, &record.doc_key()).as_str(),
-                    )?;
-                }
-            }
-        }
+fn remove_observed_queue_records_for_source_at(
+    path: &Path,
+    source_name: &str,
+) -> Result<(), SearchIndexError> {
+    let database = observed_database_for_index(path)?;
+    let write_txn = database.begin_write()?;
+    let jobs = {
+        let queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+        queue
+            .iter()?
+            .map(|entry| {
+                entry.map(|(key, value)| (key.value().to_string(), value.value().to_vec()))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
+    if jobs.is_empty() {
         write_txn.commit()?;
-        Ok(removed)
+        return Ok(());
     }
 
+    {
+        let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+        for (key, value) in jobs {
+            let Ok(job) = decode_observed_queue_job(&value) else {
+                queue.remove(key.as_str())?;
+                continue;
+            };
+            let filtered = job.without_source(source_name);
+            if filtered.is_empty() {
+                queue.remove(key.as_str())?;
+            } else {
+                let encoded = encode_observed_queue_job(&filtered)?;
+                queue.insert(key.as_str(), encoded.as_slice())?;
+            }
+        }
+    }
+
+    write_txn.commit()?;
+    Ok(())
+}
+
+fn remove_observed_records_for_source_at(
+    path: &Path,
+    source_name: &str,
+) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+    let prefix = observed_source_index_prefix(source_name);
+    remove_observed_records_from_index_range_at(path, OBSERVED_SOURCE_INDEX_TABLE, &prefix, true)
+}
+
+#[cfg(test)]
+fn remove_observed_records_before_at(
+    path: &Path,
+    cutoff: &str,
+) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+    remove_observed_records_from_index_range_at(
+        path,
+        OBSERVED_LAST_OBSERVED_INDEX_TABLE,
+        cutoff,
+        false,
+    )
+}
+
+fn remove_observed_records_from_index_range_at(
+    path: &Path,
+    index_table_definition: TableDefinition<&str, &str>,
+    prefix_or_cutoff: &str,
+    prefix_range: bool,
+) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
+    let database = observed_database_for_index(path)?;
+    let write_txn = database.begin_write()?;
+    let index_entries = {
+        let index = write_txn.open_table(index_table_definition)?;
+        let (lower_bound, upper_bound) = if prefix_range {
+            (
+                prefix_or_cutoff.to_string(),
+                prefix_range_end(prefix_or_cutoff),
+            )
+        } else {
+            (String::new(), format!("{prefix_or_cutoff}\0"))
+        };
+        index
+            .range(lower_bound.as_str()..upper_bound.as_str())?
+            .map(|entry| {
+                entry.map(|(index_key, doc_key)| {
+                    (index_key.value().to_string(), doc_key.value().to_string())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    if index_entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut removed = Vec::new();
+    {
+        let mut records = write_txn.open_table(OBSERVED_RECORDS_TABLE)?;
+        for (_index_key, key) in &index_entries {
+            if let Some(record) = records.remove(key.as_str())? {
+                match decode_observed_record(record.value()) {
+                    Ok(record) => removed.push(record),
+                    Err(error) => {
+                        tracing::warn!(
+                            record_key = %key,
+                            error = %error,
+                            "discarding malformed observed-value state record during removal"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    {
+        let mut index = write_txn.open_table(index_table_definition)?;
+        for (index_key, _doc_key) in &index_entries {
+            index.remove(index_key.as_str())?;
+        }
+    }
+    {
+        let mut source_index = write_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
+        if !prefix_range {
+            for record in &removed {
+                source_index.remove(observed_source_index_key(record).as_str())?;
+            }
+        }
+    }
+    {
+        let mut last_observed_index = write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+        if prefix_range {
+            for record in &removed {
+                last_observed_index
+                    .remove(observed_last_observed_index_key(record, &record.doc_key()).as_str())?;
+            }
+        }
+    }
+
+    write_txn.commit()?;
+    Ok(removed)
+}
+
+impl SearchIndexStore {
     #[cfg(test)]
     fn set_last_observed_at_for_test(
         &self,
@@ -679,7 +1210,12 @@ impl SearchIndexStore {
                 let (key, value) = entry?;
                 records.push((
                     key.value().to_string(),
-                    decode_observed_record(value.value())?,
+                    decode_observed_record(value.value()).map_err(|error| {
+                        SearchIndexError::ObservedStateDecode {
+                            record_key: key.value().to_string(),
+                            error: error.to_string(),
+                        }
+                    })?,
                 ));
             }
             for (key, mut record) in records {
@@ -743,18 +1279,53 @@ pub(crate) enum SearchIndexError {
     #[error(transparent)]
     Encode(#[from] bincode::error::EncodeError),
     #[error(transparent)]
-    Decode(#[from] bincode::error::DecodeError),
+    Decode(#[from] ObservedRecordDecodeError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("search index mutation lock is poisoned")]
+    MutationLockPoisoned,
+    #[cfg(test)]
     #[error(
         "observed-value state record '{record_key}' references malformed encoded data: {error}"
     )]
-    ObservedStateDecode {
-        record_key: String,
-        error: bincode::error::DecodeError,
-    },
+    ObservedStateDecode { record_key: String, error: String },
     #[error("Tantivy search index schema is missing required field '{field}'")]
     MissingField { field: &'static str },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ObservedRecordDecodeError {
+    #[error(transparent)]
+    Bincode(#[from] bincode::error::DecodeError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("compressed observed-value state record is missing its length header")]
+    MissingCompressedLength,
+    #[error("compressed observed-value state record length does not fit this platform: {len}")]
+    CompressedLengthTooLarge { len: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObservedQueueDrain {
+    pub(crate) processed_jobs: usize,
+    pub(crate) pending_jobs: usize,
+    pub(crate) budget_exhausted: bool,
+    pub(crate) lock_busy: bool,
+    pub(crate) storage_budget_exceeded: bool,
+}
+
+impl ObservedQueueDrain {
+    pub(crate) fn has_pending(&self) -> bool {
+        self.pending_jobs > 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObservedStorageBudgetEnforcement {
+    pub(crate) removed_queue_jobs: usize,
+    pub(crate) removed_records: usize,
+    pub(crate) storage_bytes: u64,
+    pub(crate) budget_exceeded: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -872,9 +1443,57 @@ pub(crate) struct ObservedValueRecord {
     pub(crate) normalized_value_key: String,
     pub(crate) display_value: String,
     pub(crate) searchable_text: String,
-    pub(crate) sensitivity_tier: ObservedValueSensitivityTier,
     pub(crate) suggested_operator: ObservedValueSuggestedOperator,
     pub(crate) observed_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ObservedValueQueuedRecord {
+    source_name: String,
+    surface_kind: String,
+    surface_name: String,
+    column_name: String,
+    normalized_value_key: String,
+    display_value: String,
+    searchable_text: String,
+    suggested_operator: String,
+    observed_count: u64,
+}
+
+impl From<ObservedValueRecord> for ObservedValueQueuedRecord {
+    fn from(record: ObservedValueRecord) -> Self {
+        Self {
+            source_name: record.source_name,
+            surface_kind: record.surface_kind.as_str().to_string(),
+            surface_name: record.surface_name,
+            column_name: record.column_name,
+            normalized_value_key: record.normalized_value_key,
+            display_value: record.display_value,
+            searchable_text: record.searchable_text,
+            suggested_operator: record.suggested_operator.as_str().to_string(),
+            observed_count: record.observed_count,
+        }
+    }
+}
+
+impl From<ObservedValueQueuedRecord> for ObservedValueRecord {
+    fn from(record: ObservedValueQueuedRecord) -> Self {
+        Self {
+            source_name: record.source_name,
+            surface_kind: ObservedValueSurfaceKind::from_str(&record.surface_kind)
+                .unwrap_or(ObservedValueSurfaceKind::Table),
+            surface_name: record.surface_name,
+            column_name: record.column_name,
+            normalized_value_key: record.normalized_value_key,
+            display_value: record.display_value,
+            searchable_text: record.searchable_text,
+            suggested_operator: ObservedValueSuggestedOperator::from_str(
+                &record.suggested_operator,
+            )
+            .unwrap_or(ObservedValueSuggestedOperator::Exact),
+            observed_count: record.observed_count,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -914,19 +1533,6 @@ impl ObservedValueSurfaceKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum ObservedValueSensitivityTier {
-    LowRisk,
-}
-
-impl ObservedValueSensitivityTier {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::LowRisk => "low_risk",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
 pub(crate) enum ObservedValueSuggestedOperator {
     Exact,
 }
@@ -937,9 +1543,16 @@ impl ObservedValueSuggestedOperator {
             Self::Exact => "exact",
         }
     }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "exact" => Some(Self::Exact),
+            _ => None,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ObservedValueStoredRecord {
     source_name: String,
     surface_kind: String,
@@ -948,11 +1561,67 @@ struct ObservedValueStoredRecord {
     normalized_value_key: String,
     display_value: String,
     searchable_text: String,
-    sensitivity_tier: String,
     suggested_operator: String,
     first_observed_at: String,
     last_observed_at: String,
     observed_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ObservedValueQueueJob {
+    state: ObservedValueQueueJobState,
+    created_at: String,
+    last_attempt_at: Option<String>,
+    attempts: u32,
+}
+
+impl ObservedValueQueueJob {
+    fn without_source(mut self, source_name: &str) -> Self {
+        match &mut self.state {
+            ObservedValueQueueJobState::Pending { records } => {
+                records.retain(|record| record.source_name != source_name);
+            }
+            ObservedValueQueueJobState::ProjectionPending { records } => {
+                records.retain(|record| record.source_name != source_name);
+            }
+        }
+        self
+    }
+
+    #[cfg(test)]
+    fn only_sources(mut self, live_sources: &BTreeSet<String>) -> Self {
+        match &mut self.state {
+            ObservedValueQueueJobState::Pending { records } => {
+                records.retain(|record| live_sources.contains(&record.source_name));
+            }
+            ObservedValueQueueJobState::ProjectionPending { records } => {
+                records.retain(|record| live_sources.contains(&record.source_name));
+            }
+        }
+        self
+    }
+
+    fn is_empty(&self) -> bool {
+        match &self.state {
+            ObservedValueQueueJobState::Pending { records } => records.is_empty(),
+            ObservedValueQueueJobState::ProjectionPending { records } => records.is_empty(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum ObservedValueQueueJobState {
+    Pending {
+        records: Vec<ObservedValueQueuedRecord>,
+    },
+    ProjectionPending {
+        records: Vec<ObservedValueStoredRecord>,
+    },
+}
+
+struct PreparedObservedQueueJob {
+    key: String,
+    records: Vec<ObservedValueStoredRecord>,
 }
 
 impl ObservedValueStoredRecord {
@@ -970,15 +1639,126 @@ impl ObservedValueStoredRecord {
     }
 }
 
+fn new_observed_stored_record(record: ObservedValueRecord, now: &str) -> ObservedValueStoredRecord {
+    ObservedValueStoredRecord {
+        source_name: record.source_name,
+        surface_kind: record.surface_kind.as_str().to_string(),
+        surface_name: record.surface_name,
+        column_name: record.column_name,
+        normalized_value_key: record.normalized_value_key,
+        display_value: record.display_value,
+        searchable_text: record.searchable_text,
+        suggested_operator: record.suggested_operator.as_str().to_string(),
+        first_observed_at: now.to_string(),
+        last_observed_at: now.to_string(),
+        observed_count: record.observed_count,
+    }
+}
+
 fn encode_observed_record(record: &ObservedValueStoredRecord) -> Result<Vec<u8>, SearchIndexError> {
-    bincode::serde::encode_to_vec(record, bincode::config::standard()).map_err(Into::into)
+    let raw = encode_raw_observed_record(record)?;
+    let compressed = zstd::bulk::compress(&raw, OBSERVED_RECORD_ZSTD_LEVEL)?;
+    let compressed_len = 1 + OBSERVED_RECORD_ZSTD_LENGTH_BYTES + compressed.len();
+    let raw_len = 1 + raw.len();
+    if compressed_len < raw_len {
+        let mut encoded = Vec::with_capacity(compressed_len);
+        encoded.push(OBSERVED_RECORD_ENCODING_ZSTD);
+        encoded.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+        encoded.extend_from_slice(&compressed);
+        return Ok(encoded);
+    }
+
+    let mut encoded = Vec::with_capacity(raw_len);
+    encoded.push(OBSERVED_RECORD_ENCODING_RAW);
+    encoded.extend_from_slice(&raw);
+    Ok(encoded)
+}
+
+fn encode_observed_queue_job(job: &ObservedValueQueueJob) -> Result<Vec<u8>, SearchIndexError> {
+    let raw = bincode::serde::encode_to_vec(job, bincode::config::standard())?;
+    let compressed = zstd::bulk::compress(&raw, OBSERVED_RECORD_ZSTD_LEVEL)?;
+    let mut encoded =
+        Vec::with_capacity(OBSERVED_RECORD_ZSTD_LENGTH_BYTES.saturating_add(compressed.len()));
+    encoded.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+    encoded.extend_from_slice(&compressed);
+    Ok(encoded)
+}
+
+fn decode_observed_queue_job(
+    bytes: &[u8],
+) -> Result<ObservedValueQueueJob, ObservedRecordDecodeError> {
+    let length_bytes = bytes
+        .get(..OBSERVED_RECORD_ZSTD_LENGTH_BYTES)
+        .ok_or(ObservedRecordDecodeError::MissingCompressedLength)?;
+    let length_bytes = length_bytes
+        .try_into()
+        .map_err(|_error| ObservedRecordDecodeError::MissingCompressedLength)?;
+    let raw_len = u64::from_le_bytes(length_bytes);
+    let raw_len = usize::try_from(raw_len)
+        .map_err(|_error| ObservedRecordDecodeError::CompressedLengthTooLarge { len: raw_len })?;
+    let compressed = bytes
+        .get(OBSERVED_RECORD_ZSTD_LENGTH_BYTES..)
+        .ok_or(ObservedRecordDecodeError::MissingCompressedLength)?;
+    let raw = zstd::bulk::decompress(compressed, raw_len)?;
+    bincode::serde::decode_from_slice::<ObservedValueQueueJob, _>(&raw, bincode::config::standard())
+        .map(|(job, _consumed)| job)
+        .map_err(ObservedRecordDecodeError::from)
+}
+
+fn encode_raw_observed_record(
+    record: &ObservedValueStoredRecord,
+) -> Result<Vec<u8>, bincode::error::EncodeError> {
+    bincode::serde::encode_to_vec(record, bincode::config::standard())
 }
 
 fn decode_observed_record(
     bytes: &[u8],
-) -> Result<ObservedValueStoredRecord, bincode::error::DecodeError> {
-    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
-        .map(|(record, _consumed)| record)
+) -> Result<ObservedValueStoredRecord, ObservedRecordDecodeError> {
+    match bytes.first().copied() {
+        Some(OBSERVED_RECORD_ENCODING_RAW) => decode_raw_observed_record(
+            bytes
+                .get(1..)
+                .ok_or(ObservedRecordDecodeError::MissingCompressedLength)?,
+        )
+        .or_else(|_error| decode_raw_observed_record(bytes)),
+        Some(OBSERVED_RECORD_ENCODING_ZSTD) => decode_compressed_observed_record(
+            bytes
+                .get(1..)
+                .ok_or(ObservedRecordDecodeError::MissingCompressedLength)?,
+        )
+        .or_else(|_error| decode_raw_observed_record(bytes)),
+        _ => decode_raw_observed_record(bytes),
+    }
+}
+
+fn decode_raw_observed_record(
+    bytes: &[u8],
+) -> Result<ObservedValueStoredRecord, ObservedRecordDecodeError> {
+    bincode::serde::decode_from_slice::<ObservedValueStoredRecord, _>(
+        bytes,
+        bincode::config::standard(),
+    )
+    .map(|(record, _consumed)| record)
+    .map_err(ObservedRecordDecodeError::from)
+}
+
+fn decode_compressed_observed_record(
+    bytes: &[u8],
+) -> Result<ObservedValueStoredRecord, ObservedRecordDecodeError> {
+    let length_bytes = bytes
+        .get(..OBSERVED_RECORD_ZSTD_LENGTH_BYTES)
+        .ok_or(ObservedRecordDecodeError::MissingCompressedLength)?;
+    let length_bytes = length_bytes
+        .try_into()
+        .map_err(|_error| ObservedRecordDecodeError::MissingCompressedLength)?;
+    let raw_len = u64::from_le_bytes(length_bytes);
+    let raw_len = usize::try_from(raw_len)
+        .map_err(|_error| ObservedRecordDecodeError::CompressedLengthTooLarge { len: raw_len })?;
+    let compressed = bytes
+        .get(OBSERVED_RECORD_ZSTD_LENGTH_BYTES..)
+        .ok_or(ObservedRecordDecodeError::MissingCompressedLength)?;
+    let raw = zstd::bulk::decompress(compressed, raw_len)?;
+    decode_raw_observed_record(&raw)
 }
 
 fn observed_source_index_key(record: &ObservedValueStoredRecord) -> String {
@@ -991,6 +1771,10 @@ fn observed_source_index_prefix(source_name: &str) -> String {
 
 fn observed_last_observed_index_key(record: &ObservedValueStoredRecord, doc_key: &str) -> String {
     format!("{}{}{}", record.last_observed_at, '\0', doc_key)
+}
+
+fn observed_queue_job_key() -> String {
+    format!("{}{}{}", now_timestamp(), '\0', Uuid::new_v4())
 }
 
 fn prefix_range_end(prefix: &str) -> String {
@@ -1031,6 +1815,7 @@ struct SearchIndexFields {
     description: Field,
     normalized_value_key: Field,
     display_value: Field,
+    display_value_exact: Field,
     searchable_text: Field,
     last_observed_at: Field,
     observed_count: Field,
@@ -1060,6 +1845,7 @@ impl SearchIndexFields {
             description: required_field(schema, "description")?,
             normalized_value_key: required_field(schema, "normalized_value_key")?,
             display_value: required_field(schema, "display_value")?,
+            display_value_exact: required_field(schema, "display_value_exact")?,
             searchable_text: required_field(schema, "searchable_text")?,
             last_observed_at: required_field(schema, "last_observed_at")?,
             observed_count: required_field(schema, "observed_count")?,
@@ -1073,6 +1859,10 @@ impl SearchIndexFields {
 }
 
 fn replace_catalog_index_at(path: &Path, catalog: &CatalogInfo) -> Result<(), SearchIndexError> {
+    let mutation_lock = index_mutation_lock(path);
+    let _guard = mutation_lock
+        .lock()
+        .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     ensure_dir(parent)?;
 
@@ -1094,6 +1884,15 @@ fn replace_catalog_index_at(path: &Path, catalog: &CatalogInfo) -> Result<(), Se
     }
 
     swap_index_directory(path, &replacement_path)
+}
+
+fn index_mutation_lock(path: &Path) -> Arc<Mutex<()>> {
+    let locks = INDEX_MUTATION_LOCKS.get_or_init(|| Mutex::new(StdBTreeMap::new()));
+    let mut locks = locks.lock().expect("search index lock map");
+    locks
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 fn build_replacement_index(
@@ -1178,9 +1977,161 @@ fn observed_database_for_index(path: &Path) -> Result<Database, SearchIndexError
         let _records = write_txn.open_table(OBSERVED_RECORDS_TABLE)?;
         let _source_index = write_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
         let _last_observed_index = write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+        let _queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
     }
     write_txn.commit()?;
     Ok(database)
+}
+
+fn observed_database_payload_bytes_for_index(path: &Path) -> Result<u64, SearchIndexError> {
+    let database = observed_database_for_index(path)?;
+    let read_txn = database.begin_read()?;
+    let mut bytes = 0_u64;
+    {
+        let table = read_txn.open_table(OBSERVED_RECORDS_TABLE)?;
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            add_payload_bytes(&mut bytes, key.value().len());
+            add_payload_bytes(&mut bytes, value.value().len());
+        }
+    }
+    {
+        let table = read_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            add_payload_bytes(&mut bytes, key.value().len());
+            add_payload_bytes(&mut bytes, value.value().len());
+        }
+    }
+    {
+        let table = read_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            add_payload_bytes(&mut bytes, key.value().len());
+            add_payload_bytes(&mut bytes, value.value().len());
+        }
+    }
+    {
+        let table = read_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            add_payload_bytes(&mut bytes, key.value().len());
+            add_payload_bytes(&mut bytes, value.value().len());
+        }
+    }
+    Ok(bytes)
+}
+
+fn observed_search_tree_file_bytes_for_index(path: &Path) -> Result<u64, SearchIndexError> {
+    let search_root = path.parent().unwrap_or(path);
+    directory_size_excluding(search_root, &observed_state_file_for_index(path))
+}
+
+fn directory_size_excluding(path: &Path, excluded_file: &Path) -> Result<u64, SearchIndexError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {
+            if path == excluded_file {
+                Ok(0)
+            } else {
+                Ok(metadata.len())
+            }
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            let mut bytes = 0_u64;
+            for entry in fs::read_dir(path)? {
+                bytes =
+                    bytes.saturating_add(directory_size_excluding(&entry?.path(), excluded_file)?);
+            }
+            Ok(bytes)
+        }
+        Ok(_metadata) => Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn add_payload_bytes(total: &mut u64, len: usize) {
+    *total = total.saturating_add(len as u64);
+}
+
+fn remove_oldest_observed_queue_job_at(path: &Path) -> Result<bool, SearchIndexError> {
+    let database = observed_database_for_index(path)?;
+    let write_txn = database.begin_write()?;
+    let key = {
+        let queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+        queue
+            .iter()?
+            .next()
+            .transpose()?
+            .map(|(key, _value)| key.value().to_string())
+    };
+    let Some(key) = key else {
+        write_txn.commit()?;
+        return Ok(false);
+    };
+    {
+        let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
+        queue.remove(key.as_str())?;
+    }
+    write_txn.commit()?;
+    Ok(true)
+}
+
+enum RemovedObservedRecord {
+    Decoded(Box<ObservedValueStoredRecord>),
+    Malformed,
+}
+
+fn remove_oldest_observed_record_at(
+    path: &Path,
+) -> Result<Option<RemovedObservedRecord>, SearchIndexError> {
+    let database = observed_database_for_index(path)?;
+    let write_txn = database.begin_write()?;
+    let next = {
+        let last_observed_index = write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+        last_observed_index
+            .iter()?
+            .next()
+            .transpose()?
+            .map(|(index_key, doc_key)| {
+                (index_key.value().to_string(), doc_key.value().to_string())
+            })
+    };
+    let Some((last_observed_index_key, doc_key)) = next else {
+        write_txn.commit()?;
+        return Ok(None);
+    };
+
+    let removed = {
+        let mut records = write_txn.open_table(OBSERVED_RECORDS_TABLE)?;
+        records
+            .remove(doc_key.as_str())?
+            .map(|record| decode_observed_record(record.value()))
+    };
+    {
+        let mut last_observed_index = write_txn.open_table(OBSERVED_LAST_OBSERVED_INDEX_TABLE)?;
+        last_observed_index.remove(last_observed_index_key.as_str())?;
+    }
+
+    let removed = match removed {
+        Some(Ok(record)) => {
+            let mut source_index = write_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
+            source_index.remove(observed_source_index_key(&record).as_str())?;
+            Some(RemovedObservedRecord::Decoded(Box::new(record)))
+        }
+        Some(Err(error)) => {
+            tracing::warn!(
+                record_key = %doc_key,
+                error = %error,
+                "discarding malformed observed-value state record while enforcing storage budget"
+            );
+            Some(RemovedObservedRecord::Malformed)
+        }
+        None => Some(RemovedObservedRecord::Malformed),
+    };
+
+    write_txn.commit()?;
+    Ok(removed)
 }
 
 fn load_observed_records_for_index(
@@ -1189,21 +2140,20 @@ fn load_observed_records_for_index(
     let database = observed_database_for_index(path)?;
     let read_txn = database.begin_read()?;
     let table = read_txn.open_table(OBSERVED_RECORDS_TABLE)?;
-    let mut records = table
-        .iter()?
-        .map(|entry| {
-            entry
-                .map_err(SearchIndexError::from)
-                .and_then(|(key, value)| {
-                    decode_observed_record(value.value()).map_err(|error| {
-                        SearchIndexError::ObservedStateDecode {
-                            record_key: key.value().to_string(),
-                            error,
-                        }
-                    })
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut records = Vec::new();
+    for entry in table.iter()? {
+        let (key, value) = entry?;
+        match decode_observed_record(value.value()) {
+            Ok(record) => records.push(record),
+            Err(error) => {
+                tracing::warn!(
+                    record_key = %key.value(),
+                    error = %error,
+                    "skipping malformed observed-value state record during index rebuild"
+                );
+            }
+        }
+    }
     records.sort_by_key(ObservedValueStoredRecord::doc_key);
     Ok(records)
 }
@@ -1226,6 +2176,22 @@ fn open_or_create_index(path: &Path) -> Result<Index, SearchIndexError> {
         ensure_dir(path)?;
     }
     Ok(Index::create_in_dir(path, search_schema())?)
+}
+
+fn open_existing_index(path: &Path) -> Result<Option<Index>, SearchIndexError> {
+    let meta_file = path.join("meta.json");
+    if !meta_file.exists() {
+        return Ok(None);
+    }
+    let index = Index::open_in_dir(path)?;
+    if !schema_has_required_fields(&index.schema()) {
+        tracing::debug!(
+            path = %path.display(),
+            "existing Tantivy search index schema is not compatible; deferring rebuild to catalog refresh"
+        );
+        return Ok(None);
+    }
+    Ok(Some(index))
 }
 
 fn index_is_usable(path: &Path) -> bool {
@@ -1264,6 +2230,7 @@ fn search_schema() -> Schema {
     builder.add_text_field("description", stored_text_options());
     builder.add_text_field("normalized_value_key", STRING | STORED);
     builder.add_text_field("display_value", stored_text_options());
+    builder.add_text_field("display_value_exact", STRING);
     builder.add_text_field("searchable_text", stored_text_options());
     builder.add_text_field("last_observed_at", STRING | STORED);
     builder.add_text_field("observed_count", STRING | STORED);
@@ -1313,6 +2280,7 @@ fn schema_has_required_fields(schema: &Schema) -> bool {
         "description",
         "normalized_value_key",
         "display_value",
+        "display_value_exact",
         "searchable_text",
         "last_observed_at",
         "observed_count",
@@ -1745,6 +2713,10 @@ fn normalized_rank_score(position: u32, hit_count: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::fmt::Write as _;
+    use std::time::Duration as StdDuration;
+
     use coral_engine::{
         CatalogInfo, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
         TableFunctionResultColumnInfo, TableInfo,
@@ -1752,9 +2724,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        CatalogSearchFieldRole, CatalogSearchResultType, ObservedValueRecord,
-        ObservedValueSensitivityTier, ObservedValueSuggestedOperator, ObservedValueSurfaceKind,
-        SearchIndexStore, tantivy_query_text,
+        CatalogSearchFieldRole, CatalogSearchResultType, OBSERVED_QUEUE_TABLE,
+        OBSERVED_RECORD_ENCODING_ZSTD, OBSERVED_RECORDS_TABLE, ObservedValueRecord,
+        ObservedValueSuggestedOperator, ObservedValueSurfaceKind, SearchIndexStore,
+        decode_observed_record, directory_size_excluding, encode_observed_record,
+        encode_raw_observed_record, new_observed_stored_record, observed_state_file_for_index,
+        tantivy_query_text,
     };
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
@@ -1988,6 +2963,42 @@ mod tests {
     }
 
     #[test]
+    fn observed_record_encoding_reads_legacy_raw_records() {
+        let record = new_observed_stored_record(
+            observed_record("payments-api", 1),
+            "2026-06-09T10:00:00.000Z",
+        );
+        let raw = encode_raw_observed_record(&record).expect("encode raw record");
+
+        let decoded = decode_observed_record(&raw).expect("decode legacy raw record");
+
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn observed_record_encoding_compresses_large_records() {
+        let mut record = new_observed_stored_record(
+            observed_record("payments-api", 1),
+            "2026-06-09T10:00:00.000Z",
+        );
+        record.display_value = "deploy_failed service=payments-api ".repeat(128);
+        record.searchable_text = record.display_value.clone();
+
+        let raw = encode_raw_observed_record(&record).expect("encode raw record");
+        let encoded = encode_observed_record(&record).expect("encode observed record");
+
+        assert_eq!(
+            encoded.first().copied(),
+            Some(OBSERVED_RECORD_ENCODING_ZSTD)
+        );
+        assert!(encoded.len() < raw.len());
+        assert_eq!(
+            decode_observed_record(&encoded).expect("decode compressed record"),
+            record
+        );
+    }
+
+    #[test]
     fn observed_values_upsert_count_and_search() {
         let temp = tempdir().expect("tempdir");
         let workspace = WorkspaceName::parse("default").expect("workspace");
@@ -2017,6 +3028,215 @@ mod tests {
                 .expect("stored observed value"),
             3
         );
+    }
+
+    #[test]
+    fn observed_queue_drains_enqueued_values() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+
+        store
+            .enqueue_observed_values(&workspace, vec![observed_record("payments-api", 1)])
+            .expect("enqueue observed");
+
+        assert!(
+            store
+                .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+                .expect("search before drain")
+                .is_empty()
+        );
+
+        let drain = store
+            .drain_observed_value_queue_for(StdDuration::from_secs(1))
+            .expect("drain observed queue");
+
+        assert_eq!(drain.processed_jobs, 1);
+        assert_eq!(drain.pending_jobs, 0);
+        let hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search after drain");
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn observed_queue_continues_after_malformed_job() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+        let database = store.observed_database().expect("observed database");
+        let write_txn = database.begin_write().expect("write transaction");
+        {
+            let mut queue = write_txn
+                .open_table(OBSERVED_QUEUE_TABLE)
+                .expect("queue table");
+            queue
+                .insert("0000-malformed", [0xff, 0x00, 0x01].as_slice())
+                .expect("insert malformed queue job");
+        }
+        write_txn.commit().expect("commit malformed queue job");
+        drop(database);
+        store
+            .enqueue_observed_values(&workspace, vec![observed_record("payments-api", 1)])
+            .expect("enqueue observed");
+
+        let drain = store
+            .drain_observed_value_queue_for(StdDuration::from_secs(1))
+            .expect("drain observed queue");
+
+        assert_eq!(drain.processed_jobs, 1);
+        assert_eq!(drain.pending_jobs, 0);
+        let hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search observed");
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn observed_queue_projection_replay_does_not_double_count() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+
+        store
+            .enqueue_observed_values(&workspace, vec![observed_record("payments-api", 1)])
+            .expect("enqueue observed");
+        let prepared = store
+            .prepare_next_observed_queue_job()
+            .expect("prepare queued job")
+            .expect("queued job");
+        assert_eq!(prepared.records.len(), 1);
+
+        let drain = store
+            .drain_observed_value_queue_for(StdDuration::from_secs(1))
+            .expect("drain projection-pending job");
+
+        assert_eq!(drain.processed_jobs, 1);
+        assert_eq!(drain.pending_jobs, 0);
+        assert_eq!(
+            store
+                .observed_count_for_test("payments-api")
+                .expect("observed state")
+                .expect("stored observed value"),
+            1
+        );
+    }
+
+    #[test]
+    fn observed_queue_drops_values_for_deleted_source() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = crate::sources::SourceName::parse("notion").expect("source");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+
+        store
+            .enqueue_observed_values(
+                &workspace,
+                vec![ObservedValueRecord {
+                    source_name: "notion".to_string(),
+                    display_value: "notion-value".to_string(),
+                    searchable_text: "notion page notion-value".to_string(),
+                    ..observed_record("notion-value", 1)
+                }],
+            )
+            .expect("enqueue observed");
+        store
+            .delete_observed_values_for_source(&workspace, &source)
+            .expect("delete source observed values");
+
+        let drain = store
+            .drain_observed_value_queue_for(StdDuration::from_secs(1))
+            .expect("drain observed queue");
+
+        assert_eq!(drain.processed_jobs, 0);
+        assert_eq!(drain.pending_jobs, 0);
+        assert!(
+            store
+                .search_observed_values(&workspace, &["notion-value".to_string()], 10)
+                .expect("search observed")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn source_discard_deletes_redb_state_without_tantivy_projection() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = crate::sources::SourceName::parse("notion").expect("source");
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![ObservedValueRecord {
+                    source_name: "notion".to_string(),
+                    display_value: "notion-value".to_string(),
+                    searchable_text: "notion page notion-value".to_string(),
+                    ..observed_record("notion-value", 1)
+                }],
+            )
+            .expect("upsert observed");
+        store
+            .enqueue_observed_values(
+                &workspace,
+                vec![ObservedValueRecord {
+                    source_name: "notion".to_string(),
+                    display_value: "queued-notion-value".to_string(),
+                    searchable_text: "notion page queued-notion-value".to_string(),
+                    ..observed_record("queued-notion-value", 1)
+                }],
+            )
+            .expect("enqueue observed");
+        drop(store);
+        std::fs::remove_dir_all(layout.search_index_dir(&workspace)).expect("remove tantivy index");
+
+        SearchIndexStore::discard_observed_values_for_source(&layout, &workspace, &source)
+            .expect("discard source observed values");
+        let store = SearchIndexStore::replace_workspace_catalog(
+            &layout,
+            &workspace,
+            &CatalogInfo {
+                tables: Vec::new(),
+                table_functions: Vec::new(),
+            },
+        )
+        .expect("rebuild catalog index");
+        let drain = store
+            .drain_observed_value_queue_for(StdDuration::from_secs(1))
+            .expect("drain observed queue");
+
+        assert_eq!(drain.processed_jobs, 0);
+        assert_eq!(drain.pending_jobs, 0);
+        assert!(
+            store
+                .search_observed_values(&workspace, &["notion-value".to_string()], 10)
+                .expect("search deleted durable state")
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_observed_values(&workspace, &["queued-notion-value".to_string()], 10)
+                .expect("search deleted queued state")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn observed_values_support_short_exact_value_matches() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+
+        store
+            .upsert_observed_values(&workspace, vec![observed_record("US", 1)])
+            .expect("upsert observed");
+
+        let hits = store
+            .search_observed_values(&workspace, &["us".to_string()], 10)
+            .expect("search observed");
+
+        assert!(hits.iter().any(|hit| hit.display_value == "US"));
     }
 
     #[test]
@@ -2070,6 +3290,217 @@ mod tests {
                 .expect("search deleted")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn observed_reconcile_removes_stale_and_removed_sources_before_searching() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![
+                    observed_record("fresh-match", 1),
+                    observed_record("stale-match", 1),
+                    ObservedValueRecord {
+                        source_name: "notion".to_string(),
+                        display_value: "removed-source-match".to_string(),
+                        searchable_text: "notion page removed-source-match".to_string(),
+                        ..observed_record("removed-source-match", 1)
+                    },
+                ],
+            )
+            .expect("upsert observed");
+        store
+            .set_last_observed_at_for_test("stale-match", "2000-01-01T00:00:00.000Z")
+            .expect("age observed state");
+        let live_sources = BTreeSet::from(["github".to_string()]);
+
+        assert!(
+            store
+                .search_observed_values_filtered(
+                    &workspace,
+                    &["stale-match".to_string()],
+                    1,
+                    &live_sources,
+                    "2001-01-01T00:00:00.000Z",
+                )
+                .expect("search stale with filters")
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_observed_values_filtered(
+                    &workspace,
+                    &["removed-source-match".to_string()],
+                    1,
+                    &live_sources,
+                    "2001-01-01T00:00:00.000Z",
+                )
+                .expect("search removed source with filters")
+                .is_empty()
+        );
+        store
+            .reconcile_observed_values(&live_sources, "2001-01-01T00:00:00.000Z")
+            .expect("reconcile observed state");
+
+        let hits = store
+            .search_observed_values(&workspace, &["match".to_string()], 1)
+            .expect("search observed");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits.first().expect("hit").display_value, "fresh-match");
+        assert!(
+            store
+                .search_observed_values(&workspace, &["stale-match".to_string()], 10)
+                .expect("search stale")
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_observed_values(&workspace, &["removed-source-match".to_string()], 10)
+                .expect("search removed source")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn observed_storage_budget_drops_queue_before_records() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![large_observed_record("durable-budget-value", 1024)],
+            )
+            .expect("upsert durable observed value");
+        let durable_budget = store
+            .observed_storage_bytes()
+            .expect("durable observed storage bytes");
+        store
+            .enqueue_observed_values(
+                &workspace,
+                vec![large_observed_record("queued-budget-value", 16 * 1024)],
+            )
+            .expect("enqueue observed value");
+        assert!(
+            store
+                .observed_storage_bytes()
+                .expect("queued observed storage bytes")
+                > durable_budget
+        );
+
+        let enforcement = store
+            .enforce_observed_storage_budget(durable_budget)
+            .expect("enforce observed storage budget");
+
+        assert_eq!(enforcement.removed_queue_jobs, 1);
+        assert_eq!(enforcement.removed_records, 0);
+        assert!(!enforcement.budget_exceeded);
+        let drain = store
+            .drain_observed_value_queue_for(StdDuration::from_secs(1))
+            .expect("drain observed queue");
+        assert_eq!(drain.pending_jobs, 0);
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["durable-budget-value".to_string()], 10)
+                .expect("search durable observed value")
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_observed_values(&workspace, &["queued-budget-value".to_string()], 10)
+                .expect("search queued observed value")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn observed_storage_budget_counts_tantivy_search_tree_bytes() {
+        let temp = tempdir().expect("tempdir");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+        let tantivy_bytes =
+            directory_size_excluding(store.path(), &observed_state_file_for_index(store.path()))
+                .expect("tantivy bytes");
+
+        assert!(tantivy_bytes > 0);
+        assert!(
+            store
+                .observed_storage_bytes()
+                .expect("observed storage bytes")
+                >= tantivy_bytes
+        );
+    }
+
+    #[test]
+    fn observed_storage_budget_prunes_oldest_records() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![
+                    large_observed_record("old-budget-value", 128 * 1024),
+                    observed_record("fresh-budget-value", 1),
+                ],
+            )
+            .expect("upsert observed values");
+        store
+            .set_last_observed_at_for_test("old-budget-value", "2000-01-01T00:00:00.000Z")
+            .expect("age old observed value");
+        let before = store
+            .observed_storage_bytes()
+            .expect("observed storage bytes before pruning");
+
+        let enforcement = store
+            .enforce_observed_storage_budget(before.saturating_sub(1024))
+            .expect("enforce observed storage budget");
+
+        assert_eq!(enforcement.removed_records, 1);
+        assert!(!enforcement.budget_exceeded);
+        assert!(
+            store
+                .search_observed_values(&workspace, &["old-budget-value".to_string()], 10)
+                .expect("search old observed value")
+                .is_empty()
+        );
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["fresh-budget-value".to_string()], 10)
+                .expect("search fresh observed value")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn catalog_rebuild_skips_malformed_observed_state_records() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("tantivy");
+        let store = SearchIndexStore::open(&path).expect("store");
+        let database = store.observed_database().expect("observed database");
+        let write_txn = database.begin_write().expect("write transaction");
+        {
+            let mut records = write_txn
+                .open_table(OBSERVED_RECORDS_TABLE)
+                .expect("records table");
+            records
+                .insert("malformed", [0xff, 0x00, 0x01].as_slice())
+                .expect("insert malformed record");
+        }
+        write_txn.commit().expect("commit malformed state");
+        drop(database);
+        drop(store);
+
+        SearchIndexStore::replace_catalog_index(
+            &path,
+            &CatalogInfo {
+                tables: Vec::new(),
+                table_functions: Vec::new(),
+            },
+        )
+        .expect("replace catalog skips malformed observed state");
     }
 
     fn catalog_with_search_function() -> CatalogInfo {
@@ -2159,10 +3590,33 @@ mod tests {
             normalized_value_key: format!("key:{value}"),
             display_value: value.to_string(),
             searchable_text: format!("github deployments service {value}"),
-            sensitivity_tier: ObservedValueSensitivityTier::LowRisk,
             suggested_operator: ObservedValueSuggestedOperator::Exact,
             observed_count,
         }
+    }
+
+    fn large_observed_record(value: &str, payload_bytes: usize) -> ObservedValueRecord {
+        let payload = deterministic_payload(value, payload_bytes);
+        ObservedValueRecord {
+            display_value: value.to_string(),
+            searchable_text: format!("github deployments service {value} {payload}"),
+            ..observed_record(value, 1)
+        }
+    }
+
+    fn deterministic_payload(label: &str, min_bytes: usize) -> String {
+        let mut payload = String::new();
+        let mut index = 0_u64;
+        while payload.len() < min_bytes {
+            write!(
+                payload,
+                "{label}-{index:016x}-{:016x} ",
+                index.wrapping_mul(0x9e37_79b1_85eb_ca87)
+            )
+            .expect("write deterministic payload");
+            index = index.saturating_add(1);
+        }
+        payload
     }
 
     #[test]

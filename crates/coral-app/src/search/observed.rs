@@ -1,10 +1,14 @@
 //! Passive observed-value indexing for successful SQL results.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::time::Duration as StdDuration;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
-use coral_engine::{QueryResultObserver, QueryResultObserverError, QuerySource};
+use coral_engine::{
+    QueryResultObserver, QueryResultObserverError, QuerySource, RuntimeSourceComponent,
+};
 use coral_spec::ColumnSpec;
 use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
@@ -13,19 +17,53 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
+use uuid::Uuid;
 
 use crate::search::index::{
-    ObservedValueRecord, ObservedValueSensitivityTier, ObservedValueSuggestedOperator,
-    ObservedValueSurfaceKind, SearchIndexError, SearchIndexStore,
+    ObservedValueRecord, ObservedValueSuggestedOperator, ObservedValueSurfaceKind,
+    SearchIndexError, SearchIndexStore,
 };
+use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
+
+const CATALOG_FINGERPRINT_FILE_NAME: &str = "catalog.sha256";
+const DEFAULT_OBSERVED_QUEUE_FOREGROUND_DRAIN_MS: u64 = 1_000;
+const DEFAULT_OBSERVED_MAX_STORAGE_MB: u64 = 256;
+const DEFAULT_OBSERVED_COLLECTION_MAX_CANDIDATES: usize = 10_000;
+const DEFAULT_OBSERVED_COLLECTION_MAX_CANDIDATE_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_OBSERVED_COLLECTION_MAX_JSON_DEPTH: usize = 8;
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+const SOURCE_GENERATION_DIR_NAME: &str = "source-generations";
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ObservedSearchConfigFile {
+    #[serde(default)]
+    search: ObservedSearchConfig,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ObservedSearchConfig {
+    #[serde(rename = "observed_queue_foreground_drain_ms")]
+    queue_foreground_drain_ms: Option<u64>,
+    #[serde(rename = "observed_max_storage_mb")]
+    storage_mb: Option<u64>,
+    #[serde(rename = "observed_collection_max_candidates")]
+    collection_candidates: Option<usize>,
+    #[serde(rename = "observed_collection_max_candidate_bytes")]
+    collection_candidate_bytes: Option<usize>,
+    #[serde(rename = "observed_collection_max_json_depth")]
+    collection_json_depth: Option<usize>,
+}
 
 /// Query-result observer that writes direct-provenance cell values into search index storage.
 pub(crate) struct ObservedValueIndexer {
     layout: AppStateLayout,
     workspace_name: WorkspaceName,
     surfaces: Vec<ObservedSurface>,
+    source_generations: BTreeMap<String, Option<String>>,
+    collection_budget: ObservedCollectionBudget,
+    storage_budget_bytes: u64,
 }
 
 impl ObservedValueIndexer {
@@ -34,10 +72,16 @@ impl ObservedValueIndexer {
         workspace_name: WorkspaceName,
         selected_sources: &[QuerySource],
     ) -> Self {
+        let surfaces = observed_surfaces(selected_sources);
+        let source_generations = observed_source_generations(&layout, &workspace_name, &surfaces);
+        let config = observed_search_config_or_default(&layout);
         Self {
             layout,
             workspace_name,
-            surfaces: observed_surfaces(selected_sources),
+            surfaces,
+            source_generations,
+            collection_budget: observed_collection_budget_from_config(&config.search),
+            storage_budget_bytes: observed_storage_budget_bytes_from_config(&config.search),
         }
     }
 
@@ -54,15 +98,82 @@ impl ObservedValueIndexer {
             );
             return Ok(());
         }
-
-        let records = observed_records_from_batches(schema, batches, &provenance)?;
-        if records.is_empty() {
+        if self.source_generations_changed(&provenance)? {
+            tracing::debug!(
+                workspace = %self.workspace_name,
+                "skipping observed-value indexing because a source changed while the query was running"
+            );
             return Ok(());
         }
 
+        let collection =
+            observed_records_from_batches(schema, batches, &provenance, self.collection_budget)?;
+        if collection.budget_exhausted {
+            tracing::debug!(
+                workspace = %self.workspace_name,
+                accepted_candidates = collection.accepted_candidates,
+                accepted_candidate_bytes = collection.accepted_candidate_bytes,
+                skipped_oversize_candidates = collection.skipped_oversize_candidates,
+                "observed-value collection budget exhausted; enqueueing bounded chunks"
+            );
+        }
+        if collection.is_empty() {
+            return Ok(());
+        }
+
+        if !SearchIndexStore::workspace_index_is_usable(&self.layout, &self.workspace_name) {
+            clear_catalog_fingerprint(&self.layout, &self.workspace_name)?;
+        }
         let store = SearchIndexStore::open_workspace(&self.layout, &self.workspace_name)?;
-        store.upsert_observed_values(&self.workspace_name, records)?;
+        let enforcement = store.enforce_observed_storage_budget(self.storage_budget_bytes)?;
+        if enforcement.budget_exceeded {
+            tracing::warn!(
+                workspace = %self.workspace_name,
+                storage_bytes = enforcement.storage_bytes,
+                max_storage_bytes = self.storage_budget_bytes,
+                "pausing observed-value enqueue because storage budget is exhausted"
+            );
+            return Ok(());
+        }
+        for records in collection.record_chunks {
+            let enforcement = store.enforce_observed_storage_budget(self.storage_budget_bytes)?;
+            if enforcement.budget_exceeded {
+                tracing::warn!(
+                    workspace = %self.workspace_name,
+                    storage_bytes = enforcement.storage_bytes,
+                    max_storage_bytes = self.storage_budget_bytes,
+                    "pausing observed-value enqueue because storage budget is exhausted"
+                );
+                break;
+            }
+            store.enqueue_observed_values(&self.workspace_name, records)?;
+        }
+        store.enforce_observed_storage_budget(self.storage_budget_bytes)?;
         Ok(())
+    }
+
+    fn source_generations_changed(
+        &self,
+        provenance: &[Option<FieldProvenance>],
+    ) -> Result<bool, ObservedValueIndexError> {
+        let source_names = provenance
+            .iter()
+            .filter_map(|provenance| provenance.as_ref())
+            .map(|provenance| provenance.source_name.as_str())
+            .collect::<BTreeSet<_>>();
+        for source_name in source_names {
+            let generation =
+                read_observed_source_generation(&self.layout, &self.workspace_name, source_name)?;
+            let expected = self
+                .source_generations
+                .get(source_name)
+                .cloned()
+                .unwrap_or(None);
+            if generation != expected {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -92,9 +203,152 @@ enum ObservedValueIndexError {
     #[error(transparent)]
     SearchIndex(#[from] SearchIndexError),
     #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
     Arrow(#[from] arrow::error::ArrowError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Toml(#[from] toml::de::Error),
+}
+
+fn clear_catalog_fingerprint(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+) -> Result<(), ObservedValueIndexError> {
+    let path = layout
+        .search_dir(workspace_name)
+        .join(CATALOG_FINGERPRINT_FILE_NAME);
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn mark_observed_source_generation(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+) -> Result<(), std::io::Error> {
+    let path = observed_source_generation_file(layout, workspace_name, source_name.as_str());
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, format!("{}\n", Uuid::new_v4()))
+}
+
+fn observed_source_generations(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    surfaces: &[ObservedSurface],
+) -> BTreeMap<String, Option<String>> {
+    surfaces
+        .iter()
+        .map(|surface| {
+            let generation =
+                match read_observed_source_generation(layout, workspace_name, &surface.source_name)
+                {
+                    Ok(generation) => generation,
+                    Err(error) => {
+                        tracing::warn!(
+                            workspace = %workspace_name,
+                            source = %surface.source_name,
+                            error = %error,
+                            "failed to read observed-value source generation"
+                        );
+                        None
+                    }
+                };
+            (surface.source_name.clone(), generation)
+        })
+        .collect()
+}
+
+fn read_observed_source_generation(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &str,
+) -> Result<Option<String>, std::io::Error> {
+    let path = observed_source_generation_file(layout, workspace_name, source_name);
+    match fs::read_to_string(path) {
+        Ok(generation) => Ok(Some(generation.trim().to_string())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn observed_source_generation_file(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &str,
+) -> std::path::PathBuf {
+    layout
+        .search_dir(workspace_name)
+        .join(SOURCE_GENERATION_DIR_NAME)
+        .join(source_name)
+}
+
+pub(crate) fn observed_queue_foreground_drain_budget(layout: &AppStateLayout) -> StdDuration {
+    let config = observed_search_config_or_default(layout);
+    StdDuration::from_millis(
+        config
+            .search
+            .queue_foreground_drain_ms
+            .unwrap_or(DEFAULT_OBSERVED_QUEUE_FOREGROUND_DRAIN_MS),
+    )
+}
+
+pub(crate) fn observed_storage_budget_bytes(layout: &AppStateLayout) -> u64 {
+    let config = observed_search_config_or_default(layout);
+    observed_storage_budget_bytes_from_config(&config.search)
+}
+
+fn observed_search_config_or_default(layout: &AppStateLayout) -> ObservedSearchConfigFile {
+    match load_observed_search_config(layout) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to load observed-value search config; using defaults"
+            );
+            ObservedSearchConfigFile::default()
+        }
+    }
+}
+
+fn observed_storage_budget_bytes_from_config(config: &ObservedSearchConfig) -> u64 {
+    config
+        .storage_mb
+        .unwrap_or(DEFAULT_OBSERVED_MAX_STORAGE_MB)
+        .saturating_mul(BYTES_PER_MIB)
+}
+
+fn observed_collection_budget_from_config(
+    config: &ObservedSearchConfig,
+) -> ObservedCollectionBudget {
+    ObservedCollectionBudget {
+        candidates: config
+            .collection_candidates
+            .unwrap_or(DEFAULT_OBSERVED_COLLECTION_MAX_CANDIDATES),
+        candidate_bytes: config
+            .collection_candidate_bytes
+            .unwrap_or(DEFAULT_OBSERVED_COLLECTION_MAX_CANDIDATE_BYTES),
+        json_depth: config
+            .collection_json_depth
+            .unwrap_or(DEFAULT_OBSERVED_COLLECTION_MAX_JSON_DEPTH),
+    }
+}
+
+fn load_observed_search_config(
+    layout: &AppStateLayout,
+) -> Result<ObservedSearchConfigFile, ObservedValueIndexError> {
+    if !layout.config_file().exists() {
+        return Ok(ObservedSearchConfigFile::default());
+    }
+
+    let raw = std::fs::read_to_string(layout.config_file())?;
+    Ok(toml::from_str(&raw)?)
 }
 
 #[derive(Debug, Clone)]
@@ -122,55 +376,73 @@ struct FieldProvenance {
     column_name: String,
 }
 
+struct SelectedObservedSurface<'a> {
+    surface: &'a ObservedSurface,
+    aliases: Vec<String>,
+}
+
+impl SelectedObservedSurface<'_> {
+    fn qualifiers(&self) -> Vec<String> {
+        let mut qualifiers = surface_qualifiers(self.surface);
+        qualifiers.extend(self.aliases.iter().map(|alias| normalize_identifier(alias)));
+        qualifiers.sort();
+        qualifiers.dedup();
+        qualifiers
+    }
+}
+
 fn observed_surfaces(selected_sources: &[QuerySource]) -> Vec<ObservedSurface> {
     let mut surfaces = Vec::new();
     for source in selected_sources {
         let source_name = source.source_name().to_string();
-        let spec = source.source_spec();
-        if let Some(http) = spec.as_http() {
-            for table in &http.tables {
-                surfaces.push(observed_surface(
-                    &source_name,
-                    ObservedValueSurfaceKind::Table,
-                    table.name(),
-                    table.columns(),
-                ));
-            }
-            for function in &http.functions {
-                surfaces.push(observed_surface(
-                    &source_name,
-                    ObservedValueSurfaceKind::TableFunction,
-                    &function.name,
-                    &function.columns,
-                ));
-            }
-        }
-        if let Some(file) = spec.as_file() {
-            for table in &file.tables {
-                surfaces.push(observed_surface(
-                    &source_name,
-                    ObservedValueSurfaceKind::Table,
-                    table.name(),
-                    table.columns(),
-                ));
-            }
-        }
-        if let Some(mcp) = spec.as_mcp() {
-            for table in &mcp.tables {
-                surfaces.push(observed_surface(
-                    &source_name,
-                    ObservedValueSurfaceKind::Table,
-                    table.name(),
-                    table.columns(),
-                ));
-            }
-            for function in &mcp.functions {
-                surfaces.push(observed_surface(
-                    &source_name,
-                    ObservedValueSurfaceKind::TableFunction,
-                    function.name(),
-                    function.columns(),
-                ));
+        for component in source.components() {
+            match component {
+                RuntimeSourceComponent::Http(http) => {
+                    for table in &http.tables {
+                        surfaces.push(observed_surface(
+                            &source_name,
+                            ObservedValueSurfaceKind::Table,
+                            table.name(),
+                            table.columns(),
+                        ));
+                    }
+                    for function in &http.functions {
+                        surfaces.push(observed_surface(
+                            &source_name,
+                            ObservedValueSurfaceKind::TableFunction,
+                            &function.name,
+                            &function.columns,
+                        ));
+                    }
+                }
+                RuntimeSourceComponent::File(file) => {
+                    for table in &file.tables {
+                        surfaces.push(observed_surface(
+                            &source_name,
+                            ObservedValueSurfaceKind::Table,
+                            table.name(),
+                            table.columns(),
+                        ));
+                    }
+                }
+                RuntimeSourceComponent::Mcp(mcp) => {
+                    for table in &mcp.tables {
+                        surfaces.push(observed_surface(
+                            &source_name,
+                            ObservedValueSurfaceKind::Table,
+                            table.name(),
+                            table.columns(),
+                        ));
+                    }
+                    for function in &mcp.functions {
+                        surfaces.push(observed_surface(
+                            &source_name,
+                            ObservedValueSurfaceKind::TableFunction,
+                            function.name(),
+                            function.columns(),
+                        ));
+                    }
+                }
             }
         }
     }
@@ -206,12 +478,16 @@ fn resolve_projection_provenance(
     let [Statement::Query(query)] = statements.as_slice() else {
         return empty;
     };
+    if query.with.is_some() {
+        return empty;
+    }
     let Some(select) = query.body.as_select() else {
         return empty;
     };
-    let Some(surface) = select_from_surface(select, surfaces) else {
+    let Some(selected_surface) = select_from_surface(select, surfaces) else {
         return empty;
     };
+    let surface = selected_surface.surface;
 
     if let [item] = select.projection.as_slice()
         && projection_is_wildcard(item)
@@ -234,7 +510,7 @@ fn resolve_projection_provenance(
         return empty;
     }
 
-    let qualifiers = surface_qualifiers(surface);
+    let qualifiers = selected_surface.qualifiers();
     select
         .projection
         .iter()
@@ -250,7 +526,7 @@ fn resolve_projection_provenance(
 fn select_from_surface<'a>(
     select: &Select,
     surfaces: &'a [ObservedSurface],
-) -> Option<&'a ObservedSurface> {
+) -> Option<SelectedObservedSurface<'a>> {
     let [from] = select.from.as_slice() else {
         return None;
     };
@@ -263,23 +539,40 @@ fn select_from_surface<'a>(
 fn table_with_joins_surface<'a>(
     from: &TableWithJoins,
     surfaces: &'a [ObservedSurface],
-) -> Option<&'a ObservedSurface> {
+) -> Option<SelectedObservedSurface<'a>> {
     match &from.relation {
-        TableFactor::Table { name, args, .. } => {
+        TableFactor::Table {
+            name, args, alias, ..
+        } => {
             let expected_kind = if args.is_some() {
                 Some(ObservedValueSurfaceKind::TableFunction)
             } else {
                 Some(ObservedValueSurfaceKind::Table)
             };
-            resolve_surface_name(name, expected_kind, surfaces)
+            resolve_surface_name(name, expected_kind, surfaces).map(|surface| {
+                SelectedObservedSurface {
+                    surface,
+                    aliases: table_alias_names(alias.as_ref()),
+                }
+            })
         }
-        TableFactor::Function { name, .. } => resolve_surface_name(
+        TableFactor::Function { name, alias, .. } => resolve_surface_name(
             name,
             Some(ObservedValueSurfaceKind::TableFunction),
             surfaces,
-        ),
+        )
+        .map(|surface| SelectedObservedSurface {
+            surface,
+            aliases: table_alias_names(alias.as_ref()),
+        }),
         _ => None,
     }
+}
+
+fn table_alias_names(alias: Option<&sqlparser::ast::TableAlias>) -> Vec<String> {
+    alias
+        .map(|alias| vec![alias.name.value.clone()])
+        .unwrap_or_default()
 }
 
 fn resolve_surface_name<'a>(
@@ -404,8 +697,9 @@ fn observed_records_from_batches(
     schema: &Schema,
     batches: &[RecordBatch],
     provenance: &[Option<FieldProvenance>],
-) -> Result<Vec<ObservedValueRecord>, ObservedValueIndexError> {
-    let mut records = BTreeMap::<ObservedValueRecordKey, ObservedValueRecord>::new();
+    budget: ObservedCollectionBudget,
+) -> Result<ObservedRecordCollection, ObservedValueIndexError> {
+    let mut accumulator = ObservedRecordAccumulator::new(budget);
     for batch in batches {
         for row in record_batch_rows(batch)? {
             for (field_index, field_provenance) in provenance.iter().enumerate() {
@@ -418,36 +712,18 @@ fn observed_records_from_batches(
                 let Some(value) = row.get(field.name()) else {
                     continue;
                 };
-                for candidate in observed_candidate_values(field_provenance, value) {
-                    let key = ObservedValueRecordKey {
-                        source_name: field_provenance.source_name.clone(),
-                        surface_kind: field_provenance.surface_kind,
-                        surface_name: field_provenance.surface_name.clone(),
-                        column_name: candidate.field_path.clone(),
-                        normalized_value_key: candidate.normalized_value_key.clone(),
-                    };
-                    records
-                        .entry(key)
-                        .and_modify(|record| {
-                            record.observed_count = record.observed_count.saturating_add(1);
-                        })
-                        .or_insert_with(|| ObservedValueRecord {
-                            source_name: field_provenance.source_name.clone(),
-                            surface_kind: field_provenance.surface_kind,
-                            surface_name: field_provenance.surface_name.clone(),
-                            column_name: candidate.field_path.clone(),
-                            normalized_value_key: candidate.normalized_value_key.clone(),
-                            display_value: candidate.display_value.clone(),
-                            searchable_text: candidate.searchable_text.clone(),
-                            sensitivity_tier: ObservedValueSensitivityTier::LowRisk,
-                            suggested_operator: ObservedValueSuggestedOperator::Exact,
-                            observed_count: 1,
-                        });
+                let candidates =
+                    observed_candidate_values(field_provenance, value, budget.json_depth);
+                if candidates.depth_exhausted {
+                    accumulator.mark_budget_exhausted();
+                }
+                for candidate in &candidates.values {
+                    accumulator.push(field_provenance, candidate);
                 }
             }
         }
     }
-    Ok(records.into_values().collect())
+    Ok(accumulator.finish())
 }
 
 fn record_batch_rows(
@@ -470,25 +746,207 @@ struct ObservedCandidateValue {
     normalized_value_key: String,
 }
 
+#[derive(Debug, Clone)]
+struct ObservedCandidateCollection {
+    values: Vec<ObservedCandidateValue>,
+    depth_exhausted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObservedCollectionBudget {
+    candidates: usize,
+    candidate_bytes: usize,
+    json_depth: usize,
+}
+
+impl Default for ObservedCollectionBudget {
+    fn default() -> Self {
+        Self {
+            candidates: DEFAULT_OBSERVED_COLLECTION_MAX_CANDIDATES,
+            candidate_bytes: DEFAULT_OBSERVED_COLLECTION_MAX_CANDIDATE_BYTES,
+            json_depth: DEFAULT_OBSERVED_COLLECTION_MAX_JSON_DEPTH,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ObservedRecordCollection {
+    record_chunks: Vec<Vec<ObservedValueRecord>>,
+    budget_exhausted: bool,
+    accepted_candidates: usize,
+    accepted_candidate_bytes: usize,
+    skipped_oversize_candidates: usize,
+}
+
+impl ObservedRecordCollection {
+    fn is_empty(&self) -> bool {
+        self.record_chunks.iter().all(Vec::is_empty)
+    }
+}
+
+#[derive(Debug)]
+struct ObservedRecordAccumulator {
+    budget: ObservedCollectionBudget,
+    records: BTreeMap<ObservedValueRecordKey, ObservedValueRecord>,
+    record_chunks: Vec<Vec<ObservedValueRecord>>,
+    window_candidates: usize,
+    window_candidate_bytes: usize,
+    accepted_candidates: usize,
+    accepted_candidate_bytes: usize,
+    skipped_oversize_candidates: usize,
+    budget_exhausted: bool,
+}
+
+impl ObservedRecordAccumulator {
+    fn new(budget: ObservedCollectionBudget) -> Self {
+        Self {
+            budget,
+            records: BTreeMap::new(),
+            record_chunks: Vec::new(),
+            window_candidates: 0,
+            window_candidate_bytes: 0,
+            accepted_candidates: 0,
+            accepted_candidate_bytes: 0,
+            skipped_oversize_candidates: 0,
+            budget_exhausted: false,
+        }
+    }
+
+    fn mark_budget_exhausted(&mut self) {
+        self.budget_exhausted = true;
+    }
+
+    fn push(&mut self, provenance: &FieldProvenance, candidate: &ObservedCandidateValue) {
+        let candidate_bytes = candidate_bytes(candidate);
+        if self.budget.candidates == 0
+            || self.budget.candidate_bytes == 0
+            || candidate_bytes > self.budget.candidate_bytes
+        {
+            self.budget_exhausted = true;
+            self.skipped_oversize_candidates = self.skipped_oversize_candidates.saturating_add(1);
+            return;
+        }
+
+        if self.window_candidates >= self.budget.candidates
+            || self.window_candidate_bytes.saturating_add(candidate_bytes)
+                > self.budget.candidate_bytes
+        {
+            self.budget_exhausted = true;
+            self.flush_current_chunk();
+        }
+
+        self.window_candidates = self.window_candidates.saturating_add(1);
+        self.window_candidate_bytes = self.window_candidate_bytes.saturating_add(candidate_bytes);
+        self.accepted_candidates = self.accepted_candidates.saturating_add(1);
+        self.accepted_candidate_bytes = self
+            .accepted_candidate_bytes
+            .saturating_add(candidate_bytes);
+        self.insert(provenance, candidate);
+    }
+
+    fn insert(&mut self, provenance: &FieldProvenance, candidate: &ObservedCandidateValue) {
+        let key = ObservedValueRecordKey {
+            source_name: provenance.source_name.clone(),
+            surface_kind: provenance.surface_kind,
+            surface_name: provenance.surface_name.clone(),
+            column_name: candidate.field_path.clone(),
+            normalized_value_key: candidate.normalized_value_key.clone(),
+        };
+        self.records
+            .entry(key)
+            .and_modify(|record| {
+                record.observed_count = record.observed_count.saturating_add(1);
+            })
+            .or_insert_with(|| ObservedValueRecord {
+                source_name: provenance.source_name.clone(),
+                surface_kind: provenance.surface_kind,
+                surface_name: provenance.surface_name.clone(),
+                column_name: candidate.field_path.clone(),
+                normalized_value_key: candidate.normalized_value_key.clone(),
+                display_value: candidate.display_value.clone(),
+                searchable_text: candidate.searchable_text.clone(),
+                suggested_operator: ObservedValueSuggestedOperator::Exact,
+                observed_count: 1,
+            });
+    }
+
+    fn flush_current_chunk(&mut self) {
+        if !self.records.is_empty() {
+            self.record_chunks
+                .push(std::mem::take(&mut self.records).into_values().collect());
+        }
+        self.window_candidates = 0;
+        self.window_candidate_bytes = 0;
+    }
+
+    fn finish(mut self) -> ObservedRecordCollection {
+        self.flush_current_chunk();
+        ObservedRecordCollection {
+            record_chunks: self.record_chunks,
+            budget_exhausted: self.budget_exhausted,
+            accepted_candidates: self.accepted_candidates,
+            accepted_candidate_bytes: self.accepted_candidate_bytes,
+            skipped_oversize_candidates: self.skipped_oversize_candidates,
+        }
+    }
+}
+
+fn candidate_bytes(candidate: &ObservedCandidateValue) -> usize {
+    candidate
+        .field_path
+        .len()
+        .saturating_add(candidate.display_value.len())
+        .saturating_add(candidate.searchable_text.len())
+}
+
 fn observed_candidate_values(
     provenance: &FieldProvenance,
     value: &Value,
-) -> Vec<ObservedCandidateValue> {
+    max_json_depth: usize,
+) -> ObservedCandidateCollection {
     let mut candidates = BTreeMap::<(String, String), ObservedCandidateValue>::new();
-    collect_observed_candidates(provenance, &provenance.column_name, value, &mut candidates);
-    candidates.into_values().collect()
+    let mut depth_exhausted = false;
+    collect_observed_candidates(
+        provenance,
+        &provenance.column_name,
+        value,
+        0,
+        max_json_depth,
+        &mut depth_exhausted,
+        &mut candidates,
+    );
+    ObservedCandidateCollection {
+        values: candidates.into_values().collect(),
+        depth_exhausted,
+    }
 }
 
 fn collect_observed_candidates(
     provenance: &FieldProvenance,
     field_path: &str,
     value: &Value,
+    depth: usize,
+    max_json_depth: usize,
+    depth_exhausted: &mut bool,
     candidates: &mut BTreeMap<(String, String), ObservedCandidateValue>,
 ) {
+    if depth > max_json_depth {
+        *depth_exhausted = true;
+        return;
+    }
+
     match value {
         Value::Null => {}
         Value::String(value) => {
-            collect_string_candidates(provenance, field_path, value, candidates);
+            collect_string_candidates(
+                provenance,
+                field_path,
+                value,
+                depth,
+                max_json_depth,
+                depth_exhausted,
+                candidates,
+            );
         }
         Value::Bool(value) => push_observed_candidate(
             provenance,
@@ -501,23 +959,41 @@ fn collect_observed_candidates(
         }
         Value::Array(items) => {
             if !contains_sensitive_observed_path(field_path, value)
+                && !json_depth_exceeds(value, depth, max_json_depth)
                 && let Ok(display_value) = serde_json::to_string(value)
             {
                 push_observed_candidate(provenance, field_path, &display_value, candidates);
             }
             for item in items {
-                collect_observed_candidates(provenance, field_path, item, candidates);
+                collect_observed_candidates(
+                    provenance,
+                    field_path,
+                    item,
+                    depth.saturating_add(1),
+                    max_json_depth,
+                    depth_exhausted,
+                    candidates,
+                );
             }
         }
         Value::Object(object) => {
             if !contains_sensitive_observed_path(field_path, value)
+                && !json_depth_exceeds(value, depth, max_json_depth)
                 && let Ok(display_value) = serde_json::to_string(value)
             {
                 push_observed_candidate(provenance, field_path, &display_value, candidates);
             }
             for (key, value) in object {
                 let child_path = observed_field_path(field_path, key);
-                collect_observed_candidates(provenance, &child_path, value, candidates);
+                collect_observed_candidates(
+                    provenance,
+                    &child_path,
+                    value,
+                    depth.saturating_add(1),
+                    max_json_depth,
+                    depth_exhausted,
+                    candidates,
+                );
             }
         }
     }
@@ -527,6 +1003,9 @@ fn collect_string_candidates(
     provenance: &FieldProvenance,
     field_path: &str,
     value: &str,
+    depth: usize,
+    max_json_depth: usize,
+    depth_exhausted: &mut bool,
     candidates: &mut BTreeMap<(String, String), ObservedCandidateValue>,
 ) {
     let trimmed = value.trim();
@@ -541,19 +1020,35 @@ fn collect_string_candidates(
     let raw_contains_sensitive_child = parsed_json
         .as_ref()
         .is_some_and(|value| contains_sensitive_observed_path(field_path, value))
+        || contains_sensitive_raw_value(trimmed)
         || key_value_pairs
             .iter()
             .any(|pair| is_sensitive_column(&observed_field_path(field_path, &pair.key)));
+    let raw_exceeds_json_depth = parsed_json
+        .as_ref()
+        .is_some_and(|value| json_depth_exceeds(value, depth, max_json_depth));
 
-    if !raw_contains_sensitive_child {
+    if !raw_contains_sensitive_child && !raw_exceeds_json_depth {
         push_observed_candidate(provenance, field_path, trimmed, candidates);
     }
 
     if let Some(parsed) = parsed_json {
-        collect_observed_candidates(provenance, field_path, &parsed, candidates);
+        collect_observed_candidates(
+            provenance,
+            field_path,
+            &parsed,
+            depth,
+            max_json_depth,
+            depth_exhausted,
+            candidates,
+        );
     }
 
     for pair in key_value_pairs {
+        if depth.saturating_add(1) > max_json_depth {
+            *depth_exhausted = true;
+            break;
+        }
         let child_path = observed_field_path(field_path, &pair.key);
         push_observed_candidate(provenance, &child_path, &pair.value, candidates);
     }
@@ -575,14 +1070,21 @@ fn push_observed_candidate(
     }
 
     let normalized_value_key = normalized_value_key(display_value);
-    candidates
-        .entry((field_path.to_string(), normalized_value_key.clone()))
-        .or_insert_with(|| ObservedCandidateValue {
+    let key = (field_path.to_string(), normalized_value_key.clone());
+    if candidates.contains_key(&key) {
+        return;
+    }
+
+    let searchable_text = observed_searchable_text(provenance, field_path, display_value);
+    candidates.insert(
+        key,
+        ObservedCandidateValue {
             field_path: field_path.to_string(),
             display_value: display_value.to_string(),
-            searchable_text: observed_searchable_text(provenance, field_path, display_value),
+            searchable_text,
             normalized_value_key,
-        });
+        },
+    );
 }
 
 fn observed_searchable_text(
@@ -622,6 +1124,47 @@ fn contains_sensitive_observed_path(field_path: &str, value: &Value) -> bool {
             .any(|item| contains_sensitive_observed_path(field_path, item)),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
     }
+}
+
+fn json_depth_exceeds(value: &Value, depth: usize, max_depth: usize) -> bool {
+    if depth > max_depth {
+        return true;
+    }
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .any(|item| json_depth_exceeds(item, depth.saturating_add(1), max_depth)),
+        Value::Object(object) => object
+            .values()
+            .any(|child| json_depth_exceeds(child, depth.saturating_add(1), max_depth)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
+}
+
+fn contains_sensitive_raw_value(value: &str) -> bool {
+    contains_sensitive_assignment_key(value) || starts_with_credential_scheme(value)
+}
+
+fn contains_sensitive_assignment_key(value: &str) -> bool {
+    value
+        .char_indices()
+        .filter(|(_index, character)| matches!(character, ':' | '='))
+        .filter_map(|(separator_index, _separator)| {
+            sensitive_key_before_separator(value, separator_index)
+        })
+        .any(is_sensitive_column)
+}
+
+fn sensitive_key_before_separator(value: &str, separator_index: usize) -> Option<&str> {
+    value
+        .get(..separator_index)?
+        .rsplit(|character: char| !is_key_char(character))
+        .find(|part| !part.is_empty() && is_key_candidate(part))
+}
+
+fn starts_with_credential_scheme(value: &str) -> bool {
+    let lower = value.trim_start().to_ascii_lowercase();
+    lower.starts_with("bearer ") || lower.starts_with("basic ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -763,21 +1306,45 @@ struct ObservedValueRecordKey {
 
 fn is_sensitive_column(column_name: &str) -> bool {
     let normalized = normalize_identifier(column_name);
+    let compact = normalized.replace('_', "");
     [
         "api_key",
         "apikey",
+        "access_key",
+        "accesskey",
         "auth",
         "authorization",
+        "card_number",
+        "card_num",
+        "client_secret",
         "cookie",
+        "credit_card",
+        "cvc",
+        "cvv",
+        "debit_card",
+        "credential",
+        "credentials",
+        "drivers_license",
+        "id_token",
         "password",
+        "passport_number",
         "private_key",
         "refresh_token",
         "secret",
         "session",
+        "set_cookie",
+        "social_security",
+        "social_security_number",
+        "ssn",
+        "tax_id",
+        "tax_identification_number",
+        "taxpayer_id",
+        "tin_number",
         "token",
+        "x_api_key",
     ]
     .into_iter()
-    .any(|needle| normalized.contains(needle))
+    .any(|needle| normalized.contains(needle) || compact.contains(&needle.replace('_', "")))
 }
 
 fn same_identifier(left: &str, right: &str) -> bool {
@@ -785,7 +1352,33 @@ fn same_identifier(left: &str, right: &str) -> bool {
 }
 
 fn normalize_identifier(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
+    let mut normalized = String::new();
+    let mut previous_was_separator = true;
+    let mut previous_was_lower_or_digit = false;
+
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase()
+                && previous_was_lower_or_digit
+                && !previous_was_separator
+                && !normalized.ends_with('_')
+            {
+                normalized.push('_');
+            }
+            normalized.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+            previous_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else if !normalized.is_empty() && !normalized.ends_with('_') {
+            normalized.push('_');
+            previous_was_separator = true;
+            previous_was_lower_or_digit = false;
+        } else {
+            previous_was_separator = true;
+            previous_was_lower_or_digit = false;
+        }
+    }
+
+    normalized.trim_matches('_').to_string()
 }
 
 #[cfg(test)]
@@ -816,6 +1409,7 @@ mod tests {
             Field::new("payload", DataType::Utf8, true),
             Field::new("tags", DataType::Utf8, true),
             Field::new("api_token", DataType::Utf8, true),
+            Field::new("privateKey", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -826,7 +1420,7 @@ mod tests {
                     "very long incident body with retry budget exhausted and deploy rollback context",
                 ])),
                 Arc::new(StringArray::from(vec![
-                    r#"{"error":"timeout","region":"us-east-1","api_token":"nested-secret"}"#,
+                    r#"{"error":"timeout","region":"us-east-1","api_token":"nested-secret","privateKey":"nested-private-key","private-key":"nested-hyphen-private-key"}"#,
                     r#"{"error":"deploy_failed","sha":"abc123"}"#,
                 ])),
                 Arc::new(StringArray::from(vec![
@@ -834,19 +1428,24 @@ mod tests {
                     "env=prod service=billing-worker status=error",
                 ])),
                 Arc::new(StringArray::from(vec!["secret-token", "another-secret"])),
+                Arc::new(StringArray::from(vec![
+                    "direct-private-key",
+                    "another-direct-private-key",
+                ])),
             ],
         )
         .expect("batch");
 
         indexer
             .observe_result(
-                "SELECT service, body, payload, tags, api_token FROM fixture.messages",
+                "SELECT service, body, payload, tags, api_token, privateKey FROM fixture.messages",
                 &schema,
                 &[batch],
             )
             .expect("observer does not fail SQL");
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
         let hits = store
             .search_observed_values(&workspace, &["deploy_failed".to_string()], 10)
             .expect("search observed");
@@ -882,6 +1481,190 @@ mod tests {
             .search_observed_values(&workspace, &["nested-secret".to_string()], 10)
             .expect("search nested sensitive");
         assert!(hits.is_empty());
+
+        let hits = store
+            .search_observed_values(&workspace, &["direct-private-key".to_string()], 10)
+            .expect("search camel-case sensitive");
+        assert!(hits.is_empty());
+
+        let hits = store
+            .search_observed_values(&workspace, &["nested-private-key".to_string()], 10)
+            .expect("search nested camel-case sensitive");
+        assert!(hits.is_empty());
+
+        let hits = store
+            .search_observed_values(&workspace, &["nested-hyphen-private-key".to_string()], 10)
+            .expect("search nested hyphenated sensitive");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn skips_obvious_pii_and_payment_columns() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = query_source("fixture");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ssn", DataType::Utf8, true),
+            Field::new("social_security_number", DataType::Utf8, true),
+            Field::new("credit_card", DataType::Utf8, true),
+            Field::new("card_number", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["123-45-6789"])),
+                Arc::new(StringArray::from(vec!["987-65-4321"])),
+                Arc::new(StringArray::from(vec!["4111111111111111"])),
+                Arc::new(StringArray::from(vec!["5555555555554444"])),
+            ],
+        )
+        .expect("batch");
+
+        indexer
+            .observe_result(
+                "SELECT ssn, social_security_number, credit_card, card_number FROM fixture.messages",
+                &schema,
+                &[batch],
+            )
+            .expect("observer does not fail SQL");
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        for sensitive_value in [
+            "123-45-6789",
+            "987-65-4321",
+            "4111111111111111",
+            "5555555555554444",
+        ] {
+            assert!(
+                store
+                    .search_observed_values(&workspace, &[sensitive_value.to_string()], 10)
+                    .expect("search sensitive value")
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn skips_raw_credential_strings_in_non_sensitive_columns() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = query_source("fixture");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("http_response", DataType::Utf8, true),
+            Field::new("params", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec![
+                    "Authorization: Bearer header-secret-token",
+                    "status=ok latency_ms=12",
+                ])),
+                Arc::new(StringArray::from(vec![
+                    "access_key=raw-access-key region=us-east-1",
+                    "region=us-east-1 status=ok",
+                ])),
+            ],
+        )
+        .expect("batch");
+
+        indexer
+            .observe_result(
+                "SELECT http_response, params FROM fixture.messages",
+                &schema,
+                &[batch],
+            )
+            .expect("observer does not fail SQL");
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        let hits = store
+            .search_observed_values(&workspace, &["header-secret-token".to_string()], 10)
+            .expect("search raw header secret");
+        assert!(hits.is_empty());
+
+        let hits = store
+            .search_observed_values(&workspace, &["raw-access-key".to_string()], 10)
+            .expect("search raw access key");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn indexes_aliased_direct_projection_values() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = query_source("fixture");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec!["payments-api"]))],
+        )
+        .expect("batch");
+
+        indexer
+            .observe_result(
+                "SELECT msg.service FROM fixture.messages AS msg",
+                &schema,
+                &[batch],
+            )
+            .expect("observer does not fail SQL");
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        let hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search observed");
+        assert!(hits.iter().any(|hit| hit.column_name == "service"));
+    }
+
+    #[test]
+    fn skips_observation_when_source_generation_changes_before_enqueue() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = query_source("fixture");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec!["payments-api"]))],
+        )
+        .expect("batch");
+
+        mark_observed_source_generation(
+            &layout,
+            &workspace,
+            &SourceName::parse("fixture").expect("source"),
+        )
+        .expect("mark source generation");
+        indexer
+            .observe_result("SELECT service FROM fixture.messages", &schema, &[batch])
+            .expect("observer does not fail SQL");
+
+        assert!(
+            SearchIndexStore::open_existing_workspace(&layout, &workspace)
+                .expect("open existing search index")
+                .is_none()
+        );
     }
 
     #[test]
@@ -912,6 +1695,42 @@ mod tests {
             .expect("observer does not fail SQL");
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        let hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search observed");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn skips_cte_queries_to_avoid_derived_value_misattribution() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = query_source("fixture");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec!["payments-api"]))],
+        )
+        .expect("batch");
+
+        indexer
+            .observe_result(
+                "WITH messages AS (SELECT 'payments-api' AS service) SELECT service FROM messages",
+                &schema,
+                &[batch],
+            )
+            .expect("observer does not fail SQL");
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
         let hits = store
             .search_observed_values(&workspace, &["payments-api".to_string()], 10)
             .expect("search observed");
@@ -946,6 +1765,7 @@ mod tests {
             .expect("observer does not fail SQL");
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
         let hits = store
             .search_observed_values(&workspace, &["payments-api".to_string()], 10)
             .expect("search observed");
@@ -957,6 +1777,201 @@ mod tests {
                 .expect("observed count"),
             3
         );
+    }
+
+    #[test]
+    fn clears_catalog_fingerprint_when_building_search_index() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = query_source("fixture");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec!["payments-api"]))],
+        )
+        .expect("batch");
+        let fingerprint_path = layout
+            .search_dir(&workspace)
+            .join(CATALOG_FINGERPRINT_FILE_NAME);
+        fs::create_dir_all(fingerprint_path.parent().expect("fingerprint parent"))
+            .expect("search dir");
+        fs::write(&fingerprint_path, "stale-fingerprint\n").expect("fingerprint");
+
+        indexer
+            .observe_result("SELECT service FROM fixture.messages", &schema, &[batch])
+            .expect("observer does not fail SQL");
+
+        assert!(!fingerprint_path.exists());
+        let store = SearchIndexStore::open_existing_workspace(&layout, &workspace)
+            .expect("open existing search index")
+            .expect("search index exists");
+        drain_observed_queue(&store);
+        let hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search observed");
+        assert!(hits.iter().any(|hit| hit.column_name == "service"));
+    }
+
+    #[test]
+    fn observed_queue_foreground_drain_budget_loads_search_config() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        std::fs::write(
+            layout.config_file(),
+            r"
+version = 1
+
+[search]
+observed_queue_foreground_drain_ms = 250
+observed_max_storage_mb = 12
+observed_collection_max_candidates = 3
+observed_collection_max_candidate_bytes = 42
+observed_collection_max_json_depth = 2
+",
+        )
+        .expect("write config");
+
+        assert_eq!(
+            observed_queue_foreground_drain_budget(&layout),
+            StdDuration::from_millis(250)
+        );
+        assert_eq!(observed_storage_budget_bytes(&layout), 12 * BYTES_PER_MIB);
+
+        let config = observed_search_config_or_default(&layout);
+        assert_eq!(
+            observed_collection_budget_from_config(&config.search),
+            ObservedCollectionBudget {
+                candidates: 3,
+                candidate_bytes: 42,
+                json_depth: 2
+            }
+        );
+    }
+
+    #[test]
+    fn observed_collection_candidate_budget_flushes_overflow_to_queue() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        std::fs::write(
+            layout.config_file(),
+            r"
+version = 1
+
+[search]
+observed_collection_max_candidates = 1
+",
+        )
+        .expect("write config");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = query_source("fixture");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec![
+                "budget-first",
+                "budget-second",
+            ]))],
+        )
+        .expect("batch");
+
+        indexer
+            .observe_result("SELECT service FROM fixture.messages", &schema, &[batch])
+            .expect("observer does not fail SQL");
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["budget-first".to_string()], 10)
+                .expect("search first")
+                .is_empty()
+        );
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["budget-second".to_string()], 10)
+                .expect("search second")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn observed_collection_depth_budget_does_not_index_deep_json_via_container() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        std::fs::write(
+            layout.config_file(),
+            r"
+version = 1
+
+[search]
+observed_collection_max_json_depth = 1
+",
+        )
+        .expect("write config");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = query_source("fixture");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "payload",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec![
+                r#"{"top":"budget-top","outer":{"inner":"budget-deep"}}"#,
+            ]))],
+        )
+        .expect("batch");
+
+        indexer
+            .observe_result("SELECT payload FROM fixture.messages", &schema, &[batch])
+            .expect("observer does not fail SQL");
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["budget-top".to_string()], 10)
+                .expect("search top value")
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_observed_values(&workspace, &["budget-deep".to_string()], 10)
+                .expect("search deep value")
+                .is_empty()
+        );
+    }
+
+    fn drain_observed_queue(store: &SearchIndexStore) {
+        for _attempt in 0..16 {
+            let drain = store
+                .drain_observed_value_queue_for(StdDuration::from_secs(1))
+                .expect("drain observed queue");
+            if drain.pending_jobs == 0 {
+                return;
+            }
+        }
+        panic!("observed queue still has pending jobs after test drain attempts");
     }
 
     fn query_source(name: &str) -> QuerySource {
@@ -978,7 +1993,14 @@ mod tests {
                     {"name": "body", "type": "Utf8"},
                     {"name": "payload", "type": "Utf8"},
                     {"name": "tags", "type": "Utf8"},
-                    {"name": "api_token", "type": "Utf8"}
+                    {"name": "http_response", "type": "Utf8"},
+                    {"name": "params", "type": "Utf8"},
+                    {"name": "api_token", "type": "Utf8"},
+                    {"name": "privateKey", "type": "Utf8"},
+                    {"name": "ssn", "type": "Utf8"},
+                    {"name": "social_security_number", "type": "Utf8"},
+                    {"name": "credit_card", "type": "Utf8"},
+                    {"name": "card_number", "type": "Utf8"}
                 ]
             }]
         }))
