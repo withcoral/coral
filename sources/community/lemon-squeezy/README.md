@@ -228,7 +228,7 @@ SELECT
   o.user_email,
   o.total_formatted,
   o.status,
-  o.refunded_amount,
+  o.refunded_amount_formatted,
   o.refunded_at,
   i.identifier                  AS linear_issue,
   i.title                       AS issue_title
