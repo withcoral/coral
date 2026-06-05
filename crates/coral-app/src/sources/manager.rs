@@ -1511,6 +1511,38 @@ components:
 "
     }
 
+    fn v4_openapi_fixture_with_defaulted_input_server_url() -> &'static str {
+        r#"
+openapi: 3.0.3
+servers:
+  - url: "{apiBase}"
+    variables:
+      apiBase:
+        default: "{{input.API_BASE|https://fallback.example.com}}"
+paths:
+  /repos/{owner}/{repo}/issues:
+    get:
+      operationId: issues/list-for-repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/issue'}
+components:
+  schemas:
+    issue:
+      type: object
+      properties:
+        id: {type: integer}
+        title: {type: string}
+"#
+    }
+
     fn manifest_v4_with_file_descriptor(openapi_file: &std::path::Path) -> String {
         format!(
             r#"
@@ -1526,6 +1558,24 @@ surfaces:
         default: http://127.0.0.1:1
     base_url: "{{{{input.API_BASE}}}}"
 "#,
+            openapi_file.display()
+        )
+    }
+
+    fn manifest_v4_with_input_and_derived_base_url(openapi_file: &std::path::Path) -> String {
+        format!(
+            r"
+name: github_v4_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    inputs:
+      API_BASE:
+        kind: variable
+        default: https://api.example.com
+",
             openapi_file.display()
         )
     }
@@ -1710,6 +1760,51 @@ tables:
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
+    }
+
+    #[test]
+    fn import_v4_source_rejects_derived_base_url_input_token_defaults() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            v4_openapi_fixture_with_defaulted_input_server_url(),
+        )
+        .expect("write fixture");
+        let manager = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout.clone(),
+        );
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_input_and_derived_base_url(&openapi_file),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("source add should reject derived base_url input token defaults");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("derived OpenAPI server base_url input token"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !layout
+                .v4_materialized_dir(
+                    &default_workspace(),
+                    &SourceName::parse("github_v4_test").expect("source")
+                )
+                .exists(),
+            "failed materialization should not install artifacts"
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::v4::{
     ProjectionKind, ProjectionVisibility, V4MaterializedSource, V4SourceManifest,
     openapi_document_metadata, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection,
+    projection_filter_specs, request_spec_for_projection, validate_openapi_base_url_template,
 };
 use coral_spec::{ParsedTemplate, SourceManifestCommon, SourceTableFunctionSpec, TableCommon};
 
@@ -139,7 +139,7 @@ fn http_manifest_for_surface(
             description: manifest.common.description.clone(),
             test_queries: Vec::new(),
         },
-        base_url: surface_base_url(surface, materialized_surface)?,
+        base_url: surface_base_url(manifest, surface, materialized_surface)?,
         auth: surface.openapi_runtime.auth.clone(),
         request_headers: surface.openapi_runtime.request_headers.clone(),
         rate_limit: surface.openapi_runtime.rate_limit.clone(),
@@ -150,11 +150,14 @@ fn http_manifest_for_surface(
 }
 
 fn surface_base_url(
+    manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     materialized_surface: &coral_spec::v4::MaterializedSurface,
 ) -> Result<ParsedTemplate, AppError> {
     if !surface.openapi_runtime.base_url.raw().trim().is_empty() {
-        return Ok(surface.openapi_runtime.base_url.clone());
+        let base_url = surface.openapi_runtime.base_url.clone();
+        validate_surface_base_url_template(manifest, surface, &base_url, "authored")?;
+        return Ok(base_url);
     }
     let bytes = std::fs::read(&materialized_surface.raw_source_document_path).map_err(|error| {
         AppError::FailedPrecondition(format!(
@@ -174,10 +177,122 @@ fn surface_base_url(
             surface.id
         ))
     })?;
-    ParsedTemplate::parse(server_url).map_err(|error| {
+    let base_url = ParsedTemplate::parse(server_url).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to parse derived base_url for DSL v4 surface '{}': {error}",
             surface.id
         ))
-    })
+    })?;
+    validate_surface_base_url_template(manifest, surface, &base_url, "derived OpenAPI server")?;
+    Ok(base_url)
+}
+
+fn validate_surface_base_url_template(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    base_url: &ParsedTemplate,
+    provenance: &str,
+) -> Result<(), AppError> {
+    validate_openapi_base_url_template(
+        &manifest.common.name,
+        &surface.id,
+        &surface.inputs,
+        base_url,
+        provenance,
+    )
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
+    use coral_spec::v4::{
+        MaterializedSurface, OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig, SemanticIr,
+        SurfaceDescriptor, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceCommon,
+        V4SourceManifest, V4Surface,
+    };
+
+    use super::surface_base_url;
+
+    fn surface_without_authored_base_url() -> V4Surface {
+        V4Surface {
+            id: "rest".to_string(),
+            surface_type: SurfaceType::OpenApi,
+            descriptor: SurfaceDescriptor::File {
+                file: PathBuf::from("/tmp/openapi.yaml"),
+            },
+            inputs: Vec::new(),
+            openapi_runtime: OpenApiRuntimeConfig {
+                base_url: coral_spec::ParsedTemplate::parse("").expect("empty template"),
+                auth: AuthSpec::default(),
+                request_headers: Vec::new(),
+                rate_limit: RateLimitSpec::default(),
+            },
+        }
+    }
+
+    fn manifest_with_surface(surface: V4Surface) -> V4SourceManifest {
+        V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "demo".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            declared_inputs: surface.inputs.clone(),
+            surfaces: vec![surface],
+        }
+    }
+
+    fn materialized_surface(raw_source_document_path: PathBuf) -> MaterializedSurface {
+        MaterializedSurface {
+            surface_id: "rest".to_string(),
+            semantic_ir: SemanticIr {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                surface_id: "rest".to_string(),
+                surface_type: SurfaceType::OpenApi,
+                importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+                operations: Vec::new(),
+                types: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            source_document_sha256: String::new(),
+            normalized_source_document_path: raw_source_document_path.clone(),
+            raw_source_document_path,
+        }
+    }
+
+    #[test]
+    fn derived_openapi_server_url_rejects_runtime_controlled_tokens() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let openapi = temp.path().join("openapi.yaml");
+        std::fs::write(
+            &openapi,
+            r#"
+openapi: 3.0.3
+servers:
+  - url: https://{host}
+    variables:
+      host:
+        default: "{{filter.host}}"
+paths: {}
+"#,
+        )
+        .expect("write openapi");
+
+        let surface = surface_without_authored_base_url();
+        let manifest = manifest_with_surface(surface.clone());
+        let error = surface_base_url(&manifest, &surface, &materialized_surface(openapi))
+            .expect_err("runtime token should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("base_url may only reference source inputs"),
+            "unexpected error: {error}"
+        );
+    }
 }
