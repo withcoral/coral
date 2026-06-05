@@ -662,6 +662,7 @@ mod tests {
             description: String::new(),
             guide: String::new(),
             columns: vec![],
+            filters: vec![],
             required_filters: vec![],
         }
     }

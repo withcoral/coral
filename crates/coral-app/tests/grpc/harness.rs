@@ -366,6 +366,36 @@ pub(crate) fn fixture_manifest_with_column_preview_yaml() -> String {
     }))
 }
 
+pub(crate) fn fixture_manifest_with_many_matching_columns_yaml() -> String {
+    let columns = (0..60)
+        .map(|index| {
+            json!({
+                "name": format!("needle_column_{index}"),
+                "type": "Utf8",
+                "description": "Needle column",
+            })
+        })
+        .collect::<Vec<_>>();
+
+    manifest_yaml(&json!({
+        "name": "many_columns",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.com",
+        "tables": [{
+            "name": "records",
+            "description": "Many matching columns",
+            "request": {
+                "method": "GET",
+                "path": "/records",
+            },
+            "response": {},
+            "columns": columns,
+        }],
+    }))
+}
+
 pub(crate) fn fixture_manifest_with_canonical_table_ranking_yaml() -> String {
     manifest_yaml(&json!({
         "name": "github",

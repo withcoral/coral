@@ -19,6 +19,21 @@ pub struct ColumnInfo {
     pub ordinal_position: u32,
 }
 
+/// Describes one query-visible table filter.
+#[derive(Debug, Clone)]
+pub struct TableFilterInfo {
+    /// Filter name as constrained in SQL.
+    pub name: String,
+    /// Matching mode declared by the source.
+    pub mode: String,
+    /// Whether callers must constrain this filter before querying the table.
+    pub required: bool,
+    /// Data type accepted by the filter.
+    pub data_type: String,
+    /// User-facing filter description.
+    pub description: String,
+}
+
 /// Describes one queryable table.
 #[derive(Debug, Clone)]
 pub struct TableInfo {
@@ -32,6 +47,8 @@ pub struct TableInfo {
     pub guide: String,
     /// Exposed columns for the table.
     pub columns: Vec<ColumnInfo>,
+    /// Filters accepted by the table.
+    pub filters: Vec<TableFilterInfo>,
     /// Required filter names for the table.
     pub required_filters: Vec<String>,
 }

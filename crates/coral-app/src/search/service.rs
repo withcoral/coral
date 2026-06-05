@@ -14,7 +14,7 @@ use coral_api::v1::{
     SearchTableColumnPreviewColumn,
 };
 use coral_engine::{
-    CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+    CatalogInfo, ColumnInfo, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
 };
 use sha2::{Digest as _, Sha256};
@@ -132,7 +132,7 @@ impl SearchIndexRefresher {
         fingerprint: &str,
     ) -> Result<bool, SearchIndexError> {
         if self.read_catalog_dirty_marker(workspace_name)?.is_some()
-            || !SearchIndexStore::workspace_index_is_usable(&self.layout, workspace_name)?
+            || !SearchIndexStore::workspace_index_is_usable(&self.layout, workspace_name)
         {
             return Ok(false);
         }
@@ -260,7 +260,7 @@ impl UniversalSearch {
 
         let total_count = candidates.len();
         let max_results = usize::try_from(limit).unwrap_or(usize::MAX);
-        let truncated = total_count > max_results || catalog_status.has_more;
+        let truncated = total_count > max_results;
         let results = candidates
             .into_iter()
             .take(max_results)
@@ -285,7 +285,7 @@ impl UniversalSearch {
                 truncated,
                 returned_count,
                 max_results: limit,
-                note: truncation_note(truncated, total_count, max_results, catalog_status.has_more),
+                note: truncation_note(truncated, total_count, max_results),
             }),
         })
     }
@@ -326,27 +326,21 @@ impl UniversalSearch {
             terms,
             page.hits,
         ));
-        let state = if candidates.is_empty() {
+        let state = if page.has_more {
+            SearchProviderState::Partial
+        } else if candidates.is_empty() {
             SearchProviderState::Empty
         } else {
             SearchProviderState::ResultsFound
         };
         let note = catalog_provider_note(state, candidates.len(), page.has_more);
-        (
-            candidates,
-            CatalogProviderStatus {
-                state,
-                note,
-                has_more: page.has_more,
-            },
-        )
+        (candidates, CatalogProviderStatus { state, note })
     }
 }
 
 struct CatalogProviderStatus {
     state: SearchProviderState,
     note: String,
-    has_more: bool,
 }
 
 #[derive(Clone)]
@@ -489,6 +483,13 @@ fn hash_table(hasher: &mut Sha256, table: &TableInfo) {
         hash_column(hasher, column);
     }
 
+    let mut filters = table.filters.iter().collect::<Vec<_>>();
+    filters.sort_by(|left, right| left.name.cmp(&right.name));
+    hash_usize(hasher, filters.len());
+    for filter in filters {
+        hash_table_filter(hasher, filter);
+    }
+
     let mut required_filters = table.required_filters.iter().collect::<Vec<_>>();
     required_filters.sort();
     hash_usize(hasher, required_filters.len());
@@ -506,6 +507,15 @@ fn hash_column(hasher: &mut Sha256, column: &ColumnInfo) {
     hash_bool(hasher, column.is_required_filter);
     hash_str(hasher, &column.description);
     hash_u32(hasher, column.ordinal_position);
+}
+
+fn hash_table_filter(hasher: &mut Sha256, filter: &TableFilterInfo) {
+    hash_str(hasher, "filter");
+    hash_str(hasher, &filter.name);
+    hash_str(hasher, &filter.mode);
+    hash_bool(hasher, filter.required);
+    hash_str(hasher, &filter.data_type);
+    hash_str(hasher, &filter.description);
 }
 
 fn hash_table_function(hasher: &mut Sha256, function: &TableFunctionInfo) {
@@ -600,19 +610,19 @@ fn catalog_candidates_from_hits(
     for hit in hits {
         match hit.result_type {
             Some(CatalogSearchResultType::CatalogTable) => {
-                if let Some(table) = find_table(catalog, &hit.schema_name, &hit.surface_name) {
-                    candidates.push(catalog_table_candidate(workspace_name, table, hit, terms));
+                if let Some(table) = find_table(catalog, &hit.schema_name, &hit.surface_name)
+                    && let Some(candidate) =
+                        catalog_table_candidate(workspace_name, table, hit, terms)
+                {
+                    candidates.push(candidate);
                 }
             }
             Some(CatalogSearchResultType::CatalogTableFunction) => {
                 if let Some(function) = find_function(catalog, &hit.schema_name, &hit.surface_name)
+                    && let Some(candidate) =
+                        catalog_function_candidate(workspace_name, function, hit, terms)
                 {
-                    candidates.push(catalog_function_candidate(
-                        workspace_name,
-                        function,
-                        hit,
-                        terms,
-                    ));
+                    candidates.push(candidate);
                 }
             }
             Some(CatalogSearchResultType::ColumnHint) => {
@@ -654,12 +664,14 @@ fn catalog_candidates_from_hits(
                     && function.kind == "search"
                 {
                     let score = catalog_hit_score(&hit, terms);
-                    candidates.push(native_search_path_candidate(
+                    if let Some(candidate) = native_search_path_candidate(
                         workspace_name,
                         function,
                         hit.matched_fields,
                         score,
-                    ));
+                    ) {
+                        candidates.push(candidate);
+                    }
                 }
             }
             None => {}
@@ -674,26 +686,38 @@ fn catalog_table_candidate(
     table: &TableInfo,
     hit: CatalogSearchHit,
     terms: &QueryTerms,
-) -> Candidate {
+) -> Option<Candidate> {
     let score = catalog_hit_score(&hit, terms);
     let matched_fields = table_matched_fields(table, &hit, terms);
     let table_column_preview = table_column_preview(table, terms);
-    Candidate {
+    let item = match catalog_item_to_proto(
+        workspace_name,
+        crate::catalog::discovery::CatalogItem::Table(table_summary(table)),
+    ) {
+        Ok(item) => item,
+        Err(status) => {
+            tracing::warn!(
+                schema = %table.schema_name,
+                table = %table.table_name,
+                error = %status.message(),
+                "skipping catalog table search result with invalid metadata"
+            );
+            return None;
+        }
+    };
+    Some(Candidate {
         key: hit.entity_key,
         score,
         type_order: 1,
         result: SearchResult {
             provider: SearchProvider::CatalogMetadata as i32,
             payload: Some(Payload::CatalogMetadata(CatalogMetadata {
-                item: Some(catalog_item_to_proto(
-                    workspace_name,
-                    crate::catalog::discovery::CatalogItem::Table(table_summary(table)),
-                )),
+                item: Some(item),
                 matched_fields,
                 table_column_preview: Some(table_column_preview),
             })),
         },
-    }
+    })
 }
 
 fn catalog_function_candidate(
@@ -701,24 +725,36 @@ fn catalog_function_candidate(
     function: &TableFunctionInfo,
     hit: CatalogSearchHit,
     terms: &QueryTerms,
-) -> Candidate {
+) -> Option<Candidate> {
     let score = catalog_hit_score(&hit, terms);
-    Candidate {
+    let item = match catalog_item_to_proto(
+        workspace_name,
+        crate::catalog::discovery::CatalogItem::TableFunction(function.clone()),
+    ) {
+        Ok(item) => item,
+        Err(status) => {
+            tracing::warn!(
+                schema = %function.schema_name,
+                table_function = %function.function_name,
+                error = %status.message(),
+                "skipping catalog table-function search result with invalid metadata"
+            );
+            return None;
+        }
+    };
+    Some(Candidate {
         key: hit.entity_key,
         score,
         type_order: 1,
         result: SearchResult {
             provider: SearchProvider::CatalogMetadata as i32,
             payload: Some(Payload::CatalogMetadata(CatalogMetadata {
-                item: Some(catalog_item_to_proto(
-                    workspace_name,
-                    crate::catalog::discovery::CatalogItem::TableFunction(function.clone()),
-                )),
+                item: Some(item),
                 matched_fields: hit.matched_fields,
                 table_column_preview: None,
             })),
         },
-    }
+    })
 }
 
 fn catalog_hit_score(hit: &CatalogSearchHit, terms: &QueryTerms) -> u32 {
@@ -814,6 +850,12 @@ fn table_matched_fields(
 ) -> Vec<String> {
     let mut fields = hit.matched_fields.clone();
     if table
+        .filters
+        .iter()
+        .any(|filter| !filter_matched_fields(filter, terms).is_empty())
+    {
+        fields.push("filters".to_string());
+    } else if table
         .required_filters
         .iter()
         .any(|filter| value_matches_terms(filter, terms))
@@ -894,6 +936,21 @@ fn column_is_required_filter(table: &TableInfo, column: &ColumnInfo) -> bool {
             .required_filters
             .iter()
             .any(|filter| filter == &column.name)
+}
+
+fn filter_matched_fields(filter: &TableFilterInfo, terms: &QueryTerms) -> Vec<String> {
+    let mut fields = [
+        ("name", filter.name.as_str()),
+        ("mode", filter.mode.as_str()),
+        ("data_type", filter.data_type.as_str()),
+        ("description", filter.description.as_str()),
+    ]
+    .into_iter()
+    .filter_map(|(field, value)| value_matches_terms(value, terms).then_some(field.to_string()))
+    .collect::<Vec<_>>();
+    fields.sort();
+    fields.dedup();
+    fields
 }
 
 fn column_matched_fields(column: &ColumnInfo, terms: &QueryTerms) -> Vec<String> {
@@ -1003,8 +1060,9 @@ impl CatalogSearchFieldRole {
 fn column_hint_candidate(input: ColumnHintCandidate<'_>, score: u32) -> Candidate {
     Candidate {
         key: format!(
-            "column:{}:{}.{}:{}",
+            "column:{}:{}:{}.{}:{}",
             input.surface_kind.as_str_name(),
+            input.field_role.as_str_name(),
             input.schema_name,
             input.surface_name,
             input.name
@@ -1034,8 +1092,20 @@ fn native_search_path_candidate(
     function: &TableFunctionInfo,
     matched_fields: Vec<String>,
     score: u32,
-) -> Candidate {
-    Candidate {
+) -> Option<Candidate> {
+    let table_function = match table_function_to_proto(workspace_name, function.clone()) {
+        Ok(table_function) => table_function,
+        Err(status) => {
+            tracing::warn!(
+                schema = %function.schema_name,
+                table_function = %function.function_name,
+                error = %status.message(),
+                "skipping native search path with invalid metadata"
+            );
+            return None;
+        }
+    };
+    Some(Candidate {
         key: format!(
             "native_search:{}.{}",
             function.schema_name, function.function_name
@@ -1045,12 +1115,12 @@ fn native_search_path_candidate(
         result: SearchResult {
             provider: SearchProvider::CatalogMetadata as i32,
             payload: Some(Payload::NativeSearchPath(NativeSearchPath {
-                table_function: Some(table_function_to_proto(workspace_name, function.clone())),
+                table_function: Some(table_function),
                 sql_call_example: sql_call_example(function),
                 matched_fields,
             })),
         },
-    }
+    })
 }
 
 fn table_summary(table: &TableInfo) -> TableInfo {
@@ -1107,9 +1177,9 @@ fn find_function<'a>(
 
 fn catalog_provider_note(state: SearchProviderState, total_count: usize, has_more: bool) -> String {
     match state {
-        SearchProviderState::ResultsFound if has_more => {
+        SearchProviderState::Partial if has_more => {
             format!(
-                "Catalog metadata returned {total_count} candidate search hints; more matches exist beyond the retrieval window"
+                "Catalog metadata returned {total_count} candidate search hints from a bounded retrieval window; more index matches may exist"
             )
         }
         SearchProviderState::ResultsFound => {
@@ -1124,34 +1194,16 @@ fn catalog_index_error_status(error: &SearchIndexError) -> CatalogProviderStatus
     CatalogProviderStatus {
         state: SearchProviderState::Error,
         note: format!("Catalog metadata search index is unavailable: {error}"),
-        has_more: false,
     }
 }
 
-fn truncation_note(
-    truncated: bool,
-    total_count: usize,
-    max_results: usize,
-    backend_has_more: bool,
-) -> String {
+fn truncation_note(truncated: bool, total_count: usize, max_results: usize) -> String {
     if !truncated {
         return String::new();
     }
 
-    if total_count > max_results {
-        let visible_count = total_count.min(max_results);
-        if backend_has_more {
-            format!("Returned {visible_count} of at least {total_count} search hints")
-        } else {
-            format!("Returned {visible_count} of {total_count} search hints")
-        }
-    } else if backend_has_more {
-        format!(
-            "Returned {total_count} search hints; more matches exist beyond the retrieval window"
-        )
-    } else {
-        String::new()
-    }
+    let visible_count = total_count.min(max_results);
+    format!("Returned {visible_count} of {total_count} search hints")
 }
 
 #[cfg(test)]
@@ -1274,6 +1326,7 @@ mod tests {
                 description: description.to_string(),
                 guide: String::new(),
                 columns: Vec::new(),
+                filters: Vec::new(),
                 required_filters: Vec::new(),
             }],
             table_functions: Vec::new(),

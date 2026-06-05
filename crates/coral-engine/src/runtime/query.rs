@@ -512,6 +512,7 @@ fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
         description: table.description.clone(),
         guide: table.guide.clone(),
         columns: Vec::new(),
+        filters: table.filters.clone(),
         required_filters: table.required_filters.clone(),
     }
 }
@@ -552,6 +553,7 @@ mod tests {
                     description: "Event ID".to_string(),
                     ordinal_position: 0,
                 }],
+                filters: Vec::new(),
                 required_filters: vec!["owner".to_string()],
             }],
             table_functions: Vec::new(),

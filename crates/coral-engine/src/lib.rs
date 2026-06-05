@@ -70,7 +70,7 @@ pub use contracts::{
     DescribeTableInfo, EffectiveDependentJoinConfig, QueryExecution, QueryPlan, QueryRuntimeConfig,
     QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
     RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    StructuredQueryError, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
 };
 

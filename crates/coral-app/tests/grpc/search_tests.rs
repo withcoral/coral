@@ -18,7 +18,8 @@ use tonic::Request;
 use super::harness::{
     GrpcHarness, fixture_manifest_with_canonical_table_ranking_yaml,
     fixture_manifest_with_column_preview_yaml, fixture_manifest_with_functions_yaml,
-    fixture_manifest_with_inputs_yaml, source_dir,
+    fixture_manifest_with_inputs_yaml, fixture_manifest_with_many_matching_columns_yaml,
+    source_dir,
 };
 
 #[tokio::test]
@@ -37,7 +38,7 @@ async fn search_returns_typed_metadata_and_native_search_results() {
         .search(Request::new(SearchRequest {
             workspace: Some(default_workspace()),
             query: "issue search title".to_string(),
-            limit: 10,
+            limit: 50,
         }))
         .await
         .expect("search")
@@ -164,6 +165,38 @@ async fn search_catalog_metadata_includes_compact_table_column_preview() {
             .iter()
             .any(|field| field == "description")
     );
+}
+
+#[tokio::test]
+async fn search_marks_catalog_partial_without_response_truncation_for_raw_index_overflow() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_many_matching_columns_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "needle".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert_provider_state(
+        &response,
+        SearchProvider::CatalogMetadata,
+        SearchProviderState::Partial,
+    );
+    let truncation = response.truncation.expect("truncation");
+    assert!(!truncation.truncated);
+    assert!(response.results.len() <= 10);
 }
 
 #[tokio::test]
@@ -403,7 +436,10 @@ async fn source_mutations_mark_catalog_search_index_dirty() {
     assert!(total_catalog_entity_count(&harness) > 0);
 
     search(&harness, "task search title").await;
-    assert_eq!(total_catalog_entity_count(&harness), 0);
+    assert_eq!(catalog_entity_count(&harness, "placeholder"), 0);
+    assert_eq!(catalog_entity_count(&harness, "lookup_issue"), 0);
+    assert_eq!(catalog_entity_count(&harness, "search_issues"), 0);
+    assert_eq!(catalog_entity_count(&harness, "search_tasks"), 0);
 }
 
 async fn search(harness: &GrpcHarness, query: &str) {

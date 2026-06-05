@@ -17,8 +17,8 @@ use crate::backends::common::{
 use crate::backends::{RegisteredSource, RegisteredTableFunction};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
-    ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
-    TableInfo,
+    ColumnInfo, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// Schema name for source metadata tables such as `coral.tables`.
@@ -476,6 +476,7 @@ fn system_table_infos() -> Vec<TableInfo> {
                 })
                 .collect(),
             required_filters: Vec::new(),
+            filters: Vec::new(),
         })
         .collect()
 }
@@ -502,6 +503,17 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
                     is_required_filter: column.is_required_filter,
                     description: column.description.clone(),
                     ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
+                })
+                .collect(),
+            filters: table
+                .filters
+                .iter()
+                .map(|filter| TableFilterInfo {
+                    name: filter.name.clone(),
+                    mode: filter.mode.clone(),
+                    required: filter.required,
+                    data_type: filter.data_type.clone(),
+                    description: filter.description.clone(),
                 })
                 .collect(),
             required_filters: table.required_filters.clone(),

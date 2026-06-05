@@ -4,11 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_engine::{
-    CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+    CatalogInfo, ColumnInfo, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
 };
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value as _,
 };
@@ -62,7 +62,7 @@ impl SearchIndexStore {
     pub(crate) fn workspace_index_is_usable(
         layout: &AppStateLayout,
         workspace_name: &WorkspaceName,
-    ) -> Result<bool, SearchIndexError> {
+    ) -> bool {
         index_is_usable(&layout.search_index_dir(workspace_name))
     }
 
@@ -228,7 +228,7 @@ impl SearchIndexStore {
             clauses.push((Occur::Should, parsed_query));
         }
         clauses.extend(
-            self.short_exact_term_queries(terms)
+            self.exact_identifier_queries(terms)
                 .into_iter()
                 .map(|query| (Occur::Should, query)),
         );
@@ -239,27 +239,26 @@ impl SearchIndexStore {
         }
     }
 
-    fn short_exact_term_queries(&self, terms: &[String]) -> Vec<Box<dyn Query>> {
+    fn exact_identifier_queries(&self, terms: &[String]) -> Vec<Box<dyn Query>> {
         let fields = [
-            self.fields.schema_name,
-            self.fields.surface_name,
-            self.fields.name,
-            self.fields.data_type,
+            (self.fields.schema_name, 20.0),
+            (self.fields.surface_name, 16.0),
+            (self.fields.name, 12.0),
+            (self.fields.qualified_name, 10.0),
+            (self.fields.data_type, 4.0),
         ];
         terms
             .iter()
-            .filter(|term| term.chars().count() < 3)
             .flat_map(|term| {
-                short_exact_term_variants(term)
-                    .into_iter()
-                    .flat_map(move |term| {
-                        fields.into_iter().map(move |field| {
-                            Box::new(TermQuery::new(
-                                Term::from_field_text(field, &term),
-                                IndexRecordOption::Basic,
-                            )) as Box<dyn Query>
-                        })
+                exact_term_variants(term).into_iter().flat_map(move |term| {
+                    fields.into_iter().map(move |(field, boost)| {
+                        let query = Box::new(TermQuery::new(
+                            Term::from_field_text(field, &term),
+                            IndexRecordOption::Basic,
+                        ));
+                        Box::new(BoostQuery::new(query, boost)) as Box<dyn Query>
                     })
+                })
             })
             .collect()
     }
@@ -584,9 +583,16 @@ fn sibling_index_path(path: &Path, label: &str) -> PathBuf {
 fn open_or_create_index(path: &Path) -> Result<Index, SearchIndexError> {
     let meta_file = path.join("meta.json");
     if meta_file.exists() {
-        let index = Index::open_in_dir(path)?;
-        if schema_has_required_fields(&index.schema()) {
-            return Ok(index);
+        match Index::open_in_dir(path) {
+            Ok(index) if schema_has_required_fields(&index.schema()) => return Ok(index),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    error = %error,
+                    "discarding unusable Tantivy search index"
+                );
+            }
         }
         fs::remove_dir_all(path)?;
         ensure_dir(path)?;
@@ -594,13 +600,22 @@ fn open_or_create_index(path: &Path) -> Result<Index, SearchIndexError> {
     Ok(Index::create_in_dir(path, search_schema())?)
 }
 
-fn index_is_usable(path: &Path) -> Result<bool, SearchIndexError> {
+fn index_is_usable(path: &Path) -> bool {
     let meta_file = path.join("meta.json");
     if !meta_file.exists() {
-        return Ok(false);
+        return false;
     }
-    let index = Index::open_in_dir(path)?;
-    Ok(schema_has_required_fields(&index.schema()))
+    match Index::open_in_dir(path) {
+        Ok(index) => schema_has_required_fields(&index.schema()),
+        Err(error) => {
+            tracing::debug!(
+                path = %path.display(),
+                error = %error,
+                "treating unusable Tantivy search index as stale"
+            );
+            false
+        }
+    }
 }
 
 fn search_schema() -> Schema {
@@ -702,6 +717,19 @@ fn table_entity_records(table: &TableInfo, records: &mut Vec<CatalogEntityRecord
         })
         .collect::<Vec<_>>()
         .join(" ");
+    let filters = table
+        .filters
+        .iter()
+        .flat_map(|filter| {
+            [
+                filter.name.as_str(),
+                filter.mode.as_str(),
+                filter.data_type.as_str(),
+                filter.description.as_str(),
+            ]
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let required_filters = table.required_filters.join(" ");
     records.push(CatalogEntityRecord {
         entity_key: format!("catalog:table:{qualified_name}"),
@@ -721,16 +749,41 @@ fn table_entity_records(table: &TableInfo, records: &mut Vec<CatalogEntityRecord
             qualified_name.as_str(),
             table.description.as_str(),
             table.guide.as_str(),
+            filters.as_str(),
             required_filters.as_str(),
             columns.as_str(),
         ]),
     });
 
     for column in &table.columns {
+        if table
+            .filters
+            .iter()
+            .any(|filter| filter.name == column.name)
+        {
+            continue;
+        }
         table_column_record(table, column, records);
     }
-    for filter in &table.required_filters {
-        table_required_filter_record(table, filter, records);
+    for filter in &table.filters {
+        table_filter_record(table, filter, records);
+    }
+    for filter in table
+        .required_filters
+        .iter()
+        .filter(|required| !table.filters.iter().any(|filter| filter.name == **required))
+    {
+        table_filter_record(
+            table,
+            &TableFilterInfo {
+                name: filter.clone(),
+                mode: String::new(),
+                required: true,
+                data_type: String::new(),
+                description: "Required table filter".to_string(),
+            },
+            records,
+        );
     }
 }
 
@@ -766,29 +819,32 @@ fn table_column_record(
     });
 }
 
-fn table_required_filter_record(
+fn table_filter_record(
     table: &TableInfo,
-    filter: &str,
+    filter: &TableFilterInfo,
     records: &mut Vec<CatalogEntityRecord>,
 ) {
     let surface_name = qualified_name(&table.schema_name, &table.table_name);
     records.push(CatalogEntityRecord {
-        entity_key: format!("filter:table:{surface_name}:{filter}"),
+        entity_key: format!("filter:table:{surface_name}:{}", filter.name),
         result_type: CatalogSearchResultType::ColumnHint,
         surface_kind: CatalogSearchSurfaceKind::Table,
         field_role: CatalogSearchFieldRole::TableFilter,
         schema_name: table.schema_name.clone(),
         surface_name: table.table_name.clone(),
-        name: filter.to_string(),
-        qualified_name: format!("{surface_name}.{filter}"),
-        data_type: String::new(),
-        required: true,
-        description: "Required table filter".to_string(),
+        name: filter.name.clone(),
+        qualified_name: format!("{surface_name}.{}", filter.name),
+        data_type: filter.data_type.clone(),
+        required: filter.required,
+        description: filter.description.clone(),
         searchable_text: join_search_text([
             table.schema_name.as_str(),
             table.table_name.as_str(),
-            filter,
-            "required table filter",
+            filter.name.as_str(),
+            filter.mode.as_str(),
+            filter.data_type.as_str(),
+            filter.description.as_str(),
+            "table filter",
         ]),
     });
 }
@@ -953,7 +1009,7 @@ fn escape_tantivy_phrase(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn short_exact_term_variants(term: &str) -> Vec<String> {
+fn exact_term_variants(term: &str) -> Vec<String> {
     let mut variants = Vec::new();
     push_unique_variant(&mut variants, term.to_string());
     push_unique_variant(&mut variants, term.to_ascii_uppercase());
@@ -1029,7 +1085,8 @@ fn normalized_rank_score(position: u32, hit_count: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use coral_engine::{
-        CatalogInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
+        CatalogInfo, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
+        TableFunctionResultColumnInfo, TableInfo,
     };
     use tempfile::tempdir;
 
@@ -1051,6 +1108,29 @@ mod tests {
         assert_eq!(store.capabilities().tantivy_version, "0.26.1");
         assert_eq!(store.capabilities().tokenizer, "coral_trigram");
         assert!(store.path().join("meta.json").exists());
+    }
+
+    #[test]
+    fn open_workspace_recreates_corrupt_search_index() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let index_path = layout.search_index_dir(&workspace);
+        std::fs::create_dir_all(&index_path).expect("index dir");
+        std::fs::write(index_path.join("meta.json"), "not valid tantivy metadata")
+            .expect("corrupt meta");
+
+        assert!(!SearchIndexStore::workspace_index_is_usable(
+            &layout, &workspace
+        ));
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("recreate index");
+
+        assert_eq!(store.path(), index_path);
+        assert!(store.path().join("meta.json").exists());
+        assert!(SearchIndexStore::workspace_index_is_usable(
+            &layout, &workspace
+        ));
     }
 
     #[test]
@@ -1110,6 +1190,28 @@ mod tests {
         assert!(hits.iter().any(|hit| hit.name == "ID"
             && hit.result_type == Some(CatalogSearchResultType::ColumnHint)
             && hit.field_role == Some(CatalogSearchFieldRole::TableFunctionResultColumn)));
+    }
+
+    #[test]
+    fn catalog_tantivy_indexes_optional_non_column_filters() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::replace_catalog_index(
+            temp.path().join("tantivy"),
+            &catalog_with_table_filters(),
+        )
+        .expect("replace catalog");
+
+        let hits = store
+            .search_catalog(&workspace, &["status".to_string()], 1)
+            .expect("search catalog");
+
+        assert!(hits.iter().any(|hit| hit.name == "status"
+            && hit.result_type == Some(CatalogSearchResultType::ColumnHint)
+            && hit.field_role == Some(CatalogSearchFieldRole::TableFilter)
+            && !hit.required
+            && hit.data_type == "Utf8"
+            && hit.description == "Optional issue status filter"));
     }
 
     #[test]
@@ -1236,6 +1338,36 @@ mod tests {
                 kind: "search".to_string(),
                 search_limits_json: None,
             }],
+        }
+    }
+
+    fn catalog_with_table_filters() -> CatalogInfo {
+        CatalogInfo {
+            tables: vec![TableInfo {
+                schema_name: "github".to_string(),
+                table_name: "issues".to_string(),
+                description: "GitHub issues".to_string(),
+                guide: "Filter by owner and repo; optionally filter by status.".to_string(),
+                columns: Vec::new(),
+                filters: vec![
+                    TableFilterInfo {
+                        name: "owner".to_string(),
+                        mode: "equality".to_string(),
+                        required: true,
+                        data_type: "Utf8".to_string(),
+                        description: "Repository owner".to_string(),
+                    },
+                    TableFilterInfo {
+                        name: "status".to_string(),
+                        mode: "equality".to_string(),
+                        required: false,
+                        data_type: "Utf8".to_string(),
+                        description: "Optional issue status filter".to_string(),
+                    },
+                ],
+                required_filters: vec!["owner".to_string()],
+            }],
+            table_functions: Vec::new(),
         }
     }
 }

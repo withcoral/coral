@@ -670,6 +670,7 @@ mod tests {
                 description: "User id".to_string(),
                 ordinal_position: 0,
             }],
+            filters: Vec::new(),
             required_filters: vec!["org_id".to_string()],
         };
 
@@ -708,6 +709,7 @@ mod tests {
                 description: "User id".to_string(),
                 ordinal_position: 0,
             }],
+            filters: Vec::new(),
             required_filters: vec!["org_id".to_string()],
         };
 
