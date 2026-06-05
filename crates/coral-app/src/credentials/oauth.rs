@@ -573,18 +573,32 @@ fn validate_oauth_client_inputs(
         let _client_secret = resolve_client_secret(oauth, inputs)?;
         return Ok(());
     }
-    if oauth.client.dynamic_registration.is_none() {
+    let Some(registration) = oauth.client.dynamic_registration.as_ref() else {
         return Err(missing_client_id_error(oauth));
-    }
-    if let Some(registration) = oauth.client.dynamic_registration.as_ref()
-        && let Some(input) = registration.initial_access_token_input.as_deref()
-        && inputs.get(input).is_none_or(String::is_empty)
-    {
-        return Err(AppError::FailedPrecondition(format!(
-            "missing OAuth dynamic client registration initial access token input '{input}'"
-        )));
-    }
+    };
+    resolve_initial_access_token(registration, inputs)?;
     Ok(())
+}
+
+/// Resolve the optional initial access token a dynamic client registration
+/// endpoint requires, erroring when the declared input is missing or empty.
+fn resolve_initial_access_token<'a>(
+    registration: &coral_spec::ManifestOAuthDynamicClientRegistrationSpec,
+    inputs: &'a BTreeMap<String, String>,
+) -> Result<Option<&'a str>, AppError> {
+    let Some(input) = registration.initial_access_token_input.as_deref() else {
+        return Ok(None);
+    };
+    let token = inputs
+        .get(input)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "missing OAuth dynamic client registration initial access token input '{input}'"
+            ))
+        })?;
+    Ok(Some(token))
 }
 
 fn maybe_resolve_client_id(
@@ -604,16 +618,6 @@ fn maybe_resolve_client_id(
         .as_deref()
         .filter(|default| !default.is_empty())
         .map(ToString::to_string)
-}
-
-fn resolve_client_id(
-    oauth: &ManifestOAuthCredentialSpec,
-    inputs: &BTreeMap<String, String>,
-) -> Result<String, AppError> {
-    if let Some(client_id) = maybe_resolve_client_id(oauth, inputs) {
-        return Ok(client_id);
-    }
-    Err(missing_client_id_error(oauth))
 }
 
 fn missing_client_id_error(oauth: &ManifestOAuthCredentialSpec) -> AppError {
@@ -651,9 +655,9 @@ async fn resolve_oauth_client(
     credential_inputs: &BTreeMap<String, String>,
     redirect_uri: Option<&str>,
 ) -> Result<ResolvedOAuthClient, AppError> {
-    if maybe_resolve_client_id(oauth, credential_inputs).is_some() {
+    if let Some(client_id) = maybe_resolve_client_id(oauth, credential_inputs) {
         return Ok(ResolvedOAuthClient {
-            client_id: resolve_client_id(oauth, credential_inputs)?,
+            client_id,
             client_secret: resolve_client_secret(oauth, credential_inputs)?,
             client_secret_transport: oauth.client.secret.as_ref().map(|secret| secret.transport),
             dynamic_client_registration: None,
@@ -836,15 +840,7 @@ async fn register_dynamic_client(
         .post(registration_url)
         .header(ACCEPT, "application/json")
         .json(&payload);
-    if let Some(input) = registration.initial_access_token_input.as_deref() {
-        let token = credential_inputs
-            .get(input)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                AppError::FailedPrecondition(format!(
-                    "missing OAuth dynamic client registration initial access token input '{input}'"
-                ))
-            })?;
+    if let Some(token) = resolve_initial_access_token(registration, credential_inputs)? {
         request = request.bearer_auth(token);
     }
     let response = request.send().await.map_err(|error| {
@@ -953,20 +949,16 @@ fn dynamic_client_auth_method_transport(
     method: ManifestOAuthDynamicClientRegistrationAuthMethod,
     client_secret: Option<&str>,
 ) -> Result<Option<ManifestOAuthClientSecretTransport>, AppError> {
-    match method {
-        ManifestOAuthDynamicClientRegistrationAuthMethod::None => Ok(None),
-        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic
-            if client_secret.is_some() =>
-        {
+    use ManifestOAuthDynamicClientRegistrationAuthMethod as Method;
+    match (method, client_secret.is_some()) {
+        (Method::None, _) => Ok(None),
+        (Method::ClientSecretBasic, true) => {
             Ok(Some(ManifestOAuthClientSecretTransport::BasicAuth))
         }
-        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost
-            if client_secret.is_some() =>
-        {
+        (Method::ClientSecretPost, true) => {
             Ok(Some(ManifestOAuthClientSecretTransport::RequestBody))
         }
-        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic
-        | ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost => {
+        (Method::ClientSecretBasic | Method::ClientSecretPost, false) => {
             Err(AppError::FailedPrecondition(
                 "OAuth dynamic client registration selected client-secret authentication but did not return client_secret".to_string(),
             ))
@@ -1633,50 +1625,64 @@ fn oauth_credential_material(
         format!("{prefix}token_url"),
         session.endpoints.token_url.clone(),
     );
-    if let Some(resource) = session.resource.as_deref() {
-        internal_metadata.insert(format!("{prefix}resource"), resource.to_string());
-    }
-    if let Some(transport) = session.client_secret_transport {
-        internal_metadata.insert(
-            format!("{prefix}client_secret_transport"),
-            transport.label().to_string(),
-        );
-    }
-    if let Some(client_secret) = session.client_secret.as_deref() {
-        internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
-    }
+    insert_optional_metadata(
+        &mut internal_metadata,
+        format!("{prefix}resource"),
+        session.resource.as_deref(),
+    );
+    insert_optional_metadata(
+        &mut internal_metadata,
+        format!("{prefix}client_secret_transport"),
+        session
+            .client_secret_transport
+            .map(ManifestOAuthClientSecretTransport::label),
+    );
+    insert_optional_metadata(
+        &mut internal_metadata,
+        format!("{prefix}client_secret"),
+        session.client_secret.as_deref(),
+    );
     if let Some(registration) = session.dynamic_client_registration.as_ref() {
         internal_metadata.insert(
             format!("{prefix}dynamic_client_registration"),
             "true".to_string(),
         );
-        if let Some(value) = registration.registration_client_uri.as_deref() {
-            internal_metadata.insert(
-                format!("{prefix}registration_client_uri"),
-                value.to_string(),
-            );
-        }
-        if let Some(value) = registration.registration_access_token.as_deref() {
-            internal_metadata.insert(
-                format!("{prefix}registration_access_token"),
-                value.to_string(),
-            );
-        }
-        if let Some(value) = registration.client_id_issued_at.as_deref() {
-            internal_metadata.insert(format!("{prefix}client_id_issued_at"), value.to_string());
-        }
-        if let Some(value) = registration.client_secret_expires_at.as_deref() {
-            internal_metadata.insert(
-                format!("{prefix}client_secret_expires_at"),
-                value.to_string(),
-            );
-        }
+        insert_optional_metadata(
+            &mut internal_metadata,
+            format!("{prefix}registration_client_uri"),
+            registration.registration_client_uri.as_deref(),
+        );
+        insert_optional_metadata(
+            &mut internal_metadata,
+            format!("{prefix}registration_access_token"),
+            registration.registration_access_token.as_deref(),
+        );
+        insert_optional_metadata(
+            &mut internal_metadata,
+            format!("{prefix}client_id_issued_at"),
+            registration.client_id_issued_at.as_deref(),
+        );
+        insert_optional_metadata(
+            &mut internal_metadata,
+            format!("{prefix}client_secret_expires_at"),
+            registration.client_secret_expires_at.as_deref(),
+        );
     }
     OAuthCredentialMaterial {
         input_key: session.input_key.clone(),
         access_token: token.access_token.clone(),
         internal_metadata,
         safe_metadata: safe_metadata(token),
+    }
+}
+
+fn insert_optional_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    key: String,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        metadata.insert(key, value.to_string());
     }
 }
 
