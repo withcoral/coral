@@ -18,7 +18,7 @@ use tonic::Request;
 use super::harness::{
     GrpcHarness, fixture_manifest_with_canonical_table_ranking_yaml,
     fixture_manifest_with_column_preview_yaml, fixture_manifest_with_functions_yaml,
-    fixture_manifest_with_inputs_yaml,
+    fixture_manifest_with_inputs_yaml, source_dir,
 };
 
 #[tokio::test]
@@ -73,8 +73,8 @@ async fn search_returns_typed_metadata_and_native_search_results() {
                     .table_function
                     .as_ref()
                     .is_some_and(|function| function.name == "search_issues")
-                    && path.sql_call_example.contains("searchy.search_issues")
-                    && path.sql_call_example.contains("q => '<q>'")
+                    && path.sql_call_example.contains("\"searchy\".\"search_issues\"")
+                    && path.sql_call_example.contains("\"q\" => '<q>'")
         )));
     assert!(response.results.iter().any(|result| result.provider
         == SearchProvider::CatalogMetadata as i32
@@ -203,6 +203,37 @@ async fn search_catalog_metadata_loads_sources_with_stored_secrets() {
         .expect("secured table metadata result");
     assert_eq!(metadata.0.schema_name, "secured_messages");
     assert_eq!(metadata.0.name, "messages");
+}
+
+#[tokio::test]
+async fn search_fails_when_a_stored_source_cannot_load() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_inputs_yaml(),
+            Vec::new(),
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "secret-token".to_string(),
+            }],
+        )
+        .await;
+    std::fs::remove_file(source_dir(harness.config_dir(), "secured_messages").join("secrets.env"))
+        .expect("remove stored secret material");
+
+    let error = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "secured messages".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect_err("search should fail instead of indexing a partial catalog");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(error.message().contains("secured_messages"));
+    assert!(error.message().contains("stored catalog"));
 }
 
 #[tokio::test]

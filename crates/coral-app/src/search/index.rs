@@ -108,16 +108,31 @@ impl SearchIndexStore {
         &self.capabilities
     }
 
+    #[cfg(test)]
     pub(crate) fn search_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        terms: &[String],
+        limit: usize,
+    ) -> Result<Vec<CatalogSearchHit>, SearchIndexError> {
+        Ok(self.search_catalog_page(workspace_name, terms, limit)?.hits)
+    }
+
+    pub(crate) fn search_catalog_page(
         &self,
         _workspace_name: &WorkspaceName,
         terms: &[String],
         limit: usize,
-    ) -> Result<Vec<CatalogSearchHit>, SearchIndexError> {
+    ) -> Result<CatalogSearchPage, SearchIndexError> {
         let Some(query) = self.scoped_query("catalog", terms) else {
-            return Ok(Vec::new());
+            return Ok(CatalogSearchPage {
+                hits: Vec::new(),
+                has_more: false,
+            });
         };
-        let docs = self.search_documents(&query, limit)?;
+        let mut docs = self.search_documents(&query, limit.saturating_add(1))?;
+        let has_more = docs.len() > limit;
+        docs.truncate(limit);
         let mut hits = docs
             .into_iter()
             .filter(|doc| doc_text(doc, self.fields.entity_kind) == "catalog")
@@ -163,7 +178,7 @@ impl SearchIndexStore {
             })
             .collect::<Vec<_>>();
         assign_rank_scores(&mut hits, |hit, score| hit.score = score);
-        Ok(hits)
+        Ok(CatalogSearchPage { hits, has_more })
     }
 
     fn writer(&self) -> Result<IndexWriter, SearchIndexError> {
@@ -235,12 +250,16 @@ impl SearchIndexStore {
             .iter()
             .filter(|term| term.chars().count() < 3)
             .flat_map(|term| {
-                fields.into_iter().map(move |field| {
-                    Box::new(TermQuery::new(
-                        Term::from_field_text(field, term),
-                        IndexRecordOption::Basic,
-                    )) as Box<dyn Query>
-                })
+                short_exact_term_variants(term)
+                    .into_iter()
+                    .flat_map(move |term| {
+                        fields.into_iter().map(move |field| {
+                            Box::new(TermQuery::new(
+                                Term::from_field_text(field, &term),
+                                IndexRecordOption::Basic,
+                            )) as Box<dyn Query>
+                        })
+                    })
             })
             .collect()
     }
@@ -324,6 +343,12 @@ pub(crate) struct CatalogSearchHit {
     pub(crate) description: String,
     pub(crate) matched_fields: Vec<String>,
     pub(crate) score: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogSearchPage {
+    pub(crate) hits: Vec<CatalogSearchHit>,
+    pub(crate) has_more: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -928,6 +953,32 @@ fn escape_tantivy_phrase(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn short_exact_term_variants(term: &str) -> Vec<String> {
+    let mut variants = Vec::new();
+    push_unique_variant(&mut variants, term.to_string());
+    push_unique_variant(&mut variants, term.to_ascii_uppercase());
+    push_unique_variant(&mut variants, title_case_ascii(term));
+    variants
+}
+
+fn title_case_ascii(term: &str) -> String {
+    let mut chars = term.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    format!(
+        "{}{}",
+        first.to_ascii_uppercase(),
+        chars.as_str().to_ascii_lowercase()
+    )
+}
+
+fn push_unique_variant(variants: &mut Vec<String>, variant: String) {
+    if !variants.iter().any(|existing| existing == &variant) {
+        variants.push(variant);
+    }
+}
+
 fn matched_fields<const N: usize>(
     terms: &[String],
     fields: [(&'static str, &str); N],
@@ -1043,6 +1094,43 @@ mod tests {
     }
 
     #[test]
+    fn catalog_tantivy_supports_case_preserving_short_identifier_matches() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::replace_catalog_index(
+            temp.path().join("tantivy"),
+            &catalog_with_uppercase_identifier(),
+        )
+        .expect("replace catalog");
+
+        let hits = store
+            .search_catalog(&workspace, &["id".to_string()], 10)
+            .expect("search catalog");
+
+        assert!(hits.iter().any(|hit| hit.name == "ID"
+            && hit.result_type == Some(CatalogSearchResultType::ColumnHint)
+            && hit.field_role == Some(CatalogSearchFieldRole::TableFunctionResultColumn)));
+    }
+
+    #[test]
+    fn catalog_search_page_reports_more_available_hits() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::replace_catalog_index(
+            temp.path().join("tantivy"),
+            &catalog_with_search_function(),
+        )
+        .expect("replace catalog");
+
+        let page = store
+            .search_catalog_page(&workspace, &["github".to_string()], 1)
+            .expect("search catalog page");
+
+        assert_eq!(page.hits.len(), 1);
+        assert!(page.has_more);
+    }
+
+    #[test]
     fn replace_catalog_indexes_function_metadata() {
         let temp = tempdir().expect("tempdir");
         let workspace = WorkspaceName::parse("default").expect("workspace");
@@ -1120,6 +1208,30 @@ mod tests {
                     data_type: "Utf8".to_string(),
                     nullable: false,
                     description: "Deployment commit SHA".to_string(),
+                }],
+                kind: "search".to_string(),
+                search_limits_json: None,
+            }],
+        }
+    }
+
+    fn catalog_with_uppercase_identifier() -> CatalogInfo {
+        CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![TableFunctionInfo {
+                schema_name: "Search".to_string(),
+                function_name: "Search_Issues".to_string(),
+                description: "Search issues".to_string(),
+                arguments: vec![TableFunctionArgumentInfo {
+                    name: "Q".to_string(),
+                    required: true,
+                    values: Vec::new(),
+                }],
+                result_columns: vec![TableFunctionResultColumnInfo {
+                    name: "ID".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    description: "Issue identifier".to_string(),
                 }],
                 kind: "search".to_string(),
                 search_limits_json: None,

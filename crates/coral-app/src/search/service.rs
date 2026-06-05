@@ -260,7 +260,7 @@ impl UniversalSearch {
 
         let total_count = candidates.len();
         let max_results = usize::try_from(limit).unwrap_or(usize::MAX);
-        let truncated = total_count > max_results;
+        let truncated = total_count > max_results || catalog_status.has_more;
         let results = candidates
             .into_iter()
             .take(max_results)
@@ -278,14 +278,14 @@ impl UniversalSearch {
                 SearchProviderStatus {
                     provider: SearchProvider::ObservedValues as i32,
                     state: SearchProviderState::NotEnabled as i32,
-                    note: "Observed-value search is not enabled in this PR".to_string(),
+                    note: "Observed-value search is not enabled in this build".to_string(),
                 },
             ],
             truncation: Some(SearchResultTruncation {
                 truncated,
                 returned_count,
                 max_results: limit,
-                note: truncation_note(truncated, total_count, max_results),
+                note: truncation_note(truncated, total_count, max_results, catalog_status.has_more),
             }),
         })
     }
@@ -316,29 +316,37 @@ impl UniversalSearch {
             .unwrap_or(usize::MAX)
             .saturating_mul(5)
             .max(25);
-        let hits = match index.search_catalog(workspace_name, &terms.terms, search_limit) {
-            Ok(hits) => hits,
+        let page = match index.search_catalog_page(workspace_name, &terms.terms, search_limit) {
+            Ok(page) => page,
             Err(error) => return (Vec::new(), catalog_index_error_status(&error)),
         };
         let candidates = dedupe_candidates(catalog_candidates_from_hits(
             workspace_name,
             catalog,
             terms,
-            hits,
+            page.hits,
         ));
         let state = if candidates.is_empty() {
             SearchProviderState::Empty
         } else {
             SearchProviderState::ResultsFound
         };
-        let note = catalog_provider_note(state, candidates.len());
-        (candidates, CatalogProviderStatus { state, note })
+        let note = catalog_provider_note(state, candidates.len(), page.has_more);
+        (
+            candidates,
+            CatalogProviderStatus {
+                state,
+                note,
+                has_more: page.has_more,
+            },
+        )
     }
 }
 
 struct CatalogProviderStatus {
     state: SearchProviderState,
     note: String,
+    has_more: bool,
 }
 
 #[derive(Clone)]
@@ -1056,14 +1064,24 @@ fn sql_call_example(function: &TableFunctionInfo) -> String {
         .arguments
         .iter()
         .filter(|argument| argument.required)
-        .map(|argument| format!("{} => '<{}>'", argument.name, argument.name))
+        .map(|argument| {
+            format!(
+                "{} => '<{}>'",
+                quote_sql_identifier(&argument.name),
+                argument.name
+            )
+        })
         .collect::<Vec<_>>();
     format!(
         "SELECT * FROM {}.{}({}) LIMIT 10",
-        function.schema_name,
-        function.function_name,
+        quote_sql_identifier(&function.schema_name),
+        quote_sql_identifier(&function.function_name),
         args.join(", ")
     )
+}
+
+fn quote_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
 fn find_table<'a>(
@@ -1087,8 +1105,13 @@ fn find_function<'a>(
     })
 }
 
-fn catalog_provider_note(state: SearchProviderState, total_count: usize) -> String {
+fn catalog_provider_note(state: SearchProviderState, total_count: usize, has_more: bool) -> String {
     match state {
+        SearchProviderState::ResultsFound if has_more => {
+            format!(
+                "Catalog metadata returned {total_count} candidate search hints; more matches exist beyond the retrieval window"
+            )
+        }
         SearchProviderState::ResultsFound => {
             format!("Catalog metadata returned {total_count} candidate search hints")
         }
@@ -1101,12 +1124,31 @@ fn catalog_index_error_status(error: &SearchIndexError) -> CatalogProviderStatus
     CatalogProviderStatus {
         state: SearchProviderState::Error,
         note: format!("Catalog metadata search index is unavailable: {error}"),
+        has_more: false,
     }
 }
 
-fn truncation_note(truncated: bool, total_count: usize, max_results: usize) -> String {
-    if truncated {
-        format!("Returned {max_results} of {total_count} search hints")
+fn truncation_note(
+    truncated: bool,
+    total_count: usize,
+    max_results: usize,
+    backend_has_more: bool,
+) -> String {
+    if !truncated {
+        return String::new();
+    }
+
+    if total_count > max_results {
+        let visible_count = total_count.min(max_results);
+        if backend_has_more {
+            format!("Returned {visible_count} of at least {total_count} search hints")
+        } else {
+            format!("Returned {visible_count} of {total_count} search hints")
+        }
+    } else if backend_has_more {
+        format!(
+            "Returned {total_count} search hints; more matches exist beyond the retrieval window"
+        )
     } else {
         String::new()
     }
@@ -1115,12 +1157,12 @@ fn truncation_note(truncated: bool, total_count: usize, max_results: usize) -> S
 #[cfg(test)]
 mod tests {
     use coral_api::v1::SearchSurfaceKind;
-    use coral_engine::{CatalogInfo, TableInfo};
+    use coral_engine::{CatalogInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo};
     use tantivy::Index;
     use tantivy::schema::{STORED, STRING, Schema};
     use tempfile::tempdir;
 
-    use super::{SearchIndexRefresher, catalog_fingerprint, query_terms};
+    use super::{SearchIndexRefresher, catalog_fingerprint, query_terms, sql_call_example};
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
 
@@ -1138,6 +1180,28 @@ mod tests {
         assert_eq!(
             SearchSurfaceKind::Table.as_str_name(),
             "SEARCH_SURFACE_KIND_TABLE"
+        );
+    }
+
+    #[test]
+    fn sql_call_example_quotes_case_preserving_identifiers() {
+        let function = TableFunctionInfo {
+            schema_name: "Search".to_string(),
+            function_name: "Search_Issues".to_string(),
+            description: String::new(),
+            arguments: vec![TableFunctionArgumentInfo {
+                name: "Q".to_string(),
+                required: true,
+                values: Vec::new(),
+            }],
+            result_columns: Vec::new(),
+            kind: "search".to_string(),
+            search_limits_json: None,
+        };
+
+        assert_eq!(
+            sql_call_example(&function),
+            "SELECT * FROM \"Search\".\"Search_Issues\"(\"Q\" => '<Q>') LIMIT 10"
         );
     }
 

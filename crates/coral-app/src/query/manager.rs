@@ -357,16 +357,15 @@ impl QueryManager {
         let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
         for source in catalog.workspace_sources(workspace_name) {
-            match self.load_stored_query_source(workspace_name, &source) {
-                Ok(query_source) => query_sources.push(query_source),
-                Err(error) => {
-                    tracing::warn!(
-                        source = %source.name,
-                        detail = %error,
-                        "skipping source during stored catalog load"
-                    );
-                }
-            }
+            let query_source = self
+                .load_stored_query_source(workspace_name, &source)
+                .map_err(|error| {
+                    AppError::FailedPrecondition(format!(
+                        "failed to load source '{}' while building stored catalog: {error}",
+                        source.name
+                    ))
+                })?;
+            query_sources.push(query_source);
         }
         Ok(query_sources)
     }
