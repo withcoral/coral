@@ -26,6 +26,7 @@ use crate::backends::shared::template::{RenderContext, render_template};
 use coral_spec::ParsedTemplate;
 use coral_spec::backends::file::{
     FileFormat, FileObjectStoreSpec, FileSourceSpec, FileTableSpec, S3AuthSpec,
+    s3_endpoint_dns_suffix_for_region,
 };
 
 use super::error::FileBackendError;
@@ -281,7 +282,13 @@ fn build_object_store(
             let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
 
             if let Some(region) = region {
-                builder = builder.with_region(render_template(region, &context)?);
+                let region = render_template(region, &context)?;
+                let region = region.trim();
+                builder = builder.with_region(region);
+                let dns_suffix = s3_endpoint_dns_suffix_for_region(region);
+                if dns_suffix != "amazonaws.com" {
+                    builder = builder.with_endpoint(format!("https://s3.{region}.{dns_suffix}"));
+                }
             }
 
             match auth {
@@ -447,6 +454,26 @@ mod tests {
 
         build_object_store("codex", &table_path, &source, &resolved_inputs)
             .expect("S3 object store should use typed object-store settings");
+    }
+
+    #[test]
+    fn s3_object_store_accepts_china_region_endpoint() {
+        let table_path = ListingTableUrl::parse("s3://example-bucket/events/")
+            .expect("s3 table path should parse");
+        let source = FileSourceSpec {
+            location: ParsedTemplate::parse("s3://example-bucket/events/")
+                .expect("location template should parse"),
+            glob: None,
+            partitions: vec![],
+            metadata: vec![],
+            object_store: Some(FileObjectStoreSpec::S3 {
+                region: Some(ParsedTemplate::parse("cn-north-1").expect("region should parse")),
+                auth: S3AuthSpec::InstanceProfile,
+            }),
+        };
+
+        build_object_store("codex", &table_path, &source, &BTreeMap::new())
+            .expect("S3 object store should accept China-region endpoint settings");
     }
 
     #[test]

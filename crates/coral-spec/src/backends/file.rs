@@ -317,9 +317,9 @@ fn validate_s3_object_store(
 ) -> Result<()> {
     if let Some(region) = region {
         validate_source_scoped_template(schema, table, "source.object_store.region", region)?;
-        // The region determines the S3 service host (`s3.<region>.amazonaws.com`)
-        // shown during outbound-host confirmation, so it may only template
-        // non-secret variable inputs.
+        // The region determines the partition-specific S3 service host shown
+        // during outbound-host confirmation, so it may only template non-secret
+        // variable inputs.
         validate_host_template_inputs(
             &format!("{schema}.{table} source.object_store.region"),
             region,
@@ -327,6 +327,21 @@ fn validate_s3_object_store(
         )?;
     }
     auth.validate(schema, table)
+}
+
+/// Returns the AWS endpoint DNS suffix implied by an S3 region.
+///
+/// The object-store runtime defaults to the standard AWS partition unless an
+/// endpoint is provided explicitly. China regions use a different DNS suffix, so
+/// callers that display or configure the effective S3 endpoint must account for
+/// that partition.
+#[must_use]
+pub fn s3_endpoint_dns_suffix_for_region(region: &str) -> &'static str {
+    if region.trim().starts_with("cn-") {
+        "amazonaws.com.cn"
+    } else {
+        "amazonaws.com"
+    }
 }
 
 /// Credential mode for an S3 object store.
