@@ -58,18 +58,24 @@ impl<'a> McpImporter<'a> {
     }
 
     fn import(&mut self, catalog: &McpToolCatalog) -> Result<SemanticIr> {
-        let mut operation_ids = BTreeSet::new();
+        let mut operation_ids = BTreeMap::new();
         let mut tools = catalog.tools.iter().collect::<Vec<_>>();
         tools.sort_by(|left, right| left.name.cmp(&right.name));
         let mut operations = Vec::with_capacity(tools.len());
         for tool in tools {
-            if !operation_ids.insert(tool.name.as_str()) {
+            let operation_id = normalize_identifier(&tool.name, "tool");
+            if let Some(existing_tool_name) = operation_ids.get(&operation_id) {
                 return Err(ManifestError::validation(format!(
-                    "source '{}' surface '{}' imports duplicate MCP tool '{}'",
-                    self.manifest.common.name, self.surface.id, tool.name
+                    "source '{}' surface '{}' imports MCP tools '{}' and '{}' that both normalize to operation id '{}'",
+                    self.manifest.common.name,
+                    self.surface.id,
+                    existing_tool_name,
+                    tool.name,
+                    operation_id
                 )));
             }
-            operations.push(self.import_tool(tool));
+            operations.push(self.import_tool(tool, &operation_id));
+            operation_ids.insert(operation_id, tool.name.as_str());
         }
         Ok(SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
@@ -83,12 +89,11 @@ impl<'a> McpImporter<'a> {
         })
     }
 
-    fn import_tool(&mut self, tool: &McpToolDescriptor) -> IrOperation {
-        let operation_id = normalize_identifier(&tool.name, "tool");
+    fn import_tool(&mut self, tool: &McpToolDescriptor, operation_id: &str) -> IrOperation {
         let inputs = self.import_inputs(tool);
-        let output = self.import_output(&operation_id, tool.output_schema.as_ref());
+        let output = self.import_output(operation_id, tool.output_schema.as_ref());
         IrOperation {
-            id: operation_id.clone(),
+            id: operation_id.to_string(),
             method_name: "tools/call".to_string(),
             description: tool
                 .description
@@ -96,11 +101,11 @@ impl<'a> McpImporter<'a> {
                 .or_else(|| tool.title.clone())
                 .unwrap_or_default(),
             deprecated: false,
-            read_only: tool.read_only_hint.unwrap_or(true),
+            read_only: tool.read_only_hint.unwrap_or(false),
             inputs,
             output,
             entity: Some(IrEntityCandidate {
-                name: operation_id.clone(),
+                name: operation_id.to_string(),
                 type_ref: format!("{operation_id}_row"),
                 identity_fields: Vec::new(),
             }),
@@ -349,4 +354,92 @@ fn single_array_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
         return None;
     }
     Some((name.as_str(), property.get("items")))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::parse_source_manifest_yaml;
+    use crate::v4::{ProjectionVisibility, generate_projection_catalog};
+
+    fn tool(name: &str, read_only_hint: Option<bool>) -> McpToolDescriptor {
+        McpToolDescriptor {
+            name: name.to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({"type": "object", "properties": {}}),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"}
+                }
+            })),
+            read_only_hint,
+        }
+    }
+
+    #[test]
+    fn omitted_read_only_hint_keeps_mcp_projection_hidden() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("surface");
+        let catalog = McpToolCatalog {
+            tools: vec![tool("list-items", None)],
+        };
+
+        let ir = import_mcp_surface(v4, surface, &catalog).expect("import");
+        let operation = ir.operations.first().expect("operation");
+        assert!(!operation.read_only);
+
+        let projections =
+            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projections");
+        let projection = projections.projections.first().expect("projection");
+        assert_eq!(projection.visibility, ProjectionVisibility::Hidden);
+    }
+
+    #[test]
+    fn rejects_mcp_tools_that_collide_after_operation_id_normalization() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("surface");
+        let catalog = McpToolCatalog {
+            tools: vec![tool("foo-bar", Some(true)), tool("foo_bar", Some(true))],
+        };
+
+        let error = import_mcp_surface(v4, surface, &catalog)
+            .expect_err("normalized collision should fail");
+        let message = error.to_string();
+        assert!(message.contains("foo-bar"), "{message}");
+        assert!(message.contains("foo_bar"), "{message}");
+        assert!(
+            message.contains("normalize to operation id 'foo_bar'"),
+            "{message}"
+        );
+    }
 }
