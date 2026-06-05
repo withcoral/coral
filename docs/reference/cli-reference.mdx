@@ -34,6 +34,17 @@ coral sql "<SQL>"
 
 JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
 
+Use `DESCRIBE <schema>.<table>` to inspect a table's result columns:
+
+```shellscript
+coral sql "DESCRIBE datadog.hosts"
+```
+
+`DESCRIBE` expects a table. To inspect table functions, query
+`coral.table_functions`.
+
+`DESCRIBE SELECT ...` still describes the result schema of the query itself.
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.

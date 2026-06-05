@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use coral_engine::{ColumnInfo, CoralQuery, QuerySource, TableInfo};
+use coral_engine::{ColumnInfo, CoralQuery, CoreError, QuerySource, TableInfo};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -483,6 +483,90 @@ async fn coral_table_functions_lists_source_functions() {
             "max_top_k": 100,
             "max_calls_per_query": 1
         })
+    );
+}
+
+#[tokio::test]
+async fn table_function_used_as_table_returns_guided_error() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    for sql in [
+        "DESCRIBE searchy.search_issues",
+        "SELECT * FROM searchy.search_issues",
+    ] {
+        let error = CoralQuery::execute_sql(&sources, test_runtime(), sql)
+            .await
+            .expect_err("table function reference should explain the object kind");
+
+        let CoreError::QueryFailure(sqe) = error else {
+            panic!("expected structured query error");
+        };
+        assert_eq!(sqe.reason(), "TABLE_FUNCTION_NOT_TABLE");
+        assert!(
+            sqe.summary()
+                .contains("`searchy.search_issues` is a table function, not a table"),
+            "got: {}",
+            sqe.summary()
+        );
+        assert!(
+            sqe.detail()
+                .contains("Query it as `FROM searchy.search_issues(...)`"),
+            "got: {}",
+            sqe.detail()
+        );
+        assert!(
+            sqe.detail()
+                .contains("DESCRIBE SELECT * FROM searchy.search_issues(...)"),
+            "got: {}",
+            sqe.detail()
+        );
+        let hint = sqe.hint().expect("hint should point at catalog metadata");
+        assert!(hint.contains("coral.table_functions"), "got: {hint}");
+        assert!(hint.contains("schema_name = 'searchy'"), "got: {hint}");
+        assert!(
+            hint.contains("function_name = 'search_issues'"),
+            "got: {hint}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn describe_table_keeps_datafusion_shape() {
+    let (_temp, sources) = build_catalog_sources();
+
+    let execution = CoralQuery::execute_sql(&sources, test_runtime(), "DESCRIBE alpha.users")
+        .await
+        .expect("table describe should succeed");
+
+    assert_eq!(
+        execution
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["column_name", "data_type", "is_nullable"]
+    );
+}
+
+#[tokio::test]
+async fn describe_select_from_table_function_keeps_datafusion_shape() {
+    let sources = vec![build_source(http_manifest_with_function())];
+
+    let execution = CoralQuery::execute_sql(
+        &sources,
+        test_runtime(),
+        "DESCRIBE SELECT * FROM searchy.search_issues(q => 'flaky')",
+    )
+    .await
+    .expect("query describe should succeed");
+
+    assert_eq!(
+        execution
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["column_name", "data_type", "is_nullable"]
     );
 }
 

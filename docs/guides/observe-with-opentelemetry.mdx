@@ -86,7 +86,7 @@ Coral emits five families of trace spans, all exported with the W3C Trace Contex
 
 #### Adjusting what gets exported
 
-`[otel].trace_filter` uses [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.Targets.html) syntax. Enable noisy targets when you want them (`coral_engine::datafusion` covers physical-plan and optimizer-rule spans, off by default to keep export volume low), and disable any you do not (`coral_engine::http` silences the HTTP backend):
+`[otel].trace_filter` uses [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/targets/struct.Targets.html) syntax. Enable noisy targets when you want them (`coral_engine::datafusion` covers physical-plan and optimizer-rule spans, off by default to keep export volume low), and disable any you do not (`coral_engine::http` silences the HTTP backend):
 
 ```toml
 [otel]

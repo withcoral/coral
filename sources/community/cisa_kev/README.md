@@ -30,15 +30,15 @@ Single-row feed metadata for the CISA KEV catalog. Use this table to check feed 
 
 | Column           | Type    | Description                              |
 | ---------------- | ------- | ---------------------------------------- |
-| `catalogVersion` | `Utf8`  | CISA catalog version string              |
-| `dateReleased`   | `Utf8`  | Date the catalog feed was released       |
+| `catalog_version` | `Utf8`  | CISA catalog version string              |
+| `date_released`   | `Utf8`  | Date the catalog feed was released       |
 | `count`          | `Int64` | Number of vulnerability rows in the feed |
 
 ## Quick Start
 
 ```bash
 # Confirm connectivity and freshness metadata
-coral sql "SELECT \"catalogVersion\", \"dateReleased\", count FROM cisa_kev.catalog LIMIT 1"
+coral sql "SELECT catalog_version, date_released, count FROM cisa_kev.catalog LIMIT 1"
 ```
 
 ### `vulnerabilities`
