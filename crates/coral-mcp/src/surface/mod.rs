@@ -10,9 +10,7 @@ mod values;
 
 pub(crate) use catalog::{describe_table_value, list_catalog_value, list_columns_value};
 pub(crate) use discovery::{Pagination, parse_pagination};
-pub(crate) use errors::{
-    internal_status, status_to_error_data, tool_error_from_status, tool_error_result,
-};
+pub(crate) use errors::{status_to_error_data, tool_error_from_status, tool_error_result};
 pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,
     tables_resource_content,

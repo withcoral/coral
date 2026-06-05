@@ -13,17 +13,17 @@ use super::catalog::catalog_item_value;
 use super::values::format_schema_table_equivalent;
 
 pub(crate) fn search_value(response: &SearchResponse) -> Value {
+    let truncation = match response.truncation.as_ref() {
+        Some(truncation) => truncation_value(truncation),
+        None => TruncationValue::empty(),
+    };
     serde_json::to_value(SearchValue {
         provider_statuses: response
             .provider_statuses
             .iter()
             .map(ProviderStatusValue::from)
             .collect(),
-        truncation: response
-            .truncation
-            .as_ref()
-            .map(TruncationValue::from)
-            .unwrap_or_default(),
+        truncation,
         results: response
             .results
             .iter()
@@ -42,6 +42,7 @@ pub(crate) fn search_output_schema() -> Arc<Map<String, Value>> {
             "properties": {
                 "provider_statuses": {
                     "type": "array",
+                    "description": "Per-provider coverage and error metadata computed before final global ranking and truncation. A provider state of results_found means that provider produced candidates, not that one of those candidates appears in the returned results window.",
                     "items": {
                         "type": "object",
                         "required": ["provider", "state", "note"],
@@ -53,6 +54,7 @@ pub(crate) fn search_output_schema() -> Arc<Map<String, Value>> {
                             },
                             "state": {
                                 "type": "string",
+                                "description": "Provider run state for this query before final result truncation. Treat error and partial states as diagnostics; treat results_found without a returned result from that provider as a signal to retry with a more targeted query.",
                                 "enum": [
                                     "results_found",
                                     "empty",
@@ -69,6 +71,7 @@ pub(crate) fn search_output_schema() -> Arc<Map<String, Value>> {
                 },
                 "truncation": {
                     "type": "object",
+                    "description": "Final global result-window metadata after provider candidates are merged and ranked. Search has no MCP pagination; if truncated, retry with a more targeted keyword/identifier query.",
                     "required": ["truncated", "returned_count", "max_results", "note"],
                     "additionalProperties": false,
                     "properties": {
@@ -121,7 +124,7 @@ impl<'a> From<&'a coral_api::v1::SearchProviderStatus> for ProviderStatusValue<'
     }
 }
 
-#[derive(Default, Serialize)]
+#[derive(Serialize)]
 struct TruncationValue<'a> {
     truncated: bool,
     returned_count: u32,
@@ -129,14 +132,23 @@ struct TruncationValue<'a> {
     note: &'a str,
 }
 
-impl<'a> From<&'a SearchResultTruncation> for TruncationValue<'a> {
-    fn from(truncation: &'a SearchResultTruncation) -> Self {
+impl TruncationValue<'static> {
+    fn empty() -> Self {
         Self {
-            truncated: truncation.truncated,
-            returned_count: truncation.returned_count,
-            max_results: truncation.max_results,
-            note: &truncation.note,
+            truncated: false,
+            returned_count: 0,
+            max_results: 1,
+            note: "",
         }
+    }
+}
+
+fn truncation_value(truncation: &SearchResultTruncation) -> TruncationValue<'_> {
+    TruncationValue {
+        truncated: truncation.truncated,
+        returned_count: truncation.returned_count,
+        max_results: truncation.max_results,
+        note: &truncation.note,
     }
 }
 

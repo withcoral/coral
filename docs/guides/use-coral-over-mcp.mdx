@@ -15,7 +15,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database        |
-| Tool     | `search`         | Route clues to likely catalog items, columns, filters, and native search paths |
+| Tool     | `search`         | Find likely catalog items, columns, filters, observed values, and native search paths |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
@@ -37,12 +37,14 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 - For table functions, use `sql_call_example` and fill in the required arguments.
 - Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 
-**`search`**: one-query clue routing over Coral discovery metadata.
+**`search`**: one-query discovery over Coral metadata, previously observed values, and native search paths.
 
 - Arguments: required `query` only.
-- Returns typed hints such as `catalog_item`, `column_hint`, and `native_search_path`, plus provider-status and truncation metadata.
-- Use it when the agent has a clue but does not know which source, table, table function, column, or filter to try first.
-- Results are not evidence. Agents must verify useful hints with ordinary `sql` queries or explicit table-function calls before answering.
+- Returns typed hints such as `catalog_item`, `column_hint`, `observed_value`, and `native_search_path`, plus provider-status and truncation metadata.
+- Use it to turn a plain-text query, identifier, or phrase into candidate sources, SQL surfaces, columns, filters, or table-function calls.
+- Provider-status metadata reports provider coverage and errors before final global ranking/truncation. `results_found` means a provider produced candidates, not that one of those candidates must appear in the returned `results` window.
+- The MCP search tool is not paginated. If results are truncated or a provider reports matches without returned rows, retry with a more targeted keyword/identifier query instead of paging.
+- Use the returned `sql_reference` or `sql_call_example` with the `sql` tool when you need current source rows.
 
 **`describe_table`**: compact metadata for one table.
 
@@ -260,7 +262,7 @@ The agent should call `search`, `list_catalog`, or query `coral.tables` and `cor
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database        |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
-| Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
+| Tool     | `search`         | Find likely catalog items, columns, filters, observed values, and native search paths |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
 | Resource | `coral://guide`  | Database workflow guide for agents                     |
@@ -281,9 +283,12 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 - For table functions, use `sql_call_example` and fill in the required arguments.
 - Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 
-**`search_catalog`**: deterministic regex matching over database catalog metadata.
+**`search`**: one-query clue routing over Coral discovery metadata and local search indexes.
 
-- Arguments: required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, `offset`.
+- Arguments: required `query` only.
+- Returns typed hints such as `catalog_item`, `column_hint`, `observed_value`, and `native_search_path`, plus provider-status and truncation metadata.
+- Use it when the agent has a clue but does not know which source, table, table function, column, or filter to try first.
+- Results are not evidence. Agents must verify useful hints with ordinary `sql` queries or explicit table-function calls before answering.
 
 **`describe_table`**: compact metadata for one table.
 
@@ -294,7 +299,7 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 
 - Arguments: exact `schema` and `table`, plus optional `pattern`, `ignore_case`, `required_only`, `limit`, `offset`.
 - For existing tables, returns a `columns` page with `total`, `has_more`, and optional `next_offset`. When `pattern` is set, matching rows include `matched_fields` so clients can explain why a column matched.
-- When the requested table does not exist, returns `found: false` with recovery hints instead of an empty page. Clients should branch to `search_catalog` or `list_catalog` rather than pretending the table has zero columns.
+- When the requested table does not exist, returns `found: false` with recovery hints instead of an empty page. Clients should branch to `search` or `list_catalog` rather than pretending the table has zero columns.
 
 ### Richer metadata when using SQL tool
 

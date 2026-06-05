@@ -417,7 +417,8 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .expect("search description");
     assert!(search_tool_description.contains("plain-text keyword/identifier query"));
     assert!(search_tool_description.contains("not SQL, regex, wildcard, boolean"));
-    assert!(search_tool_description.contains("Current release searches catalog metadata"));
+    assert!(search_tool_description.contains("Catalog matches cover schema names"));
+    assert!(search_tool_description.contains("Observed-value matches can also return values"));
     for tool in &initial_tools {
         let Some(output_schema) = &tool.output_schema else {
             continue;
@@ -960,7 +961,7 @@ async fn list_catalog_surfaces_table_functions() {
                 && result["name"] == "searchy.search_issues"
                 && result["sql_call_example"]
                     .as_str()
-                    .is_some_and(|example| example.contains("q => '<q>'")))
+                    .is_some_and(|example| example.contains("\"q\" => '<q>'")))
     );
     assert!(
         universal_search["results"]

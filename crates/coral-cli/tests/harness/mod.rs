@@ -26,13 +26,14 @@ use coral_api::v1::{
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    NativeSearchPath, PaginationRequest, PaginationResponse, QueryPlan, SearchProvider,
-    SearchProviderState, SearchProviderStatus, SearchRequest, SearchResponse, SearchResult,
-    SearchResultTruncation, SearchResultType, SearchSurfaceKind, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableFunction,
-    TableFunctionArgument, TableFunctionResultColumn, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    import_source_response, search_result, source_input_spec::Input as ProtoSourceInput,
+    NativeSearchPath, PaginationRequest, PaginationResponse, QueryPlan, SearchFieldRole,
+    SearchLimits, SearchProvider, SearchProviderState, SearchProviderStatus, SearchRequest,
+    SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table,
+    TableFunction, TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_o_auth_response, import_source_response, search_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tempfile::TempDir;
@@ -145,9 +146,12 @@ fn mock_search_function() -> TableFunction {
             nullable: false,
             description: "Issue title".to_string(),
         }],
-        kind: "search".to_string(),
-        search_limits_json: r#"{"default_top_k":10,"max_top_k":100,"max_calls_per_query":1}"#
-            .to_string(),
+        kind: TableFunctionKind::Search as i32,
+        search_limits: Some(SearchLimits {
+            default_top_k: 10,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        }),
     }
 }
 
@@ -322,15 +326,15 @@ fn mock_search_response() -> SearchResponse {
     SearchResponse {
         results: vec![
             SearchResult {
-                r#type: SearchResultType::NativeSearchPath as i32,
+                provider: SearchProvider::CatalogMetadata as i32,
                 payload: Some(search_result::Payload::NativeSearchPath(NativeSearchPath {
                     table_function: Some(mock_search_function()),
-                    sql_call_example: "github.search_issues(q => '<q>')".to_string(),
+                    sql_call_example: "github.search_issues(\"q\" => '<q>')".to_string(),
                     matched_fields: vec!["description".to_string()],
                 })),
             },
             SearchResult {
-                r#type: SearchResultType::ColumnHint as i32,
+                provider: SearchProvider::CatalogMetadata as i32,
                 payload: Some(search_result::Payload::ColumnHint(ColumnHint {
                     workspace: Some(workspace()),
                     schema_name: "github".to_string(),
@@ -341,6 +345,7 @@ fn mock_search_response() -> SearchResponse {
                     required: false,
                     description: "Issue title".to_string(),
                     matched_fields: vec!["description".to_string()],
+                    field_role: SearchFieldRole::TableColumn as i32,
                 })),
             },
         ],

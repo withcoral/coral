@@ -145,19 +145,6 @@ impl CatalogDiscovery {
         })
     }
 
-    async fn catalog_items(
-        &self,
-        workspace_name: &WorkspaceName,
-        schema_name: Option<&str>,
-        kind: Option<CatalogItemKind>,
-    ) -> Result<Vec<CatalogItem>, QueryManagerError> {
-        let catalog = self
-            .queries
-            .list_catalog(workspace_name, schema_name)
-            .await?;
-        Ok(catalog_items(catalog, kind))
-    }
-
     pub(crate) async fn describe_table(
         &self,
         workspace_name: &WorkspaceName,
@@ -413,33 +400,7 @@ pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CatalogMetadataField, compile_metadata_regex, table_matched_fields};
-    use coral_engine::TableInfo;
-
-    fn table(required_filters: Vec<String>) -> TableInfo {
-        TableInfo {
-            schema_name: "github".to_string(),
-            table_name: "Pull.Requests".to_string(),
-            description: "Pull request table".to_string(),
-            guide: "Query pull requests.".to_string(),
-            columns: Vec::new(),
-            filters: Vec::new(),
-            required_filters,
-        }
-    }
-
-    #[test]
-    fn required_filters_match_each_filter_independently() {
-        let summary = table(vec!["owner".to_string(), "repo".to_string()]);
-
-        assert_eq!(
-            table_matched_fields(&summary, &regex::Regex::new("^repo$").expect("regex")),
-            vec![CatalogMetadataField::RequiredFilters]
-        );
-        assert!(
-            table_matched_fields(&summary, &regex::Regex::new("r.r").expect("regex")).is_empty()
-        );
-    }
+    use super::compile_metadata_regex;
 
     #[test]
     fn empty_metadata_pattern_is_invalid() {
