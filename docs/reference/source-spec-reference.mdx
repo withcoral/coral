@@ -628,7 +628,10 @@ introspect MCP tools at query time.
 DSL v4 preview manifests can also declare MCP surfaces. In v4, Coral discovers
 the MCP server's tool catalog during `coral source add`, materializes generated
 projections, and then queries only those installed artifacts. Re-add the source
-when the server's tool catalog changes.
+when the server's tool catalog changes. If generated MCP projection names
+collide with generated REST projection names in the same source, Coral keeps the
+REST projection name and renames the MCP projection with a stable collision
+suffix.
 
 ```yaml
 name: github_v4

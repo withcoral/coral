@@ -358,31 +358,14 @@ fn single_array_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
-    use crate::parse_source_manifest_yaml;
     use crate::v4::{ProjectionVisibility, generate_projection_catalog};
+    use crate::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
-    fn tool(name: &str, read_only_hint: Option<bool>) -> McpToolDescriptor {
-        McpToolDescriptor {
-            name: name.to_string(),
-            title: None,
-            description: None,
-            input_schema: json!({"type": "object", "properties": {}}),
-            output_schema: Some(json!({
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"}
-                }
-            })),
-            read_only_hint,
-        }
-    }
-
-    #[test]
-    fn omitted_read_only_hint_keeps_mcp_projection_hidden() {
-        let manifest = parse_source_manifest_yaml(
+    fn manifest() -> ValidatedSourceManifest {
+        parse_source_manifest_yaml(
             r"
 name: demo
 dsl_version: 4
@@ -394,7 +377,216 @@ surfaces:
       command: demo-mcp-server
 ",
         )
-        .expect("manifest");
+        .expect("manifest")
+    }
+
+    fn tool(name: &str, read_only_hint: Option<bool>) -> McpToolDescriptor {
+        tool_with_schemas(
+            name,
+            json!({"type": "object", "properties": {}}),
+            Some(json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"}
+                }
+            })),
+            read_only_hint,
+        )
+    }
+
+    fn tool_with_schemas(
+        name: &str,
+        input_schema: Value,
+        output_schema: Option<Value>,
+        read_only_hint: Option<bool>,
+    ) -> McpToolDescriptor {
+        McpToolDescriptor {
+            name: name.to_string(),
+            title: None,
+            description: None,
+            input_schema,
+            output_schema,
+            read_only_hint,
+        }
+    }
+
+    fn import_catalog(catalog: &McpToolCatalog) -> SemanticIr {
+        let manifest = manifest();
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("surface");
+        import_mcp_surface(v4, surface, catalog).expect("import")
+    }
+
+    fn operation<'a>(ir: &'a SemanticIr, id: &str) -> &'a IrOperation {
+        ir.operations
+            .iter()
+            .find(|operation| operation.id == id)
+            .expect("operation")
+    }
+
+    fn row_fields<'a>(ir: &'a SemanticIr, type_id: &str) -> &'a [IrField] {
+        let row_type = ir
+            .types
+            .iter()
+            .find(|ty| ty.id == type_id)
+            .expect("row type");
+        let IrTypeShape::Object { fields } = &row_type.shape else {
+            panic!("row type should be an object");
+        };
+        fields
+    }
+
+    fn field<'a>(fields: &'a [IrField], name: &str) -> &'a IrField {
+        fields
+            .iter()
+            .find(|field| field.name == name)
+            .expect("field")
+    }
+
+    #[test]
+    fn imports_input_schema_types_required_flags_and_defaults() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": ["string", "null"], "description": "Search query"},
+                        "limit": {"type": "integer", "default": 10},
+                        "exact": {"type": "boolean", "default": true},
+                        "since": {"type": "string", "format": "date-time"}
+                    },
+                    "required": ["query"]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        let query = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "query")
+            .expect("query input");
+        assert_eq!(query.data_type, IrScalarType::String);
+        assert!(query.required);
+        assert_eq!(query.description, "Search query");
+
+        let limit = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "limit")
+            .expect("limit input");
+        assert_eq!(limit.data_type, IrScalarType::Integer);
+        assert_eq!(limit.default_value.as_deref(), Some("10"));
+
+        let exact = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "exact")
+            .expect("exact input");
+        assert_eq!(exact.data_type, IrScalarType::Boolean);
+        assert_eq!(exact.default_value.as_deref(), Some("true"));
+
+        let since = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "since")
+            .expect("since input");
+        assert_eq!(since.data_type, IrScalarType::Timestamp);
+    }
+
+    #[test]
+    fn imports_output_cardinalities_and_row_types() {
+        let catalog = McpToolCatalog {
+            tools: vec![
+                tool_with_schemas(
+                    "list-items",
+                    json!({"type": "object", "properties": {}}),
+                    Some(json!({
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "Item id"},
+                                "count": {"type": ["integer", "null"]}
+                            },
+                            "required": ["id"]
+                        }
+                    })),
+                    Some(true),
+                ),
+                tool_with_schemas(
+                    "wrapped-items",
+                    json!({"type": "object", "properties": {}}),
+                    Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "enabled": {"type": "boolean"}
+                                    }
+                                }
+                            }
+                        }
+                    })),
+                    Some(true),
+                ),
+                tool("get-item", Some(true)),
+                tool_with_schemas(
+                    "no-schema",
+                    json!({"type": "object", "properties": {}}),
+                    None,
+                    Some(true),
+                ),
+            ],
+        };
+
+        let ir = import_catalog(&catalog);
+
+        let list_items = operation(&ir, "list_items");
+        assert_eq!(list_items.output.cardinality, OutputCardinality::List);
+        let list_fields = row_fields(&ir, "list_items_row");
+        let id = field(list_fields, "id");
+        assert_eq!(id.type_ref, "mcp_string");
+        assert!(id.required);
+        assert!(!id.nullable);
+        assert_eq!(id.description, "Item id");
+        let count = field(list_fields, "count");
+        assert_eq!(count.type_ref, "mcp_integer");
+        assert!(!count.required);
+        assert!(count.nullable);
+        assert!(list_fields.iter().any(|field| field.name == "raw"));
+
+        let wrapped_items = operation(&ir, "wrapped_items");
+        assert_eq!(
+            wrapped_items.output.cardinality,
+            OutputCardinality::WrappedList
+        );
+        assert_eq!(wrapped_items.output.row_path, vec!["items".to_string()]);
+        let wrapped_fields = row_fields(&ir, "wrapped_items_row");
+        assert_eq!(field(wrapped_fields, "enabled").type_ref, "mcp_boolean");
+
+        let get_item = operation(&ir, "get_item");
+        assert_eq!(get_item.output.cardinality, OutputCardinality::Singleton);
+        let get_item_fields = row_fields(&ir, "get_item_row");
+        assert_eq!(field(get_item_fields, "id").type_ref, "mcp_string");
+
+        let no_schema = operation(&ir, "no_schema");
+        assert_eq!(no_schema.output.cardinality, OutputCardinality::Singleton);
+        let generic_fields = row_fields(&ir, "no_schema_row");
+        assert_eq!(field(generic_fields, "result").type_ref, "mcp_json");
+        assert_eq!(field(generic_fields, "raw").type_ref, "mcp_json");
+    }
+
+    #[test]
+    fn omitted_read_only_hint_keeps_mcp_projection_hidden() {
+        let manifest = manifest();
         let v4 = manifest.as_v4().expect("v4");
         let surface = v4.surfaces.first().expect("surface");
         let catalog = McpToolCatalog {
@@ -413,19 +605,7 @@ surfaces:
 
     #[test]
     fn rejects_mcp_tools_that_collide_after_operation_id_normalization() {
-        let manifest = parse_source_manifest_yaml(
-            r"
-name: demo
-dsl_version: 4
-surfaces:
-  - id: mcp
-    type: mcp
-    server:
-      transport: stdio
-      command: demo-mcp-server
-",
-        )
-        .expect("manifest");
+        let manifest = manifest();
         let v4 = manifest.as_v4().expect("v4");
         let surface = v4.surfaces.first().expect("surface");
         let catalog = McpToolCatalog {

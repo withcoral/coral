@@ -215,6 +215,9 @@ fn projection_input_sql_exposure(
 
 fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
     if matches!(&operation.execution, IrExecutionAttachment::Mcp(_)) {
+        // MCP output schemas drive row cardinality and response extraction, but
+        // SQL columns stay opaque until Coral has stable per-tool payload
+        // normalization semantics.
         return vec![
             ProjectionColumn {
                 name: "result".to_string(),

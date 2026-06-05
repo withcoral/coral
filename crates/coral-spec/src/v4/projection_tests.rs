@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use serde_json::json;
+
 use super::naming::{pluralize, singularize};
 use super::test_support::github_openapi;
 use super::*;
@@ -371,6 +373,132 @@ components:
     assert_eq!(
         projection_collision_diagnostics,
         catalog_collision_diagnostics.len()
+    );
+}
+
+fn rest_mcp_collision_manifest() -> crate::ValidatedSourceManifest {
+    parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+  - id: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect("manifest")
+}
+
+fn rest_search_openapi() -> &'static [u8] {
+    r"
+openapi: 3.0.3
+paths:
+  /search/issues:
+    get:
+      operationId: issues/search
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
+                        title: {type: string}
+"
+    .as_bytes()
+}
+
+fn search_issues_mcp_catalog() -> McpToolCatalog {
+    McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "search_issues".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer"},
+                                "title": {"type": "string"}
+                            }
+                        }
+                    }
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    }
+}
+
+#[test]
+fn rest_projection_keeps_name_when_mcp_projection_collides() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let rest_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "rest")
+        .expect("rest surface");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let rest_ir =
+        import_openapi_surface(v4, rest_surface, rest_search_openapi()).expect("rest import");
+    let mcp_ir =
+        import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
+
+    let catalog = generate_projection_catalog(v4, &[rest_ir, mcp_ir]).expect("catalog");
+    let rest_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| {
+            projection.surface_id == "rest" && projection.operation_id == "issues_search"
+        })
+        .expect("rest search projection");
+    assert_eq!(rest_projection.name, "search_issues");
+
+    let mcp_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| {
+            projection.surface_id == "mcp" && projection.operation_id == "search_issues"
+        })
+        .expect("mcp search projection");
+    assert_ne!(mcp_projection.name, "search_issues");
+    assert!(mcp_projection.name.starts_with("search_issues__"));
+    assert!(
+        mcp_projection
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED" })
     );
 }
 

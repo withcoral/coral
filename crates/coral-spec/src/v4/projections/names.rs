@@ -108,14 +108,19 @@ fn projection_name_priority(
     projection: &Projection,
     operation: Option<&IrOperation>,
     index: usize,
-) -> (bool, bool, usize, usize, usize) {
+) -> (bool, bool, bool, usize, usize, usize) {
     (
         projection.visibility != ProjectionVisibility::Published,
+        discovered_mcp_operation(operation),
         !matches!(projection.kind, ProjectionKind::Table),
         operation.map_or(usize::MAX, required_input_count),
         operation.map_or(usize::MAX, rest_literal_path_depth),
         index,
     )
+}
+
+fn discovered_mcp_operation(operation: Option<&IrOperation>) -> bool {
+    operation.is_none_or(|operation| matches!(&operation.execution, IrExecutionAttachment::Mcp(_)))
 }
 
 fn required_input_count(operation: &IrOperation) -> usize {

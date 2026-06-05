@@ -87,7 +87,7 @@ impl StdioMcpToolCaller {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::null());
 
         for (name, value) in self.resolved_server_env().await? {
             command.env(name, value);
@@ -183,7 +183,7 @@ impl StdioMcpToolCaller {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::null());
 
         for (name, value) in self.resolved_server_env().await? {
             command.env(name, value);

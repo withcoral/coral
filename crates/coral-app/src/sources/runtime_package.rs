@@ -316,6 +316,9 @@ fn mcp_response_for_operation(operation: &coral_spec::v4::IrOperation) -> Respon
 }
 
 fn mcp_filter_bindings(projection: &Projection) -> Vec<McpTableFilterBinding> {
+    // MCP tables currently come only from no-input tools, so this is empty in
+    // generated v4 packages. Keep the mapping here for the first projection
+    // rule that publishes filter-backed MCP tables.
     projection
         .inputs
         .iter()
