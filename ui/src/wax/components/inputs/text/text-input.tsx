@@ -42,7 +42,12 @@ export function TextInput({
     <Field.Root disabled={disabled}>
       <div className={styles.container}>
         {icon && (
-          <Icon className={styles.iconWrapper} color={disabled ? 'disabled' : 'placeholder'} name={icon} size="20" />
+          <Icon
+            className={styles.iconWrapper}
+            color={disabled ? 'disabled' : 'placeholder'}
+            name={icon}
+            size="20"
+          />
         )}
         <Field.Control
           autoFocus={autoFocus}

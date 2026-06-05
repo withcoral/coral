@@ -1,0 +1,1017 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Coral DSL v4 Source Manifest",
+  "type": "object",
+  "properties": {
+    "dsl_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "const": 4
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "test_queries": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/V4SurfaceSchema"
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "dsl_version",
+    "name",
+    "surfaces"
+  ],
+  "$defs": {
+    "V4SurfaceSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "type": {
+          "$ref": "#/$defs/V4SurfaceTypeSchema"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/V4InputSpecSchema"
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        },
+        "base_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auth": {
+          "$ref": "#/$defs/AuthSpec",
+          "default": {
+            "type": "HeaderAuth",
+            "headers": []
+          }
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeaderSpec"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/RateLimitSpec",
+          "default": {
+            "extra_statuses": [],
+            "retry_after_header": null,
+            "remaining_header": null,
+            "reset_header": null
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "url"
+          ]
+        },
+        {
+          "required": [
+            "file"
+          ]
+        }
+      ]
+    },
+    "V4SurfaceTypeSchema": {
+      "type": "string",
+      "enum": [
+        "openapi"
+      ]
+    },
+    "V4InputSpecSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "default": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "hint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "variable"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "hint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "credential": true,
+            "kind": {
+              "type": "string",
+              "const": "secret"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "AuthSpec": {
+      "description": "Source-level authentication requirements for HTTP-backed source specs.",
+      "oneOf": [
+        {
+          "description": "HTTP Basic authentication; runtime base64-encodes `username:password`.",
+          "type": "object",
+          "properties": {
+            "username": {
+              "$ref": "#/$defs/ParsedTemplate"
+            },
+            "password": {
+              "$ref": "#/$defs/ParsedTemplate"
+            },
+            "type": {
+              "type": "string",
+              "const": "BasicAuth"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "username",
+            "password"
+          ]
+        },
+        {
+          "description": "Declarative list of auth headers to attach to the request.",
+          "type": "object",
+          "properties": {
+            "headers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/HeaderSpec"
+              },
+              "default": []
+            },
+            "type": {
+              "type": "string",
+              "const": "HeaderAuth"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Dispatches auth header resolution to a runtime-registered authenticator.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "CustomAuth"
+            }
+          },
+          "$ref": "#/$defs/CustomAuthSpec",
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "ParsedTemplate": {
+      "type": "string"
+    },
+    "HeaderSpec": {
+      "description": "One request or auth header declared in the source spec.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "template": {
+              "$ref": "#/$defs/ParsedTemplate"
+            },
+            "from": {
+              "type": "string",
+              "const": "template"
+            }
+          },
+          "required": [
+            "from",
+            "template"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "values": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ValueSourceSpec"
+              }
+            },
+            "from": {
+              "type": "string",
+              "const": "one_of"
+            }
+          },
+          "required": [
+            "from",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": true,
+            "from": {
+              "type": "string",
+              "const": "literal"
+            }
+          },
+          "required": [
+            "from",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_int"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "separator": {
+              "type": "string"
+            },
+            "part": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_split"
+            }
+          },
+          "required": [
+            "from",
+            "key",
+            "separator",
+            "part"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "separator": {
+              "type": "string"
+            },
+            "part": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_split_int"
+            }
+          },
+          "required": [
+            "from",
+            "key",
+            "separator",
+            "part"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "arg"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "arg_int"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "arg_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "separator": {
+              "type": "string"
+            },
+            "part": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "from": {
+              "type": "string",
+              "const": "arg_split"
+            }
+          },
+          "required": [
+            "from",
+            "key",
+            "separator",
+            "part"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "separator": {
+              "type": "string"
+            },
+            "part": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "from": {
+              "type": "string",
+              "const": "arg_split_int"
+            }
+          },
+          "required": [
+            "from",
+            "key",
+            "separator",
+            "part"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string",
+              "const": "input"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string",
+              "const": "bearer"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string",
+              "const": "state"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "from": {
+              "type": "string",
+              "const": "now_epoch_minus_seconds"
+            }
+          },
+          "required": [
+            "from",
+            "seconds"
+          ]
+        }
+      ]
+    },
+    "ValueSourceSpec": {
+      "description": "How a source-spec request value is populated at runtime.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "template": {
+              "$ref": "#/$defs/ParsedTemplate"
+            },
+            "from": {
+              "type": "string",
+              "const": "template"
+            }
+          },
+          "required": [
+            "from",
+            "template"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "values": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ValueSourceSpec"
+              }
+            },
+            "from": {
+              "type": "string",
+              "const": "one_of"
+            }
+          },
+          "required": [
+            "from",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": true,
+            "from": {
+              "type": "string",
+              "const": "literal"
+            }
+          },
+          "required": [
+            "from",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_int"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "separator": {
+              "type": "string"
+            },
+            "part": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_split"
+            }
+          },
+          "required": [
+            "from",
+            "key",
+            "separator",
+            "part"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "separator": {
+              "type": "string"
+            },
+            "part": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_split_int"
+            }
+          },
+          "required": [
+            "from",
+            "key",
+            "separator",
+            "part"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "arg"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "arg_int"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "arg_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "separator": {
+              "type": "string"
+            },
+            "part": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "from": {
+              "type": "string",
+              "const": "arg_split"
+            }
+          },
+          "required": [
+            "from",
+            "key",
+            "separator",
+            "part"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "separator": {
+              "type": "string"
+            },
+            "part": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "from": {
+              "type": "string",
+              "const": "arg_split_int"
+            }
+          },
+          "required": [
+            "from",
+            "key",
+            "separator",
+            "part"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string",
+              "const": "input"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string",
+              "const": "bearer"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string",
+              "const": "state"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "seconds": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "from": {
+              "type": "string",
+              "const": "now_epoch_minus_seconds"
+            }
+          },
+          "required": [
+            "from",
+            "seconds"
+          ]
+        }
+      ]
+    },
+    "CustomAuthSpec": {
+      "description": "Dispatches to a runtime-registered request authenticator by name.",
+      "type": "object",
+      "properties": {
+        "authenticator": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "authenticator"
+      ],
+      "additionalProperties": true
+    },
+    "RateLimitSpec": {
+      "description": "Provider-specific response hints for classifying and delaying rate-limit retries.",
+      "type": "object",
+      "properties": {
+        "extra_statuses": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "default": []
+        },
+        "retry_after_header": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "remaining_header": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "reset_header": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$id": "https://coral.local/source_manifest_v4.schema.json"
+}

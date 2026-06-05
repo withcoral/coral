@@ -3,6 +3,7 @@
     reason = "Integration test crates share this harness, but each target only uses a subset of the helpers."
 )]
 
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -16,8 +17,8 @@ use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
-    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
+    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
     DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
@@ -25,12 +26,13 @@ use coral_api::v1::{
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
     PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
+    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
+use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -54,6 +56,7 @@ fn mock_source() -> Source {
         secrets: Vec::new(),
         variables: Vec::new(),
         origin: SourceOrigin::Bundled as i32,
+        credential_storage: SourceCredentialStorage::File as i32,
     }
 }
 
@@ -285,6 +288,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
+                credential_storage: SourceCredentialStorage::File as i32,
             },
             SourceInfo {
                 name: "slack".to_string(),
@@ -293,6 +297,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 inputs: Vec::new(),
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
+                credential_storage: SourceCredentialStorage::Unspecified as i32,
             },
         ],
     }
@@ -326,6 +331,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             }],
             installed: true,
             origin: SourceOrigin::Bundled as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
         }),
         "slack" => Ok(SourceInfo {
             name: "slack".to_string(),
@@ -334,6 +340,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             inputs: Vec::new(),
             installed: false,
             origin: SourceOrigin::Bundled as i32,
+            credential_storage: SourceCredentialStorage::Unspecified as i32,
         }),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
@@ -342,6 +349,16 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             inputs: Vec::new(),
             installed: true,
             origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
+        }),
+        "versionless" => Ok(SourceInfo {
+            name: "versionless".to_string(),
+            description: String::new(),
+            version: String::new(),
+            inputs: Vec::new(),
+            installed: true,
+            origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
@@ -442,6 +459,7 @@ impl Default for MockServerConfig {
                         secrets: Vec::new(),
                         variables: Vec::new(),
                         origin: SourceOrigin::Bundled as i32,
+                        credential_storage: SourceCredentialStorage::File as i32,
                     },
                     Source {
                         workspace: Some(workspace()),
@@ -450,6 +468,7 @@ impl Default for MockServerConfig {
                         secrets: Vec::new(),
                         variables: Vec::new(),
                         origin: SourceOrigin::Imported as i32,
+                        credential_storage: SourceCredentialStorage::File as i32,
                     },
                 ],
             }),
@@ -524,9 +543,13 @@ impl MockServerConfig {
 }
 
 fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
-    let items = mock_visible_tables()
+    let tables = mock_visible_tables()
         .into_iter()
         .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
+        .collect::<Vec<_>>();
+    let table_count = u32::try_from(tables.len()).unwrap_or(u32::MAX);
+    let items = tables
+        .into_iter()
         .filter(|_| request.kind == 0 || request.kind == 1)
         .map(|table| CatalogItem {
             item: Some(catalog_item::Item::Table(table_summary(&table))),
@@ -542,6 +565,10 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
     ListCatalogResponse {
         items,
         pagination: Some(pagination),
+        counts: Some(CatalogCounts {
+            table_count,
+            table_function_count: 0,
+        }),
     }
 }
 
@@ -945,6 +972,7 @@ impl SourceService for MockSourceService {
 
 pub(crate) struct MockServer {
     endpoint_uri: String,
+    config_dir: TempDir,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), tonic::transport::Error>>,
     captured: Arc<Captured>,
@@ -987,6 +1015,7 @@ impl MockServer {
         });
         Self {
             endpoint_uri,
+            config_dir: TempDir::new().expect("mock server config dir"),
             shutdown_tx: Some(shutdown_tx),
             task,
             captured,
@@ -1005,7 +1034,12 @@ impl MockServer {
     pub(crate) fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
+        cmd.env("CORAL_CONFIG_DIR", self.config_dir.path());
         cmd
+    }
+
+    pub(crate) fn config_dir(&self) -> &Path {
+        self.config_dir.path()
     }
 
     pub(crate) fn execute_sql_requests(&self) -> Vec<ExecuteSqlRequest> {
@@ -1085,6 +1119,14 @@ impl MockServer {
             .delete_source
             .lock()
             .expect("delete_source capture")
+            .clone()
+    }
+
+    pub(crate) fn import_source_requests(&self) -> Vec<ImportSourceRequest> {
+        self.captured
+            .import_source
+            .lock()
+            .expect("import_source capture")
             .clone()
     }
 
