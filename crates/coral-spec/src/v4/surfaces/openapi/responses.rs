@@ -20,9 +20,11 @@ impl OpenApiImporter<'_> {
         RestResponseAttachment,
         Option<IrEntityCandidate>,
     ) {
-        let Some((status_code, media_type, schema)) =
-            select_json_response(operation.get("responses").and_then(Value::as_object))
-        else {
+        let Some((status_code, media_type, schema)) = self.select_json_response(
+            operation.get("responses").and_then(Value::as_object),
+            operation_id,
+            diagnostics,
+        ) else {
             let response = ResponseSpec::default();
             return (
                 IrOperationOutput {
@@ -39,7 +41,7 @@ impl OpenApiImporter<'_> {
             );
         };
 
-        let Some(resolved) = self.resolve_ref(schema, operation_id, diagnostics) else {
+        let Some(resolved) = self.resolve_ref(&schema, operation_id, diagnostics) else {
             diagnostics.push(Diagnostic::warning(
                 "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
                 format!("operation '{operation_id}' response schema could not be resolved"),
@@ -95,27 +97,78 @@ impl OpenApiImporter<'_> {
             entity,
         )
     }
+    fn select_json_response(
+        &self,
+        responses: Option<&Map<String, Value>>,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<(u16, String, Value)> {
+        let responses = responses?;
+        let mut numeric_candidates = Vec::new();
+        let mut range_candidates = Vec::new();
+        for (status, response) in responses {
+            let Some(status) = success_response_status(status) else {
+                continue;
+            };
+            let Some(response) = self.resolve_ref(response, operation_id, diagnostics) else {
+                continue;
+            };
+            let Some(content) = response.get("content").and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(json) = content.get("application/json") else {
+                continue;
+            };
+            let schema = json.get("schema").cloned().unwrap_or(Value::Null);
+            let candidate = (
+                status.representative_status_code(),
+                "application/json".to_string(),
+                schema,
+            );
+            if status.is_range() {
+                range_candidates.push(candidate);
+            } else {
+                numeric_candidates.push(candidate);
+            }
+        }
+        preferred_numeric_response(numeric_candidates)
+            .or_else(|| range_candidates.into_iter().next())
+    }
 }
 
-fn select_json_response(responses: Option<&Map<String, Value>>) -> Option<(u16, String, &Value)> {
-    let responses = responses?;
-    let mut candidates = Vec::new();
-    for (status, response) in responses {
-        let Ok(status_code) = status.parse::<u16>() else {
-            continue;
-        };
-        if !(200..300).contains(&status_code) {
-            continue;
+#[derive(Debug, Clone, Copy)]
+enum SuccessResponseStatus {
+    Numeric(u16),
+    Range2xx,
+}
+
+impl SuccessResponseStatus {
+    fn representative_status_code(self) -> u16 {
+        match self {
+            Self::Numeric(status_code) => status_code,
+            Self::Range2xx => 200,
         }
-        let Some(content) = response.get("content").and_then(Value::as_object) else {
-            continue;
-        };
-        let Some(json) = content.get("application/json") else {
-            continue;
-        };
-        let schema = json.get("schema").unwrap_or(&Value::Null);
-        candidates.push((status_code, "application/json".to_string(), schema));
     }
+
+    fn is_range(self) -> bool {
+        matches!(self, Self::Range2xx)
+    }
+}
+
+fn success_response_status(status: &str) -> Option<SuccessResponseStatus> {
+    if let Ok(status_code) = status.parse::<u16>() {
+        return (200..300)
+            .contains(&status_code)
+            .then_some(SuccessResponseStatus::Numeric(status_code));
+    }
+    status
+        .eq_ignore_ascii_case("2XX")
+        .then_some(SuccessResponseStatus::Range2xx)
+}
+
+fn preferred_numeric_response(
+    candidates: Vec<(u16, String, Value)>,
+) -> Option<(u16, String, Value)> {
     candidates
         .iter()
         .position(|(status, _, _)| *status == 200)
