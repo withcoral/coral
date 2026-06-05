@@ -241,6 +241,11 @@ This server exposes:
 | Resource | `coral://guide`  | Database workflow guide for agents |
 | Resource | `coral://tables` | Database table summaries         |
 
+Catalog helpers include the `coral` system schema, so `list_catalog`,
+`describe_table`, `list_columns`, and `coral://tables` can discover
+`coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and
+`coral.inputs`.
+
 ## `coral completion <SHELL>`
 
 Generate a shell completion script and write it to standard output. Supported shells are `bash`, `zsh`, `fish`, `elvish`, and `powershell`.
