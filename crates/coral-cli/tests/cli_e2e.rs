@@ -19,7 +19,7 @@ use assert_cmd::Command;
 use coral_api::v1::{
     DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse,
     ResolveBundledSourceHostsResponse, Source, SourceCredentialStorage, SourceInfo,
-    SourceInputSpec, SourceOrigin, SourceVariableInput,
+    SourceInputSpec, SourceOrigin, SourceVariable, SourceVariableInput,
     source_input_spec::Input as ProtoSourceInput,
 };
 use tempfile::tempdir;
@@ -65,6 +65,42 @@ fn assert_default_workspace(workspace: Option<&coral_api::v1::Workspace>) {
         Some("default"),
         "expected default workspace, got {workspace:?}"
     );
+}
+
+const GITLAB_API_BASE_KEY: &str = "GITLAB_API_BASE";
+const GITLAB_API_BASE_VALUE: &str = "https://gitlab.internal/api/v4";
+
+fn gitlab_host_confirmation_config() -> MockServerConfig {
+    MockServerConfig::default()
+        .with_discover_sources(DiscoverSourcesResponse {
+            sources: vec![SourceInfo {
+                name: "gitlab".to_string(),
+                description: "GitLab data".to_string(),
+                version: "1.0.0".to_string(),
+                inputs: vec![SourceInputSpec {
+                    key: GITLAB_API_BASE_KEY.to_string(),
+                    required: false,
+                    hint: "GitLab API base URL".to_string(),
+                    input: Some(ProtoSourceInput::Variable(SourceVariableInput {
+                        default_value: "https://gitlab.com/api/v4".to_string(),
+                    })),
+                }],
+                installed: false,
+                origin: SourceOrigin::Bundled as i32,
+                credential_storage: SourceCredentialStorage::Unspecified as i32,
+            }],
+        })
+        .with_resolve_bundled_source_hosts(ResolveBundledSourceHostsResponse {
+            hosts: vec!["gitlab.internal".to_string()],
+        })
+}
+
+fn assert_single_source_variable(variables: &[SourceVariable], key: &str, value: &str) {
+    let [variable] = variables else {
+        panic!("expected one source variable, got {variables:?}");
+    };
+    assert_eq!(variable.key, key);
+    assert_eq!(variable.value, value);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -796,6 +832,69 @@ surfaces:
     server.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_confirms_hosts_from_local_manifest_variables() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let manifest_file = source_dir.path().join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r#"
+name: local_gitlab
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  GITLAB_API_BASE:
+    kind: variable
+    default: https://gitlab.com/api/v4
+base_url: "{{input.GITLAB_API_BASE}}"
+tables:
+  - name: projects
+    description: Projects
+    request:
+      path: /projects
+"#,
+    )
+    .expect("write manifest");
+
+    let assert = server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+        ])
+        .env(GITLAB_API_BASE_KEY, GITLAB_API_BASE_VALUE)
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("gitlab.internal"),
+        "expected local manifest host in stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("gitlab.com"),
+        "should not confirm default host when env overrides it: {stdout}"
+    );
+    assert!(
+        server.resolve_bundled_source_hosts_requests().is_empty(),
+        "file imports should resolve hosts locally without the bundled host RPC"
+    );
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert_single_source_variable(
+        &requests[0].variables,
+        GITLAB_API_BASE_KEY,
+        GITLAB_API_BASE_VALUE,
+    );
+
+    server.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // Name validation
 // ---------------------------------------------------------------------------
@@ -872,36 +971,12 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_add_confirms_hosts_resolved_from_env_variables() {
-    let server = MockServer::start_with_config(
-        MockServerConfig::default()
-            .with_discover_sources(DiscoverSourcesResponse {
-                sources: vec![SourceInfo {
-                    name: "gitlab".to_string(),
-                    description: "GitLab data".to_string(),
-                    version: "1.0.0".to_string(),
-                    inputs: vec![SourceInputSpec {
-                        key: "GITLAB_API_BASE".to_string(),
-                        required: false,
-                        hint: "GitLab API base URL".to_string(),
-                        input: Some(ProtoSourceInput::Variable(SourceVariableInput {
-                            default_value: "https://gitlab.com/api/v4".to_string(),
-                        })),
-                    }],
-                    installed: false,
-                    origin: SourceOrigin::Bundled as i32,
-                    credential_storage: SourceCredentialStorage::Unspecified as i32,
-                }],
-            })
-            .with_resolve_bundled_source_hosts(ResolveBundledSourceHostsResponse {
-                hosts: vec!["gitlab.internal".to_string()],
-            }),
-    )
-    .await;
+    let server = MockServer::start_with_config(gitlab_host_confirmation_config()).await;
 
     let assert = server
         .cmd()
         .args(["source", "add", "gitlab"])
-        .env("GITLAB_API_BASE", "https://gitlab.internal/api/v4")
+        .env(GITLAB_API_BASE_KEY, GITLAB_API_BASE_VALUE)
         .assert()
         .success();
 
@@ -918,20 +993,18 @@ async fn source_add_confirms_hosts_resolved_from_env_variables() {
     let host_requests = server.resolve_bundled_source_hosts_requests();
     assert_eq!(host_requests.len(), 1, "expected one host resolution call");
     assert_eq!(host_requests[0].name, "gitlab");
-    assert_eq!(host_requests[0].variables.len(), 1);
-    assert_eq!(host_requests[0].variables[0].key, "GITLAB_API_BASE");
-    assert_eq!(
-        host_requests[0].variables[0].value,
-        "https://gitlab.internal/api/v4"
+    assert_single_source_variable(
+        &host_requests[0].variables,
+        GITLAB_API_BASE_KEY,
+        GITLAB_API_BASE_VALUE,
     );
 
     let create_requests = server.create_bundled_source_requests();
     assert_eq!(create_requests.len(), 1, "expected one create call");
-    assert_eq!(create_requests[0].variables.len(), 1);
-    assert_eq!(create_requests[0].variables[0].key, "GITLAB_API_BASE");
-    assert_eq!(
-        create_requests[0].variables[0].value,
-        "https://gitlab.internal/api/v4"
+    assert_single_source_variable(
+        &create_requests[0].variables,
+        GITLAB_API_BASE_KEY,
+        GITLAB_API_BASE_VALUE,
     );
 
     server.shutdown().await;
@@ -939,40 +1012,17 @@ async fn source_add_confirms_hosts_resolved_from_env_variables() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_add_interactive_declining_hosts_does_not_create_source() {
-    let server = MockServer::start_with_config(
-        MockServerConfig::default()
-            .with_discover_sources(DiscoverSourcesResponse {
-                sources: vec![SourceInfo {
-                    name: "gitlab".to_string(),
-                    description: "GitLab data".to_string(),
-                    version: "1.0.0".to_string(),
-                    inputs: vec![SourceInputSpec {
-                        key: "GITLAB_API_BASE".to_string(),
-                        required: false,
-                        hint: "GitLab API base URL".to_string(),
-                        input: Some(ProtoSourceInput::Variable(SourceVariableInput {
-                            default_value: "https://gitlab.com/api/v4".to_string(),
-                        })),
-                    }],
-                    installed: false,
-                    origin: SourceOrigin::Bundled as i32,
-                    credential_storage: SourceCredentialStorage::Unspecified as i32,
-                }],
-            })
-            .with_resolve_bundled_source_hosts(ResolveBundledSourceHostsResponse {
-                hosts: vec!["gitlab.internal".to_string()],
-            }),
-    )
-    .await;
+    let server = MockServer::start_with_config(gitlab_host_confirmation_config()).await;
 
     // GITLAB_API_BASE is supplied via the environment, so the only interactive
     // prompt before secrets is the host confirmation. Drive it through a
     // pseudo-tty and answer "no".
     let command = format!(
-        "env CORAL_ENDPOINT={} CORAL_CONFIG_DIR={} GITLAB_API_BASE={} {} source add --interactive gitlab",
+        "env CORAL_ENDPOINT={} CORAL_CONFIG_DIR={} {}={} {} source add --interactive gitlab",
         sh_quote(server.endpoint_uri()),
         sh_quote(&server.config_dir().display().to_string()),
-        sh_quote("https://gitlab.internal/api/v4"),
+        GITLAB_API_BASE_KEY,
+        sh_quote(GITLAB_API_BASE_VALUE),
         sh_quote(env!("CARGO_BIN_EXE_coral")),
     );
     let shell = format!("printf 'n\\r' | {}", script_command(&command));

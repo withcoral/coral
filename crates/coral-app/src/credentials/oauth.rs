@@ -1147,11 +1147,7 @@ fn basic_client_authorization(client_id: &str, client_secret: &str) -> String {
 
 fn validate_device_verification_url(field: &str, raw: &str) -> Result<(), AppError> {
     let context = format!("OAuth device authorization response {field}");
-    validate_oauth_https_or_loopback_url(&context, raw)
-}
-
-fn validate_oauth_https_or_loopback_url(context: &str, raw: &str) -> Result<(), AppError> {
-    coral_spec::validate_https_or_loopback_url(context, raw).map_err(AppError::FailedPrecondition)
+    coral_spec::validate_https_or_loopback_url(&context, raw).map_err(AppError::FailedPrecondition)
 }
 
 fn parse_token_response(body: &str) -> Result<TokenResponse, AppError> {
@@ -1352,7 +1348,8 @@ fn oauth_refresh_config(
         .unwrap_or_else(|| oauth.token_url.clone());
     let token_url_context =
         format!("OAuth refresh token URL for source secret '{access_token_material_key}'");
-    validate_oauth_https_or_loopback_url(&token_url_context, &token_url)?;
+    coral_spec::validate_https_or_loopback_url(&token_url_context, &token_url)
+        .map_err(AppError::FailedPrecondition)?;
     let client_secret_transport = material
         .get(&format!("{metadata_prefix}client_secret_transport"))
         .map(|value| {
@@ -1468,8 +1465,8 @@ mod tests {
         AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthSessionCommon,
         RefreshOAuthCredentialRequest, StartOAuthCredentialRequest, basic_client_authorization,
         join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
-        parse_device_authorization_response, parse_token_response, pkce_challenge,
-        receive_callback, request_device_code,
+        oauth_refresh_config, parse_device_authorization_response, parse_token_response,
+        pkce_challenge, receive_callback, request_device_code,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -1542,29 +1539,12 @@ mod tests {
             &fixture.token_url,
             free_loopback_port(),
             ManifestOAuthPkceMode::Disabled,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
+            default_public_client(),
         );
         let prefix = oauth_metadata_prefix("API_TOKEN");
-        let mut material = BTreeMap::from([
-            ("API_TOKEN".to_string(), "expired-token".to_string()),
-            (format!("{prefix}method"), "oauth".to_string()),
-            (
-                format!("{prefix}access_token_expires_at"),
-                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            ),
-            (
-                format!("{prefix}refresh_token"),
-                "stored-refresh-token".to_string(),
-            ),
-            (format!("{prefix}client_id"), "stored-client".to_string()),
-            (format!("{prefix}token_url"), fixture.token_url.clone()),
-        ]);
+        let mut material = expired_refresh_material(&prefix, &fixture.token_url);
+        material.insert("API_TOKEN".to_string(), "expired-token".to_string());
+        material.insert(format!("{prefix}client_id"), "stored-client".to_string());
         let service = OAuthCredentialService::new();
 
         let refreshed = service
@@ -1602,57 +1582,26 @@ mod tests {
         assert!(captured.authorization.is_none());
     }
 
-    #[tokio::test]
-    async fn expired_oauth_material_rejects_stored_plain_http_token_url() {
+    #[test]
+    fn oauth_refresh_config_rejects_stored_plain_http_token_url() {
         let oauth = oauth_spec(
             "https://provider.example.com/token",
             free_loopback_port(),
             ManifestOAuthPkceMode::Disabled,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
+            default_public_client(),
         );
         let prefix = oauth_metadata_prefix("API_TOKEN");
-        let mut material = BTreeMap::from([
-            ("API_TOKEN".to_string(), "expired-token".to_string()),
-            (format!("{prefix}method"), "oauth".to_string()),
-            (
-                format!("{prefix}access_token_expires_at"),
-                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            ),
-            (
-                format!("{prefix}refresh_token"),
-                "stored-refresh-token".to_string(),
-            ),
-            (format!("{prefix}client_id"), "stored-client".to_string()),
-            (
-                format!("{prefix}token_url"),
-                "http://provider.example.com/token".to_string(),
-            ),
-        ]);
-        let service = OAuthCredentialService::new();
+        let material = expired_refresh_material(&prefix, "http://provider.example.com/token");
 
-        let error = service
-            .refresh_if_needed(
-                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
-                &mut material,
-            )
-            .await
-            .expect_err("stored plain HTTP refresh token URL should fail");
+        let error = oauth_refresh_config("API_TOKEN", &prefix, &oauth, &material)
+            .err()
+            .expect("stored plain HTTP refresh token URL should fail");
 
         assert!(
             error
                 .to_string()
                 .contains("OAuth refresh token URL for source secret 'API_TOKEN' must use https unless it targets localhost"),
             "unexpected error: {error}"
-        );
-        assert_eq!(
-            material.get("API_TOKEN").map(String::as_str),
-            Some("expired-token")
         );
     }
 
@@ -2044,40 +1993,43 @@ mod tests {
     }
 
     #[test]
-    fn device_authorization_response_rejects_unsafe_verification_uri_scheme() {
-        let body = r#"{"device_code":"device-code","user_code":"ABCD-1234","verification_uri":"x-coral-unsafe://open","expires_in":900,"interval":1}"#;
-        let Err(error) = parse_device_authorization_response(body) else {
-            panic!("unsafe verification_uri should fail");
-        };
+    fn device_authorization_response_rejects_unsafe_verification_urls() {
+        for (case, verification_uri, verification_uri_complete, expected) in [
+            (
+                "verification_uri",
+                "x-coral-unsafe://open",
+                None,
+                "verification_uri has unsupported scheme 'x-coral-unsafe'",
+            ),
+            (
+                "verification_uri_complete",
+                "https://github.com/login/device",
+                Some("http://provider.example.com/device?user_code=ABCD-1234"),
+                "verification_uri_complete must use https unless it targets localhost",
+            ),
+        ] {
+            let body =
+                device_authorization_response_body(verification_uri, verification_uri_complete);
+            let Err(error) = parse_device_authorization_response(&body) else {
+                panic!("{case} should fail");
+            };
+            let message = error.to_string();
 
-        assert!(
-            error
-                .to_string()
-                .contains("verification_uri has unsupported scheme 'x-coral-unsafe'"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn device_authorization_response_rejects_plain_http_verification_uri_complete() {
-        let body = r#"{"device_code":"device-code","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","verification_uri_complete":"http://provider.example.com/device?user_code=ABCD-1234","expires_in":900,"interval":1}"#;
-        let Err(error) = parse_device_authorization_response(body) else {
-            panic!("plain HTTP verification_uri_complete should fail");
-        };
-
-        assert!(
-            error
-                .to_string()
-                .contains("verification_uri_complete must use https unless it targets localhost"),
-            "unexpected error: {error}"
-        );
+            assert!(
+                message.contains(expected),
+                "case `{case}` expected `{expected}` in `{message}`"
+            );
+        }
     }
 
     #[test]
     fn device_authorization_response_allows_plain_http_loopback_verification_urls() {
-        let body = r#"{"device_code":"device-code","user_code":"ABCD-1234","verification_uri":"http://127.0.0.1:53682/device","verification_uri_complete":"http://[::1]:53682/device?user_code=ABCD-1234","expires_in":900,"interval":1}"#;
+        let body = device_authorization_response_body(
+            "http://127.0.0.1:53682/device",
+            Some("http://[::1]:53682/device?user_code=ABCD-1234"),
+        );
         let response =
-            parse_device_authorization_response(body).expect("loopback verification URLs");
+            parse_device_authorization_response(&body).expect("loopback verification URLs");
 
         assert_eq!(response.verification_uri, "http://127.0.0.1:53682/device");
         assert_eq!(
@@ -2556,6 +2508,42 @@ mod tests {
             .expect("callback success");
     }
 
+    fn expired_refresh_material(
+        metadata_prefix: &str,
+        token_url: &str,
+    ) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (format!("{metadata_prefix}method"), "oauth".to_string()),
+            (
+                format!("{metadata_prefix}access_token_expires_at"),
+                "2000-01-01T00:00:00Z".to_string(),
+            ),
+            (
+                format!("{metadata_prefix}refresh_token"),
+                "stored-refresh-token".to_string(),
+            ),
+            (format!("{metadata_prefix}token_url"), token_url.to_string()),
+        ])
+    }
+
+    fn device_authorization_response_body(
+        verification_uri: &str,
+        verification_uri_complete: Option<&str>,
+    ) -> String {
+        let mut body = serde_json::json!({
+            "device_code": "device-code",
+            "user_code": "ABCD-1234",
+            "verification_uri": verification_uri,
+            "expires_in": 900,
+            "interval": 1,
+        });
+        if let Some(verification_uri_complete) = verification_uri_complete {
+            body["verification_uri_complete"] =
+                serde_json::Value::String(verification_uri_complete.to_string());
+        }
+        body.to_string()
+    }
+
     fn oauth_spec(
         token_url: &str,
         redirect_port: u16,
@@ -2622,6 +2610,16 @@ mod tests {
                     values: vec!["repo".to_string(), "read:org".to_string()],
                 },
             }),
+        }
+    }
+
+    fn default_public_client() -> ManifestOAuthClientSpec {
+        ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: Some("default-client".to_string()),
+                input: None,
+            },
+            secret: None,
         }
     }
 

@@ -271,7 +271,9 @@ message DiscoverSourcesResponse {
 }
 
 // Resolves outbound hosts for a bundled source after applying source variable
-// values.
+// values. This is bundled-only because bundled candidates are selected by name
+// before installation; file imports already have their manifest YAML client-side
+// and resolve hosts from that manifest before calling ImportSource.
 message ResolveBundledSourceHostsRequest {
   // Owning workspace resource.
   Workspace workspace = 1;

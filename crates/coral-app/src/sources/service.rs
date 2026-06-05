@@ -97,6 +97,9 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<ResolveBundledSourceHostsRequest>,
     ) -> Result<Response<ResolveBundledSourceHostsResponse>, Status> {
+        // Bundled candidates arrive here by catalog name; the manifest YAML
+        // lives in coral-app. File imports already have their manifest
+        // client-side and resolve hosts before calling ImportSource.
         let span = grpc_span(&request);
         instrument_grpc(span, async move {
             let request = request.into_inner();

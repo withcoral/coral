@@ -13,7 +13,7 @@ use url::Url;
 use crate::{
     ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace, TemplatePart,
     ValidatedSourceManifest,
-    backends::file::{FileObjectStoreSpec, s3_endpoint_dns_suffix_for_region},
+    backends::file::FileObjectStoreSpec,
     v4::{SurfaceDescriptor, openapi_document_metadata},
 };
 
@@ -223,10 +223,7 @@ fn collect_s3_service_host(
     if region.is_empty() {
         return;
     }
-    hosts.insert(format!(
-        "s3.{region}.{}",
-        s3_endpoint_dns_suffix_for_region(region)
-    ));
+    hosts.insert(format!("s3.{region}.amazonaws.com"));
 }
 
 fn render_string_template_with_input_values(
@@ -865,42 +862,6 @@ tables:
         assert_eq!(
             manifest.outbound_hosts_with_input_values(&source_inputs),
             vec!["s3.eu-west-1.amazonaws.com".to_string()]
-        );
-    }
-
-    #[test]
-    fn includes_s3_service_host_with_china_region_suffix() {
-        let manifest = parse_source_manifest_yaml(
-            r#"
-name: demo
-version: 1.0.0
-dsl_version: 3
-backend: file
-inputs:
-  AWS_REGION:
-    kind: variable
-tables:
-  - name: events
-    description: Demo events
-    format: jsonl
-    source:
-      location: s3://example-bucket/events/
-      object_store:
-        type: s3
-        region: "{{input.AWS_REGION}}"
-        auth:
-          type: instance_profile
-    columns:
-      - name: kind
-        type: Utf8
-"#,
-        )
-        .expect("manifest should parse");
-
-        let source_inputs = BTreeMap::from([("AWS_REGION".to_string(), "cn-north-1".to_string())]);
-        assert_eq!(
-            manifest.outbound_hosts_with_input_values(&source_inputs),
-            vec!["s3.cn-north-1.amazonaws.com.cn".to_string()]
         );
     }
 

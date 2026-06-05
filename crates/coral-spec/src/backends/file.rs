@@ -214,13 +214,7 @@ impl FileSourceSpec {
     }
 
     /// Validates file-backed source settings.
-    fn validate_for_file(
-        &self,
-        schema: &str,
-        table: &str,
-        format: FileFormat,
-        declared_inputs: &[ManifestInputSpec],
-    ) -> Result<()> {
+    fn validate_for_file(&self, schema: &str, table: &str, format: FileFormat) -> Result<()> {
         validate_source_scoped_template(schema, table, "source.location", &self.location)?;
         let mut seen_partitions = HashSet::new();
         for partition in &self.partitions {
@@ -263,7 +257,7 @@ impl FileSourceSpec {
                 )));
             }
             ("s3", Some(FileObjectStoreSpec::S3 { region, auth })) => {
-                validate_s3_object_store(schema, table, region.as_ref(), auth, declared_inputs)?;
+                validate_s3_object_store(schema, table, region.as_ref(), auth)?;
             }
             ("s3", None) => {
                 return Err(ManifestError::validation(format!(
@@ -313,35 +307,11 @@ fn validate_s3_object_store(
     table: &str,
     region: Option<&ParsedTemplate>,
     auth: &S3AuthSpec,
-    declared_inputs: &[ManifestInputSpec],
 ) -> Result<()> {
     if let Some(region) = region {
         validate_source_scoped_template(schema, table, "source.object_store.region", region)?;
-        // The region determines the partition-specific S3 service host shown
-        // during outbound-host confirmation, so it may only template non-secret
-        // variable inputs.
-        validate_host_template_inputs(
-            &format!("{schema}.{table} source.object_store.region"),
-            region,
-            declared_inputs,
-        )?;
     }
     auth.validate(schema, table)
-}
-
-/// Returns the AWS endpoint DNS suffix implied by an S3 region.
-///
-/// The object-store runtime defaults to the standard AWS partition unless an
-/// endpoint is provided explicitly. China regions use a different DNS suffix, so
-/// callers that display or configure the effective S3 endpoint must account for
-/// that partition.
-#[must_use]
-pub fn s3_endpoint_dns_suffix_for_region(region: &str) -> &'static str {
-    if region.trim().starts_with("cn-") {
-        "amazonaws.com.cn"
-    } else {
-        "amazonaws.com"
-    }
 }
 
 /// Credential mode for an S3 object store.
@@ -594,11 +564,7 @@ impl FileFormatOptions {
 }
 
 impl RawFileTableSpec {
-    fn into_validated(
-        self,
-        schema: &str,
-        declared_inputs: &[ManifestInputSpec],
-    ) -> Result<FileTableSpec> {
+    fn into_validated(self, schema: &str) -> Result<FileTableSpec> {
         let format = FileFormat::parse(&self.format, schema, &self.name)?;
         if format.requires_declared_columns() && self.columns.is_empty() {
             return Err(ManifestError::validation(format!(
@@ -608,8 +574,7 @@ impl RawFileTableSpec {
             )));
         }
 
-        self.source
-            .validate_for_file(schema, &self.name, format, declared_inputs)?;
+        self.source.validate_for_file(schema, &self.name, format)?;
         validate_columns(&self.columns, schema, &self.name)?;
         validate_native_file_table_features(
             schema,
@@ -719,6 +684,28 @@ fn validate_derived_column_overlap(
     Ok(())
 }
 
+fn validate_file_host_template_inputs(
+    source_name: &str,
+    tables: &[RawFileTableSpec],
+    declared_inputs: &[ManifestInputSpec],
+) -> Result<()> {
+    for table in tables {
+        if let Some(FileObjectStoreSpec::S3 {
+            region: Some(region),
+            ..
+        }) = &table.source.object_store
+        {
+            validate_host_template_inputs(
+                &format!("{source_name}.{} source.object_store.region", table.name),
+                region,
+                declared_inputs,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 impl FileSourceManifest {
     pub(crate) fn parse_manifest_value(value: Value) -> Result<Self> {
         let declared_inputs = collect_source_inputs_value(&value)?;
@@ -741,11 +728,12 @@ impl FileSourceManifest {
                 .iter()
                 .map(|table| DeclaredRelation::table(table.name.as_str())),
         )?;
+        validate_file_host_template_inputs(&name, &tables, &declared_inputs)?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
             .into_iter()
-            .map(|table| table.into_validated(&common.name, &declared_inputs))
+            .map(|table| table.into_validated(&common.name))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             common,

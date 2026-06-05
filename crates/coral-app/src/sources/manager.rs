@@ -250,7 +250,14 @@ impl SourceManager {
         variables: &[SourceBinding],
     ) -> Result<Vec<String>, AppError> {
         let bundled = load_bundled_source(source_name)?;
-        let manifest = parse_source_manifest_yaml(&bundled.manifest_yaml)
+        Self::resolve_manifest_hosts(&bundled.manifest_yaml, variables)
+    }
+
+    pub(crate) fn resolve_manifest_hosts(
+        manifest_yaml: &str,
+        variables: &[SourceBinding],
+    ) -> Result<Vec<String>, AppError> {
+        let manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let source_variables = variables
             .iter()
@@ -1467,6 +1474,23 @@ tables:
         type: Utf8
 "#
         .to_string()
+    }
+
+    #[test]
+    fn resolve_manifest_hosts_applies_source_variables() {
+        let hosts = SourceManager::resolve_manifest_hosts(
+            &manifest_with_secret(),
+            &[SourceBinding {
+                key: "API_BASE".to_string(),
+                value: "https://api.enterprise.example/v1".to_string(),
+            }],
+        )
+        .expect("resolve hosts");
+
+        assert!(
+            hosts.iter().any(|host| host == "api.enterprise.example"),
+            "expected resolved API host, got {hosts:?}"
+        );
     }
 
     fn v4_openapi_fixture() -> &'static str {

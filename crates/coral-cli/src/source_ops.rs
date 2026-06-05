@@ -87,6 +87,9 @@ pub(crate) async fn resolve_bundled_source_hosts(
     name: &str,
     variables: Vec<SourceVariable>,
 ) -> Result<Vec<String>, anyhow::Error> {
+    // Bundled sources are resolved by catalog name because their manifest YAML
+    // lives in coral-app. File imports already have a parsed local manifest;
+    // use `resolve_manifest_source_hosts` for that path instead.
     Ok(app
         .source_client()
         .resolve_bundled_source_hosts(Request::new(ResolveBundledSourceHostsRequest {
@@ -97,6 +100,13 @@ pub(crate) async fn resolve_bundled_source_hosts(
         .await?
         .into_inner()
         .hosts)
+}
+
+pub(crate) fn resolve_manifest_source_hosts(
+    manifest: &ValidatedSourceManifest,
+    variables: &[SourceVariable],
+) -> Vec<String> {
+    manifest.outbound_hosts_with_input_values(&source_variables_map(variables))
 }
 
 pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow::Error> {

@@ -101,31 +101,6 @@ surfaces:
 }
 
 #[test]
-fn rejects_v4_base_url_templating_secret_host() {
-    let error = parse_source_manifest_yaml(
-        r#"
-name: demo
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    file: /tmp/openapi.yaml
-    inputs:
-      SECRET_HOST:
-        kind: secret
-    base_url: "https://{{input.SECRET_HOST}}.example.com"
-"#,
-    )
-    .expect_err("secret-templated v4 base_url host should be rejected");
-    assert!(
-        error
-            .to_string()
-            .contains("only `kind: variable` inputs may determine an outbound host"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
 fn rejects_v4_openapi_base_url_runtime_controlled_tokens() {
     for token in [
         "filter.host",

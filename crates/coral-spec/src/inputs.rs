@@ -182,22 +182,16 @@ fn render_oauth_endpoint_url(
         }
     }
     let context = format!("OAuth {label} URL");
-    validate_oauth_provider_endpoint_url(&context, &rendered)?;
+    crate::validate_https_or_loopback_url(&context, &rendered)
+        .map_err(ManifestError::validation)?;
     Ok(rendered)
-}
-
-fn validate_oauth_provider_endpoint_url(context: &str, raw: &str) -> Result<()> {
-    crate::validate_https_or_loopback_url(context, raw).map_err(ManifestError::validation)
-}
-
-fn validate_oauth_provider_endpoint_scheme(context: &str, url: &Url) -> Result<()> {
-    crate::validate_https_or_loopback_scheme(context, url).map_err(ManifestError::validation)
 }
 
 fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &str) -> Result<()> {
     let parse_prefix = raw_prefix.strip_suffix(':').unwrap_or(raw_prefix);
     if let Ok(url) = Url::parse(parse_prefix) {
-        return validate_oauth_provider_endpoint_scheme(context, &url);
+        return crate::validate_https_or_loopback_scheme(context, &url)
+            .map_err(ManifestError::validation);
     }
     let Some((scheme, _rest)) = raw_prefix.split_once("://") else {
         return Ok(());
@@ -616,7 +610,8 @@ fn validate_oauth_endpoint_template(
 
     if !has_required_variable {
         let context = format!("manifest input '{input_key}' oauth.endpoints.{field}");
-        validate_oauth_provider_endpoint_url(&context, &rendered)?;
+        crate::validate_https_or_loopback_url(&context, &rendered)
+            .map_err(ManifestError::validation)?;
     } else if let Some(prefix) = rendered_before_first_required_variable.as_deref() {
         let context = format!("manifest input '{input_key}' oauth.endpoints.{field}");
         validate_oauth_provider_endpoint_template_prefix(&context, prefix)?;
@@ -1323,6 +1318,11 @@ mod tests {
     use crate::{ManifestError, Result};
     use std::collections::BTreeMap;
 
+    const DEFAULT_OAUTH_CLIENT: &str = r"
+              id:
+                default: default-client
+";
+
     fn collect(raw: &str) -> Result<Vec<ManifestInputSpec>> {
         let root: serde_json::Value =
             serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
@@ -1420,6 +1420,36 @@ tables: []
                   - read:org
 "
         ))
+    }
+
+    fn oauth_input_with_default_client() -> String {
+        oauth_input(DEFAULT_OAUTH_CLIENT)
+    }
+
+    fn oauth_endpoint_spec(
+        authorization_url: Option<&str>,
+        device_authorization_url: Option<&str>,
+        token_url: &str,
+    ) -> ManifestOAuthCredentialSpec {
+        ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                pkce: ManifestOAuthPkceMode::Disabled,
+            },
+            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: authorization_url.map(ToString::to_string),
+            device_authorization_url: device_authorization_url.map(ToString::to_string),
+            token_url: token_url.to_string(),
+            client: ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+            },
+            scopes: None,
+        }
     }
 
     #[test]
@@ -1917,95 +1947,51 @@ tables: []
     }
 
     #[test]
-    fn rejects_oauth_endpoint_urls_with_unsupported_schemes() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
+    fn rejects_oauth_endpoint_urls_that_are_not_https_or_loopback() {
+        for (case, from, to, expected) in [
+            (
+                "unsupported scheme",
                 "https://provider.example.com/oauth/authorize",
                 "x-coral-unsafe://open",
+                "unsupported scheme 'x-coral-unsafe'",
             ),
-        )
-        .expect_err("unsupported endpoint scheme should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported scheme 'x-coral-unsafe'"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_plain_http_oauth_endpoint_urls_without_loopback_host() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
+            (
+                "plain HTTP provider host",
                 "https://provider.example.com/oauth/token",
                 "http://provider.example.com/oauth/token",
+                "must use https unless it targets localhost",
             ),
-        )
-        .expect_err("plain http endpoint should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("must use https unless it targets localhost"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn rejects_plain_http_oauth_endpoint_urls_with_loopback_lookalike_host() {
-        let error = collect(
-            &oauth_input(
-                r"
-              id:
-                default: default-client
-",
-            )
-            .replace(
+            (
+                "loopback-lookalike host",
                 "https://provider.example.com/oauth/token",
                 "http://127.example.com/oauth/token",
+                "must use https unless it targets localhost",
             ),
-        )
-        .expect_err("loopback-lookalike endpoint should fail");
+        ] {
+            let raw = oauth_input_with_default_client().replace(from, to);
+            let error = collect(&raw).expect_err(case);
+            let message = error.to_string();
 
-        assert!(
-            error
-                .to_string()
-                .contains("must use https unless it targets localhost"),
-            "unexpected error: {error}"
-        );
+            assert!(
+                message.contains(expected),
+                "case `{case}` expected `{expected}` in `{message}`"
+            );
+        }
     }
 
     #[test]
     fn allows_plain_http_oauth_endpoint_urls_for_loopback_hosts() {
         for host in ["127.0.0.1", "localhost", "[::1]"] {
             collect(
-                &oauth_input(
-                    r"
-              id:
-                default: default-client
-",
-                )
-                .replace(
-                    "https://provider.example.com/oauth/authorize",
-                    &format!("http://{host}:53682/oauth/authorize"),
-                )
-                .replace(
-                    "https://provider.example.com/oauth/token",
-                    &format!("http://{host}:53682/oauth/token"),
-                ),
+                &oauth_input_with_default_client()
+                    .replace(
+                        "https://provider.example.com/oauth/authorize",
+                        &format!("http://{host}:53682/oauth/authorize"),
+                    )
+                    .replace(
+                        "https://provider.example.com/oauth/token",
+                        &format!("http://{host}:53682/oauth/token"),
+                    ),
             )
             .unwrap_or_else(|error| {
                 panic!("loopback OAuth endpoint host `{host}` should pass: {error}")
@@ -2134,27 +2120,11 @@ tables: []
 
     #[test]
     fn endpoint_urls_reject_rendered_plain_http_non_loopback_endpoint() {
-        let oauth = ManifestOAuthCredentialSpec {
-            flow: ManifestOAuthFlowSpec {
-                kind: ManifestOAuthFlowKind::AuthorizationCode,
-                pkce: ManifestOAuthPkceMode::Disabled,
-            },
-            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
-            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
-            authorization_url: Some(
-                "{{input.OAUTH_SCHEME}}://provider.example.com/oauth/authorize".to_string(),
-            ),
-            device_authorization_url: None,
-            token_url: "{{input.OAUTH_SCHEME}}://provider.example.com/oauth/token".to_string(),
-            client: ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
-            scopes: None,
-        };
+        let oauth = oauth_endpoint_spec(
+            Some("{{input.OAUTH_SCHEME}}://provider.example.com/oauth/authorize"),
+            None,
+            "{{input.OAUTH_SCHEME}}://provider.example.com/oauth/token",
+        );
         let source_inputs = BTreeMap::from([("OAUTH_SCHEME".to_string(), "http".to_string())]);
         let error = oauth
             .endpoint_urls(&source_inputs)
@@ -2218,30 +2188,13 @@ tables: []
 
     #[test]
     fn endpoint_urls_reject_inline_template_defaults() {
-        let oauth = ManifestOAuthCredentialSpec {
-            flow: ManifestOAuthFlowSpec {
-                kind: ManifestOAuthFlowKind::AuthorizationCode,
-                pkce: ManifestOAuthPkceMode::Disabled,
-            },
-            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
-            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
-            authorization_url: Some(
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID|organizations}}/oauth2/v2.0/authorize"
-                    .to_string(),
+        let oauth = oauth_endpoint_spec(
+            Some(
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID|organizations}}/oauth2/v2.0/authorize",
             ),
-            device_authorization_url: None,
-            token_url:
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
-                    .to_string(),
-            client: ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
-            scopes: None,
-        };
+            None,
+            "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+        );
         let source_inputs =
             BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
         let error = oauth
@@ -2258,33 +2211,15 @@ tables: []
 
     #[test]
     fn endpoint_urls_render_source_input_templates() {
-        let oauth = ManifestOAuthCredentialSpec {
-            flow: ManifestOAuthFlowSpec {
-                kind: ManifestOAuthFlowKind::AuthorizationCode,
-                pkce: ManifestOAuthPkceMode::Disabled,
-            },
-            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
-            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
-            authorization_url: Some(
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize"
-                    .to_string(),
+        let oauth = oauth_endpoint_spec(
+            Some(
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/authorize",
             ),
-            device_authorization_url: Some(
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/devicecode"
-                    .to_string(),
+            Some(
+                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/devicecode",
             ),
-            token_url:
-                "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
-                    .to_string(),
-            client: ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
-            scopes: None,
-        };
+            "https://login.microsoftonline.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+        );
         let source_inputs =
             BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
         let endpoints = oauth.endpoint_urls(&source_inputs).expect("endpoint urls");
@@ -2305,26 +2240,11 @@ tables: []
 
     #[test]
     fn endpoint_urls_reject_plaintext_rendered_source_input_templates() {
-        let oauth = ManifestOAuthCredentialSpec {
-            flow: ManifestOAuthFlowSpec {
-                kind: ManifestOAuthFlowKind::AuthorizationCode,
-                pkce: ManifestOAuthPkceMode::Disabled,
-            },
-            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
-            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
-            authorization_url: None,
-            device_authorization_url: None,
-            token_url: "http://provider.example.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token"
-                .to_string(),
-            client: ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
-            scopes: None,
-        };
+        let oauth = oauth_endpoint_spec(
+            None,
+            None,
+            "http://provider.example.com/{{input.OUTLOOK_TENANT_ID}}/oauth2/v2.0/token",
+        );
         let source_inputs =
             BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
         let error = oauth

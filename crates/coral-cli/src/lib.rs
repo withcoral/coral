@@ -861,8 +861,7 @@ async fn run_source_add_file(
     if interactive {
         let host_variables =
             source_ops::prompt_variables_for_host_confirmation(manifest.declared_inputs())?;
-        let hosts = manifest
-            .outbound_hosts_with_input_values(&source_ops::source_variables_map(&host_variables));
+        let hosts = source_ops::resolve_manifest_source_hosts(&manifest, &host_variables);
         if !source_ops::confirm_source_hosts(&hosts, true)? {
             println!(
                 "Cancelled. Source '{}' was not connected.",
@@ -885,8 +884,7 @@ async fn run_source_add_file(
         );
         let (variables, secrets) =
             source_ops::collect_inputs_from_env(manifest.declared_inputs(), interactive_command)?;
-        let hosts = manifest
-            .outbound_hosts_with_input_values(&source_ops::source_variables_map(&variables));
+        let hosts = source_ops::resolve_manifest_source_hosts(&manifest, &variables);
         // Non-interactive setup has no prompt to decline; the host list is
         // printed for visibility only.
         source_ops::confirm_source_hosts(&hosts, false)?;
