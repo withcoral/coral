@@ -3,7 +3,7 @@
 **Version:** 0.2.0
 **Backend:** HTTP
 **Tables:** 6
-**Functions:** 1
+**Functions:** 2
 **Base URL:** `https://oauth.reddit.com`
 
 Query Reddit posts, comments, user activity, and keyword search via the Reddit
@@ -36,7 +36,8 @@ REDDIT_ACCESS_TOKEN=$(
     -u '<your_client_id>:<your_client_secret>' \
     -A 'Coral source by <your reddit username or contact>' \
     -d 'grant_type=client_credentials' \
-  | jq -r .access_token
+  | jq -r .access_token \
+  | tr -d '\r\n'
 )
 
 REDDIT_ACCESS_TOKEN="$REDDIT_ACCESS_TOKEN" \
@@ -49,6 +50,8 @@ tokens are time-limited, so refresh and re-store the token if queries return
 
 For full details on Reddit's API access rules see:
 https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki
+and Reddit's Responsible Builder Policy:
+https://support.reddithelp.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy
 
 ## Tables And Functions
 
@@ -57,7 +60,8 @@ https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-
 | `subreddit_hot` | table | Hot posts from a subreddit | `subreddit` filter |
 | `subreddit_new` | table | Newest posts from a subreddit | `subreddit` filter |
 | `subreddit_top` | table | Top posts from a subreddit | `subreddit` filter |
-| `search_posts(q => ...)` | search function | Provider-ranked Reddit post search | `q` argument |
+| `search_posts(q => ...)` | search function | Provider-ranked global Reddit post search | `q` argument |
+| `search_subreddit_posts(subreddit => ..., q => ...)` | search function | Provider-ranked post search within one subreddit | `subreddit`, `q` arguments |
 | `user_posts` | table | Public posts submitted by a user | `username` filter |
 | `user_comments` | table | Public comments written by a user | `username` filter |
 | `post_comments` | table | Top-level comment listing for a post | `subreddit`, `post_id` filters |
@@ -117,6 +121,20 @@ coral sql "
 "
 ```
 
+Search within one subreddit:
+
+```bash
+coral sql "
+  SELECT title, subreddit, author, score, permalink
+  FROM reddit.search_subreddit_posts(
+    subreddit => 'redditdev',
+    q => 'oauth',
+    sort => 'new'
+  )
+  LIMIT 25
+"
+```
+
 Get comments from a post:
 
 ```bash
@@ -125,6 +143,21 @@ coral sql "
   FROM reddit.post_comments
   WHERE subreddit = 'redditdev'
     AND post_id = '<post_id>'
+  LIMIT 100
+"
+```
+
+Sort or focus the comment listing:
+
+```bash
+coral sql "
+  SELECT author, score, body, kind, replies
+  FROM reddit.post_comments
+  WHERE subreddit = 'redditdev'
+    AND post_id = '<post_id>'
+    AND comment_sort = 'top'
+    AND depth = 2
+    AND showmore = true
   LIMIT 100
 "
 ```
@@ -163,10 +196,12 @@ prefixed with `t3_` for posts and `t1_` for comments. The manifest uses this
 cursor internally for automatic pagination; it does not currently expose a
 manual `after` or `before` filter.
 
-`post_comments` uses Reddit's comments listing endpoint without optional
-`limit`, `depth`, `sort`, or `showmore` controls. Treat it as the default
-top-level comment listing Reddit returns for that request, not a guarantee of
-every possible comment in a discussion.
+`post_comments` exposes Reddit's documented sort control as `comment_sort`,
+plus `depth`, `showmore`, `comment`, and `context` controls. Treat it as the
+comment listing Reddit returns for that request, not a guarantee of every
+possible comment in a discussion. Coral exposes nested replies as JSON when
+Reddit includes them, but does not recursively expand every `more` placeholder
+automatically.
 
 ## Rate Limits
 
@@ -181,8 +216,55 @@ allow bursts. Each OAuth response includes approximate rate-limit headers:
 | `X-Ratelimit-Reset` | Seconds until the current rate-limit period ends |
 
 Keep exploratory queries small with `LIMIT`. If Coral surfaces a 429 or
-rate-limit error, wait according to the reset value returned by Reddit before
-retrying.
+rate-limit error, Coral uses `X-Ratelimit-Reset` as a retry delay. Full
+remaining-quota tracking is not wired because Reddit's reset header is seconds
+until reset, while Coral's `reset_header` expects an absolute Unix epoch reset
+time.
+
+## Validation
+
+Lint the manifest:
+
+```bash
+coral source lint sources/community/reddit/manifest.yaml
+```
+
+Install and test with a registered Reddit app token:
+
+```bash
+REDDIT_ACCESS_TOKEN="<token>" \
+  coral source add --file sources/community/reddit/manifest.yaml
+coral source test reddit
+```
+
+Sanitized output from a live Reddit API test:
+
+```text
+reddit connected successfully
+
+reddit (6 tables)
+- post_comments
+- subreddit_hot
+- subreddit_new
+- subreddit_top
+- user_comments
+- user_posts
+
+Query tests
+3 declared, 3 passed, 0 failed
+
+PASS SELECT title, author, score FROM reddit.subreddit_hot WHERE subreddit = 'redditdev' LIMIT 1
+PASS SELECT title, subreddit, author FROM reddit.search_posts(q => 'rust') LIMIT 1
+PASS SELECT title, subreddit, author FROM reddit.search_subreddit_posts(subreddit => 'redditdev', q => 'oauth') LIMIT 1
+```
+
+Inspect the registered source catalog:
+
+```bash
+coral sql "SELECT table_name, description, required_filters FROM coral.tables WHERE schema_name = 'reddit' ORDER BY table_name"
+coral sql "SELECT function_name, kind, arguments_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'reddit' ORDER BY function_name"
+coral sql "SELECT table_name, filter_name, is_required, data_type FROM coral.filters WHERE schema_name = 'reddit' ORDER BY table_name, filter_name"
+```
 
 ## Common Columns
 
@@ -224,10 +306,10 @@ Comment tables expose:
   registered Reddit app. See **Authentication** above.
 - Private subreddits, saved posts, inbox data, moderation queues, and votes
   are not available.
-- `post_comments` returns Reddit's default top-level comment listing for the
-  post and may include `more` placeholders as rows with `kind = 'more'`;
-  nested replies are available in the `replies` JSON column when Reddit
-  includes them.
+- `post_comments` returns the comment listing Reddit provides for the requested
+  `comment_sort`, `depth`, `showmore`, `comment`, and `context` controls. It
+  may include `more` placeholders as rows with `kind = 'more'`; nested replies
+  are available in the `replies` JSON column when Reddit includes them.
 - All requests include `raw_json=1` so `title`, `selftext`, and `body` are
   returned as unescaped Unicode. Without this parameter Reddit would
   HTML-escape `<`, `>`, and `&`.
@@ -253,6 +335,20 @@ Watch launch sentiment:
 coral sql "
   SELECT title, subreddit, score, num_comments, created_utc, permalink
   FROM reddit.search_posts(q => 'Coral SQL', sort => 'new')
+  LIMIT 50
+"
+```
+
+Search one community for issue reports:
+
+```bash
+coral sql "
+  SELECT title, author, score, num_comments, permalink
+  FROM reddit.search_subreddit_posts(
+    subreddit => 'LocalLLaMA',
+    q => 'crash OR regression',
+    sort => 'new'
+  )
   LIMIT 50
 "
 ```

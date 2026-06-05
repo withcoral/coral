@@ -12,14 +12,18 @@ inputs:
   REDDIT_ACCESS_TOKEN:
     kind: secret
     hint: |
-      Reddit OAuth access token from a registered Reddit app. Reddit requires
-      clients to use OAuth for Data API access; unauthenticated .json traffic
-      is not a stable Coral source contract.
+      Reddit OAuth access token from a registered Reddit app. Coral stores the
+      token as a source secret and sends it as Authorization: Bearer <token>.
 
       For a script app, request a token with grant_type=client_credentials
-      using your app's client ID and client secret, then store the returned
-      access_token as REDDIT_ACCESS_TOKEN. Coral sends it as
-      Authorization: Bearer <token>.
+      using your app's client ID and client secret, then paste or export the
+      returned access_token as REDDIT_ACCESS_TOKEN. Reddit access tokens expire;
+      mint and store a new token if Reddit returns 401.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste Reddit access token
+          description: Paste an OAuth access token minted from a registered Reddit app.
 
 auth:
   type: HeaderAuth
@@ -33,9 +37,13 @@ request_headers:
     from: literal
     value: application/json
 
+rate_limit:
+  retry_after_header: X-Ratelimit-Reset
+
 test_queries:
   - SELECT title, author, score FROM reddit.subreddit_hot WHERE subreddit = 'redditdev' LIMIT 1
   - SELECT title, subreddit, author FROM reddit.search_posts(q => 'rust') LIMIT 1
+  - SELECT title, subreddit, author FROM reddit.search_subreddit_posts(subreddit => 'redditdev', q => 'oauth') LIMIT 1
 
 functions:
   - name: search_posts
@@ -170,7 +178,162 @@ functions:
         nullable: true
         description: Echoes the search query.
         expr: {kind: from_arg, key: q}
+      - name: search_sort
+        type: Utf8
+        nullable: true
+        description: Echoes the requested Reddit search sort.
+        expr: {kind: from_arg, key: sort}
+      - name: t
+        type: Utf8
+        nullable: true
+        description: Echoes the requested search time window.
+        expr: {kind: from_arg, key: t}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Reddit listing child JSON.
+        expr: {kind: current_row}
+
+  - name: search_subreddit_posts
+    kind: search
+    description: Provider-ranked search results for posts within one subreddit.
+    fetch_limit_default: 25
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 10
+    args:
+      - name: subreddit
+        required: true
+        bind:
+          arg: subreddit
+      - name: q
+        required: true
+        bind:
+          arg: q
       - name: sort
+        values:
+          - relevance
+          - hot
+          - top
+          - new
+          - comments
+        bind:
+          arg: sort
+      - name: t
+        values:
+          - hour
+          - day
+          - week
+          - month
+          - year
+          - all
+        bind:
+          arg: t
+    request:
+      method: GET
+      path: /r/{{arg.subreddit}}/search.json
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: restrict_sr
+          from: literal
+          value: "1"
+        - name: sort
+          from: arg
+          key: sort
+        - name: t
+          from: arg
+          key: t
+        - name: raw_json
+          from: literal
+          value: "1"
+    response:
+      rows_path:
+        - data
+        - children
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+      cursor_param: after
+      response_cursor_path:
+        - data
+        - after
+      max_pages: 10
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Reddit post ID without the `t3_` prefix.
+        expr: {kind: path, path: [data, id]}
+      - name: fullname
+        type: Utf8
+        nullable: true
+        description: Reddit fullname, usually prefixed with `t3_`.
+        expr: {kind: path, path: [data, name]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Post title.
+        expr: {kind: path, path: [data, title]}
+      - name: subreddit
+        type: Utf8
+        nullable: true
+        description: Subreddit name without the `r/` prefix.
+        expr: {kind: path, path: [data, subreddit]}
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Reddit username of the post author.
+        expr: {kind: path, path: [data, author]}
+      - name: score
+        type: Int64
+        nullable: true
+        description: Current post score.
+        expr: {kind: path, path: [data, score]}
+      - name: upvote_ratio
+        type: Float64
+        nullable: true
+        description: Reddit upvote ratio for the post.
+        expr: {kind: path, path: [data, upvote_ratio]}
+      - name: num_comments
+        type: Int64
+        nullable: true
+        description: Number of comments on the post.
+        expr: {kind: path, path: [data, num_comments]}
+      - name: permalink
+        type: Utf8
+        nullable: true
+        description: Relative Reddit permalink.
+        expr: {kind: path, path: [data, permalink]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Linked URL or Reddit post URL.
+        expr: {kind: path, path: [data, url]}
+      - name: selftext
+        type: Utf8
+        nullable: true
+        description: Text body for self posts.
+        expr: {kind: path, path: [data, selftext]}
+      - name: created_utc
+        type: Timestamp
+        nullable: true
+        description: Post creation time as UTC timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [data, created_utc]}
+      - name: q
+        type: Utf8
+        nullable: true
+        description: Echoes the search query.
+        expr: {kind: from_arg, key: q}
+      - name: search_sort
         type: Utf8
         nullable: true
         description: Echoes the requested Reddit search sort.
@@ -755,10 +918,38 @@ tables:
         required: true
       - name: post_id
         required: true
+      - name: comment_sort
+        required: false
+      - name: depth
+        type: Int64
+        required: false
+      - name: showmore
+        type: Boolean
+        required: false
+      - name: comment
+        required: false
+      - name: context
+        type: Int64
+        required: false
     request:
       method: GET
       path: /r/{{filter.subreddit}}/comments/{{filter.post_id}}.json
       query:
+        - name: sort
+          from: filter
+          key: comment_sort
+        - name: depth
+          from: filter_int
+          key: depth
+        - name: showmore
+          from: filter_bool
+          key: showmore
+        - name: comment
+          from: filter
+          key: comment
+        - name: context
+          from: filter_int
+          key: context
         - name: raw_json
           from: literal
           value: "1"
@@ -833,6 +1024,31 @@ tables:
         nullable: true
         description: Echoes the requested post ID.
         expr: {kind: from_filter, key: post_id}
+      - name: comment_sort
+        type: Utf8
+        nullable: true
+        description: Echoes the requested comment sort.
+        expr: {kind: from_filter, key: comment_sort}
+      - name: depth
+        type: Int64
+        nullable: true
+        description: Echoes the requested comment-tree depth.
+        expr: {kind: from_filter, key: depth}
+      - name: showmore
+        type: Boolean
+        nullable: true
+        description: Echoes whether more placeholders were requested.
+        expr: {kind: from_filter, key: showmore}
+      - name: comment
+        type: Utf8
+        nullable: true
+        description: Echoes the requested focused comment ID.
+        expr: {kind: from_filter, key: comment}
+      - name: context
+        type: Int64
+        nullable: true
+        description: Echoes the requested focused-comment context depth.
+        expr: {kind: from_filter, key: context}
       - name: raw
         type: Json
         nullable: true
