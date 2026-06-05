@@ -155,10 +155,7 @@ impl OpenApiImporter<'_> {
                 Some(IrOperationInput {
                     name,
                     location,
-                    required: parameter_obj
-                        .get("required")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
+                    required: parameter_is_required(parameter_obj, location),
                     data_type: scalar,
                     default_value: schema.get("default").map(openapi_default_to_string),
                     description: parameter_obj
@@ -266,6 +263,19 @@ fn parse_parameter_location(location: &str) -> Option<OpenApiParameterLocation> 
         "cookie" => Some(OpenApiParameterLocation::Cookie),
         _ => None,
     }
+}
+
+fn parameter_is_required(
+    parameter_obj: &Map<String, Value>,
+    location: OpenApiParameterLocation,
+) -> bool {
+    if location == OpenApiParameterLocation::Path {
+        return true;
+    }
+    parameter_obj
+        .get("required")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn openapi_default_to_string(value: &Value) -> String {

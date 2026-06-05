@@ -32,7 +32,11 @@ pub fn generate_projection_catalog(
         }
         diagnostics.extend(ir.diagnostics.clone());
     }
-    resolve_projection_name_collisions(manifest, surfaces, &mut projections);
+    diagnostics.extend(resolve_projection_name_collisions(
+        manifest,
+        surfaces,
+        &mut projections,
+    ));
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),
@@ -106,7 +110,7 @@ fn generate_projection(
                 sql_exposure: exposure,
                 source_location: input.location,
                 wire_name: input.name.clone(),
-                required: input.required && input.default_value.is_none(),
+                required: projection_input_required(input),
                 data_type: manifest_type(input.data_type),
                 default_value: input.default_value.clone(),
                 description: input.description.clone(),
@@ -140,6 +144,11 @@ fn generate_projection(
     };
     diagnostics.extend(projection_diagnostics);
     projection
+}
+
+fn projection_input_required(input: &IrOperationInput) -> bool {
+    input.required
+        && (input.location == OpenApiParameterLocation::Path || input.default_value.is_none())
 }
 
 fn projection_input_sql_exposure(
