@@ -621,9 +621,32 @@ query. Values must be positive. `default_top_k` and `max_top_k` are capped at
 ### MCP sources
 
 MCP sources expose Model Context Protocol tools as SQL tables and source-scoped
-table functions. The manifest remains the contract for SQL names, filters,
-arguments, response shape, and columns; Coral does not introspect MCP tools at
-query time.
+table functions. For DSL v3 MCP sources, the manifest remains the contract for
+SQL names, filters, arguments, response shape, and columns; Coral does not
+introspect MCP tools at query time.
+
+DSL v4 preview manifests can also declare MCP surfaces. In v4, Coral discovers
+the MCP server's tool catalog during `coral source add`, materializes generated
+projections, and then queries only those installed artifacts. Re-add the source
+when the server's tool catalog changes.
+
+```yaml
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    inputs:
+      GITHUB_TOKEN:
+        kind: secret
+    server:
+      transport: streamable_http
+      url: https://api.githubcopilot.com/mcp/x/all/readonly
+      auth:
+        type: bearer
+        from: input
+        key: GITHUB_TOKEN
+```
 
 Stdio MCP servers run as child processes:
 
