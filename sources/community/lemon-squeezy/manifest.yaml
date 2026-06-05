@@ -612,7 +612,7 @@ tables:
       - name: unit_price_decimal
         type: Utf8
         nullable: true
-        description: "Price as a decimal string. Null unless usage aggregation is enabled. Use for display; see unit_price for arithmetic."
+        description: "Price as a decimal string.Null unless usage aggregation is enabled,then unit_price is null and this is authoritative"
         expr:
           kind: path
           path: [attributes, unit_price_decimal]
@@ -1110,6 +1110,12 @@ tables:
         expr:
           kind: path
           path: [attributes, total_formatted]
+      - name: refunded_amount_formatted
+        type: Utf8
+        description: Human-readable refunded amount in the order currency (e.g. "$9.99"). Display only — use refunded_amount for aggregations.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount_formatted]
       - name: created_at
         type: Timestamp
         description: When the order was placed.
