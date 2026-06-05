@@ -605,14 +605,14 @@ tables:
       - name: unit_price
         type: Int64
         nullable: true
-        description: "Price in store-currency cents. Null when usage_aggregation is enabled or for volume and graduated pricing (use tiers instead). See also unit_price_decimal."
+        description: "Price in cents. For volume/graduated pricing use tier data. If usage aggregation is enabled, use unit_price_decimal."
         expr:
           kind: path
           path: [attributes, unit_price]
       - name: unit_price_decimal
         type: Utf8
         nullable: true
-        description: "Price in cents as a decimal string (e.g. \"9.99\"). Null when usage_aggregation is not enabled. Use for display or sub-cent precision; use unit_price for arithmetic when available. See also unit_price."
+        description: "Price as a decimal string. Null unless usage aggregation is enabled. Use for display; see unit_price for arithmetic."
         expr:
           kind: path
           path: [attributes, unit_price_decimal]
@@ -639,7 +639,7 @@ tables:
       - name: tiers
         type: Json
         nullable: true
-        description: "Tier definitions for graduated and volume pricing. Each tier object contains: last_unit (top limit of tier, integer or \"inf\" for unlimited), unit_price (price per unit in cents, null if usage-based billing enabled), unit_price_decimal (price per unit as decimal string, null if usage-based billing not enabled), and fixed_fee (optional fixed charge alongside unit price). Null for standard and package pricing."
+        description: "Tier data for volume/graduated pricing, including limits, prices, and fixed fees. Null for standard/package pricing."
         expr:
           kind: path
           path: [attributes, tiers]
@@ -838,7 +838,7 @@ tables:
       - name: urls__customer_portal
         type: Utf8
         nullable: true
-        description: Pre-signed URL to the Customer Portal for subscription and billing management. Valid for 24 hours. Null if the customer has not purchased a subscription.
+        description: Customer Portal URL for subscription and billing management. Valid for 24 hours. Null if no subscription exists.
         expr:
           kind: path
           path: [attributes, urls, customer_portal]
@@ -1073,7 +1073,7 @@ tables:
       - name: refunded_at
         type: Timestamp
         nullable: true
-        description: When the order was refunded, if applicable.
+        description: Timestamp of a full refund. Null for non-refunded and partially refunded orders.
         expr:
           kind: format_timestamp
           input: iso8601
@@ -1401,7 +1401,7 @@ tables:
       - name: payment_processor
         type: Utf8
         nullable: true
-        description: Payment processor used (stripe or paypal). Null for subscriptions created before this field was recorded, or for free subscriptions with no payment method.
+        description: Payment processor (stripe or paypal). Null for older subscriptions or free subscriptions without a payment method
         expr:
           kind: path
           path: [attributes, payment_processor]

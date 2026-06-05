@@ -3,27 +3,24 @@
 Query your [Lemon Squeezy](https://www.lemonsqueezy.com/) store data — orders,
 subscriptions, customers, products, prices, license keys, discounts, and more.
 
-## Prerequisites
+## Authentication
 
-You need a Lemon Squeezy API key.
+Requires a LEMON_SQUEEZY_API_KEY
 
 1. Log in to [Lemon Squeezy](https://app.lemonsqueezy.com).
 2. Go to **Settings → API**.
 3. Click **+ Add key**, give it a name, and copy the generated key.
 
-Use a **test-mode key** while developing. Switch to a live-mode key for
-production data. Test-mode and live-mode keys access separate datasets.
-
 ## Installation
 
 ```sh
-LEMON_SQUEEZY_API_KEY=your_api_key coral source add --file manifest.yaml
+LEMON_SQUEEZY_API_KEY=your_api_key coral source add --file sources/community/lemon-squeezy/manifest.yaml
 ```
 
 Or add it interactively and paste the key when prompted:
 
 ```sh
-coral source add --file manifest.yaml --interactive
+LEMON_SQUEEZY_API_KEY=your_api_key coral source add --file sources/community/lemon-squeezy/manifest.yaml --interactive
 ```
 
 Validate the source after adding it:
@@ -231,7 +228,7 @@ SELECT
   o.user_email,
   o.total_formatted,
   o.status,
-  o.refunded_amount_formatted,
+  o.refunded_amount,
   o.refunded_at,
   i.identifier                  AS linear_issue,
   i.title                       AS issue_title
