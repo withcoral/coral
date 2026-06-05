@@ -7,7 +7,7 @@ use crate::v4::ir::SemanticIr;
 use crate::v4::manifest::{SurfaceType, V4SourceManifest};
 use crate::v4::projections::ProjectionCatalog;
 use crate::v4::{
-    OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION,
+    PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION,
 };
 use crate::{ManifestError, Result};
 
@@ -63,7 +63,7 @@ pub fn validate_materialized_source(
             manifest.common.name
         )));
     }
-    if materialized.fingerprint.importer_version != OPENAPI_IMPORTER_VERSION
+    if materialized.fingerprint.importer_version != SURFACE_IMPORTER_VERSION
         || materialized.fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
         return Err(ManifestError::validation(

@@ -1,15 +1,22 @@
 //! App-owned assembly of query-engine runtime source packages.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use coral_engine::RuntimeSourceComponent;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
+use coral_spec::backends::mcp::{
+    McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
+};
 use coral_spec::v4::{
-    ProjectionKind, ProjectionVisibility, V4MaterializedSource, V4SourceManifest,
+    IrExecutionAttachment, Projection, ProjectionKind, ProjectionVisibility, SqlInputExposure,
+    SurfaceType, V4MaterializedSource, V4SourceManifest, mcp_projection_arg_specs,
     openapi_document_metadata, projection_arg_specs, projection_column_specs,
     projection_filter_specs, request_spec_for_projection, validate_openapi_base_url_template,
 };
-use coral_spec::{ParsedTemplate, SourceManifestCommon, SourceTableFunctionSpec, TableCommon};
+use coral_spec::{
+    PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, SourceManifestCommon,
+    SourceTableFunctionSpec, TableCommon,
+};
 
 use crate::bootstrap::AppError;
 
@@ -22,11 +29,22 @@ pub(crate) fn runtime_components_for_v4_source(
         if !has_published_projection(materialized, &surface.id) {
             continue;
         }
-        components.push(RuntimeSourceComponent::Http(http_manifest_for_surface(
-            manifest,
-            materialized,
-            &surface.id,
-        )?));
+        match surface.surface_type {
+            SurfaceType::OpenApi => {
+                components.push(RuntimeSourceComponent::Http(http_manifest_for_surface(
+                    manifest,
+                    materialized,
+                    &surface.id,
+                )?));
+            }
+            SurfaceType::Mcp => {
+                components.push(RuntimeSourceComponent::Mcp(mcp_manifest_for_surface(
+                    manifest,
+                    materialized,
+                    &surface.id,
+                )?));
+            }
+        }
     }
     Ok(components)
 }
@@ -49,6 +67,11 @@ fn http_manifest_for_surface(
 ) -> Result<HttpSourceManifest, AppError> {
     let surface = manifest.surface(surface_id).ok_or_else(|| {
         AppError::FailedPrecondition(format!("DSL v4 manifest is missing surface '{surface_id}'"))
+    })?;
+    let openapi_runtime = surface.openapi_runtime().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "DSL v4 surface '{surface_id}' is not an OpenAPI surface"
+        ))
     })?;
     let materialized_surface = materialized
         .surfaces
@@ -102,11 +125,7 @@ fn http_manifest_for_surface(
                     },
                     request,
                     requests: Vec::new(),
-                    response: match &operation.execution {
-                        coral_spec::v4::IrExecutionAttachment::Rest(rest) => {
-                            rest.response.response.clone()
-                        }
-                    },
+                    response: rest_response_for_operation(operation)?,
                     pagination: projection.pagination.clone(),
                 });
             }
@@ -120,11 +139,7 @@ fn http_manifest_for_surface(
                     detail_hints: projection.detail_hints.clone(),
                     args: projection_arg_specs(projection),
                     request,
-                    response: match &operation.execution {
-                        coral_spec::v4::IrExecutionAttachment::Rest(rest) => {
-                            rest.response.response.clone()
-                        }
-                    },
+                    response: rest_response_for_operation(operation)?,
                     pagination: projection.pagination.clone(),
                     columns,
                 });
@@ -140,13 +155,151 @@ fn http_manifest_for_surface(
             test_queries: Vec::new(),
         },
         base_url: surface_base_url(manifest, surface, materialized_surface)?,
-        auth: surface.openapi_runtime.auth.clone(),
-        request_headers: surface.openapi_runtime.request_headers.clone(),
-        rate_limit: surface.openapi_runtime.rate_limit.clone(),
+        auth: openapi_runtime.auth.clone(),
+        request_headers: openapi_runtime.request_headers.clone(),
+        rate_limit: openapi_runtime.rate_limit.clone(),
         tables,
         functions,
         declared_inputs: manifest.declared_inputs.clone(),
     })
+}
+
+fn rest_response_for_operation(
+    operation: &coral_spec::v4::IrOperation,
+) -> Result<ResponseSpec, AppError> {
+    match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => Ok(rest.response.response.clone()),
+        IrExecutionAttachment::Mcp(_) => Err(AppError::FailedPrecondition(format!(
+            "DSL v4 operation '{}' is not a REST operation",
+            operation.id
+        ))),
+    }
+}
+
+fn mcp_manifest_for_surface(
+    manifest: &V4SourceManifest,
+    materialized: &V4MaterializedSource,
+    surface_id: &str,
+) -> Result<McpSourceManifest, AppError> {
+    let surface = manifest.surface(surface_id).ok_or_else(|| {
+        AppError::FailedPrecondition(format!("DSL v4 manifest is missing surface '{surface_id}'"))
+    })?;
+    let mcp_runtime = surface.mcp_runtime().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "DSL v4 surface '{surface_id}' is not an MCP surface"
+        ))
+    })?;
+    let materialized_surface = materialized
+        .surfaces
+        .iter()
+        .find(|candidate| candidate.surface_id == surface_id)
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "DSL v4 materialization is missing surface '{surface_id}'"
+            ))
+        })?;
+    let operations = materialized_surface
+        .semantic_ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation))
+        .collect::<HashMap<_, _>>();
+    let mut tables = Vec::new();
+    let mut functions = Vec::new();
+    for projection in materialized
+        .projections
+        .projections
+        .iter()
+        .filter(|projection| {
+            projection.surface_id == surface_id
+                && projection.visibility == ProjectionVisibility::Published
+        })
+    {
+        let operation = operations
+            .get(projection.operation_id.as_str())
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "DSL v4 projection '{}' references missing operation '{}'",
+                    projection.name, projection.operation_id
+                ))
+            })?;
+        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
+            return Err(AppError::FailedPrecondition(format!(
+                "DSL v4 projection '{}' is not backed by an MCP operation",
+                projection.name
+            )));
+        };
+        let response = ResponseSpec {
+            rows_path: operation.output.row_path.clone(),
+            ..ResponseSpec::default()
+        };
+        match &projection.kind {
+            ProjectionKind::Table => {
+                tables.push(McpTableSpec {
+                    common: TableCommon {
+                        name: projection.name.clone(),
+                        description: projection.description.clone(),
+                        guide: projection.guide.clone(),
+                        filters: projection_filter_specs(projection),
+                        fetch_limit_default: None,
+                        search_limits: projection.search_limits.clone(),
+                        detail_hints: projection.detail_hints.clone(),
+                        columns: projection_column_specs(projection),
+                    },
+                    tool: mcp.tool_name.clone(),
+                    tool_args: BTreeMap::new(),
+                    filter_bindings: mcp_filter_bindings(projection),
+                    limit_binding: None,
+                    pagination: None,
+                    response,
+                });
+            }
+            ProjectionKind::TableFunction { function_kind } => {
+                functions.push(McpTableFunctionSpec {
+                    tool: mcp.tool_name.clone(),
+                    pagination: None,
+                    common: SourceTableFunctionSpec {
+                        name: projection.name.clone(),
+                        kind: *function_kind,
+                        description: projection.description.clone(),
+                        fetch_limit_default: None,
+                        search_limits: projection.search_limits.clone(),
+                        detail_hints: projection.detail_hints.clone(),
+                        args: mcp_projection_arg_specs(projection),
+                        request: RequestSpec::default(),
+                        response,
+                        pagination: PaginationSpec::default(),
+                        columns: projection_column_specs(projection),
+                    },
+                });
+            }
+        }
+    }
+    Ok(McpSourceManifest {
+        common: SourceManifestCommon {
+            dsl_version: manifest.common.dsl_version,
+            name: manifest.common.name.clone(),
+            version: String::new(),
+            description: manifest.common.description.clone(),
+            test_queries: Vec::new(),
+        },
+        server: mcp_runtime.server.clone(),
+        functions,
+        tables,
+        declared_inputs: manifest.declared_inputs.clone(),
+    })
+}
+
+fn mcp_filter_bindings(projection: &Projection) -> Vec<McpTableFilterBinding> {
+    projection
+        .inputs
+        .iter()
+        .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
+        .map(|input| McpTableFilterBinding {
+            name: input.name.clone(),
+            tool_arg: input.wire_name.clone(),
+        })
+        .collect()
 }
 
 fn surface_base_url(
@@ -154,8 +307,14 @@ fn surface_base_url(
     surface: &coral_spec::v4::V4Surface,
     materialized_surface: &coral_spec::v4::MaterializedSurface,
 ) -> Result<ParsedTemplate, AppError> {
-    if !surface.openapi_runtime.base_url.raw().trim().is_empty() {
-        let base_url = surface.openapi_runtime.base_url.clone();
+    let openapi_runtime = surface.openapi_runtime().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "DSL v4 surface '{}' is not an OpenAPI surface",
+            surface.id
+        ))
+    })?;
+    if !openapi_runtime.base_url.raw().trim().is_empty() {
+        let base_url = openapi_runtime.base_url.clone();
         validate_surface_base_url_template(manifest, surface, &base_url, "authored")?;
         return Ok(base_url);
     }
@@ -210,8 +369,8 @@ mod tests {
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::v4::{
         MaterializedSurface, OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig, SemanticIr,
-        SurfaceDescriptor, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceCommon,
-        V4SourceManifest, V4Surface,
+        SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
+        V4SourceCommon, V4SourceManifest, V4Surface,
     };
 
     use super::surface_base_url;
@@ -224,12 +383,12 @@ mod tests {
                 file: PathBuf::from("/tmp/openapi.yaml"),
             },
             inputs: Vec::new(),
-            openapi_runtime: OpenApiRuntimeConfig {
+            runtime: SurfaceRuntimeConfig::OpenApi(OpenApiRuntimeConfig {
                 base_url: coral_spec::ParsedTemplate::parse("").expect("empty template"),
                 auth: AuthSpec::default(),
                 request_headers: Vec::new(),
                 rate_limit: RateLimitSpec::default(),
-            },
+            }),
         }
     }
 

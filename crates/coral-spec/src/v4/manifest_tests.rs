@@ -55,7 +55,8 @@ surfaces:
         v4.surfaces
             .first()
             .expect("surface")
-            .openapi_runtime
+            .openapi_runtime()
+            .expect("OpenAPI runtime")
             .base_url
             .raw(),
         ""

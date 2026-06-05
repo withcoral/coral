@@ -6,11 +6,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use coral_spec::v4::{
-    Diagnostic, Fingerprint, FingerprintSurface, MaterializedSurface, OPENAPI_IMPORTER_VERSION,
-    PROJECTION_GENERATOR_VERSION, ProjectionCatalog, SemanticIr, V4_ARTIFACT_SCHEMA_VERSION,
-    V4MaterializedSource, V4SourceManifest, generate_projection_catalog, import_openapi_surface,
-    normalize_source_document, openapi_document_metadata, validate_materialized_source,
-    validate_openapi_base_url_template,
+    Diagnostic, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION, MaterializedSurface,
+    McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION, ProjectionCatalog,
+    SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
+    V4MaterializedSource, V4SourceManifest, generate_projection_catalog, import_mcp_surface,
+    import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
+    openapi_document_metadata, validate_materialized_source, validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -36,12 +37,19 @@ pub(crate) struct MaterializationBuild {
     pub(crate) temp_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MaterializationInputs {
+    pub(crate) variables: BTreeMap<String, String>,
+    pub(crate) secrets: BTreeMap<String, String>,
+}
+
 pub(crate) fn build_v4_materialization_tmp(
     layout: &AppStateLayout,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
+    inputs: &MaterializationInputs,
     temp_suffix: &str,
 ) -> Result<MaterializationBuild, AppError> {
     let temp_dir = layout.v4_materialized_tmp_dir(workspace_name, source_name, temp_suffix);
@@ -50,7 +58,7 @@ pub(crate) fn build_v4_materialization_tmp(
     }
     fs::ensure_private_dir(&temp_dir)?;
 
-    match write_materialization(&temp_dir, manifest_yaml, manifest) {
+    match write_materialization(&temp_dir, manifest_yaml, manifest, inputs) {
         Ok(()) => Ok(MaterializationBuild { temp_dir }),
         Err(error) => {
             if temp_dir.exists() {
@@ -217,7 +225,7 @@ fn validate_fingerprint_header(
             "fingerprint source name does not match installed manifest",
         ));
     }
-    if fingerprint.importer_version != OPENAPI_IMPORTER_VERSION
+    if fingerprint.importer_version != SURFACE_IMPORTER_VERSION
         || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
         return Err(incompatible_materialization_error(
@@ -466,7 +474,7 @@ fn validate_semantic_ir(
             format!("semantic IR identity mismatch for surface '{}'", surface.id),
         ));
     }
-    if semantic_ir.importer_version != OPENAPI_IMPORTER_VERSION {
+    if semantic_ir.importer_version != expected_importer_version(surface.surface_type) {
         return Err(incompatible_materialization_error(
             source_name,
             format!(
@@ -476,6 +484,13 @@ fn validate_semantic_ir(
         ));
     }
     Ok(())
+}
+
+fn expected_importer_version(surface_type: SurfaceType) -> &'static str {
+    match surface_type {
+        SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
+        SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+    }
 }
 
 pub(crate) fn incompatible_materialization_error(
@@ -492,44 +507,42 @@ fn write_materialization(
     temp_dir: &Path,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
+    inputs: &MaterializationInputs,
 ) -> Result<(), AppError> {
     let manifest_sha256 = sha256_hex(manifest_yaml.as_bytes());
     let mut materialized_surfaces = Vec::new();
     let mut semantic_irs = Vec::new();
     let mut fingerprint_surfaces = Vec::new();
     for surface in &manifest.surfaces {
-        let bytes = read_descriptor(surface)?;
-        validate_materialized_surface_base_url(manifest, surface, &bytes)?;
-        let observed = sha256_hex(&bytes);
-        let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
-            AppError::FailedPrecondition(format!(
-                "failed to import source '{}' surface '{}': {error}",
-                manifest.common.name, surface.id
-            ))
-        })?;
+        let materialized_surface = materialize_surface(manifest, surface, inputs)?;
         let surface_dir = temp_dir.join("surfaces").join(&surface.id);
         fs::ensure_private_dir(&surface_dir)?;
-        std::fs::write(surface_dir.join("source-document.raw"), &bytes)?;
+        std::fs::write(
+            surface_dir.join("source-document.raw"),
+            &materialized_surface.raw_document,
+        )?;
         std::fs::write(
             surface_dir.join("source-document.yaml"),
-            normalize_source_document(&bytes)
-                .map_err(|error| AppError::FailedPrecondition(error.to_string()))?,
+            &materialized_surface.normalized_document,
         )?;
-        write_yaml(&surface_dir.join("semantic-ir.yaml"), &semantic_ir)?;
+        write_yaml(
+            &surface_dir.join("semantic-ir.yaml"),
+            &materialized_surface.semantic_ir,
+        )?;
         materialized_surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
-            semantic_ir: semantic_ir.clone(),
-            source_document_sha256: observed.clone(),
+            semantic_ir: materialized_surface.semantic_ir.clone(),
+            source_document_sha256: materialized_surface.observed_sha256.clone(),
             normalized_source_document_path: surface_dir.join("source-document.yaml"),
             raw_source_document_path: surface_dir.join("source-document.raw"),
         });
-        semantic_irs.push(semantic_ir);
+        semantic_irs.push(materialized_surface.semantic_ir);
         fingerprint_surfaces.push(FingerprintSurface {
             surface_id: surface.id.clone(),
             surface_type: surface.surface_type,
             descriptor_kind: surface.descriptor.kind().to_string(),
             descriptor_location: surface.descriptor.location(),
-            descriptor_sha256: observed,
+            descriptor_sha256: materialized_surface.observed_sha256,
             input_declarations_sha256: stable_input_declarations_sha256(&surface.inputs)?,
         });
     }
@@ -549,7 +562,7 @@ fn write_materialization(
         source_name: manifest.common.name.clone(),
         manifest_sha256: manifest_sha256.clone(),
         surfaces: fingerprint_surfaces,
-        importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+        importer_version: SURFACE_IMPORTER_VERSION.to_string(),
         projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
     };
     let materialized = V4MaterializedSource {
@@ -566,12 +579,127 @@ fn write_materialization(
     Ok(())
 }
 
+struct MaterializedSurfaceBuild {
+    raw_document: Vec<u8>,
+    normalized_document: Vec<u8>,
+    observed_sha256: String,
+    semantic_ir: SemanticIr,
+}
+
+fn materialize_surface(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    inputs: &MaterializationInputs,
+) -> Result<MaterializedSurfaceBuild, AppError> {
+    match surface.surface_type {
+        SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
+        SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
+    }
+}
+
+fn materialize_openapi_surface(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+) -> Result<MaterializedSurfaceBuild, AppError> {
+    let bytes = read_descriptor(surface)?;
+    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
+    let observed_sha256 = sha256_hex(&bytes);
+    let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to import source '{}' surface '{}': {error}",
+            manifest.common.name, surface.id
+        ))
+    })?;
+    let normalized_document = normalize_source_document(&bytes)
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    Ok(MaterializedSurfaceBuild {
+        raw_document: bytes,
+        normalized_document: normalized_document.into_bytes(),
+        observed_sha256,
+        semantic_ir,
+    })
+}
+
+fn materialize_mcp_surface(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    inputs: &MaterializationInputs,
+) -> Result<MaterializedSurfaceBuild, AppError> {
+    let catalog = discover_mcp_tool_catalog(manifest, surface, inputs)?;
+    let normalized_document = normalize_mcp_tool_catalog(&catalog)
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let observed_sha256 = sha256_hex(&normalized_document);
+    let semantic_ir = import_mcp_surface(manifest, surface, &catalog).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to import source '{}' surface '{}': {error}",
+            manifest.common.name, surface.id
+        ))
+    })?;
+    Ok(MaterializedSurfaceBuild {
+        raw_document: normalized_document.clone(),
+        normalized_document,
+        observed_sha256,
+        semantic_ir,
+    })
+}
+
+fn discover_mcp_tool_catalog(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    inputs: &MaterializationInputs,
+) -> Result<McpToolCatalog, AppError> {
+    let runtime = surface.mcp_runtime().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "DSL v4 surface '{}' is not an MCP surface",
+            surface.id
+        ))
+    })?;
+    let source_name = manifest.common.name.clone();
+    let server = runtime.server.clone();
+    let declared_inputs = surface.inputs.clone();
+    let variables = inputs.variables.clone();
+    let secrets = inputs.secrets.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(AppError::from)?;
+        runtime
+            .block_on(coral_engine::discover_mcp_tool_catalog(
+                &source_name,
+                server,
+                &declared_inputs,
+                variables,
+                secrets,
+            ))
+            .map_err(app_error_from_core)
+    })
+    .join()
+    .map_err(|_panic| {
+        AppError::Unavailable(format!(
+            "failed to discover MCP tools for source '{}' surface '{}': discovery thread panicked",
+            manifest.common.name, surface.id
+        ))
+    })?
+}
+
+fn app_error_from_core(error: coral_engine::CoreError) -> AppError {
+    match error {
+        coral_engine::CoreError::InvalidInput(detail) => AppError::InvalidInput(detail),
+        coral_engine::CoreError::Unavailable(detail) => AppError::Unavailable(detail),
+        other => AppError::FailedPrecondition(other.to_string()),
+    }
+}
+
 fn validate_materialized_surface_base_url(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     bytes: &[u8],
 ) -> Result<(), AppError> {
-    if !surface.openapi_runtime.base_url.raw().trim().is_empty() {
+    let Some(openapi_runtime) = surface.openapi_runtime() else {
+        return Ok(());
+    };
+    if !openapi_runtime.base_url.raw().trim().is_empty() {
         return Ok(());
     }
     let metadata = openapi_document_metadata(bytes).map_err(|error| {
@@ -603,6 +731,12 @@ fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppEr
     match &surface.descriptor {
         coral_spec::v4::SurfaceDescriptor::File { file } => read_file_descriptor(file),
         coral_spec::v4::SurfaceDescriptor::Url { url } => read_url_descriptor(url),
+        coral_spec::v4::SurfaceDescriptor::McpServer { .. } => {
+            Err(AppError::FailedPrecondition(format!(
+                "DSL v4 MCP surface '{}' does not have an OpenAPI descriptor",
+                surface.id
+            )))
+        }
     }
 }
 
@@ -948,6 +1082,7 @@ surfaces:
             &source_name(),
             &manifest_yaml,
             &manifest,
+            &MaterializationInputs::default(),
             "test",
         )
         .expect("build materialization");

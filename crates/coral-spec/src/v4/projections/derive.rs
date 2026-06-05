@@ -8,7 +8,7 @@ use crate::v4::ir::{
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
 use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-use crate::{ManifestDataType, Result, SearchLimitsSpec, SourceTableFunctionKind};
+use crate::{ManifestDataType, PaginationSpec, Result, SearchLimitsSpec, SourceTableFunctionKind};
 
 use super::model::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
@@ -54,26 +54,45 @@ fn generate_projection(
     let is_search = is_search_operation(operation);
     let mut visibility = ProjectionVisibility::Published;
     let mut projection_diagnostics = operation.diagnostics.clone();
-    let IrExecutionAttachment::Rest(rest) = &operation.execution;
-    if !operation.read_only
-        || rest.method != HttpMethod::Get
-        || rest.request_body.is_some()
-        || matches!(
-            operation.output.cardinality,
-            OutputCardinality::None | OutputCardinality::Unknown
-        )
-    {
-        visibility = ProjectionVisibility::Hidden;
+    let rest = match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => Some(rest),
+        IrExecutionAttachment::Mcp(_) => None,
+    };
+    match rest {
+        Some(rest)
+            if !operation.read_only
+                || rest.method != HttpMethod::Get
+                || rest.request_body.is_some()
+                || matches!(
+                    operation.output.cardinality,
+                    OutputCardinality::None | OutputCardinality::Unknown
+                ) =>
+        {
+            visibility = ProjectionVisibility::Hidden;
+        }
+        None if !operation.read_only
+            || matches!(
+                operation.output.cardinality,
+                OutputCardinality::None | OutputCardinality::Unknown
+            ) =>
+        {
+            visibility = ProjectionVisibility::Hidden;
+        }
+        Some(_) | None => {}
     }
 
-    let function_kind = if is_search {
-        Some(SourceTableFunctionKind::Search)
-    } else if operation.output.cardinality == OutputCardinality::Singleton
-        && operation.inputs.iter().any(|input| input.required)
-    {
-        Some(SourceTableFunctionKind::Table)
-    } else {
-        None
+    let function_kind = match &operation.execution {
+        IrExecutionAttachment::Rest(_) if is_search => Some(SourceTableFunctionKind::Search),
+        IrExecutionAttachment::Rest(_)
+            if operation.output.cardinality == OutputCardinality::Singleton
+                && operation.inputs.iter().any(|input| input.required) =>
+        {
+            Some(SourceTableFunctionKind::Table)
+        }
+        IrExecutionAttachment::Mcp(_) if operation.inputs.is_empty() && !is_search => None,
+        IrExecutionAttachment::Mcp(_) if is_search => Some(SourceTableFunctionKind::Search),
+        IrExecutionAttachment::Mcp(_) => Some(SourceTableFunctionKind::Table),
+        IrExecutionAttachment::Rest(_) => None,
     };
     let kind = function_kind.map_or(ProjectionKind::Table, |function_kind| {
         ProjectionKind::TableFunction { function_kind }
@@ -83,13 +102,18 @@ fn generate_projection(
     } else {
         SqlInputExposure::FunctionArg
     };
-    let pagination_query_params = pagination_query_param_names(&rest.pagination);
+    let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
+    let pagination_query_params = pagination_query_param_names(&pagination);
     let inputs = operation
         .inputs
         .iter()
         .map(|input| {
-            let (exposure, pagination_owned_query_input) =
-                projection_input_sql_exposure(input, sql_exposure, &pagination_query_params);
+            let (exposure, pagination_owned_query_input) = match &operation.execution {
+                IrExecutionAttachment::Rest(_) => {
+                    projection_input_sql_exposure(input, sql_exposure, &pagination_query_params)
+                }
+                IrExecutionAttachment::Mcp(_) => (sql_exposure, false),
+            };
             if exposure == SqlInputExposure::Internal
                 && input.required
                 && !pagination_owned_query_input
@@ -118,11 +142,14 @@ fn generate_projection(
         })
         .collect::<Vec<_>>();
     let columns = projection_columns(ir, operation);
-    let mut name = projection_name(operation, is_search);
+    let mut name = match &operation.execution {
+        IrExecutionAttachment::Rest(_) => projection_name(operation, is_search),
+        IrExecutionAttachment::Mcp(_) => normalize_identifier(&operation.id, "projection"),
+    };
     if name.is_empty() {
         name = normalize_identifier(&operation.id, "projection");
     }
-    let guide = projection_guide(&kind, &inputs, &rest.pagination, is_search);
+    let guide = projection_guide(&kind, &inputs, &pagination, is_search);
     let projection = Projection {
         name,
         kind,
@@ -133,7 +160,7 @@ fn generate_projection(
         visibility,
         inputs,
         columns,
-        pagination: rest.pagination.clone(),
+        pagination,
         search_limits: is_search.then_some(SearchLimitsSpec {
             default_top_k: 30,
             max_top_k: 100,
@@ -147,7 +174,11 @@ fn generate_projection(
 }
 
 fn projection_input_required(input: &IrOperationInput) -> bool {
-    input.required && (input.location == IrInputLocation::Path || input.default_value.is_none())
+    input.required
+        && (matches!(
+            input.location,
+            IrInputLocation::Path | IrInputLocation::ToolArg
+        ) || input.default_value.is_none())
 }
 
 fn projection_input_sql_exposure(
@@ -159,7 +190,9 @@ fn projection_input_sql_exposure(
         && pagination_query_params.contains(input.name.as_str());
     let exposure = match input.location {
         IrInputLocation::Query if pagination_owned_query_input => SqlInputExposure::Internal,
-        IrInputLocation::Path | IrInputLocation::Query => default_exposure,
+        IrInputLocation::Path | IrInputLocation::Query | IrInputLocation::ToolArg => {
+            default_exposure
+        }
         IrInputLocation::Header | IrInputLocation::Cookie | IrInputLocation::Body => {
             SqlInputExposure::Internal
         }
@@ -168,6 +201,24 @@ fn projection_input_sql_exposure(
 }
 
 fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {
+    if matches!(&operation.execution, IrExecutionAttachment::Mcp(_)) {
+        return vec![
+            ProjectionColumn {
+                name: "result".to_string(),
+                data_type: ManifestDataType::Json,
+                source_path: vec!["result".to_string()],
+                nullable: true,
+                description: "Tool result field when the server returns one.".to_string(),
+            },
+            ProjectionColumn {
+                name: "raw".to_string(),
+                data_type: ManifestDataType::Json,
+                source_path: Vec::new(),
+                nullable: true,
+                description: "Full decoded tool response row.".to_string(),
+            },
+        ];
+    }
     let type_by_id = ir
         .types
         .iter()

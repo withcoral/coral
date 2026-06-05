@@ -20,9 +20,9 @@ use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
-    MaterializationBuild, build_v4_materialization_tmp, canonicalize_file_descriptor,
-    cleanup_materialization_backup, cleanup_materialization_tmp, new_materialization_suffix,
-    replace_v4_materialization, restore_materialization_backup,
+    MaterializationBuild, MaterializationInputs, build_v4_materialization_tmp,
+    canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
+    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -154,6 +154,18 @@ struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
     credential_material: Option<CredentialMaterialSnapshot>,
+}
+
+fn materialization_inputs_from_bindings(
+    bindings: &ValidatedBindings,
+    stored_material: &BTreeMap<String, String>,
+) -> MaterializationInputs {
+    let mut secrets = stored_material.clone();
+    secrets.extend(bindings.secrets.clone());
+    MaterializationInputs {
+        variables: bindings.variables.clone(),
+        secrets,
+    }
 }
 
 impl SourceManager {
@@ -346,6 +358,8 @@ impl SourceManager {
             &BTreeSet::new(),
         )?;
         let bindings = validate_bindings(candidate, bindings, &stored_material)?;
+        let materialization_inputs =
+            materialization_inputs_from_bindings(&bindings, &stored_material);
         let credential_storage = self.source_persist_storage(
             workspace_name,
             &candidate.name,
@@ -365,6 +379,7 @@ impl SourceManager {
                         workspace_name,
                         candidate,
                         materialization_manifest_yaml,
+                        &materialization_inputs,
                         origin,
                         "tmp",
                     )?
@@ -403,6 +418,7 @@ impl SourceManager {
             &oauth_input_keys,
         )?;
         let has_stored_material = !stored_material.is_empty();
+        let stored_material_for_materialization = stored_material.clone();
         let bindings = self
             .bindings_with_oauth_material(
                 candidate,
@@ -412,6 +428,8 @@ impl SourceManager {
                 events,
             )
             .await?;
+        let materialization_inputs =
+            materialization_inputs_from_bindings(&bindings, &stored_material_for_materialization);
         let credential_storage = self.source_persist_storage(
             workspace_name,
             &candidate.name,
@@ -431,6 +449,7 @@ impl SourceManager {
                         workspace_name,
                         candidate,
                         materialization_manifest_yaml,
+                        &materialization_inputs,
                         origin,
                         "tmp",
                     )?
@@ -688,6 +707,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         candidate: &CandidateSource,
         manifest_yaml: &str,
+        inputs: &MaterializationInputs,
         origin: SourceOrigin,
         suffix_prefix: &str,
     ) -> Result<Option<MaterializationBuild>, AppError> {
@@ -715,6 +735,7 @@ impl SourceManager {
             &candidate.name,
             manifest_yaml,
             v4,
+            inputs,
             &new_materialization_suffix(suffix_prefix),
         )
         .map(Some)

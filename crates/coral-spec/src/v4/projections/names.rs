@@ -148,11 +148,14 @@ fn projection_path_context(operation: &IrOperation) -> Option<String> {
 }
 
 fn rest_literal_path_segments(operation: &IrOperation) -> Vec<String> {
-    let IrExecutionAttachment::Rest(rest) = &operation.execution;
-    rest.path_template
-        .split('/')
-        .filter_map(normalized_path_literal_segment)
-        .collect()
+    match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => rest
+            .path_template
+            .split('/')
+            .filter_map(normalized_path_literal_segment)
+            .collect(),
+        IrExecutionAttachment::Mcp(_) => Vec::new(),
+    }
 }
 
 fn normalized_path_literal_segment(segment: &str) -> Option<String> {
@@ -297,6 +300,7 @@ pub(super) fn is_search_operation(operation: &IrOperation) -> bool {
             .path_template
             .split(|c: char| !c.is_ascii_alphanumeric())
             .any(|token| token.eq_ignore_ascii_case("search")),
+        IrExecutionAttachment::Mcp(_) => false,
     };
     path_has_search
         || id_tokens

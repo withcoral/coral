@@ -29,13 +29,17 @@ surfaces:
     inputs:
       GITHUB_TOKEN:
         kind: secret
+        hint: |
+          GitHub personal access token used as a bearer token for the live
+          GitHub REST API. Set GITHUB_TOKEN when installing this preview
+          source.
     server:
       transport: streamable_http
       url: https://api.githubcopilot.com/mcp/x/all/readonly
       auth:
         type: bearer
         from: input
-        key: GITHUB_MCP_ACCESS_TOKEN
+        key: GITHUB_TOKEN
 
 test_queries:
   # MCP surface

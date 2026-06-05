@@ -449,12 +449,16 @@ paths:
 
     let range = operations.get("range_list").expect("range operation");
     assert_eq!(range.output.cardinality, OutputCardinality::List);
-    let IrExecutionAttachment::Rest(range_rest) = &range.execution;
+    let IrExecutionAttachment::Rest(range_rest) = &range.execution else {
+        panic!("range operation should be REST");
+    };
     assert_eq!(range_rest.response.status_code, 200);
 
     let numeric = operations.get("numeric_list").expect("numeric operation");
     assert_eq!(numeric.output.cardinality, OutputCardinality::List);
-    let IrExecutionAttachment::Rest(numeric_rest) = &numeric.execution;
+    let IrExecutionAttachment::Rest(numeric_rest) = &numeric.execution else {
+        panic!("numeric operation should be REST");
+    };
     assert_eq!(numeric_rest.response.status_code, 201);
 }
 

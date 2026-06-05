@@ -47,6 +47,22 @@ pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec
         .collect()
 }
 
+pub fn mcp_projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec> {
+    projection
+        .inputs
+        .iter()
+        .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
+        .map(|input| TableFunctionArgSpec {
+            name: input.name.clone(),
+            required: input.required,
+            values: Vec::new(),
+            bind: FunctionArgBinding {
+                arg: input.wire_name.clone(),
+            },
+        })
+        .collect()
+}
+
 pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
     let pagination_query_params = pagination_query_param_names(&projection.pagination);
     let mut columns = projection
@@ -103,7 +119,12 @@ pub fn request_spec_for_projection(
     projection: &Projection,
     operation: &IrOperation,
 ) -> Result<RequestSpec> {
-    let IrExecutionAttachment::Rest(rest) = &operation.execution;
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        return Err(crate::ManifestError::validation(format!(
+            "projection '{}' is not backed by a REST operation",
+            projection.name
+        )));
+    };
     let pagination_query_params = pagination_query_param_names(&projection.pagination);
     let mut path = rest.path_template.clone();
     for input in &projection.inputs {

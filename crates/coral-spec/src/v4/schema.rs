@@ -6,7 +6,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{AuthSpec, HeaderSpec, backends::http::RateLimitSpec};
+use crate::backends::http::RateLimitSpec;
+use crate::backends::mcp::McpServerSpec;
+use crate::{AuthSpec, HeaderSpec};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -21,11 +23,16 @@ struct V4SourceManifestSchema {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum V4SurfaceSchema {
+    Openapi(V4OpenApiSurfaceSchema),
+    Mcp(V4McpSurfaceSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct V4SurfaceSchema {
+struct V4OpenApiSurfaceSchema {
     id: String,
-    #[serde(rename = "type")]
-    surface_type: V4SurfaceTypeSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,9 +50,12 @@ struct V4SurfaceSchema {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum V4SurfaceTypeSchema {
-    Openapi,
+#[serde(deny_unknown_fields)]
+struct V4McpSurfaceSchema {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
+    server: McpServerSpec,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -131,22 +141,28 @@ fn post_process_schema(schema: &mut Value) {
         }
     }
 
-    let Some(surface) = root
-        .get_mut("$defs")
-        .and_then(Value::as_object_mut)
-        .and_then(|defs| defs.get_mut("V4SurfaceSchema"))
+    let Some(defs) = root.get_mut("$defs").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if let Some(surface_schema) = defs.get_mut("V4SurfaceSchema") {
+        post_process_surface_variants(surface_schema);
+        return;
+    }
+    let Some(openapi_surface) = defs
+        .get_mut("V4OpenApiSurfaceSchema")
         .and_then(Value::as_object_mut)
     else {
         return;
     };
-    surface.insert(
+    openapi_surface.insert(
         "oneOf".to_string(),
         json!([{ "required": ["url"] }, { "required": ["file"] }]),
     );
-    if let Some(properties) = surface.get_mut("properties").and_then(Value::as_object_mut) {
-        if let Some(id) = properties.get_mut("id").and_then(Value::as_object_mut) {
-            id.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
-        }
+    if let Some(properties) = openapi_surface
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    {
+        post_process_surface_id(properties);
         if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
             url.insert("type".to_string(), json!("string"));
             url.insert("pattern".to_string(), json!("^https://"));
@@ -155,10 +171,7 @@ fn post_process_schema(schema: &mut Value) {
             file.insert("type".to_string(), json!("string"));
             file.insert("minLength".to_string(), json!(1));
         }
-        if let Some(inputs) = properties.get_mut("inputs").and_then(Value::as_object_mut) {
-            inputs.insert("type".to_string(), json!("object"));
-            inputs.insert("propertyNames".to_string(), json!({ "minLength": 1 }));
-        }
+        post_process_surface_inputs(properties);
         if let Some(base_url) = properties
             .get_mut("base_url")
             .and_then(Value::as_object_mut)
@@ -166,6 +179,84 @@ fn post_process_schema(schema: &mut Value) {
             base_url.insert("type".to_string(), json!("string"));
             base_url.insert("minLength".to_string(), json!(1));
         }
+    }
+
+    let Some(mcp_surface) = defs
+        .get_mut("V4McpSurfaceSchema")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    if let Some(properties) = mcp_surface
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    {
+        post_process_surface_id(properties);
+        post_process_surface_inputs(properties);
+    }
+}
+
+fn post_process_surface_variants(surface_schema: &mut Value) {
+    let Some(variants) = surface_schema
+        .get_mut("oneOf")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for variant in variants {
+        let Some(variant) = variant.as_object_mut() else {
+            continue;
+        };
+        let surface_type = variant
+            .get("properties")
+            .and_then(|value| value.get("type"))
+            .and_then(|value| value.get("const"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        if matches!(surface_type.as_deref(), Some("openapi")) {
+            variant.insert(
+                "oneOf".to_string(),
+                json!([{ "required": ["url"] }, { "required": ["file"] }]),
+            );
+        }
+        let Some(properties) = variant.get_mut("properties").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        post_process_surface_id(properties);
+        post_process_surface_inputs(properties);
+        match surface_type.as_deref() {
+            Some("openapi") => {
+                if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
+                    url.insert("type".to_string(), json!("string"));
+                    url.insert("pattern".to_string(), json!("^https://"));
+                }
+                if let Some(file) = properties.get_mut("file").and_then(Value::as_object_mut) {
+                    file.insert("type".to_string(), json!("string"));
+                    file.insert("minLength".to_string(), json!(1));
+                }
+                if let Some(base_url) = properties
+                    .get_mut("base_url")
+                    .and_then(Value::as_object_mut)
+                {
+                    base_url.insert("type".to_string(), json!("string"));
+                    base_url.insert("minLength".to_string(), json!(1));
+                }
+            }
+            Some("mcp") | None | Some(_) => {}
+        }
+    }
+}
+
+fn post_process_surface_id(properties: &mut serde_json::Map<String, Value>) {
+    if let Some(id) = properties.get_mut("id").and_then(Value::as_object_mut) {
+        id.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
+    }
+}
+
+fn post_process_surface_inputs(properties: &mut serde_json::Map<String, Value>) {
+    if let Some(inputs) = properties.get_mut("inputs").and_then(Value::as_object_mut) {
+        inputs.insert("type".to_string(), json!("object"));
+        inputs.insert("propertyNames".to_string(), json!({ "minLength": 1 }));
     }
 }
 
@@ -197,6 +288,33 @@ mod tests {
             panic!("generated schema should accept core v4 fixture: {errors:?}");
         }
         parse_source_manifest_yaml(&raw).expect("parser accepts core v4 fixture");
+    }
+
+    #[test]
+    fn generated_schema_accepts_mcp_surface() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    inputs:
+      MCP_TOKEN:
+        kind: secret
+    server:
+      transport: streamable_http
+      url: https://mcp.example.com/mcp
+      auth:
+        type: bearer
+        from: input
+        key: MCP_TOKEN
+";
+
+        if let Err(errors) = validator().validate(&manifest_json(raw)) {
+            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
+            panic!("generated schema should accept MCP surface: {errors:?}");
+        }
+        parse_source_manifest_yaml(raw).expect("parser accepts MCP surface");
     }
 
     #[test]

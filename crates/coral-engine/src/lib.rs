@@ -60,6 +60,7 @@ mod composition;
 pub mod contracts;
 mod runtime;
 
+pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,

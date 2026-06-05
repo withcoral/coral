@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use coral_spec::backends::mcp::McpServerSpec;
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use rmcp::model::{CallToolRequestParams, ClientInfo, Implementation, JsonObject};
+use rmcp::model::{CallToolRequestParams, ClientInfo, Implementation, JsonObject, Tool};
 use rmcp::transport::ConfigureCommandExt;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -70,6 +70,53 @@ impl StdioMcpToolCaller {
             env.push((spec.name.clone(), value_to_env_string(value)));
         }
         Ok(env)
+    }
+
+    pub(super) async fn list_tools(&self) -> Result<Vec<Tool>> {
+        let McpServerSpec::Stdio {
+            command: program,
+            args,
+            ..
+        } = &self.server
+        else {
+            unreachable!("StdioMcpToolCaller requires a stdio MCP server spec");
+        };
+
+        let mut command = Command::new(program);
+        command.args(args);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+
+        for (name, value) in self.resolved_server_env().await? {
+            command.env(name, value);
+        }
+
+        let transport = rmcp::transport::TokioChildProcess::new(command.configure(|cmd| {
+            cmd.kill_on_drop(true);
+        }))
+        .map_err(|error| {
+            DataFusionError::External(Box::new(McpProviderQueryError::ServerStart {
+                source_schema: self.source_name.clone(),
+                detail: error.to_string(),
+            }))
+        })?;
+        let client = McpClientHandler::new(&self.source_name)
+            .serve(transport)
+            .await
+            .map_err(|error| {
+                DataFusionError::External(Box::new(McpProviderQueryError::Initialize {
+                    source_schema: self.source_name.clone(),
+                    detail: error.to_string(),
+                }))
+            })?;
+        client.peer().list_all_tools().await.map_err(|error| {
+            DataFusionError::External(Box::new(McpProviderQueryError::Initialize {
+                source_schema: self.source_name.clone(),
+                detail: error.to_string(),
+            }))
+        })
     }
 }
 
@@ -208,6 +255,35 @@ impl StreamableHttpMcpToolCaller {
             return Ok(None);
         };
         Ok(Some(value_to_env_string(token)))
+    }
+
+    pub(super) async fn list_tools(&self) -> Result<Vec<Tool>> {
+        let McpServerSpec::StreamableHttp { url, .. } = &self.server else {
+            unreachable!("StreamableHttpMcpToolCaller requires a Streamable HTTP MCP server spec");
+        };
+
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_string())
+            .reinit_on_expired_session(true);
+        if let Some(token) = self.resolved_bearer_token().await? {
+            config = config.auth_header(token);
+        }
+
+        let transport = StreamableHttpClientTransport::from_config(config);
+        let client = McpClientHandler::new(&self.source_name)
+            .serve(transport)
+            .await
+            .map_err(|error| {
+                DataFusionError::External(Box::new(mcp_http_initialize_error(
+                    &self.source_name,
+                    &error,
+                )))
+            })?;
+        client.peer().list_all_tools().await.map_err(|error| {
+            DataFusionError::External(Box::new(mcp_http_initialize_error(
+                &self.source_name,
+                &error,
+            )))
+        })
     }
 }
 

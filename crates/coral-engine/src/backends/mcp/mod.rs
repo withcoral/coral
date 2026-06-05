@@ -1,5 +1,6 @@
 //! MCP-backed source runtime pieces.
 
+mod catalog;
 mod client;
 pub(crate) mod error;
 mod fetch;
@@ -15,8 +16,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::SourceBackend;
 use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest, McpTableSpec};
+use coral_spec::v4::McpToolCatalog;
+use coral_spec::{ManifestInputSpec, SourceBackend, resolve_inputs};
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
@@ -31,7 +33,9 @@ use crate::backends::{
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names, validate_lookup_key_filter_backend_support,
 };
-use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
+use crate::{
+    CoreError, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+};
 
 #[derive(Debug, Clone)]
 struct McpCompiledSource {
@@ -121,6 +125,28 @@ pub(crate) fn compile_manifest(
         source_inputs,
         caller,
     )
+}
+
+/// Connects to an MCP server and returns its declared tool catalog.
+///
+/// This is used by DSL v4 materialization to snapshot MCP `tools/list`
+/// metadata into app-owned artifacts before query runtime assembly.
+pub async fn discover_tool_catalog(
+    source_name: &str,
+    server: McpServerSpec,
+    declared_inputs: &[ManifestInputSpec],
+    source_variables: BTreeMap<String, String>,
+    source_secrets: BTreeMap<String, String>,
+) -> std::result::Result<McpToolCatalog, CoreError> {
+    let resolved_inputs = Arc::new(resolve_inputs(
+        declared_inputs,
+        &source_secrets,
+        &source_variables,
+    ));
+    let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
+    catalog::inspect_tools(source_name.to_string(), server, source_inputs)
+        .await
+        .map_err(|error| CoreError::Unavailable(error.to_string()))
 }
 
 fn compile_source_with_caller(

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
+use crate::v4::ir::mcp::McpExecutionAttachment;
 use crate::v4::ir::rest::RestExecutionAttachment;
 use crate::v4::manifest::SurfaceType;
 
@@ -112,6 +113,7 @@ pub enum IrInputLocation {
     Header,
     Cookie,
     Body,
+    ToolArg,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +133,7 @@ pub enum HttpMethod {
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
 pub enum IrExecutionAttachment {
     Rest(RestExecutionAttachment),
+    Mcp(McpExecutionAttachment),
 }
 
 #[cfg(test)]
