@@ -1,6 +1,6 @@
 # Lemon Squeezy
 
-Query your [Lemon Squeezy](https://www.lemonsqueezy.com/) store data — orders,
+Query your [Lemon Squeezy](https://www.lemonsqueezy.com/) store data - orders,
 subscriptions, customers, products, prices, license keys, discounts, and more.
 
 ## Authentication
@@ -33,15 +33,15 @@ coral source test lemon_squeezy
 | ----------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `stores`                | Stores owned by the authenticated account, with revenue totals and 30-day summaries                             |
 | `products`              | Products listed in your stores                                                                                  |
-| `variants`              | Legacy variant metadata and back-compat pricing/billing defaults — current price records live in `prices`      |
-| `prices`                 | Current price records for variants, including billing scheme, tiers, trials, and price history                 |
+| `variants`              | Legacy variant metadata and back-compat pricing/billing defaults - current price records live in `prices`       |
+| `prices`                | Current price records for variants, including billing scheme, tiers, trials, and price history                  |
 | `customers`             | Customers who have made purchases, with MRR and cumulative revenue                                              |
 | `orders`                | Individual purchase transactions with full price and tax breakdowns in store currency and USD                   |
 | `order_items`           | Line items within each order, with price and quantity per variant purchased                                     |
 | `subscriptions`         | Active and historical subscriptions with billing status, renewal dates, and payment method                      |
 | `subscription_invoices` | Invoices generated per subscription billing cycle                                                               |
 | `discounts`             | Coupon codes with validity windows, redemption limits, and subscription discount duration settings              |
-| `discount_redemptions`  | Individual records of each discount code being applied to an order — use this to count redemptions per discount |
+| `discount_redemptions`  | Individual records of each discount code being applied to an order - use this to count redemptions per discount |
 | `license_keys`          | License keys issued with purchases, tracking activation limit and current activation count                      |
 
 All monetary amounts are in **cents**. Most transactional columns
@@ -199,7 +199,7 @@ GROUP BY d.id, d.code, d.amount_type, d.amount, d.status, s.currency
 ORDER BY redemptions DESC;
 ```
 
-### Subscription invoices — recent void and refunded invoices
+### Subscription invoices - recent void and refunded invoices
 
 ```sql
 SELECT
@@ -246,18 +246,18 @@ LIMIT 10;
 - All responses use the JSON:API format. Coral flattens the `attributes` object
   so each field is a direct SQL column.
 - Monetary values are almost always integers (cents). The only exceptions are
-  `prices.unit_price_decimal` and the `unit_price_decimal` field nested inside
-  `prices.tiers` objects — both are string representations of the cent amount
-  as a decimal (e.g. `"9.99"`). When usage-based billing is enabled
-  (`usage_aggregation` is non-null), `prices.unit_price` is null and
-  `unit_price_decimal` is the authoritative price; cast it to a numeric type
-  for arithmetic (e.g. `CAST(unit_price_decimal AS DECIMAL) / 100`). The same
+  `unit_price_decimal` and the `unit_price_decimal` field nested inside
+  `prices.tiers` objects - both are string representations of the price
+  **in cents** as a decimal (e.g. `"999.0"` for $9.99). When usage-based
+  billing is enabled (`usage_aggregation` is non-null), `prices.unit_price`
+  is null and `unit_price_decimal` is the authoritative price; cast it to a
+  numeric type for arithmetic (e.g. `CAST(unit_price_decimal AS DECIMAL) / 100`).. The same
   applies to `unit_price_decimal` inside tier objects. For standard pricing
   where `unit_price` is non-null, prefer that integer column for `SUM`, `AVG`,
   and other aggregations.
 - Most price columns have a `_formatted` counterpart returning a
   human-readable string (e.g. `total_formatted`, `setup_fee_formatted`,
-  `mrr_formatted`). These are for display only — always use the raw integer
+  `mrr_formatted`). These are for display only - always use the raw integer
   columns for `SUM`, `AVG`, and other aggregations.
 - `order_items.quantity` records how many units were purchased per line item.
   Multiply `price × quantity` to get the true line-item revenue; using `price`
