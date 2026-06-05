@@ -209,7 +209,7 @@ tables:
         nullable: true
         description: Variable font axes metadata.
 
-      - name: color_capabilities
+      - name: colorCapabilities
         type: Json
         nullable: true
 
@@ -371,14 +371,14 @@ tables:
         type: Json
         nullable: true
 
-      - name: color_capabilities
+      - name: colorCapabilities
         type: Json
         nullable: true
 
         expr:
           kind: path
           path:
-            - color_capabilities
+            - colorCapabilities
 
       - name: tags
         type: Json
