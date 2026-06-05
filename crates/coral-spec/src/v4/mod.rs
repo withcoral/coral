@@ -4,8 +4,8 @@
 )]
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 1;
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v2";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v3";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v3";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v4";
 
 mod artifacts;
 mod diagnostics;
@@ -31,14 +31,14 @@ pub use artifacts::{
 };
 pub use diagnostics::{Diagnostic, DiagnosticSeverity};
 pub use ir::{
-    HttpMethod, IrEntityCandidate, IrExecutionAttachment, IrField, IrOperation, IrOperationInput,
-    IrOperationOutput, IrScalarType, IrType, IrTypeShape, OpenApiParameterLocation,
-    OutputCardinality, RestExecutionAttachment, RestParameterBinding, RestRequestBody,
-    RestResponseAttachment, SemanticIr,
+    HttpMethod, IrEntityCandidate, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
+    IrOperationInput, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
+    RestExecutionAttachment, RestParameterBinding, RestRequestBody, RestResponseAttachment,
+    SemanticIr,
 };
 pub use manifest::{
     OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceType, V4SourceCommon, V4SourceManifest,
-    V4Surface,
+    V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
 pub use projections::{

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::v4::ir::{HttpMethod, IrScalarType, OpenApiParameterLocation};
+use crate::v4::ir::{HttpMethod, IrInputLocation, IrScalarType};
 use crate::{PaginationSpec, ResponseSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +23,7 @@ pub struct RestRequestBody {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestParameterBinding {
     pub input_name: String,
-    pub location: OpenApiParameterLocation,
+    pub location: IrInputLocation,
     pub wire_name: String,
     pub required: bool,
     pub data_type: IrScalarType,

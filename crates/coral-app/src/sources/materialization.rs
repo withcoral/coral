@@ -9,12 +9,13 @@ use coral_spec::v4::{
     Diagnostic, Fingerprint, FingerprintSurface, MaterializedSurface, OPENAPI_IMPORTER_VERSION,
     PROJECTION_GENERATOR_VERSION, ProjectionCatalog, SemanticIr, V4_ARTIFACT_SCHEMA_VERSION,
     V4MaterializedSource, V4SourceManifest, generate_projection_catalog, import_openapi_surface,
-    normalize_source_document, validate_materialized_source,
+    normalize_source_document, openapi_document_metadata, validate_materialized_source,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
-    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ParsedTemplate,
 };
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -340,6 +341,23 @@ fn require_file(source_name: &SourceName, path: &Path) -> Result<(), AppError> {
     }
 }
 
+fn read_raw_source_document_artifact(
+    source_name: &SourceName,
+    surface: &coral_spec::v4::V4Surface,
+    path: &Path,
+) -> Result<Vec<u8>, AppError> {
+    std::fs::read(path).map_err(|error| {
+        incompatible_materialization_error(
+            source_name,
+            format!(
+                "failed to read raw source document artifact for surface '{}' '{}': {error}",
+                surface.id,
+                path.display()
+            ),
+        )
+    })
+}
+
 fn validate_loaded_materialization(
     source_name: &SourceName,
     manifest: &V4SourceManifest,
@@ -370,7 +388,11 @@ fn validate_loaded_materialization(
                 format!("fingerprint is missing surface '{}'", surface.id),
             ));
         };
-        let raw_bytes = std::fs::read(&materialized_surface.raw_source_document_path)?;
+        let raw_bytes = read_raw_source_document_artifact(
+            source_name,
+            surface,
+            &materialized_surface.raw_source_document_path,
+        )?;
         let observed_raw_hash = sha256_hex(&raw_bytes);
         if observed_raw_hash != fingerprint_surface.descriptor_sha256 {
             return Err(incompatible_materialization_error(
@@ -477,6 +499,7 @@ fn write_materialization(
     let mut fingerprint_surfaces = Vec::new();
     for surface in &manifest.surfaces {
         let bytes = read_descriptor(surface)?;
+        validate_materialized_surface_base_url(manifest, surface, &bytes)?;
         let observed = sha256_hex(&bytes);
         let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
             AppError::FailedPrecondition(format!(
@@ -541,6 +564,39 @@ fn write_materialization(
     write_yaml(&temp_dir.join("projections.yaml"), &projections)?;
     write_yaml(&temp_dir.join("diagnostics.yaml"), &diagnostics)?;
     Ok(())
+}
+
+fn validate_materialized_surface_base_url(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    bytes: &[u8],
+) -> Result<(), AppError> {
+    if !surface.openapi_runtime.base_url.raw().trim().is_empty() {
+        return Ok(());
+    }
+    let metadata = openapi_document_metadata(bytes).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to derive base_url for DSL v4 surface '{}': {error}",
+            surface.id
+        ))
+    })?;
+    let Some(server_url) = metadata.server_url.as_deref() else {
+        return Ok(());
+    };
+    let base_url = ParsedTemplate::parse(server_url).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to parse derived base_url for DSL v4 surface '{}': {error}",
+            surface.id
+        ))
+    })?;
+    validate_openapi_base_url_template(
+        &manifest.common.name,
+        &surface.id,
+        &surface.inputs,
+        &base_url,
+        "derived OpenAPI server",
+    )
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
 }
 
 fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
@@ -701,6 +757,7 @@ fn stable_credential_method(method: &ManifestCredentialMethod) -> Value {
         "kind": stable_credential_method_kind(method.kind),
         "label": &method.label,
         "description": &method.description,
+        "hint": &method.hint,
         "oauth": method.oauth.as_ref().map(stable_oauth_credential),
     })
 }
@@ -899,6 +956,48 @@ surfaces:
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
     }
 
+    fn credential_method_hint_manifest(hint: &str) -> V4SourceManifest {
+        let manifest_yaml = format!(
+            r"
+name: github_v4_materialization_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      ACCESS_TOKEN:
+        kind: secret
+        credential:
+          methods:
+            - type: source_config
+              label: Paste token
+              description: Configure a token manually.
+              hint: {hint}
+"
+        );
+        parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone()
+    }
+
+    #[test]
+    fn input_declarations_fingerprint_includes_credential_method_hint() {
+        let first = credential_method_hint_manifest("Use source config one.");
+        let second = credential_method_hint_manifest("Use source config two.");
+
+        let first_hash =
+            stable_input_declarations_sha256(&first.surfaces.first().expect("surface").inputs)
+                .expect("first hash");
+        let second_hash =
+            stable_input_declarations_sha256(&second.surfaces.first().expect("surface").inputs)
+                .expect("second hash");
+
+        assert_ne!(first_hash, second_hash);
+    }
+
     #[test]
     fn load_v4_materialization_rejects_mismatched_manifest_hash() {
         let (_state, _descriptor, layout, manifest_yaml, _manifest) = setup_materialization();
@@ -1014,6 +1113,55 @@ surfaces:
                 .to_string()
                 .contains("raw source document hash does not match"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_v4_materialization_rejects_unreadable_raw_source_document_with_readd_guidance() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let raw_path = layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("source-document.raw");
+        let original_permissions = std::fs::metadata(&raw_path)
+            .expect("raw descriptor metadata")
+            .permissions();
+        let mut unreadable_permissions = original_permissions.clone();
+        unreadable_permissions.set_mode(0o000);
+        std::fs::set_permissions(&raw_path, unreadable_permissions)
+            .expect("make raw descriptor unreadable");
+        if std::fs::read(&raw_path).is_ok() {
+            std::fs::set_permissions(&raw_path, original_permissions)
+                .expect("restore raw descriptor permissions");
+            return;
+        }
+
+        let result = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        );
+
+        std::fs::set_permissions(&raw_path, original_permissions)
+            .expect("restore raw descriptor permissions");
+        let message = result
+            .expect_err("unreadable raw descriptor should fail")
+            .to_string();
+        assert!(
+            message.contains("missing or incompatible DSL v4 materialized artifacts"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("failed to read raw source document artifact"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("Re-add the source"),
+            "unexpected error: {message}"
         );
     }
 

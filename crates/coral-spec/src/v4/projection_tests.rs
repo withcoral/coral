@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use super::naming::{pluralize, singularize};
 use super::test_support::github_openapi;
 use super::*;
-use crate::{PaginationMode, parse_source_manifest_yaml};
+use crate::{PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml};
 
 #[test]
 fn imports_and_generates_github_issue_slice() {
@@ -151,6 +151,67 @@ surfaces:
 }
 
 #[test]
+fn projection_generation_uses_omitted_path_required_for_table_function_args() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: path_required
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items/{id}:
+    get:
+      operationId: items/get
+      parameters:
+        - {name: id, in: path, required: false, schema: {type: string, default: public}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "items_get")
+        .expect("projection");
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
+    let id_input = projection
+        .inputs
+        .iter()
+        .find(|input| input.wire_name == "id")
+        .expect("id input");
+    assert_eq!(id_input.sql_exposure, SqlInputExposure::FunctionArg);
+    assert!(id_input.required);
+    assert_eq!(id_input.default_value.as_deref(), Some("public"));
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps related collision cases together."
@@ -294,6 +355,23 @@ components:
         .get("pulls_list_commits")
         .expect("pulls_list_commits projection");
     assert_eq!(pull_commits.0, "repos_pulls_commits");
+
+    let catalog_collision_diagnostics = catalog
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+        .collect::<Vec<_>>();
+    assert_eq!(catalog_collision_diagnostics.len(), 3);
+    let projection_collision_diagnostics = catalog
+        .projections
+        .iter()
+        .flat_map(|projection| &projection.diagnostics)
+        .filter(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+        .count();
+    assert_eq!(
+        projection_collision_diagnostics,
+        catalog_collision_diagnostics.len()
+    );
 }
 
 #[test]

@@ -340,6 +340,113 @@ tables:
     }
 
     #[test]
+    fn parse_source_manifest_yaml_accepts_jsonl_file_metadata() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: jsonl
+    source:
+      location: file:///tmp/events/
+      metadata:
+        - name: session_path
+          kind: relative_path
+        - name: session_file
+          kind: file_stem
+        - name: event_index
+          kind: line_number
+    columns:
+      - name: type
+        type: Utf8
+",
+        )
+        .expect("JSONL file metadata should pass full manifest parsing");
+        assert!(manifest.as_file().is_some());
+    }
+
+    #[test]
+    fn validate_manifest_schema_accepts_empty_file_metadata_for_non_jsonl_tables() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: parquet
+    source:
+      location: file:///tmp/events/
+      metadata: []
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("empty non-JSONL metadata should match Rust parsing");
+    }
+
+    #[test]
+    fn validate_manifest_schema_accepts_file_scoped_metadata_for_non_jsonl_tables() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: parquet
+    source:
+      location: file:///tmp/events/
+      metadata:
+        - name: file_path
+          kind: relative_path
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("file-scoped metadata should be valid for non-JSONL file tables");
+    }
+
+    #[test]
+    fn validate_manifest_schema_rejects_line_number_metadata_for_non_jsonl_tables() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: parquet
+    source:
+      location: file:///tmp/events/
+      metadata:
+        - name: event_index
+          kind: line_number
+",
+        );
+        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("source manifest failed schema validation:"),
+            "{message}"
+        );
+        assert!(message.contains("/tables/0/source"), "{message}");
+        assert!(message.contains("metadata"), "{message}");
+        assert!(
+            message.contains("line_number"),
+            "schema error should reject non-JSONL line_number metadata: {message}"
+        );
+    }
+
+    #[test]
     fn validate_manifest_schema_rejects_http_table_source() {
         let manifest = manifest_json(
             r"
