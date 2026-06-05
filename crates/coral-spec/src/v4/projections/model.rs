@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
-use crate::v4::ir::OpenApiParameterLocation;
+use crate::v4::ir::IrInputLocation;
 use crate::{
     DetailHintSpec, ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind,
 };
@@ -52,7 +52,7 @@ pub enum ProjectionVisibility {
 pub struct ProjectionInput {
     pub name: String,
     pub sql_exposure: SqlInputExposure,
-    pub source_location: OpenApiParameterLocation,
+    pub source_location: IrInputLocation,
     pub wire_name: String,
     pub required: bool,
     pub data_type: ManifestDataType,
