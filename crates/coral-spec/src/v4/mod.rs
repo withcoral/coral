@@ -13,6 +13,7 @@ mod schema;
 
 use crate::backends::http::{AuthSpec, RateLimitSpec};
 use crate::inputs::{collect_declared_inputs, validate_input_references};
+use crate::validate::validate_host_template_inputs;
 use crate::{
     ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec,
     ManifestDataType, ManifestError, ManifestInputSpec, PageSizeSpec, PaginationMode,
@@ -177,6 +178,13 @@ impl V4SourceManifest {
             }
             let inputs = collect_declared_inputs(surface_value)?;
             validate_input_references(surface_value, &inputs)?;
+            if let Some(base_url) = raw_surface.base_url.as_ref() {
+                validate_host_template_inputs(
+                    &format!("source '{name}' surface '{}' base_url", raw_surface.id),
+                    base_url,
+                    &inputs,
+                )?;
+            }
             merge_surface_inputs(
                 &name,
                 &raw_surface.id,
@@ -2297,6 +2305,31 @@ surfaces:
                 .base_url
                 .raw(),
             ""
+        );
+    }
+
+    #[test]
+    fn rejects_v4_base_url_templating_secret_host() {
+        let error = parse_source_manifest_yaml(
+            r#"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    inputs:
+      SECRET_HOST:
+        kind: secret
+    base_url: "https://{{input.SECRET_HOST}}.example.com"
+"#,
+        )
+        .expect_err("secret-templated v4 base_url host should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("only `kind: variable` inputs may determine an outbound host"),
+            "unexpected error: {error}"
         );
     }
 

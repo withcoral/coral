@@ -12,8 +12,13 @@ use url::Url;
 
 use crate::{
     ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace, TemplatePart,
-    ValidatedSourceManifest, backends::file::FileObjectStoreSpec,
+    ValidatedSourceManifest,
+    backends::file::FileObjectStoreSpec,
+    v4::{SurfaceDescriptor, openapi_document_metadata},
 };
+
+const UNRESOLVED_OPENAPI_SERVER_HOST: &str =
+    "OpenAPI servers[0].url runtime host (unresolved; declare base_url to review before import)";
 
 impl ValidatedSourceManifest {
     /// Returns every network host this source will contact, de-duplicated and
@@ -24,7 +29,11 @@ impl ValidatedSourceManifest {
     /// endpoints. A URL whose host depends on a setup-time input with no
     /// manifest default cannot be resolved statically; its unresolved `{{...}}`
     /// template string is returned verbatim so callers can still show it to the
-    /// user.
+    /// user. A DSL v4 `OpenAPI` surface that omits `base_url` derives its
+    /// runtime host from the materialized `OpenAPI` `servers[0].url`; local
+    /// descriptors are read here so that derived host can be shown during
+    /// preflight confirmation. Remote or unreadable descriptors are surfaced as
+    /// unresolved so callers do not silently omit the runtime host.
     #[must_use]
     pub fn outbound_hosts(&self) -> Vec<String> {
         self.outbound_hosts_with_input_values(&BTreeMap::new())
@@ -95,8 +104,41 @@ impl ValidatedSourceManifest {
             );
         }
 
+        if let Some(v4) = self.as_v4() {
+            for surface in &v4.surfaces {
+                if let SurfaceDescriptor::Url { url } = &surface.descriptor {
+                    collect_host(&mut hosts, url);
+                }
+
+                if surface.openapi_runtime.base_url.raw().trim().is_empty() {
+                    collect_v4_derived_openapi_host(&mut hosts, &surface.descriptor);
+                } else {
+                    collect_host(
+                        &mut hosts,
+                        &render_with_input_values(
+                            &surface.openapi_runtime.base_url,
+                            inputs,
+                            source_inputs,
+                        ),
+                    );
+                }
+            }
+        }
+
         hosts.into_iter().collect()
     }
+}
+
+fn collect_v4_derived_openapi_host(hosts: &mut BTreeSet<String>, descriptor: &SurfaceDescriptor) {
+    if let SurfaceDescriptor::File { file } = descriptor
+        && let Ok(bytes) = std::fs::read(file)
+        && let Ok(metadata) = openapi_document_metadata(&bytes)
+        && let Some(server_url) = metadata.server_url
+        && insert_parsed_url_host(hosts, &server_url)
+    {
+        return;
+    }
+    hosts.insert(UNRESOLVED_OPENAPI_SERVER_HOST.to_string());
 }
 
 /// Renders a template, substituting input tokens with their manifest default
@@ -202,28 +244,34 @@ fn collect_host(hosts: &mut BTreeSet<String>, raw: &str) {
     if raw.is_empty() || has_scheme(raw, "file") {
         return;
     }
-    match Url::parse(raw) {
-        Ok(url) => {
-            // A `file://` location reads from the local filesystem; there is
-            // no remote host to report.
-            if url.scheme() == "file" {
-                return;
-            }
-            if let Some(host) = url.host_str() {
-                match url.port() {
-                    Some(port) => hosts.insert(format!("{host}:{port}")),
-                    None => hosts.insert(host.to_string()),
-                };
-                return;
-            }
-            hosts.insert(raw.to_string());
-        }
-        // Templated or otherwise unparseable: surface the raw string so the
-        // user still sees that an input-driven endpoint exists.
-        Err(_) => {
-            hosts.insert(raw.to_string());
-        }
+    if insert_parsed_url_host(hosts, raw) {
+        return;
     }
+    if matches!(Url::parse(raw), Ok(url) if url.scheme() == "file") {
+        return;
+    }
+    // Hostless, templated, or otherwise unparseable: surface the raw string so
+    // the user still sees that an input-driven endpoint exists.
+    hosts.insert(raw.to_string());
+}
+
+fn insert_parsed_url_host(hosts: &mut BTreeSet<String>, raw: &str) -> bool {
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    // A `file://` location reads from the local filesystem; there is no remote
+    // host to report.
+    if url.scheme() == "file" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    match url.port() {
+        Some(port) => hosts.insert(format!("{host}:{port}")),
+        None => hosts.insert(host.to_string()),
+    };
+    true
 }
 
 fn has_scheme(raw: &str, expected: &str) -> bool {
@@ -235,9 +283,13 @@ fn has_scheme(raw: &str, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::parse_source_manifest_yaml;
+
+    use super::UNRESOLVED_OPENAPI_SERVER_HOST;
 
     fn hosts(manifest_yaml: &str) -> Vec<String> {
         parse_source_manifest_yaml(manifest_yaml)
@@ -401,6 +453,132 @@ tables:
 "#,
         );
         assert_eq!(found, vec!["{{input.API_BASE}}".to_string()]);
+    }
+
+    #[test]
+    fn includes_v4_descriptor_and_explicit_runtime_hosts() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://specs.example.com/openapi.yaml
+    base_url: https://api.example.com/v1
+",
+        )
+        .expect("manifest should parse");
+
+        assert_eq!(
+            manifest.outbound_hosts(),
+            vec![
+                "api.example.com".to_string(),
+                "specs.example.com".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn includes_v4_file_descriptor_and_derived_runtime_host() {
+        let openapi_file = write_openapi_fixture(
+            r"
+openapi: 3.0.3
+info:
+  title: Demo
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1
+paths: {}
+",
+        );
+        let manifest = parse_source_manifest_yaml(&format!(
+            r#"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: "{}"
+"#,
+            openapi_file.display()
+        ))
+        .expect("manifest should parse");
+
+        assert_eq!(
+            manifest.outbound_hosts(),
+            vec!["api.example.com".to_string()]
+        );
+        std::fs::remove_file(openapi_file).expect("remove OpenAPI fixture");
+    }
+
+    #[test]
+    fn includes_unresolved_marker_for_v4_file_descriptor_with_relative_server_url() {
+        let openapi_file = write_openapi_fixture(
+            r"
+openapi: 3.0.3
+info:
+  title: Demo
+  version: 1.0.0
+servers:
+  - url: /v1
+paths: {}
+",
+        );
+        let manifest = parse_source_manifest_yaml(&format!(
+            r#"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: "{}"
+"#,
+            openapi_file.display()
+        ))
+        .expect("manifest should parse");
+
+        assert_eq!(
+            manifest.outbound_hosts(),
+            vec![UNRESOLVED_OPENAPI_SERVER_HOST.to_string()]
+        );
+        std::fs::remove_file(openapi_file).expect("remove OpenAPI fixture");
+    }
+
+    #[test]
+    fn includes_v4_url_descriptor_and_unresolved_derived_runtime_host_marker() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://specs.example.com/openapi.yaml
+",
+        )
+        .expect("manifest should parse");
+
+        assert_eq!(
+            manifest.outbound_hosts(),
+            vec![
+                UNRESOLVED_OPENAPI_SERVER_HOST.to_string(),
+                "specs.example.com".to_string()
+            ]
+        );
+    }
+
+    fn write_openapi_fixture(contents: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let file = std::env::temp_dir().join(format!(
+            "coral-spec-openapi-{}-{unique}.yaml",
+            std::process::id()
+        ));
+        std::fs::write(&file, contents).expect("write OpenAPI fixture");
+        file
     }
 
     #[test]
@@ -607,6 +785,14 @@ tables:
         type: Utf8
 ",
         );
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn omits_local_file_urls_without_double_slashes() {
+        let mut found = BTreeSet::new();
+        super::collect_host(&mut found, "file:/tmp/demo");
+
         assert!(found.is_empty());
     }
 

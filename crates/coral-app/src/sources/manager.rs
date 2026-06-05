@@ -1306,11 +1306,10 @@ fn collect_unique_secrets(secrets: &[SourceBinding]) -> Result<BTreeMap<String, 
     let mut values = BTreeMap::new();
     for secret in secrets {
         let key = normalize_binding_key("source secret key", &secret.key)?;
-        let value = normalize_input_value(&secret.value);
-        if value.is_empty() {
+        if normalize_input_value(&secret.value).is_empty() {
             continue;
         }
-        if values.insert(key.clone(), value).is_some() {
+        if values.insert(key.clone(), secret.value.clone()).is_some() {
             return Err(AppError::InvalidInput(format!(
                 "source secret '{key}' is repeated"
             )));
@@ -1899,7 +1898,7 @@ tables:
     }
 
     #[test]
-    fn collect_unique_secrets_trims_values_and_skips_whitespace_only_values() {
+    fn collect_unique_secrets_preserves_values_and_skips_whitespace_only_values() {
         let secrets = collect_unique_secrets(&[
             SourceBinding {
                 key: "API_TOKEN".to_string(),
@@ -1912,7 +1911,10 @@ tables:
         ])
         .expect("collect secrets");
 
-        assert_eq!(secrets.get("API_TOKEN").map(String::as_str), Some("token"));
+        assert_eq!(
+            secrets.get("API_TOKEN").map(String::as_str),
+            Some("  token  ")
+        );
         assert!(!secrets.contains_key("OPTIONAL_TOKEN"));
     }
 

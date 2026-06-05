@@ -17,16 +17,14 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-/// Normalizes a user-supplied source input value (variable or secret) by
-/// trimming surrounding whitespace.
+/// Trims a user-supplied source input value for variable normalization and
+/// empty-value checks.
 ///
-/// Source inputs are pasted into a terminal or read from environment variables,
-/// where trailing newlines and stray spaces are common copy/paste artifacts;
-/// the credentials Coral handles (API keys, tokens, JWTs, base64/hex blobs,
-/// endpoint URLs, regions) never carry semantically significant leading or
-/// trailing whitespace. This is the single normalization policy shared by the
-/// CLI, the gRPC request boundary, and source-binding collection so the three
-/// cannot drift apart.
+/// Variable inputs use the trimmed value because they commonly hold endpoint
+/// URLs, regions, and other copied configuration. Secret inputs use this only
+/// to decide whether a value is empty; callers must preserve non-empty secret
+/// values byte-for-byte because password-style credentials may carry
+/// significant leading or trailing whitespace.
 #[must_use]
 pub fn normalize_input_value(value: &str) -> String {
     value.trim().to_string()

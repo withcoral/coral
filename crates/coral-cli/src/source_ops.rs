@@ -682,6 +682,17 @@ pub(crate) fn prompt_for_remaining_inputs_with_credential_methods_in_mode(
     variables: Vec<SourceVariable>,
     mode: CredentialPromptMode,
 ) -> Result<CollectedSourceInputs, anyhow::Error> {
+    collect_remaining_inputs_with_env_lookup(inputs, variables, mode, |key| {
+        read_source_input_env(key).unwrap_or_default()
+    })
+}
+
+fn collect_remaining_inputs_with_env_lookup(
+    inputs: &[ManifestInputSpec],
+    variables: Vec<SourceVariable>,
+    mode: CredentialPromptMode,
+    mut read_env: impl FnMut(&str) -> String,
+) -> Result<CollectedSourceInputs, anyhow::Error> {
     let mut collected = CollectedSourceInputs::new();
     collected.variables = variables;
 
@@ -690,9 +701,8 @@ pub(crate) fn prompt_for_remaining_inputs_with_credential_methods_in_mode(
             continue;
         }
         if mode.reads_env_before_prompt(input) {
-            let env_value =
-                normalize_input_value(&read_source_input_env(&input.key).unwrap_or_default());
-            if !env_value.is_empty() {
+            let env_value = read_env(&input.key);
+            if !normalize_input_value(&env_value).is_empty() {
                 push_collected_input(&mut collected, input, &env_value);
                 continue;
             }
@@ -722,19 +732,26 @@ fn push_collected_input(
     input: &ManifestInputSpec,
     value: &str,
 ) {
-    let value = normalize_input_value(value);
-    if value.is_empty() {
-        return;
-    }
     match input.kind {
-        ManifestInputKind::Variable => collected.variables.push(SourceVariable {
-            key: input.key.clone(),
-            value,
-        }),
-        ManifestInputKind::Secret => collected.secrets.push(SourceSecret {
-            key: input.key.clone(),
-            value,
-        }),
+        ManifestInputKind::Variable => {
+            let value = normalize_input_value(value);
+            if value.is_empty() {
+                return;
+            }
+            collected.variables.push(SourceVariable {
+                key: input.key.clone(),
+                value,
+            });
+        }
+        ManifestInputKind::Secret => {
+            if normalize_input_value(value).is_empty() {
+                return;
+            }
+            collected.secrets.push(SourceSecret {
+                key: input.key.clone(),
+                value: value.to_string(),
+            });
+        }
     }
 }
 
@@ -817,13 +834,24 @@ fn collect_inputs_with_hint(
 
     for input in inputs {
         let raw = lookup(&input.key);
-        let raw = normalize_input_value(&raw);
-        let value = if raw.is_empty() {
-            input.default_value.clone()
-        } else {
-            raw
+        let value = match input.kind {
+            ManifestInputKind::Variable => {
+                let raw = normalize_input_value(&raw);
+                if raw.is_empty() {
+                    input.default_value.clone()
+                } else {
+                    raw
+                }
+            }
+            ManifestInputKind::Secret => {
+                if normalize_input_value(&raw).is_empty() {
+                    input.default_value.clone()
+                } else {
+                    raw
+                }
+            }
         };
-        if value.is_empty() {
+        if normalize_input_value(&value).is_empty() {
             if input.required {
                 missing.push(input.key.clone());
             }
@@ -1189,8 +1217,7 @@ fn prompt_source_config_secret(
     method: Option<&ManifestCredentialMethod>,
 ) -> Result<Option<SourceSecret>, anyhow::Error> {
     let env_value = read_source_input_env(&input.key).unwrap_or_default();
-    let env_value = normalize_input_value(&env_value);
-    if !env_value.is_empty() {
+    if !normalize_input_value(&env_value).is_empty() {
         return Ok(Some(SourceSecret {
             key: input.key.clone(),
             value: env_value,
@@ -1730,9 +1757,12 @@ pub(crate) fn finalize_input_value(
     value: &str,
     kind_label: &str,
 ) -> Result<Option<String>, anyhow::Error> {
-    let value = normalize_input_value(value);
-    if !value.is_empty() {
-        return Ok(Some(value));
+    let normalized = normalize_input_value(value);
+    if !normalized.is_empty() {
+        return Ok(Some(match input.kind {
+            ManifestInputKind::Variable => normalized,
+            ManifestInputKind::Secret => value.to_string(),
+        }));
     }
     // An empty entry is omitted so the server applies the manifest default
     // (see `validate_bindings`, which fills the default before its required
@@ -1771,10 +1801,11 @@ mod tests {
 
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
-        apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, render_redirect_prompt_key_echo, resolve_prompt_hint,
-        shell_quote_arg, source_name_arg, source_variables_map, submit_oauth_redirect_url,
-        validate_oauth_redirect_url, validation_follow_up,
+        apply_redirect_prompt_key, collect_inputs_with_hint,
+        collect_remaining_inputs_with_env_lookup, expected_oauth_redirect, finalize_input_value,
+        render_redirect_prompt_key_echo, resolve_prompt_hint, shell_quote_arg, source_name_arg,
+        source_variables_map, submit_oauth_redirect_url, validate_oauth_redirect_url,
+        validation_follow_up,
     };
 
     #[test]
@@ -1833,6 +1864,33 @@ mod tests {
 
         assert!(CredentialPromptMode::EnvFirst.reads_env_before_prompt(&input));
         assert!(!CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&input));
+    }
+
+    #[test]
+    fn env_first_remaining_inputs_preserve_env_secret_values() {
+        let inputs = vec![ManifestInputSpec {
+            key: "API_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: None,
+            credential: None,
+        }];
+
+        let collected = collect_remaining_inputs_with_env_lookup(
+            &inputs,
+            Vec::new(),
+            CredentialPromptMode::EnvFirst,
+            |key| {
+                assert_eq!(key, "API_TOKEN");
+                "\n token \t".to_string()
+            },
+        )
+        .expect("env secret should be collected");
+
+        assert_eq!(collected.secrets.len(), 1);
+        assert_eq!(collected.secrets[0].key, "API_TOKEN");
+        assert_eq!(collected.secrets[0].value, "\n token \t");
     }
 
     fn secret_with_method(
@@ -1949,7 +2007,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_inputs_trims_env_values_before_collecting() {
+    fn collect_inputs_trims_variable_env_values_and_preserves_secret_env_values() {
         let inputs = vec![
             ManifestInputSpec {
                 key: "API_BASE".to_string(),
@@ -1982,7 +2040,7 @@ mod tests {
         .expect("trimmed env values should collect");
 
         assert_eq!(variables[0].value, "https://override.test");
-        assert_eq!(secrets[0].value, "token");
+        assert_eq!(secrets[0].value, "\n token \t");
     }
 
     #[test]
@@ -2147,7 +2205,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_input_value_trims_values_and_rejects_whitespace_only_required_values() {
+    fn finalize_input_value_preserves_secret_values_and_rejects_whitespace_only_required_values() {
         let input = ManifestInputSpec {
             key: "API_TOKEN".to_string(),
             kind: ManifestInputKind::Secret,
@@ -2159,9 +2217,9 @@ mod tests {
 
         assert_eq!(
             finalize_input_value(&input, "  token  ", "source secret")
-                .expect("trimmed value")
+                .expect("secret value")
                 .as_deref(),
-            Some("token")
+            Some("  token  ")
         );
         let error = finalize_input_value(&input, " \n\t ", "source secret")
             .expect_err("whitespace-only required input should fail");
