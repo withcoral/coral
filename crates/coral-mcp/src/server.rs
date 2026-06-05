@@ -7,7 +7,7 @@ use coral_api::v1::{
     TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient,
+    AppClient, CatalogClient, CollectedQueryResult, FeedbackClient, QueryClient, SourceClient,
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
 };
 use rmcp::{
@@ -26,13 +26,13 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
-        describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, list_catalog_arguments, list_catalog_tool, list_catalog_value,
-        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
-        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        CatalogToolKind, build_tool_result, build_tool_result_with_text, describe_table_arguments,
+        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
+        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
+        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
+        required_string_argument, search_catalog_arguments, search_catalog_tool,
+        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -44,7 +44,10 @@ const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 
 enum ToolCallOutcome {
-    Success(Value),
+    Success {
+        value: Value,
+        text: Option<String>,
+    },
     ToolError {
         operation: &'static str,
         status: tonic::Status,
@@ -54,6 +57,18 @@ enum ToolCallOutcome {
 #[derive(Serialize)]
 struct SqlRowsValue {
     rows: Vec<Value>,
+}
+
+#[derive(Serialize)]
+struct SqlColumnarTextValue<'a> {
+    columns: &'a [String],
+    rows: Vec<Vec<Value>>,
+    row_count: usize,
+}
+
+struct SqlToolValue {
+    structured: Value,
+    text: String,
 }
 
 #[derive(Serialize)]
@@ -67,10 +82,40 @@ fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
 }
 
+fn sql_columnar_text(
+    columns: &[String],
+    rows: &[Value],
+    row_count: usize,
+) -> Result<String, tonic::Status> {
+    let rows = rows
+        .iter()
+        .map(|row| sql_columnar_row(columns, row))
+        .collect::<Vec<_>>();
+    serde_json::to_string(&SqlColumnarTextValue {
+        columns,
+        rows,
+        row_count,
+    })
+    .map_err(|error| tonic::Status::internal(error.to_string()))
+}
+
+fn sql_columnar_row(columns: &[String], row: &Value) -> Vec<Value> {
+    let Some(object) = row.as_object() else {
+        return match columns {
+            [_single] => vec![row.clone()],
+            _ => vec![Value::Null; columns.len()],
+        };
+    };
+    columns
+        .iter()
+        .map(|column| object.get(column).cloned().unwrap_or(Value::Null))
+        .collect()
+}
+
 impl ToolCallOutcome {
     fn from_value_result(operation: &'static str, result: Result<Value, tonic::Status>) -> Self {
         match result {
-            Ok(value) => Self::Success(value),
+            Ok(value) => Self::Success { value, text: None },
             Err(status) => Self::ToolError { operation, status },
         }
     }
@@ -215,7 +260,7 @@ impl CoralMcpServer {
         Ok((sources, tables, table_function_schema_names))
     }
 
-    async fn query_rows(&self, sql: &str) -> Result<Vec<Value>, tonic::Status> {
+    async fn query_result(&self, sql: &str) -> Result<CollectedQueryResult, tonic::Status> {
         let mut query_client = self.query.clone();
         let response = query_client
             .execute_sql(Request::new(ExecuteSqlRequest {
@@ -224,16 +269,36 @@ impl CoralMcpServer {
             }))
             .await?
             .into_inner();
-        let result = decode_execute_sql_response(&response)
-            .map_err(|error| tonic::Status::internal(error.to_string()))?;
-        batches_to_json_rows_json_safe_numbers(result.batches())
+        decode_execute_sql_response(&response)
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
-    async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
-        serialize_tool_value(SqlRowsValue {
-            rows: self.query_rows(sql).await?,
-        })
+    async fn execute_sql_tool_value(&self, sql: &str) -> Result<SqlToolValue, tonic::Status> {
+        let result = self.query_result(sql).await?;
+        let columns = result
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let rows = batches_to_json_rows_json_safe_numbers(result.batches())
+            .map_err(|error| tonic::Status::internal(error.to_string()))?;
+        let text = sql_columnar_text(&columns, &rows, result.row_count())?;
+        let structured = serialize_tool_value(SqlRowsValue { rows })?;
+        Ok(SqlToolValue { structured, text })
+    }
+
+    async fn execute_sql_outcome(&self, sql: &str) -> ToolCallOutcome {
+        match self.execute_sql_tool_value(sql).await {
+            Ok(value) => ToolCallOutcome::Success {
+                value: value.structured,
+                text: Some(value.text),
+            },
+            Err(status) => ToolCallOutcome::ToolError {
+                operation: "Query",
+                status,
+            },
+        }
     }
 
     async fn submit_feedback_value(
@@ -283,7 +348,7 @@ impl CoralMcpServer {
             .await
             .map(|response| search_catalog_value(&response.into_inner()))
         {
-            Ok(value) => Ok(ToolCallOutcome::Success(value)),
+            Ok(value) => Ok(ToolCallOutcome::Success { value, text: None }),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
@@ -327,11 +392,10 @@ impl CoralMcpServer {
             .load_table_description(&arguments.schema, &arguments.table)
             .await
         {
-            Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
-                &arguments.schema,
-                &arguments.table,
-                &response,
-            ))),
+            Ok(response) => Ok(ToolCallOutcome::Success {
+                value: describe_table_value(&arguments.schema, &arguments.table, &response),
+                text: None,
+            }),
             Err(status) => Ok(ToolCallOutcome::ToolError {
                 operation: "Table description",
                 status,
@@ -346,10 +410,7 @@ impl CoralMcpServer {
         match request.name.as_ref() {
             "sql" => {
                 let sql = required_string_argument(request.arguments.as_ref(), "sql")?;
-                Ok(ToolCallOutcome::from_value_result(
-                    "Query",
-                    self.execute_sql_value(&sql).await,
-                ))
+                Ok(self.execute_sql_outcome(&sql).await)
             }
             "list_catalog" => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
@@ -406,11 +467,14 @@ impl CoralMcpServer {
             }))
             .await
         {
-            Ok(response) => Ok(ToolCallOutcome::Success(list_columns_value(
-                &arguments.schema,
-                &arguments.table,
-                &response.into_inner(),
-            ))),
+            Ok(response) => Ok(ToolCallOutcome::Success {
+                value: list_columns_value(
+                    &arguments.schema,
+                    &arguments.table,
+                    &response.into_inner(),
+                ),
+                text: None,
+            }),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
@@ -419,11 +483,10 @@ impl CoralMcpServer {
                     .load_table_description(&arguments.schema, &arguments.table)
                     .await
                 {
-                    Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
-                        &arguments.schema,
-                        &arguments.table,
-                        &response,
-                    ))),
+                    Ok(response) => Ok(ToolCallOutcome::Success {
+                        value: describe_table_value(&arguments.schema, &arguments.table, &response),
+                        text: None,
+                    }),
                     Err(status) => Ok(ToolCallOutcome::ToolError {
                         operation: "Column listing",
                         status,
@@ -557,8 +620,11 @@ fn finish_tool_call(
     outcome: Result<ToolCallOutcome, ErrorData>,
 ) -> Result<CallToolResult, ErrorData> {
     match outcome {
-        Ok(ToolCallOutcome::Success(value)) => {
-            let result = build_tool_result(value);
+        Ok(ToolCallOutcome::Success { value, text }) => {
+            let result = match text {
+                Some(text) => Ok(build_tool_result_with_text(value, text)),
+                None => build_tool_result(value),
+            };
             telemetry::record_protocol_result(span, &result);
             result
         }

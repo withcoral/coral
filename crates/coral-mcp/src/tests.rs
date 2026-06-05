@@ -251,6 +251,14 @@ fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     }
 }
 
+fn tool_text_content(result: &rmcp::model::CallToolResult) -> &str {
+    result.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .as_str()
+}
+
 fn tool_by_name<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
     tools
         .iter()
@@ -1032,8 +1040,13 @@ async fn mcp_tool_error_does_not_end_session() {
         )
         .await
         .expect("sql");
+    let sql_text: Value =
+        serde_json::from_str(tool_text_content(&sql)).expect("sql text content should be JSON");
+    assert_eq!(sql_text["columns"], json!(["text"]));
+    assert_eq!(sql_text["rows"], json!([["hello"], ["world"]]));
+    assert_eq!(sql_text["row_count"], 2);
     assert_eq!(
-        sql.structured_content.expect("structured content")["rows"][0]["text"],
+        sql.structured_content.as_ref().expect("structured content")["rows"][0]["text"],
         "hello"
     );
     assert_eq!(sql.is_error, Some(false));
@@ -1098,11 +1111,16 @@ async fn mcp_sql_returns_large_int64_as_string() {
         .expect("sql");
     assert_eq!(sql.is_error, Some(false));
 
-    let rows = &sql.structured_content.expect("structured content")["rows"];
+    let rows = &sql.structured_content.as_ref().expect("structured content")["rows"];
     assert_eq!(
         rows[0]["user_id"],
         Value::String("-8504475857937456387".to_string()),
     );
+    let sql_text: Value =
+        serde_json::from_str(tool_text_content(&sql)).expect("sql text content should be JSON");
+    assert_eq!(sql_text["columns"], json!(["user_id"]));
+    assert_eq!(sql_text["rows"], json!([["-8504475857937456387"]]));
+    assert_eq!(sql_text["row_count"], 1);
 
     session.shutdown().await;
 }
