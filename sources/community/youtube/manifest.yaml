@@ -388,7 +388,7 @@ tables:
       - name: snippet__channel_id
         type: Utf8
         nullable: true
-        description: ID of the channel that published the playlist
+        description: ID of the channel that added this item to the playlist (the playlist owner; from snippet.channelId)
         expr:
           kind: path
           path:
@@ -443,7 +443,7 @@ tables:
       - name: snippet__video_owner_channel_id
         type: Utf8
         nullable: true
-        description: ID of the channel that uploaded the video
+        description: ID of the channel that uploaded the video itself — may differ from snippet__channel_id (the playlist owner)
         expr:
           kind: path
           path:
@@ -452,7 +452,7 @@ tables:
       - name: snippet__video_owner_channel_title
         type: Utf8
         nullable: true
-        description: Name of the channel that uploaded the video
+        description: Display name of the channel that uploaded the video (paired with snippet__video_owner_channel_id)
         expr:
           kind: path
           path:

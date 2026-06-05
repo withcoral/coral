@@ -286,7 +286,8 @@ LIMIT 20;
     `youtube.playlist_items`, or other public listings.
 - **Fields hidden on otherwise-public content.** Some columns can come back
   empty or zero even with a valid API key:
-  - `statistics__dislike_count` has been private since December 2021.
+  - `statistics.dislikeCount` is not exposed at all — YouTube made it
+    private in December 2021, so no API-key call returns it.
   - `statistics__subscriber_count` is hidden (set to `0`) when a channel owner
     has opted to hide their subscriber count.
   - When comments are disabled on a video, `commentThreads.list` returns a
