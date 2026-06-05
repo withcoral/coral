@@ -371,10 +371,10 @@ pub(crate) fn list_columns_arguments(
 }
 
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
-    let pretty = serde_json::to_string_pretty(&value)
+    let compact = serde_json::to_string(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(pretty)];
+    result.content = vec![Content::text(compact)];
     Ok(result)
 }
 
@@ -799,9 +799,41 @@ fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Map, Value};
+    use serde_json::{Map, Value, json};
 
-    use super::{list_catalog_arguments, search_catalog_arguments};
+    use super::{build_tool_result, list_catalog_arguments, search_catalog_arguments};
+
+    #[test]
+    fn success_tool_result_text_uses_compact_json() {
+        let value = json!({
+            "rows": [
+                {
+                    "id": 1,
+                    "text": "hello"
+                },
+                {
+                    "id": 2,
+                    "text": "world"
+                }
+            ]
+        });
+
+        let result = build_tool_result(value.clone()).expect("tool result");
+
+        let text = result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .expect("text content");
+        assert_eq!(
+            text.text,
+            r#"{"rows":[{"id":1,"text":"hello"},{"id":2,"text":"world"}]}"#
+        );
+        assert_eq!(
+            result.structured_content.expect("structured content"),
+            value
+        );
+    }
 
     #[test]
     fn catalog_kind_argument_accepts_null_as_all_kinds() {
