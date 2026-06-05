@@ -122,7 +122,6 @@ tables:
 
       - name: capability
         required: false
-        repeated: true
 
     request:
       method: GET
@@ -292,7 +291,6 @@ tables:
 
       - name: capability
         required: false
-        repeated: true
 
     request:
       method: GET

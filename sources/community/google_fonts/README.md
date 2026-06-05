@@ -445,4 +445,4 @@ AND capability = 'WOFF2'
 * Design-space tags are only returned when `capability = 'FAMILY_TAGS'`.
 * WOFF2 URLs are only returned when `capability = 'WOFF2'`.
 * Color font metadata is available only for families that support color formats.
-* Multiple capabilities cannot be requested simultaneously.
+* Coral currently supports only a single `capability` filter value at a time. The Google Fonts API accepts repeated `capability` parameters, but Coral source validation does not yet support repeated filters for this source.
