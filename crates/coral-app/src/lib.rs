@@ -37,6 +37,7 @@
 pub mod bootstrap;
 mod catalog;
 mod credentials;
+mod episode;
 pub mod features;
 mod feedback;
 mod identity;
