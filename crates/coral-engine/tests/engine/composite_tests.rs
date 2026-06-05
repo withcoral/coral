@@ -28,8 +28,8 @@ async fn multi_component_source_executes_across_component_tables() {
         .mount(&server)
         .await;
 
-    let issues = http_component(&server.uri(), "issues", "/issues");
-    let pulls = http_component(&server.uri(), "pulls", "/pulls");
+    let issues = http_component(&server.uri(), "github", "issues", "/issues");
+    let pulls = http_component(&server.uri(), "github", "pulls", "/pulls");
     let source = QuerySource::from_runtime_components(
         RuntimeSourcePackage {
             source_name: "github".to_string(),
@@ -96,10 +96,71 @@ async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
     );
 }
 
-fn http_component(base_url: &str, table_name: &str, path: &str) -> HttpSourceManifest {
+#[tokio::test]
+async fn multi_component_source_can_register_multiple_schemas() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 1, "title": "Issue"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 2, "title": "Pull"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let issues = http_component(&server.uri(), "github_rest", "issues", "/issues");
+    let pulls = http_component(&server.uri(), "github_mcp", "pulls", "/pulls");
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github".to_string(),
+            authored_version: None,
+            description: "Composite GitHub runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            components: vec![
+                RuntimeSourceComponent::Http(issues),
+                RuntimeSourceComponent::Http(pulls),
+            ],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("runtime package");
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT 'issue' AS kind, id, title FROM github_rest.issues UNION ALL SELECT 'pull' AS kind, id, title FROM github_mcp.pulls ORDER BY kind",
+        )
+        .await
+        .expect("query should execute"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"kind": "issue", "id": 1, "title": "Issue"}),
+            json!({"kind": "pull", "id": 2, "title": "Pull"}),
+        ]
+    );
+}
+
+fn http_component(
+    base_url: &str,
+    schema_name: &str,
+    table_name: &str,
+    path: &str,
+) -> HttpSourceManifest {
     let manifest = parse_source_manifest_yaml(&format!(
         r"
-name: github
+name: {schema_name}
 version: 1.0.0
 dsl_version: 3
 backend: http

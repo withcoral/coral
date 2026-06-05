@@ -18,6 +18,7 @@ pub struct ProjectionCatalog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Projection {
     pub name: String,
+    pub namespace: String,
     pub kind: ProjectionKind,
     pub description: String,
     pub guide: String,
@@ -93,6 +94,7 @@ mod tests {
             generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
             projections: vec![Projection {
                 name: "search_issues".to_string(),
+                namespace: "demo".to_string(),
                 kind: ProjectionKind::TableFunction {
                     function_kind: SourceTableFunctionKind::Search,
                 },

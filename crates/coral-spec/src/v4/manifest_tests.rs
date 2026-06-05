@@ -64,6 +64,105 @@ surfaces:
 }
 
 #[test]
+fn single_surface_namespace_defaults_to_source_name() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo_source
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    )
+    .expect("v4 manifest");
+    let v4 = manifest.as_v4().expect("v4");
+
+    assert_eq!(
+        v4.surfaces.first().expect("surface").namespace,
+        "demo_source"
+    );
+}
+
+#[test]
+fn multi_surface_namespaces_default_to_source_and_surface_id() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+  - id: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect("v4 manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let namespaces = v4
+        .surfaces
+        .iter()
+        .map(|surface| surface.namespace.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(namespaces, ["github_v4_rest", "github_v4_mcp"]);
+}
+
+#[test]
+fn explicit_surface_namespace_overrides_default() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace: github_api
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    )
+    .expect("v4 manifest");
+    let v4 = manifest.as_v4().expect("v4");
+
+    assert_eq!(
+        v4.surfaces.first().expect("surface").namespace,
+        "github_api"
+    );
+}
+
+#[test]
+fn rejects_duplicate_surface_namespaces() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace: github
+    type: openapi
+    file: /tmp/openapi.yaml
+  - id: mcp
+    namespace: github
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect_err("duplicate namespace should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("surfaces 'rest' and 'mcp' declare duplicate namespace 'github'")
+    );
+}
+
+#[test]
 fn rejects_v4_oauth_endpoint_templates_referencing_runtime_tokens() {
     let error = parse_source_manifest_yaml(
         r"

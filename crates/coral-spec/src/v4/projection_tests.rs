@@ -396,6 +396,25 @@ surfaces:
     .expect("manifest")
 }
 
+fn two_rest_collision_manifest() -> crate::ValidatedSourceManifest {
+    parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest_primary
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+  - id: rest_secondary
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest")
+}
+
 fn rest_search_openapi() -> &'static [u8] {
     r"
 openapi: 3.0.3
@@ -457,7 +476,7 @@ fn search_issues_mcp_catalog() -> McpToolCatalog {
 }
 
 #[test]
-fn rest_projection_keeps_name_when_mcp_projection_collides() {
+fn different_surface_namespaces_keep_colliding_projection_names() {
     let manifest = rest_mcp_collision_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let rest_surface = v4
@@ -484,6 +503,7 @@ fn rest_projection_keeps_name_when_mcp_projection_collides() {
         })
         .expect("rest search projection");
     assert_eq!(rest_projection.name, "search_issues");
+    assert_eq!(rest_projection.namespace, "github_rest");
 
     let mcp_projection = catalog
         .projections
@@ -492,13 +512,58 @@ fn rest_projection_keeps_name_when_mcp_projection_collides() {
             projection.surface_id == "mcp" && projection.operation_id == "search_issues"
         })
         .expect("mcp search projection");
-    assert_ne!(mcp_projection.name, "search_issues");
-    assert!(mcp_projection.name.starts_with("search_issues__"));
+    assert_eq!(mcp_projection.name, "search_issues");
+    assert_eq!(mcp_projection.namespace, "github_mcp");
+
     assert!(
-        mcp_projection
+        !catalog
             .diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED" })
+            .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+    );
+}
+
+#[test]
+fn same_type_surface_namespaces_keep_colliding_projection_names() {
+    let manifest = two_rest_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let primary_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "rest_primary")
+        .expect("primary rest surface");
+    let secondary_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "rest_secondary")
+        .expect("secondary rest surface");
+    let primary_ir = import_openapi_surface(v4, primary_surface, rest_search_openapi())
+        .expect("primary rest import");
+    let secondary_ir = import_openapi_surface(v4, secondary_surface, rest_search_openapi())
+        .expect("secondary rest import");
+
+    let catalog = generate_projection_catalog(v4, &[primary_ir, secondary_ir]).expect("catalog");
+    let primary_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.surface_id == "rest_primary")
+        .expect("primary projection");
+    assert_eq!(primary_projection.name, "search_issues");
+    assert_eq!(primary_projection.namespace, "github_rest_primary");
+
+    let secondary_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.surface_id == "rest_secondary")
+        .expect("secondary projection");
+    assert_eq!(secondary_projection.name, "search_issues");
+    assert_eq!(secondary_projection.namespace, "github_rest_secondary");
+
+    assert!(
+        !catalog
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
     );
 }
 

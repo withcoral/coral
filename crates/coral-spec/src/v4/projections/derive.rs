@@ -8,7 +8,10 @@ use crate::v4::ir::{
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
 use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-use crate::{ManifestDataType, PaginationSpec, Result, SearchLimitsSpec, SourceTableFunctionKind};
+use crate::{
+    ManifestDataType, ManifestError, PaginationSpec, Result, SearchLimitsSpec,
+    SourceTableFunctionKind,
+};
 
 use super::model::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
@@ -26,8 +29,17 @@ pub fn generate_projection_catalog(
     let mut projections = Vec::new();
     let mut diagnostics = Vec::new();
     for ir in surfaces {
+        let namespace = manifest
+            .surface(&ir.surface_id)
+            .map(|surface| surface.namespace.as_str())
+            .ok_or_else(|| {
+                ManifestError::validation(format!(
+                    "projection surface '{}' is not declared in source '{}'",
+                    ir.surface_id, manifest.common.name
+                ))
+            })?;
         for operation in &ir.operations {
-            let projection = generate_projection(ir, operation, &mut diagnostics);
+            let projection = generate_projection(ir, namespace, operation, &mut diagnostics);
             projections.push(projection);
         }
         diagnostics.extend(ir.diagnostics.clone());
@@ -48,6 +60,7 @@ pub fn generate_projection_catalog(
 
 fn generate_projection(
     ir: &SemanticIr,
+    namespace: &str,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Projection {
@@ -105,6 +118,7 @@ fn generate_projection(
     let guide = projection_guide(&kind, &inputs, &pagination, is_search);
     let projection = Projection {
         name,
+        namespace: namespace.to_string(),
         kind,
         description: operation.description.clone(),
         guide,

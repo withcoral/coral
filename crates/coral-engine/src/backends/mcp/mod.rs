@@ -28,10 +28,11 @@ use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
 use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
-    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names, validate_lookup_key_filter_backend_support,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, SourceTableFunctions,
+    build_registered_inputs, build_registered_table, build_registered_table_function,
+    internal_table_function_name, registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
 use crate::{
     CoreError, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
@@ -246,15 +247,19 @@ impl CompiledBackendSource for McpCompiledSource {
             &secret_keys,
         );
 
+        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
-            tables,
-            table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
+            schemas: vec![BackendSchemaRegistration {
+                schema_name: schema_name.clone(),
+                tables,
+                table_functions,
+                source: RegisteredSource {
+                    schema_name,
+                    tables: table_infos,
+                    table_functions: table_function_infos,
+                    inputs,
+                },
+            }],
         })
     }
 }

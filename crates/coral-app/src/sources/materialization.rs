@@ -427,6 +427,20 @@ fn validate_loaded_materialization(
                 .collect(),
         );
     }
+    validate_projection_references(source_name, manifest, materialized, &operations_by_surface)
+}
+
+fn validate_projection_references(
+    source_name: &SourceName,
+    manifest: &V4SourceManifest,
+    materialized: &V4MaterializedSource,
+    operations_by_surface: &BTreeMap<&str, BTreeSet<&str>>,
+) -> Result<(), AppError> {
+    let namespace_by_surface = manifest
+        .surfaces
+        .iter()
+        .map(|surface| (surface.id.as_str(), surface.namespace.as_str()))
+        .collect::<BTreeMap<_, _>>();
     for projection in &materialized.projections.projections {
         let Some(operations) = operations_by_surface.get(projection.surface_id.as_str()) else {
             return Err(incompatible_materialization_error(
@@ -437,6 +451,29 @@ fn validate_loaded_materialization(
                 ),
             ));
         };
+        let expected_namespace = namespace_by_surface
+            .get(projection.surface_id.as_str())
+            .ok_or_else(|| {
+                incompatible_materialization_error(
+                    source_name,
+                    format!(
+                        "projection '{}' references missing surface '{}'",
+                        projection.name, projection.surface_id
+                    ),
+                )
+            })?;
+        if projection.namespace != *expected_namespace {
+            return Err(incompatible_materialization_error(
+                source_name,
+                format!(
+                    "projection '{}' namespace '{}' does not match surface '{}' namespace '{}'",
+                    projection.name,
+                    projection.namespace,
+                    projection.surface_id,
+                    expected_namespace
+                ),
+            ));
+        }
         if !operations.contains(projection.operation_id.as_str()) {
             return Err(incompatible_materialization_error(
                 source_name,

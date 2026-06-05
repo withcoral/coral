@@ -32,7 +32,7 @@ pub struct QuerySource {
 /// Backend-ready runtime package for one logical query source.
 #[derive(Debug, Clone)]
 pub struct RuntimeSourcePackage {
-    /// Canonical source name, also used as the visible SQL schema.
+    /// Canonical installed source name.
     pub source_name: String,
     /// Authored manifest version, when the authoring DSL has one.
     pub authored_version: Option<String>,
@@ -97,22 +97,12 @@ impl QuerySource {
     ///
     /// # Errors
     ///
-    /// Returns [`CoreError`](crate::CoreError) when any component belongs to a
-    /// different logical source/schema.
+    /// Returns [`CoreError`](crate::CoreError) when the package is invalid.
     pub fn from_runtime_components(
         package: RuntimeSourcePackage,
         variables: BTreeMap<String, String>,
         secrets: BTreeMap<String, String>,
     ) -> Result<Self, crate::CoreError> {
-        for component in &package.components {
-            let component_source = component.source_name();
-            if component_source != package.source_name {
-                return Err(crate::CoreError::InvalidInput(format!(
-                    "runtime component for source '{}' belongs to source '{component_source}'",
-                    package.source_name
-                )));
-            }
-        }
         Ok(Self {
             source_name: package.source_name,
             authored_version: package.authored_version,
@@ -126,7 +116,7 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the canonical source name. This is also the visible SQL schema name.
+    /// Returns the canonical installed source name.
     pub fn source_name(&self) -> &str {
         &self.source_name
     }
@@ -162,6 +152,22 @@ impl QuerySource {
     }
 
     #[must_use]
+    /// Returns the SQL schemas published by this selected source.
+    pub fn schema_names(&self) -> Vec<&str> {
+        let mut schemas = Vec::new();
+        for component in &self.components {
+            let schema = component.source_name();
+            if !schemas.contains(&schema) {
+                schemas.push(schema);
+            }
+        }
+        if schemas.is_empty() {
+            schemas.push(self.source_name());
+        }
+        schemas
+    }
+
+    #[must_use]
     /// Returns configured non-secret source variables.
     pub fn variables(&self) -> &BTreeMap<String, String> {
         &self.variables
@@ -176,7 +182,7 @@ impl QuerySource {
 
 impl RuntimeSourceComponent {
     #[must_use]
-    /// Returns the logical source/schema name declared by this component.
+    /// Returns the runtime schema name declared by this component.
     pub fn source_name(&self) -> &str {
         match self {
             Self::Http(manifest) => &manifest.common.name,

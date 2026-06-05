@@ -60,7 +60,7 @@ impl ValidatedSourceManifest {
     }
 
     #[must_use]
-    /// Returns the source-spec `name`, which is also the stable SQL schema name.
+    /// Returns the source-spec `name`.
     pub fn schema_name(&self) -> &str {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => &manifest.common.name,

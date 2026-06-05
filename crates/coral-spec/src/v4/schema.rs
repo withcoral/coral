@@ -34,6 +34,8 @@ enum V4SurfaceSchema {
 struct V4OpenApiSurfaceSchema {
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file: Option<String>,
@@ -53,6 +55,8 @@ struct V4OpenApiSurfaceSchema {
 #[serde(deny_unknown_fields)]
 struct V4McpSurfaceSchema {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     server: McpServerSpec,
@@ -163,6 +167,7 @@ fn post_process_schema(schema: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         post_process_surface_id(properties);
+        post_process_surface_namespace(properties);
         if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
             url.insert("type".to_string(), json!("string"));
             url.insert("pattern".to_string(), json!("^https://"));
@@ -192,6 +197,7 @@ fn post_process_schema(schema: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         post_process_surface_id(properties);
+        post_process_surface_namespace(properties);
         post_process_surface_inputs(properties);
     }
 }
@@ -223,6 +229,7 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
             continue;
         };
         post_process_surface_id(properties);
+        post_process_surface_namespace(properties);
         post_process_surface_inputs(properties);
         if let Some("openapi") = surface_type.as_deref() {
             if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
@@ -247,6 +254,16 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
 fn post_process_surface_id(properties: &mut serde_json::Map<String, Value>) {
     if let Some(id) = properties.get_mut("id").and_then(Value::as_object_mut) {
         id.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
+    }
+}
+
+fn post_process_surface_namespace(properties: &mut serde_json::Map<String, Value>) {
+    if let Some(namespace) = properties
+        .get_mut("namespace")
+        .and_then(Value::as_object_mut)
+    {
+        namespace.insert("type".to_string(), json!("string"));
+        namespace.insert("minLength".to_string(), json!(1));
     }
 }
 
@@ -294,6 +311,7 @@ name: demo
 dsl_version: 4
 surfaces:
   - id: mcp
+    namespace: demo_mcp
     type: mcp
     inputs:
       MCP_TOKEN:

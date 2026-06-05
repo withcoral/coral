@@ -216,10 +216,15 @@ impl CoralQuery {
         let query_runtime =
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
         let source_name = source.source_name();
-        let catalog = query_runtime.catalog_info(Some(source_name));
+        let catalog = query_runtime.catalog_info(None);
         if catalog.tables.is_empty() && catalog.table_functions.is_empty() {
             if let Some(failure) = query_runtime.registration_failure(source_name) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));
+            }
+            for schema_name in source.schema_names() {
+                if let Some(failure) = query_runtime.registration_failure(schema_name) {
+                    return Err(CoreError::FailedPrecondition(failure.detail.clone()));
+                }
             }
             return Err(CoreError::FailedPrecondition(format!(
                 "source '{source_name}' did not become queryable during validation"

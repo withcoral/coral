@@ -47,6 +47,10 @@
               "type": "string",
               "pattern": "^[a-z][a-z0-9_]*$"
             },
+            "namespace": {
+              "type": "string",
+              "minLength": 1
+            },
             "url": {
               "type": "string",
               "pattern": "^https://"
@@ -119,6 +123,10 @@
             "id": {
               "type": "string",
               "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1
             },
             "inputs": {
               "type": "object",

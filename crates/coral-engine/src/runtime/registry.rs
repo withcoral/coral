@@ -7,8 +7,8 @@ use datafusion::prelude::SessionContext;
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::{
-    BackendRegistration, BackendRegistrationContext, CompiledBackendSource, RegisteredSource,
-    SourceTableFunctions,
+    BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
+    CompiledBackendSource, RegisteredSource, SourceTableFunctions,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
@@ -114,7 +114,6 @@ async fn register_sources_inner(
             SourceRegistrationCandidate::Compiled(selected_source) => {
                 let query_source = &selected_source.source;
                 let compiled_source = selected_source.compiled;
-                let schema_name = compiled_source.schema_name().to_string();
                 let source_name = compiled_source.source_name().to_string();
 
                 match register_source(
@@ -126,37 +125,16 @@ async fn register_sources_inner(
                 .await
                 {
                     Ok(registration) => {
-                        let BackendRegistration {
-                            tables,
-                            table_functions,
-                            source: registered_source,
-                        } = registration;
-                        let decorated_tables =
-                            decorate_source_tables(source_decorators, query_source, tables)?;
-                        match catalog.register_schema(
-                            compiled_source.schema_name(),
-                            Arc::new(StaticSchemaProvider::new(decorated_tables)),
-                        ) {
-                            Ok(_) => {
-                                register_table_functions(ctx, table_functions);
-                                result.active_sources.push(registered_source);
-                            }
-                            Err(error) => {
-                                let core_error = datafusion_to_core(&error, &[]);
-                                if handle_source_registration_failure(
-                                    source_decorators,
-                                    query_source,
-                                    &core_error,
-                                )? {
-                                    return Err(core_error);
-                                }
-                                push_source_failure(
-                                    &mut result,
-                                    &source_name,
-                                    &schema_name,
-                                    core_error.to_string(),
-                                );
-                            }
+                        for schema_registration in registration.schemas {
+                            register_schema_registration(
+                                ctx,
+                                catalog.as_ref(),
+                                source_decorators,
+                                query_source,
+                                &source_name,
+                                schema_registration,
+                                &mut result,
+                            )?;
                         }
                     }
                     Err(error) => {
@@ -171,7 +149,7 @@ async fn register_sources_inner(
                         push_source_failure(
                             &mut result,
                             &source_name,
-                            &schema_name,
+                            compiled_source.schema_name(),
                             core_error.to_string(),
                         );
                     }
@@ -218,17 +196,60 @@ async fn register_source(
     seen_schemas: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
 ) -> DataFusionResult<BackendRegistration> {
-    check_reserved_schema(source.schema_name())?;
     source.validate_runtime_capabilities()?;
+    let registration = source.register(ctx, registration_context).await?;
+    let mut registration_schemas = std::collections::HashSet::new();
+    for schema in &registration.schemas {
+        check_reserved_schema(&schema.schema_name)?;
 
-    if !seen_schemas.insert(source.schema_name().to_string()) {
-        return Err(DataFusionError::Execution(format!(
-            "duplicate source schema '{}'",
-            source.schema_name()
-        )));
+        if !registration_schemas.insert(schema.schema_name.clone())
+            || seen_schemas.contains(&schema.schema_name)
+        {
+            return Err(DataFusionError::Execution(format!(
+                "duplicate source schema '{}'",
+                schema.schema_name
+            )));
+        }
     }
+    seen_schemas.extend(registration_schemas);
 
-    source.register(ctx, registration_context).await
+    Ok(registration)
+}
+
+fn register_schema_registration(
+    ctx: &SessionContext,
+    catalog: &dyn datafusion::catalog::CatalogProvider,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+    query_source: &QuerySource,
+    source_name: &str,
+    schema_registration: BackendSchemaRegistration,
+    result: &mut SourceRegistrationResult,
+) -> std::result::Result<(), CoreError> {
+    let BackendSchemaRegistration {
+        schema_name,
+        tables,
+        table_functions,
+        source: registered_source,
+    } = schema_registration;
+    let decorated_tables = decorate_source_tables(source_decorators, query_source, tables)?;
+    match catalog.register_schema(
+        &schema_name,
+        Arc::new(StaticSchemaProvider::new(decorated_tables)),
+    ) {
+        Ok(_) => {
+            register_table_functions(ctx, table_functions);
+            result.active_sources.push(registered_source);
+            Ok(())
+        }
+        Err(error) => {
+            let core_error = datafusion_to_core(&error, &[]);
+            if handle_source_registration_failure(source_decorators, query_source, &core_error)? {
+                return Err(core_error);
+            }
+            push_source_failure(result, source_name, &schema_name, core_error.to_string());
+            Ok(())
+        }
+    }
 }
 
 fn push_source_failure(

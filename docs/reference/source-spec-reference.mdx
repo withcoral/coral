@@ -27,7 +27,7 @@ test_queries:
 
 | Field         | Description                                        |
 | ------------- | -------------------------------------------------- |
-| `name`        | Source name, also used as the SQL schema name      |
+| `name`        | Source name, also used as the SQL schema name for DSL v3 and single-surface DSL v4 sources |
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
 | `backend`     | How data is fetched: `http`, `file`, or `mcp` |
@@ -627,17 +627,20 @@ introspect MCP tools at query time.
 
 DSL v4 preview manifests can also declare MCP surfaces. In v4, Coral discovers
 the MCP server's tool catalog during `coral source add`, materializes generated
-projections, and then queries only those installed artifacts. Re-add the source
-when the server's tool catalog changes. If generated MCP projection names
-collide with generated REST projection names in the same source, Coral keeps the
-REST projection name and renames the MCP projection with a stable collision
-suffix.
+projections, and then queries only those installed artifacts. Each surface has
+an optional `namespace` field that becomes the SQL schema for generated
+projections. If omitted, the namespace defaults to the source `name` for a
+single-surface source, or `{source.name}_{surface.id}` for a multi-surface
+source. Two surfaces in the same source cannot declare the same namespace;
+`coral source add` rejects that manifest. Re-add the source when the server's
+tool catalog changes.
 
 ```yaml
 name: github_v4
 dsl_version: 4
 surfaces:
   - id: mcp
+    namespace: github_tools
     type: mcp
     inputs:
       GITHUB_TOKEN:
