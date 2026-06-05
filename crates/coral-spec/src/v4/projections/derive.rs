@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrScalarType, IrTypeShape, OutputCardinality, SemanticIr,
+    IrScalarType, IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
 };
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
@@ -52,51 +52,10 @@ fn generate_projection(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Projection {
     let is_search = is_search_operation(operation);
-    let mut visibility = ProjectionVisibility::Published;
+    let rest = rest_execution(operation);
+    let mut visibility = initial_projection_visibility(operation, rest);
     let mut projection_diagnostics = operation.diagnostics.clone();
-    let rest = match &operation.execution {
-        IrExecutionAttachment::Rest(rest) => Some(rest),
-        IrExecutionAttachment::Mcp(_) => None,
-    };
-    match rest {
-        Some(rest)
-            if !operation.read_only
-                || rest.method != HttpMethod::Get
-                || rest.request_body.is_some()
-                || matches!(
-                    operation.output.cardinality,
-                    OutputCardinality::None | OutputCardinality::Unknown
-                ) =>
-        {
-            visibility = ProjectionVisibility::Hidden;
-        }
-        None if !operation.read_only
-            || matches!(
-                operation.output.cardinality,
-                OutputCardinality::None | OutputCardinality::Unknown
-            ) =>
-        {
-            visibility = ProjectionVisibility::Hidden;
-        }
-        Some(_) | None => {}
-    }
-
-    let function_kind = match &operation.execution {
-        IrExecutionAttachment::Rest(_) if is_search => Some(SourceTableFunctionKind::Search),
-        IrExecutionAttachment::Rest(_)
-            if operation.output.cardinality == OutputCardinality::Singleton
-                && operation.inputs.iter().any(|input| input.required) =>
-        {
-            Some(SourceTableFunctionKind::Table)
-        }
-        IrExecutionAttachment::Mcp(_) if operation.inputs.is_empty() && !is_search => None,
-        IrExecutionAttachment::Mcp(_) if is_search => Some(SourceTableFunctionKind::Search),
-        IrExecutionAttachment::Mcp(_) => Some(SourceTableFunctionKind::Table),
-        IrExecutionAttachment::Rest(_) => None,
-    };
-    let kind = function_kind.map_or(ProjectionKind::Table, |function_kind| {
-        ProjectionKind::TableFunction { function_kind }
-    });
+    let kind = projection_kind(operation, is_search);
     let sql_exposure = if matches!(kind, ProjectionKind::Table) {
         SqlInputExposure::Filter
     } else {
@@ -142,13 +101,7 @@ fn generate_projection(
         })
         .collect::<Vec<_>>();
     let columns = projection_columns(ir, operation);
-    let mut name = match &operation.execution {
-        IrExecutionAttachment::Rest(_) => projection_name(operation, is_search),
-        IrExecutionAttachment::Mcp(_) => normalize_identifier(&operation.id, "projection"),
-    };
-    if name.is_empty() {
-        name = normalize_identifier(&operation.id, "projection");
-    }
+    let name = generated_projection_name(operation, is_search);
     let guide = projection_guide(&kind, &inputs, &pagination, is_search);
     let projection = Projection {
         name,
@@ -171,6 +124,66 @@ fn generate_projection(
     };
     diagnostics.extend(projection_diagnostics);
     projection
+}
+
+fn rest_execution(operation: &IrOperation) -> Option<&RestExecutionAttachment> {
+    match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => Some(rest.as_ref()),
+        IrExecutionAttachment::Mcp(_) => None,
+    }
+}
+
+fn initial_projection_visibility(
+    operation: &IrOperation,
+    rest: Option<&RestExecutionAttachment>,
+) -> ProjectionVisibility {
+    let unsupported_output = matches!(
+        operation.output.cardinality,
+        OutputCardinality::None | OutputCardinality::Unknown
+    );
+    match rest {
+        Some(rest)
+            if !operation.read_only
+                || rest.method != HttpMethod::Get
+                || rest.request_body.is_some()
+                || unsupported_output =>
+        {
+            ProjectionVisibility::Hidden
+        }
+        None if !operation.read_only || unsupported_output => ProjectionVisibility::Hidden,
+        Some(_) | None => ProjectionVisibility::Published,
+    }
+}
+
+fn projection_kind(operation: &IrOperation, is_search: bool) -> ProjectionKind {
+    let function_kind = match &operation.execution {
+        IrExecutionAttachment::Rest(_) if is_search => Some(SourceTableFunctionKind::Search),
+        IrExecutionAttachment::Rest(_)
+            if operation.output.cardinality == OutputCardinality::Singleton
+                && operation.inputs.iter().any(|input| input.required) =>
+        {
+            Some(SourceTableFunctionKind::Table)
+        }
+        IrExecutionAttachment::Mcp(_) if operation.inputs.is_empty() && !is_search => None,
+        IrExecutionAttachment::Mcp(_) if is_search => Some(SourceTableFunctionKind::Search),
+        IrExecutionAttachment::Mcp(_) => Some(SourceTableFunctionKind::Table),
+        IrExecutionAttachment::Rest(_) => None,
+    };
+    function_kind.map_or(ProjectionKind::Table, |function_kind| {
+        ProjectionKind::TableFunction { function_kind }
+    })
+}
+
+fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String {
+    let name = match &operation.execution {
+        IrExecutionAttachment::Rest(_) => projection_name(operation, is_search),
+        IrExecutionAttachment::Mcp(_) => normalize_identifier(&operation.id, "projection"),
+    };
+    if name.is_empty() {
+        normalize_identifier(&operation.id, "projection")
+    } else {
+        name
+    }
 }
 
 fn projection_input_required(input: &IrOperationInput) -> bool {

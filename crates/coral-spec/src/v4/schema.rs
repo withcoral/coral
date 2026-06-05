@@ -224,25 +224,22 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
         };
         post_process_surface_id(properties);
         post_process_surface_inputs(properties);
-        match surface_type.as_deref() {
-            Some("openapi") => {
-                if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
-                    url.insert("type".to_string(), json!("string"));
-                    url.insert("pattern".to_string(), json!("^https://"));
-                }
-                if let Some(file) = properties.get_mut("file").and_then(Value::as_object_mut) {
-                    file.insert("type".to_string(), json!("string"));
-                    file.insert("minLength".to_string(), json!(1));
-                }
-                if let Some(base_url) = properties
-                    .get_mut("base_url")
-                    .and_then(Value::as_object_mut)
-                {
-                    base_url.insert("type".to_string(), json!("string"));
-                    base_url.insert("minLength".to_string(), json!(1));
-                }
+        if let Some("openapi") = surface_type.as_deref() {
+            if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
+                url.insert("type".to_string(), json!("string"));
+                url.insert("pattern".to_string(), json!("^https://"));
             }
-            Some("mcp") | None | Some(_) => {}
+            if let Some(file) = properties.get_mut("file").and_then(Value::as_object_mut) {
+                file.insert("type".to_string(), json!("string"));
+                file.insert("minLength".to_string(), json!(1));
+            }
+            if let Some(base_url) = properties
+                .get_mut("base_url")
+                .and_then(Value::as_object_mut)
+            {
+                base_url.insert("type".to_string(), json!("string"));
+                base_url.insert("minLength".to_string(), json!(1));
+            }
         }
     }
 }

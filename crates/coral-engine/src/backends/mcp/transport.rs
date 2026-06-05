@@ -262,7 +262,7 @@ impl StreamableHttpMcpToolCaller {
             unreachable!("StreamableHttpMcpToolCaller requires a Streamable HTTP MCP server spec");
         };
 
-        let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_string())
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url.clone())
             .reinit_on_expired_session(true);
         if let Some(token) = self.resolved_bearer_token().await? {
             config = config.auth_header(token);

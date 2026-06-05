@@ -15,7 +15,7 @@ use coral_spec::v4::{
 };
 use coral_spec::{
     PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, SourceManifestCommon,
-    SourceTableFunctionSpec, TableCommon,
+    SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
 };
 
 use crate::bootstrap::AppError;
@@ -229,49 +229,17 @@ fn mcp_manifest_for_surface(
                 projection.name
             )));
         };
-        let response = ResponseSpec {
-            rows_path: operation.output.row_path.clone(),
-            ..ResponseSpec::default()
-        };
         match &projection.kind {
             ProjectionKind::Table => {
-                tables.push(McpTableSpec {
-                    common: TableCommon {
-                        name: projection.name.clone(),
-                        description: projection.description.clone(),
-                        guide: projection.guide.clone(),
-                        filters: projection_filter_specs(projection),
-                        fetch_limit_default: None,
-                        search_limits: projection.search_limits.clone(),
-                        detail_hints: projection.detail_hints.clone(),
-                        columns: projection_column_specs(projection),
-                    },
-                    tool: mcp.tool_name.clone(),
-                    tool_args: BTreeMap::new(),
-                    filter_bindings: mcp_filter_bindings(projection),
-                    limit_binding: None,
-                    pagination: None,
-                    response,
-                });
+                tables.push(mcp_table_spec(projection, &mcp.tool_name, operation));
             }
             ProjectionKind::TableFunction { function_kind } => {
-                functions.push(McpTableFunctionSpec {
-                    tool: mcp.tool_name.clone(),
-                    pagination: None,
-                    common: SourceTableFunctionSpec {
-                        name: projection.name.clone(),
-                        kind: *function_kind,
-                        description: projection.description.clone(),
-                        fetch_limit_default: None,
-                        search_limits: projection.search_limits.clone(),
-                        detail_hints: projection.detail_hints.clone(),
-                        args: mcp_projection_arg_specs(projection),
-                        request: RequestSpec::default(),
-                        response,
-                        pagination: PaginationSpec::default(),
-                        columns: projection_column_specs(projection),
-                    },
-                });
+                functions.push(mcp_table_function_spec(
+                    projection,
+                    *function_kind,
+                    &mcp.tool_name,
+                    operation,
+                ));
             }
         }
     }
@@ -288,6 +256,63 @@ fn mcp_manifest_for_surface(
         tables,
         declared_inputs: manifest.declared_inputs.clone(),
     })
+}
+
+fn mcp_table_spec(
+    projection: &Projection,
+    tool_name: &str,
+    operation: &coral_spec::v4::IrOperation,
+) -> McpTableSpec {
+    McpTableSpec {
+        common: TableCommon {
+            name: projection.name.clone(),
+            description: projection.description.clone(),
+            guide: projection.guide.clone(),
+            filters: projection_filter_specs(projection),
+            fetch_limit_default: None,
+            search_limits: projection.search_limits.clone(),
+            detail_hints: projection.detail_hints.clone(),
+            columns: projection_column_specs(projection),
+        },
+        tool: tool_name.to_string(),
+        tool_args: BTreeMap::new(),
+        filter_bindings: mcp_filter_bindings(projection),
+        limit_binding: None,
+        pagination: None,
+        response: mcp_response_for_operation(operation),
+    }
+}
+
+fn mcp_table_function_spec(
+    projection: &Projection,
+    function_kind: SourceTableFunctionKind,
+    tool_name: &str,
+    operation: &coral_spec::v4::IrOperation,
+) -> McpTableFunctionSpec {
+    McpTableFunctionSpec {
+        tool: tool_name.to_string(),
+        pagination: None,
+        common: SourceTableFunctionSpec {
+            name: projection.name.clone(),
+            kind: function_kind,
+            description: projection.description.clone(),
+            fetch_limit_default: None,
+            search_limits: projection.search_limits.clone(),
+            detail_hints: projection.detail_hints.clone(),
+            args: mcp_projection_arg_specs(projection),
+            request: RequestSpec::default(),
+            response: mcp_response_for_operation(operation),
+            pagination: PaginationSpec::default(),
+            columns: projection_column_specs(projection),
+        },
+    }
+}
+
+fn mcp_response_for_operation(operation: &coral_spec::v4::IrOperation) -> ResponseSpec {
+    ResponseSpec {
+        rows_path: operation.output.row_path.clone(),
+        ..ResponseSpec::default()
+    }
 }
 
 fn mcp_filter_bindings(projection: &Projection) -> Vec<McpTableFilterBinding> {

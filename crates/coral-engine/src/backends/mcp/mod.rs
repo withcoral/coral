@@ -131,6 +131,11 @@ pub(crate) fn compile_manifest(
 ///
 /// This is used by DSL v4 materialization to snapshot MCP `tools/list`
 /// metadata into app-owned artifacts before query runtime assembly.
+///
+/// # Errors
+///
+/// Returns [`CoreError`] when source inputs cannot be resolved, the MCP server
+/// cannot be initialized, or tool catalog discovery fails.
 pub async fn discover_tool_catalog(
     source_name: &str,
     server: McpServerSpec,

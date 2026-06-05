@@ -70,14 +70,14 @@ impl OpenApiImporter<'_> {
             inputs: parameters,
             output,
             entity,
-            execution: IrExecutionAttachment::Rest(RestExecutionAttachment {
+            execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                 method,
                 path_template: path.to_string(),
                 parameters: rest_parameters,
                 request_body,
                 response,
                 pagination,
-            }),
+            })),
             diagnostics,
         })
     }

@@ -132,7 +132,7 @@ pub enum HttpMethod {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
 pub enum IrExecutionAttachment {
-    Rest(RestExecutionAttachment),
+    Rest(Box<RestExecutionAttachment>),
     Mcp(McpExecutionAttachment),
 }
 
@@ -169,7 +169,7 @@ mod tests {
                     row_path: Vec::new(),
                 },
                 entity: None,
-                execution: IrExecutionAttachment::Rest(RestExecutionAttachment {
+                execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                     method: HttpMethod::Get,
                     path_template: "/issues".to_string(),
                     parameters: Vec::new(),
@@ -180,7 +180,7 @@ mod tests {
                         response: crate::ResponseSpec::default(),
                     },
                     pagination: PaginationSpec::default(),
-                }),
+                })),
                 diagnostics: Vec::new(),
             }],
             types: vec![
