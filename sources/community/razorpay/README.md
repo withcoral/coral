@@ -5,9 +5,12 @@ tables — payments, orders, refunds, settlements, plans, subscriptions, and
 payment links. Built for Indian startups and SaaS teams that want to run
 AI-powered revenue analysis without writing custom API glue.
 
-> **v0.2.0** — fixes lint errors, corrects the `authorized` filter type,
-> removes unsupported pagination from `payment_links`, and adds conservative
-> `fetch_limit_default` on ledger tables. See [Changelog](#changelog).
+> **v0.3.0** — fixes YAML parse error on `speed_processed` description,
+> removes hard-coded `count` from all query blocks (now owned exclusively by
+> pagination), corrects `from`/`to`/`authorized` filter types to `Int64`,
+> exposes `payment_links` nullable-timestamp fields as raw `Int64` (Razorpay
+> returns `0` for unset), removes undocumented `X-RateLimit-*` header claims,
+> and adds required links to provider API docs. See [Changelog](#changelog).
 
 ---
 
@@ -36,6 +39,7 @@ AI-powered revenue analysis without writing custom API glue.
 - API credentials from **Dashboard → Settings → API Keys**
   - `Key ID` — starts with `rzp_live_` (production) or `rzp_test_` (test mode)
   - `Key Secret` — shown once on creation; store it in a password manager
+- **Authentication docs:** https://razorpay.com/docs/api/authentication/
 
 ---
 
@@ -63,13 +67,50 @@ from the Dashboard and re-add.
 
 ---
 
+## Live-test evidence
+
+> **Maintainer:** Replace the placeholder block below with sanitized output
+> from a real `rzp_test_*` account before submitting for review. The three
+> commands shown are the minimum required by Coral's contribution guidelines.
+
+```
+# coral source add (sanitized — Key Secret redacted)
+$ RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxx \
+  RAZORPAY_KEY_SECRET=*** \
+  coral source add --file ./manifest.yaml
+
+✓ Source "razorpay" added (id: src_xxxxxxxx)
+
+# coral source test
+$ coral source test razorpay
+
+Running test queries…
+  ✓ SELECT id, status, amount, currency FROM razorpay.payments LIMIT 1  (1 row, 42 ms)
+  ✓ SELECT id, status, amount FROM razorpay.orders LIMIT 1              (1 row, 38 ms)
+  ✓ SELECT id, status, amount FROM razorpay.refunds LIMIT 1             (1 row, 35 ms)
+All 3 test queries passed.
+
+# coral query spot-check
+$ coral query "SELECT id, amount, status FROM razorpay.payments LIMIT 3"
+
+ id                   | amount | status
+----------------------+--------+----------
+ pay_XXXXXXXXXXXXXXXX |  49900 | captured
+ pay_YYYYYYYYYYYYYYYY |  99900 | captured
+ pay_ZZZZZZZZZZZZZZZZ |   9900 | failed
+(3 rows)
+```
+
+---
+
 ## Filters
 
 Filters are declared at the table level and map to Razorpay query parameters.
-Pass them in `WHERE` clauses:
+Pass them in `WHERE` clauses. **`from` and `to` are integer Unix epoch
+seconds** — not ISO strings.
 
 ```sql
--- Payments in a specific window (Unix epoch seconds)
+-- Payments in a specific window (Unix epoch seconds, integer)
 SELECT id, amount, status
 FROM razorpay.payments
 WHERE from = 1735689600 AND to = 1738367999;
@@ -95,6 +136,19 @@ WHERE reference_id = 'INV-2025-001';
 Payments, orders, refunds, and settlements default to pages of **25 rows**
 without a time filter. For accounts with large transaction volumes always add
 a `from`/`to` window to keep query times predictable.
+
+### payment_links — zero timestamps
+
+`cancelled_at`, `expire_by`, and `expired_at` are `Int64` columns (raw Unix
+epoch seconds). Razorpay returns `0` — not `null` — when these are unset.
+Filter accordingly:
+
+```sql
+-- Only links with a real expiry set
+SELECT id, short_url, expire_by
+FROM razorpay.payment_links
+WHERE expire_by > 0;
+```
 
 ---
 
@@ -292,10 +346,31 @@ Use test credentials to validate your queries before switching to live keys.
 
 ## Rate limits
 
-Razorpay enforces per-key API rate limits. Coral automatically respects
-`Retry-After` and `X-RateLimit-*` response headers and backs off on 429
-responses. For large accounts always use `from`/`to` time windows to keep
-per-query page counts manageable.
+Razorpay enforces per-key API rate limits and returns HTTP `429` when a limit
+is exceeded. Coral is configured to respect the `Retry-After` response header
+and will back off automatically on `429` responses.
+
+For large accounts, always scope ledger queries (`payments`, `orders`,
+`refunds`, `settlements`) with `from`/`to` time windows to reduce the number
+of paginated API calls per query.
+
+- **Rate limit docs:** https://razorpay.com/docs/api/understand/?preferred-country=IN
+
+---
+
+## API reference
+
+| Resource | Razorpay docs |
+|---|---|
+| Authentication | https://razorpay.com/docs/api/authentication/ |
+| Payments | https://razorpay.com/docs/api/payments/fetch-all-payments/ |
+| Orders | https://razorpay.com/docs/api/orders/fetch-all/ |
+| Refunds | https://razorpay.com/docs/api/refunds/fetch-all/ |
+| Settlements | https://razorpay.com/docs/api/settlements/fetch-all/ |
+| Plans | https://razorpay.com/docs/api/payments/route/plans/fetch-all/ |
+| Subscriptions | https://razorpay.com/docs/api/payments/subscriptions/fetch-all/ |
+| Payment Links | https://razorpay.com/docs/api/payments/payment-links/fetch-all-standard/ |
+| Rate limits | https://razorpay.com/docs/api/understand/?preferred-country=IN |
 
 ---
 
@@ -307,23 +382,45 @@ Requires `dsl_version: 3` (available from Coral v0.2.0 onwards).
 
 ## Changelog
 
+### v0.3.0
+- **Fix #1 (High)** — Quoted the `speed_processed` description
+  (`"Actual refund speed used: normal or optimum (instant)"`) so the manifest
+  is valid YAML and passes `coral source lint`.
+- **Fix #2 (High)** — Removed hard-coded `count: 100` from all `request.query`
+  blocks (`payments`, `orders`, `refunds`, `settlements`, `plans`,
+  `subscriptions`). `count` is now owned exclusively by each table's
+  `pagination.page_size.query_param`, which lets Coral lower the provider page
+  size when a SQL `LIMIT` is smaller than the max, eliminating duplicate /
+  conflicting `count` parameters.
+- **Fix #3 (High)** — Added a **Live-test evidence** section with a sanitized
+  template covering `coral source add`, `coral source test`, and `coral query`.
+  Maintainers must replace the placeholder with real output before merging.
+- **Fix #4 (Medium)** — Changed `from` and `to` filter types from `Utf8` to
+  `Int64` on all tables that accept them (`payments`, `orders`, `refunds`,
+  `settlements`, `subscriptions`). The `authorized` filter on `orders` was
+  already typed correctly as integer (`filter_int`); its filter declaration is
+  now `Int64` to match.
+- **Fix #5 (Medium)** — `payment_links.cancelled_at`, `expire_by`, and
+  `expired_at` are now `Int64` (raw Unix epoch seconds) instead of `Timestamp`.
+  Razorpay returns `0` for unset values; mapping them as `Timestamp` would
+  have surfaced `1970-01-01` as a misleading "cancelled" date. Consumers
+  should treat `0` as not-set; the README includes a filter example.
+- **Fix #6 (Medium)** — Removed the undocumented `X-RateLimit-Remaining` and
+  `X-RateLimit-Reset` headers from `rate_limit:` (Razorpay does not publish
+  these). Only `Retry-After` is retained, which Razorpay does honour on 429
+  responses. Added a dedicated **API reference** table with direct links to
+  Razorpay docs for auth, each endpoint, and rate limits.
+
 ### v0.2.0
 - **Fix #1** — Moved all `required`/optional filter declarations from
-  `request.query` into table-level `filters:` blocks. `request.query` entries
-  now only map filters to provider parameters, which is what `coral source lint`
-  expects.
+  `request.query` into table-level `filters:` blocks.
 - **Fix #2** — Changed `orders.authorized` from `from: filter_bool` to
-  `from: filter_int`. Razorpay documents this param as integer `1` or `0`;
-  `filter_bool` was incorrectly sending `true` / `false`.
+  `from: filter_int`.
 - **Fix #3** — `payment_links` no longer declares `from`/`to` filters or
-  `count`/`skip` pagination. Razorpay's list endpoint for Payment Links only
-  accepts `payment_id` and `reference_id`. Pagination mode set to `none` to
-  prevent duplicate rows. Response key corrected to `payment_links` (not
-  `items`).
-- **Fix #4** — `payments`, `orders`, `refunds`, and `settlements` now default
-  to page size 25 (`fetch_limit_default: 25`) to avoid runaway fetches on
-  large accounts when no time filter is provided. README examples updated to
-  include `from`/`to` on all ledger queries.
+  `count`/`skip` pagination. Pagination mode set to `none`. Response key
+  corrected to `payment_links`.
+- **Fix #4** — `payments`, `orders`, `refunds`, and `settlements` default to
+  page size 25 to avoid runaway fetches on large accounts.
 
 ### v0.1.0
 - Initial release: 7 tables covering payments, orders, refunds, settlements,
