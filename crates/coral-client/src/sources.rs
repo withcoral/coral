@@ -3,6 +3,7 @@
 use coral_api::v1::{
     OAuthCredentialMethod, OauthCredentialClientSecretTransport, OauthCredentialFlowType,
     OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter,
+    OauthDynamicClientRegistrationApplicationType, OauthDynamicClientRegistrationAuthMethod,
     SourceCredential, SourceCredentialMethod, SourceInputSpec,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
@@ -11,6 +12,8 @@ use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
+    ManifestOAuthDynamicClientRegistrationApplicationType,
+    ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthDynamicClientRegistrationSpec,
     ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec,
     ManifestOAuthScopesSpec,
@@ -49,6 +52,12 @@ pub enum SourceInputDecodeError {
     /// The OAuth client secret transport was missing or unknown.
     #[error("unknown oauth client secret transport")]
     UnknownOAuthClientSecretTransport,
+    /// The OAuth dynamic client registration auth method was missing or unknown.
+    #[error("unknown oauth dynamic client registration auth method")]
+    UnknownOAuthDynamicClientRegistrationAuthMethod,
+    /// The OAuth dynamic client registration application type was missing or unknown.
+    #[error("unknown oauth dynamic client registration application type")]
+    UnknownOAuthDynamicClientRegistrationApplicationType,
     /// The OAuth scopes settings did not include a scope definition.
     #[error("oauth scopes is missing scope")]
     MissingOAuthScope,
@@ -148,6 +157,7 @@ fn oauth_from_proto(
             kind: oauth_flow_kind_from_proto(oauth.flow)?,
             pkce: oauth_pkce_from_proto(oauth.pkce)?,
         },
+        resource: (!oauth.resource.is_empty()).then(|| oauth.resource.clone()),
         redirect_uri: (!oauth.redirect_uri.is_empty()).then(|| oauth.redirect_uri.clone()),
         redirect_uri_port_mode: redirect_uri_port_mode_from_proto(oauth.redirect_uri_port_mode)?,
         authorization_url: (!endpoints.authorization_url.is_empty())
@@ -204,19 +214,25 @@ fn redirect_uri_port_mode_from_proto(
 fn oauth_client_from_proto(
     client: &coral_api::v1::OAuthCredentialClient,
 ) -> Result<ManifestOAuthClientSpec, SourceInputDecodeError> {
-    let id = client
-        .id
-        .as_ref()
-        .ok_or(SourceInputDecodeError::MissingOAuthClientId)?;
+    let id = client.id.as_ref();
+    if id.is_none() && client.dynamic_registration.is_none() {
+        return Err(SourceInputDecodeError::MissingOAuthClientId);
+    }
     Ok(ManifestOAuthClientSpec {
         id: ManifestOAuthClientIdSpec {
-            default: (!id.default_value.is_empty()).then(|| id.default_value.clone()),
-            input: (!id.input.is_empty()).then(|| id.input.clone()),
+            default: id
+                .and_then(|id| (!id.default_value.is_empty()).then(|| id.default_value.clone())),
+            input: id.and_then(|id| (!id.input.is_empty()).then(|| id.input.clone())),
         },
         secret: client
             .secret
             .as_ref()
             .map(oauth_client_secret_from_proto)
+            .transpose()?,
+        dynamic_registration: client
+            .dynamic_registration
+            .as_ref()
+            .map(dynamic_client_registration_from_proto)
             .transpose()?,
     })
 }
@@ -239,6 +255,60 @@ fn oauth_client_secret_from_proto(
         input: secret.input.clone(),
         transport,
     })
+}
+
+fn dynamic_client_registration_from_proto(
+    registration: &coral_api::v1::OAuthDynamicClientRegistration,
+) -> Result<ManifestOAuthDynamicClientRegistrationSpec, SourceInputDecodeError> {
+    Ok(ManifestOAuthDynamicClientRegistrationSpec {
+        registration_url: registration.registration_url.clone(),
+        client_name: (!registration.client_name.is_empty())
+            .then(|| registration.client_name.clone()),
+        initial_access_token_input: (!registration.initial_access_token_input.is_empty())
+            .then(|| registration.initial_access_token_input.clone()),
+        token_endpoint_auth_method: dynamic_client_registration_auth_method_from_proto(
+            registration.token_endpoint_auth_method,
+        )?,
+        application_type: dynamic_client_registration_application_type_from_proto(
+            registration.application_type,
+        )?,
+        request_refresh_token_grant: registration.request_refresh_token_grant,
+    })
+}
+
+fn dynamic_client_registration_auth_method_from_proto(
+    method: i32,
+) -> Result<ManifestOAuthDynamicClientRegistrationAuthMethod, SourceInputDecodeError> {
+    match OauthDynamicClientRegistrationAuthMethod::try_from(method) {
+        Ok(OauthDynamicClientRegistrationAuthMethod::None) => {
+            Ok(ManifestOAuthDynamicClientRegistrationAuthMethod::None)
+        }
+        Ok(OauthDynamicClientRegistrationAuthMethod::ClientSecretBasic) => {
+            Ok(ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic)
+        }
+        Ok(OauthDynamicClientRegistrationAuthMethod::ClientSecretPost) => {
+            Ok(ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost)
+        }
+        Ok(OauthDynamicClientRegistrationAuthMethod::Unspecified) | Err(_) => {
+            Err(SourceInputDecodeError::UnknownOAuthDynamicClientRegistrationAuthMethod)
+        }
+    }
+}
+
+fn dynamic_client_registration_application_type_from_proto(
+    application_type: i32,
+) -> Result<ManifestOAuthDynamicClientRegistrationApplicationType, SourceInputDecodeError> {
+    match OauthDynamicClientRegistrationApplicationType::try_from(application_type) {
+        Ok(OauthDynamicClientRegistrationApplicationType::Native) => {
+            Ok(ManifestOAuthDynamicClientRegistrationApplicationType::Native)
+        }
+        Ok(OauthDynamicClientRegistrationApplicationType::Web) => {
+            Ok(ManifestOAuthDynamicClientRegistrationApplicationType::Web)
+        }
+        Ok(OauthDynamicClientRegistrationApplicationType::Unspecified) | Err(_) => {
+            Err(SourceInputDecodeError::UnknownOAuthDynamicClientRegistrationApplicationType)
+        }
+    }
 }
 
 fn oauth_scopes_from_proto(
@@ -279,6 +349,38 @@ mod tests {
 
     use super::*;
 
+    fn authorization_code_oauth_method_proto() -> SourceCredentialMethod {
+        SourceCredentialMethod {
+            label: "Connect".to_string(),
+            description: String::new(),
+            hint: "Authorize in your browser.".to_string(),
+            method: Some(ProtoCredentialMethod::Oauth(Box::new(
+                OAuthCredentialMethod {
+                    flow: OauthCredentialFlowType::AuthorizationCode as i32,
+                    pkce: OauthCredentialPkceMode::Required as i32,
+                    resource: String::new(),
+                    redirect_uri: "http://127.0.0.1:53682/oauth/callback".to_string(),
+                    endpoints: Some(OAuthCredentialEndpoints {
+                        authorization_url: "https://provider.example.com/oauth/authorize"
+                            .to_string(),
+                        token_url: "https://provider.example.com/oauth/token".to_string(),
+                        device_authorization_url: String::new(),
+                    }),
+                    client: Some(OAuthCredentialClient {
+                        id: Some(OAuthCredentialClientId {
+                            default_value: "default-client".to_string(),
+                            input: String::new(),
+                        }),
+                        secret: None,
+                        dynamic_registration: None,
+                    }),
+                    redirect_uri_port_mode: OauthCredentialRedirectUriPortMode::Random as i32,
+                    scopes: None,
+                },
+            ))),
+        }
+    }
+
     #[test]
     fn manifest_input_from_proto_preserves_credential_methods() {
         let input = SourceInputSpec {
@@ -288,37 +390,7 @@ mod tests {
             input: Some(ProtoSourceInput::Secret(SourceSecretInput {
                 credential: Some(SourceCredential {
                     methods: vec![
-                        SourceCredentialMethod {
-                            label: "Connect".to_string(),
-                            description: String::new(),
-                            hint: "Authorize in your browser.".to_string(),
-                            method: Some(ProtoCredentialMethod::Oauth(Box::new(
-                                OAuthCredentialMethod {
-                                    flow: OauthCredentialFlowType::AuthorizationCode as i32,
-                                    pkce: OauthCredentialPkceMode::Required as i32,
-                                    redirect_uri: "http://127.0.0.1:53682/oauth/callback"
-                                        .to_string(),
-                                    endpoints: Some(OAuthCredentialEndpoints {
-                                        authorization_url:
-                                            "https://provider.example.com/oauth/authorize"
-                                                .to_string(),
-                                        token_url: "https://provider.example.com/oauth/token"
-                                            .to_string(),
-                                        device_authorization_url: String::new(),
-                                    }),
-                                    client: Some(OAuthCredentialClient {
-                                        id: Some(OAuthCredentialClientId {
-                                            default_value: "default-client".to_string(),
-                                            input: String::new(),
-                                        }),
-                                        secret: None,
-                                    }),
-                                    redirect_uri_port_mode:
-                                        OauthCredentialRedirectUriPortMode::Random as i32,
-                                    scopes: None,
-                                },
-                            ))),
-                        },
+                        authorization_code_oauth_method_proto(),
                         SourceCredentialMethod {
                             label: "Paste token".to_string(),
                             description: String::new(),
@@ -401,6 +473,7 @@ mod tests {
                             OAuthCredentialMethod {
                                 flow: flow as i32,
                                 pkce: pkce as i32,
+                                resource: String::new(),
                                 redirect_uri: "http://127.0.0.1:53682/oauth/callback".to_string(),
                                 endpoints: Some(OAuthCredentialEndpoints {
                                     authorization_url:
@@ -415,6 +488,7 @@ mod tests {
                                         input: String::new(),
                                     }),
                                     secret: None,
+                                    dynamic_registration: None,
                                 }),
                                 redirect_uri_port_mode: OauthCredentialRedirectUriPortMode::Fixed
                                     as i32,

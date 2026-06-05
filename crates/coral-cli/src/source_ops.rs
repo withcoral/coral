@@ -1553,9 +1553,20 @@ fn prompt_oauth_credential_inputs(
     oauth: &ManifestOAuthCredentialSpec,
 ) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
     let mut values = Vec::new();
+    let mut static_client_selected = oauth
+        .client
+        .id
+        .default
+        .as_deref()
+        .is_some_and(|value| !value.is_empty());
     if let Some(input_key) = oauth.client.id.input.as_deref()
-        && let Some(value) = prompt_oauth_client_id(input_key, oauth.client.id.default.as_deref())?
+        && let Some(value) = prompt_oauth_client_id(
+            input_key,
+            oauth.client.id.default.as_deref(),
+            oauth.client.dynamic_registration.is_some() && oauth.client.secret.is_none(),
+        )?
     {
+        static_client_selected = true;
         values.push(OAuthCredentialInput {
             key: input_key.to_string(),
             value,
@@ -1568,12 +1579,23 @@ fn prompt_oauth_credential_inputs(
             value,
         });
     }
+    if let Some(registration) = oauth.client.dynamic_registration.as_ref()
+        && let Some(input_key) = registration.initial_access_token_input.as_deref()
+        && !static_client_selected
+    {
+        let value = prompt_oauth_initial_access_token(input_key)?;
+        values.push(OAuthCredentialInput {
+            key: input_key.to_string(),
+            value,
+        });
+    }
     Ok(values)
 }
 
 fn prompt_oauth_client_id(
     input_key: &str,
     default: Option<&str>,
+    allow_dynamic_registration: bool,
 ) -> Result<Option<String>, anyhow::Error> {
     let theme = ColorfulTheme::default();
     let prompt = if default.is_some_and(|value| !value.is_empty()) {
@@ -1591,6 +1613,9 @@ fn prompt_oauth_client_id(
     if default.is_some_and(|value| !value.is_empty()) {
         return Ok(None);
     }
+    if allow_dynamic_registration {
+        return Ok(None);
+    }
     Err(anyhow::anyhow!(
         "missing required OAuth client ID '{input_key}'"
     ))
@@ -1605,6 +1630,20 @@ fn prompt_oauth_client_secret(input_key: &str) -> Result<String, anyhow::Error> 
     if value.is_empty() {
         return Err(anyhow::anyhow!(
             "missing required OAuth client secret '{input_key}'"
+        ));
+    }
+    Ok(value)
+}
+
+fn prompt_oauth_initial_access_token(input_key: &str) -> Result<String, anyhow::Error> {
+    let theme = ColorfulTheme::default();
+    let value = Password::with_theme(&theme)
+        .with_prompt(input_key)
+        .allow_empty_password(false)
+        .interact()?;
+    if value.is_empty() {
+        return Err(anyhow::anyhow!(
+            "missing required OAuth dynamic client registration initial access token '{input_key}'"
         ));
     }
     Ok(value)

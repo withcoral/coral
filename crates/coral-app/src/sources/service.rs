@@ -14,9 +14,10 @@ use coral_api::v1::{
     OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
     OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
     OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
-    OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
-    OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
-    SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
+    OAuthDynamicClientRegistration, OauthCredentialClientSecretTransport, OauthCredentialFlowType,
+    OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter,
+    OauthDynamicClientRegistrationApplicationType, OauthDynamicClientRegistrationAuthMethod,
+    Source, SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
     SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
     SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
@@ -26,8 +27,10 @@ use coral_api::v1::{
 };
 use coral_spec::{
     ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
-    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthFlowKind,
-    ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec,
+    ManifestOAuthDynamicClientRegistrationApplicationType,
+    ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
+    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
 };
 use tonic::{Request, Response, Status};
 
@@ -622,7 +625,10 @@ fn credential_method_to_proto(
 }
 
 fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
+    let client = oauth.client;
+    let client_id = client.id;
     OAuthCredentialMethod {
+        resource: oauth.resource.unwrap_or_default(),
         redirect_uri: oauth.redirect_uri.unwrap_or_default(),
         endpoints: Some(OAuthCredentialEndpoints {
             authorization_url: oauth.authorization_url.unwrap_or_default(),
@@ -630,27 +636,40 @@ fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
             device_authorization_url: oauth.device_authorization_url.unwrap_or_default(),
         }),
         client: Some(OAuthCredentialClient {
-            id: Some(OAuthCredentialClientId {
-                default_value: oauth.client.id.default.unwrap_or_default(),
-                input: oauth.client.id.input.unwrap_or_default(),
+            id: client_id.is_configured().then(|| OAuthCredentialClientId {
+                default_value: client_id.default.unwrap_or_default(),
+                input: client_id.input.unwrap_or_default(),
             }),
-            secret: oauth
-                .client
-                .secret
-                .map(|secret| OAuthCredentialClientSecret {
-                    input: secret.input,
-                    transport: proto_oauth_client_secret_transport(secret.transport) as i32,
-                }),
+            secret: client.secret.map(|secret| OAuthCredentialClientSecret {
+                input: secret.input,
+                transport: proto_oauth_client_secret_transport(secret.transport) as i32,
+            }),
+            dynamic_registration: client.dynamic_registration.map(|registration| {
+                OAuthDynamicClientRegistration {
+                    registration_url: registration.registration_url,
+                    client_name: registration.client_name.unwrap_or_default(),
+                    initial_access_token_input: registration
+                        .initial_access_token_input
+                        .unwrap_or_default(),
+                    token_endpoint_auth_method: proto_dynamic_client_registration_auth_method(
+                        registration.token_endpoint_auth_method,
+                    ) as i32,
+                    application_type: proto_dynamic_client_registration_application_type(
+                        registration.application_type,
+                    ) as i32,
+                    request_refresh_token_grant: registration.request_refresh_token_grant,
+                }
+            }),
         }),
         redirect_uri_port_mode: proto_redirect_uri_port_mode(oauth.redirect_uri_port_mode) as i32,
         flow: proto_oauth_flow_kind(oauth.flow.kind) as i32,
+        pkce: proto_oauth_pkce_mode(oauth.flow.pkce) as i32,
         scopes: oauth.scopes.map(|scopes| OAuthCredentialScopes {
             scope: Some(OAuthCredentialScope {
                 delimiter: proto_oauth_scope_delimiter(scopes.scope.delimiter) as i32,
                 values: scopes.scope.values,
             }),
         }),
-        pkce: proto_oauth_pkce_mode(oauth.flow.pkce) as i32,
     }
 }
 
@@ -690,6 +709,35 @@ fn proto_oauth_client_secret_transport(
     }
 }
 
+fn proto_dynamic_client_registration_auth_method(
+    method: ManifestOAuthDynamicClientRegistrationAuthMethod,
+) -> OauthDynamicClientRegistrationAuthMethod {
+    match method {
+        ManifestOAuthDynamicClientRegistrationAuthMethod::None => {
+            OauthDynamicClientRegistrationAuthMethod::None
+        }
+        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic => {
+            OauthDynamicClientRegistrationAuthMethod::ClientSecretBasic
+        }
+        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost => {
+            OauthDynamicClientRegistrationAuthMethod::ClientSecretPost
+        }
+    }
+}
+
+fn proto_dynamic_client_registration_application_type(
+    application_type: ManifestOAuthDynamicClientRegistrationApplicationType,
+) -> OauthDynamicClientRegistrationApplicationType {
+    match application_type {
+        ManifestOAuthDynamicClientRegistrationApplicationType::Native => {
+            OauthDynamicClientRegistrationApplicationType::Native
+        }
+        ManifestOAuthDynamicClientRegistrationApplicationType::Web => {
+            OauthDynamicClientRegistrationApplicationType::Web
+        }
+    }
+}
+
 fn proto_oauth_scope_delimiter(
     delimiter: ManifestOAuthScopeDelimiter,
 ) -> OauthCredentialScopeDelimiter {
@@ -710,8 +758,10 @@ mod tests {
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestOAuthClientIdSpec, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
-        ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
-        ManifestOAuthRedirectUriPortMode,
+        ManifestOAuthDynamicClientRegistrationApplicationType,
+        ManifestOAuthDynamicClientRegistrationAuthMethod,
+        ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
+        ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
     };
 
     #[test]
@@ -734,6 +784,7 @@ mod tests {
                                 kind: ManifestOAuthFlowKind::AuthorizationCode,
                                 pkce: ManifestOAuthPkceMode::Required,
                             },
+                            resource: None,
                             redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
                             redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
                             authorization_url: Some(
@@ -747,6 +798,7 @@ mod tests {
                                     input: None,
                                 },
                                 secret: None,
+                                dynamic_registration: None,
                             },
                             scopes: None,
                         }),
@@ -817,6 +869,79 @@ mod tests {
         };
 
         assert!(secret.credential.is_none());
+    }
+
+    #[test]
+    fn dcr_only_oauth_source_info_omits_static_client_id() {
+        let input = ManifestInputSpec {
+            key: "MCP_ACCESS_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: None,
+            credential: Some(ManifestCredentialSpec {
+                methods: vec![ManifestCredentialMethod {
+                    kind: ManifestCredentialMethodKind::OAuth,
+                    label: Some("Connect".to_string()),
+                    description: None,
+                    hint: None,
+                    oauth: Some(ManifestOAuthCredentialSpec {
+                        flow: ManifestOAuthFlowSpec {
+                            kind: ManifestOAuthFlowKind::AuthorizationCode,
+                            pkce: ManifestOAuthPkceMode::Required,
+                        },
+                        resource: Some("https://mcp.example.com/mcp".to_string()),
+                        redirect_uri: Some("http://127.0.0.1:0/oauth/callback".to_string()),
+                        redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Random,
+                        authorization_url: Some(
+                            "https://provider.example.com/oauth/authorize".to_string(),
+                        ),
+                        device_authorization_url: None,
+                        token_url: "https://provider.example.com/oauth/token".to_string(),
+                        client: ManifestOAuthClientSpec {
+                            id: ManifestOAuthClientIdSpec {
+                                default: None,
+                                input: None,
+                            },
+                            secret: None,
+                            dynamic_registration: Some(
+                                ManifestOAuthDynamicClientRegistrationSpec {
+                                    registration_url:
+                                        "https://provider.example.com/oauth/register".to_string(),
+                                    client_name: Some("Coral MCP".to_string()),
+                                    initial_access_token_input: None,
+                                    token_endpoint_auth_method:
+                                        ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                                    application_type:
+                                        ManifestOAuthDynamicClientRegistrationApplicationType::Native,
+                                    request_refresh_token_grant: false,
+                                },
+                            ),
+                        },
+                        scopes: None,
+                    }),
+                }],
+            }),
+        };
+
+        let proto = candidate_source_input_to_proto(input);
+        let secret = match proto.input.expect("input") {
+            ProtoSourceInput::Secret(secret) => secret,
+            ProtoSourceInput::Variable(_) => panic!("expected secret input"),
+        };
+        let credential = secret.credential.expect("credential");
+        let oauth = match credential.methods[0].method.as_ref().expect("method") {
+            ProtoCredentialMethod::Oauth(oauth) => oauth,
+            ProtoCredentialMethod::SourceConfig(_) => panic!("expected oauth method"),
+        };
+        let client = oauth.client.as_ref().expect("oauth client");
+
+        assert!(client.id.is_none());
+        let registration = client
+            .dynamic_registration
+            .as_ref()
+            .expect("dynamic registration");
+        assert!(!registration.request_refresh_token_grant);
     }
 
     #[test]

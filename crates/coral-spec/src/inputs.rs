@@ -82,6 +82,8 @@ pub struct ManifestCredentialMethod {
 pub struct ManifestOAuthCredentialSpec {
     /// OAuth flow settings.
     pub flow: ManifestOAuthFlowSpec,
+    /// Optional OAuth resource indicator parameter.
+    pub resource: Option<String>,
     /// Loopback callback URI Coral binds during authorization-code sessions.
     pub redirect_uri: Option<String>,
     /// Whether Coral binds the authored redirect URI port exactly or chooses a free port.
@@ -146,9 +148,36 @@ impl ManifestOAuthCredentialSpec {
             token_url,
         })
     }
+
+    /// Render the optional OAuth resource indicator with resolved source variables.
+    pub fn resource(&self, source_inputs: &BTreeMap<String, String>) -> Result<Option<String>> {
+        self.resource
+            .as_deref()
+            .map(|template| render_oauth_url_template("resource", template, source_inputs))
+            .transpose()
+    }
+}
+
+impl ManifestOAuthDynamicClientRegistrationSpec {
+    /// Render the registration endpoint URL with resolved source variables.
+    pub fn registration_url(&self, source_inputs: &BTreeMap<String, String>) -> Result<String> {
+        render_oauth_url_template(
+            "dynamic client registration",
+            &self.registration_url,
+            source_inputs,
+        )
+    }
 }
 
 fn render_oauth_endpoint_url(
+    label: &str,
+    raw_template: &str,
+    source_inputs: &BTreeMap<String, String>,
+) -> Result<String> {
+    render_oauth_url_template(&format!("{label} URL"), raw_template, source_inputs)
+}
+
+fn render_oauth_url_template(
     label: &str,
     raw_template: &str,
     source_inputs: &BTreeMap<String, String>,
@@ -161,19 +190,19 @@ fn render_oauth_endpoint_url(
             crate::TemplatePart::Token(token) => {
                 if token.namespace() != &TemplateNamespace::Input {
                     return Err(ManifestError::validation(format!(
-                        "unsupported OAuth endpoint template token '{}'",
+                        "unsupported OAuth URL template token '{}'",
                         token.raw()
                     )));
                 }
                 if token.default_value().is_some() {
                     return Err(ManifestError::validation(format!(
-                        "OAuth endpoint template token '{}' must declare defaults under top-level inputs",
+                        "OAuth URL template token '{}' must declare defaults under top-level inputs",
                         token.raw()
                     )));
                 }
                 let value = source_inputs.get(token.key()).ok_or_else(|| {
                     ManifestError::validation(format!(
-                        "missing source input '{}' for OAuth endpoint template",
+                        "missing source input '{}' for OAuth URL template",
                         token.key()
                     ))
                 })?;
@@ -181,9 +210,8 @@ fn render_oauth_endpoint_url(
             }
         }
     }
-    Url::parse(&rendered).map_err(|error| {
-        ManifestError::validation(format!("invalid OAuth {label} URL: {error}"))
-    })?;
+    Url::parse(&rendered)
+        .map_err(|error| ManifestError::validation(format!("invalid OAuth {label}: {error}")))?;
     Ok(rendered)
 }
 
@@ -239,6 +267,8 @@ pub struct ManifestOAuthClientSpec {
     pub id: ManifestOAuthClientIdSpec,
     /// Optional confidential-client secret configuration.
     pub secret: Option<ManifestOAuthClientSecretSpec>,
+    /// Optional OAuth 2.0 Dynamic Client Registration configuration.
+    pub dynamic_registration: Option<ManifestOAuthDynamicClientRegistrationSpec>,
 }
 
 /// OAuth client ID resolution configuration.
@@ -248,6 +278,14 @@ pub struct ManifestOAuthClientIdSpec {
     pub default: Option<String>,
     /// Optional credential-retrieval input key for a client ID override.
     pub input: Option<String>,
+}
+
+impl ManifestOAuthClientIdSpec {
+    /// Returns whether the manifest declares any static client ID resolution.
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        self.default.is_some() || self.input.is_some()
+    }
 }
 
 /// OAuth client secret retrieval configuration.
@@ -266,6 +304,83 @@ pub enum ManifestOAuthClientSecretTransport {
     BasicAuth,
     /// Send `client_secret` in the token request body.
     RequestBody,
+}
+
+/// OAuth 2.0 Dynamic Client Registration configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestOAuthDynamicClientRegistrationSpec {
+    /// OAuth client registration endpoint URL template.
+    pub registration_url: String,
+    /// Optional client display name sent during registration.
+    pub client_name: Option<String>,
+    /// Optional credential-retrieval input key for an initial access token.
+    pub initial_access_token_input: Option<String>,
+    /// Requested token endpoint authentication method.
+    pub token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod,
+    /// OAuth client application type.
+    pub application_type: ManifestOAuthDynamicClientRegistrationApplicationType,
+    /// Whether Coral requests the `refresh_token` grant type during registration.
+    pub request_refresh_token_grant: bool,
+}
+
+/// Supported DCR token endpoint authentication method requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOAuthDynamicClientRegistrationAuthMethod {
+    /// Public client; no client authentication at the token endpoint.
+    None,
+    /// Confidential client using HTTP Basic authentication at the token endpoint.
+    ClientSecretBasic,
+    /// Confidential client sending the client secret in the token request body.
+    ClientSecretPost,
+}
+
+impl ManifestOAuthDynamicClientRegistrationAuthMethod {
+    /// Canonical OAuth metadata label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ClientSecretBasic => "client_secret_basic",
+            Self::ClientSecretPost => "client_secret_post",
+        }
+    }
+
+    /// Parse a canonical OAuth metadata label.
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "client_secret_basic" => Some(Self::ClientSecretBasic),
+            "client_secret_post" => Some(Self::ClientSecretPost),
+            _ => None,
+        }
+    }
+}
+
+/// Supported DCR application types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOAuthDynamicClientRegistrationApplicationType {
+    /// Native app such as a CLI or desktop process using loopback redirects.
+    Native,
+    /// Web application.
+    Web,
+}
+
+impl ManifestOAuthDynamicClientRegistrationApplicationType {
+    /// Canonical OAuth metadata label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Web => "web",
+        }
+    }
+
+    /// Parse a canonical OAuth metadata label.
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value {
+            "native" => Some(Self::Native),
+            "web" => Some(Self::Web),
+            _ => None,
+        }
+    }
 }
 
 impl ManifestOAuthClientSecretTransport {
@@ -517,7 +632,7 @@ fn validate_oauth_endpoint_templates_for_method(
     if let Some(template) = oauth.authorization_url.as_deref() {
         validate_oauth_endpoint_template(
             input_key,
-            "authorization_url",
+            "endpoints.authorization_url",
             template,
             declared,
             input_scope,
@@ -526,15 +641,27 @@ fn validate_oauth_endpoint_templates_for_method(
     if let Some(template) = oauth.device_authorization_url.as_deref() {
         validate_oauth_endpoint_template(
             input_key,
-            "device_authorization_url",
+            "endpoints.device_authorization_url",
             template,
+            declared,
+            input_scope,
+        )?;
+    }
+    if let Some(template) = oauth.resource.as_deref() {
+        validate_oauth_endpoint_template(input_key, "resource", template, declared, input_scope)?;
+    }
+    if let Some(dynamic_registration) = oauth.client.dynamic_registration.as_ref() {
+        validate_oauth_endpoint_template(
+            input_key,
+            "client.dynamic_registration.registration_url",
+            &dynamic_registration.registration_url,
             declared,
             input_scope,
         )?;
     }
     validate_oauth_endpoint_template(
         input_key,
-        "token_url",
+        "endpoints.token_url",
         &oauth.token_url,
         declared,
         input_scope,
@@ -558,7 +685,7 @@ fn validate_oauth_endpoint_template(
             crate::TemplatePart::Token(token) => {
                 if !matches!(token.namespace(), TemplateNamespace::Input) {
                     return Err(ManifestError::validation(format!(
-                        "manifest input '{input_key}' oauth.endpoints.{field} uses unsupported template token '{}'; OAuth endpoint templates only support source variable input tokens",
+                        "manifest input '{input_key}' oauth.{field} uses unsupported template token '{}'; OAuth URL templates only support source variable input tokens",
                         token.raw()
                     )));
                 }
@@ -576,7 +703,7 @@ fn validate_oauth_endpoint_template(
                 };
                 if input.kind != ManifestInputKind::Variable {
                     return Err(ManifestError::validation(format!(
-                        "manifest input '{}' is referenced by oauth.endpoints.{field} but is not a variable",
+                        "manifest input '{}' is referenced by oauth.{field} but is not a variable",
                         token.key()
                     )));
                 }
@@ -592,7 +719,7 @@ fn validate_oauth_endpoint_template(
     if !has_required_variable {
         Url::parse(&rendered).map_err(|error| {
             ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.endpoints.{field} is invalid: {error}"
+                "manifest input '{input_key}' oauth.{field} is invalid: {error}"
             ))
         })?;
     }
@@ -714,6 +841,7 @@ fn parse_oauth(
             ))
         })
         .and_then(|flow| parse_oauth_flow(input_key, flow))?;
+    let resource = optional_string(oauth, "resource", input_key, "oauth")?;
     let redirect_uri = optional_string(oauth, "redirect_uri", input_key, "oauth")?;
     let redirect_uri_port_mode = oauth
         .get("redirect_uri_port_mode")
@@ -768,6 +896,7 @@ fn parse_oauth(
     }
     Ok(ManifestOAuthCredentialSpec {
         flow,
+        resource,
         redirect_uri,
         redirect_uri_port_mode,
         authorization_url,
@@ -856,22 +985,35 @@ fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthCli
     })?;
     let id = client
         .get("id")
-        .ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{input_key}' oauth.client is missing id"
-            ))
-        })
-        .and_then(|id| parse_oauth_client_id(input_key, id))?;
+        .map(|id| parse_oauth_client_id(input_key, id))
+        .transpose()?
+        .unwrap_or(ManifestOAuthClientIdSpec {
+            default: None,
+            input: None,
+        });
     let secret = client
         .get("secret")
         .map(|secret| parse_oauth_client_secret(input_key, secret))
         .transpose()?;
+    let dynamic_registration = client
+        .get("dynamic_registration")
+        .map(|registration| parse_oauth_dynamic_client_registration(input_key, registration))
+        .transpose()?;
+    if !id.is_configured() && dynamic_registration.is_none() {
+        return Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.client must declare id or dynamic_registration"
+        )));
+    }
     if secret.is_some() && id.input.is_none() {
         return Err(ManifestError::validation(format!(
             "manifest input '{input_key}' confidential oauth client must declare client.id.input"
         )));
     }
-    Ok(ManifestOAuthClientSpec { id, secret })
+    Ok(ManifestOAuthClientSpec {
+        id,
+        secret,
+        dynamic_registration,
+    })
 }
 
 fn parse_oauth_client_id(input_key: &str, value: &Value) -> Result<ManifestOAuthClientIdSpec> {
@@ -923,6 +1065,104 @@ fn parse_oauth_client_secret(
         }
     };
     Ok(ManifestOAuthClientSecretSpec { input, transport })
+}
+
+fn parse_oauth_dynamic_client_registration(
+    input_key: &str,
+    value: &Value,
+) -> Result<ManifestOAuthDynamicClientRegistrationSpec> {
+    let registration = value.as_object().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.client.dynamic_registration must be a mapping"
+        ))
+    })?;
+    let registration_url = required_string(
+        registration,
+        "registration_url",
+        input_key,
+        "oauth.client.dynamic_registration",
+    )?;
+    let client_name = optional_string(
+        registration,
+        "client_name",
+        input_key,
+        "oauth.client.dynamic_registration",
+    )?;
+    let initial_access_token_input = optional_string(
+        registration,
+        "initial_access_token_input",
+        input_key,
+        "oauth.client.dynamic_registration",
+    )?;
+    if let Some(input) = initial_access_token_input.as_deref() {
+        validate_input_key(
+            "oauth dynamic client registration initial access token input key",
+            input,
+        )?;
+    }
+    let token_endpoint_auth_method = registration
+        .get("token_endpoint_auth_method")
+        .map(|value| parse_dynamic_client_registration_auth_method(input_key, value))
+        .transpose()?
+        .unwrap_or(ManifestOAuthDynamicClientRegistrationAuthMethod::None);
+    let application_type = registration
+        .get("application_type")
+        .map(|value| parse_dynamic_client_registration_application_type(input_key, value))
+        .transpose()?
+        .unwrap_or(ManifestOAuthDynamicClientRegistrationApplicationType::Native);
+    let request_refresh_token_grant = registration
+        .get("request_refresh_token_grant")
+        .map(|value| {
+            value.as_bool().ok_or_else(|| {
+                ManifestError::validation(format!(
+                    "manifest input '{input_key}' oauth.client.dynamic_registration.request_refresh_token_grant must be a boolean"
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or(false);
+    Ok(ManifestOAuthDynamicClientRegistrationSpec {
+        registration_url,
+        client_name,
+        initial_access_token_input,
+        token_endpoint_auth_method,
+        application_type,
+        request_refresh_token_grant,
+    })
+}
+
+fn parse_dynamic_client_registration_auth_method(
+    input_key: &str,
+    value: &Value,
+) -> Result<ManifestOAuthDynamicClientRegistrationAuthMethod> {
+    match value.as_str() {
+        Some(value) => ManifestOAuthDynamicClientRegistrationAuthMethod::from_label(value)
+            .ok_or_else(|| {
+                ManifestError::validation(format!(
+                    "manifest input '{input_key}' oauth.client.dynamic_registration.token_endpoint_auth_method has unsupported value '{value}'"
+                ))
+            }),
+        None => Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.client.dynamic_registration.token_endpoint_auth_method must be a string"
+        ))),
+    }
+}
+
+fn parse_dynamic_client_registration_application_type(
+    input_key: &str,
+    value: &Value,
+) -> Result<ManifestOAuthDynamicClientRegistrationApplicationType> {
+    match value.as_str() {
+        Some(value) => ManifestOAuthDynamicClientRegistrationApplicationType::from_label(value)
+            .ok_or_else(|| {
+                ManifestError::validation(format!(
+                    "manifest input '{input_key}' oauth.client.dynamic_registration.application_type has unsupported value '{value}'"
+                ))
+            }),
+        None => Err(ManifestError::validation(format!(
+            "manifest input '{input_key}' oauth.client.dynamic_registration.application_type must be a string"
+        ))),
+    }
 }
 
 fn parse_oauth_scopes(input_key: &str, value: &Value) -> Result<ManifestOAuthScopesSpec> {
@@ -1291,9 +1531,10 @@ mod tests {
     use super::{
         ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
-        ManifestOAuthCredentialSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
-        ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
-        ManifestOAuthScopeDelimiter, collect_source_inputs_value,
+        ManifestOAuthCredentialSpec, ManifestOAuthDynamicClientRegistrationApplicationType,
+        ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthFlowKind,
+        ManifestOAuthFlowSpec, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
+        ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, collect_source_inputs_value,
     };
     use crate::{ManifestError, Result};
     use std::collections::BTreeMap;
@@ -1624,6 +1865,60 @@ tables: []
             .expect("oauth");
         assert_eq!(oauth.client.id.default.as_deref(), Some("default-client"));
         assert_eq!(oauth.client.id.input.as_deref(), Some("OAUTH_CLIENT_ID"));
+    }
+
+    #[test]
+    fn parses_oauth_dynamic_client_registration_without_static_client_id() {
+        let inputs = collect(
+            &oauth_input(
+                r"
+              dynamic_registration:
+                registration_url: https://provider.example.com/oauth/register
+                client_name: Coral MCP
+                initial_access_token_input: OAUTH_INITIAL_ACCESS_TOKEN
+                token_endpoint_auth_method: client_secret_post
+                application_type: native
+                request_refresh_token_grant: true
+",
+            )
+            .replace(
+                "          oauth:\n",
+                "          oauth:\n            resource: https://mcp.example.com/mcp\n",
+            ),
+        )
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert!(!oauth.client.id.is_configured());
+        assert_eq!(
+            oauth.resource.as_deref(),
+            Some("https://mcp.example.com/mcp")
+        );
+        let registration = oauth
+            .client
+            .dynamic_registration
+            .as_ref()
+            .expect("dynamic registration");
+        assert_eq!(
+            registration.registration_url,
+            "https://provider.example.com/oauth/register"
+        );
+        assert_eq!(registration.client_name.as_deref(), Some("Coral MCP"));
+        assert_eq!(
+            registration.initial_access_token_input.as_deref(),
+            Some("OAUTH_INITIAL_ACCESS_TOKEN")
+        );
+        assert_eq!(
+            registration.token_endpoint_auth_method,
+            ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost
+        );
+        assert_eq!(
+            registration.application_type,
+            ManifestOAuthDynamicClientRegistrationApplicationType::Native
+        );
+        assert!(registration.request_refresh_token_grant);
     }
 
     #[test]
@@ -2037,6 +2332,7 @@ tables: []
                 kind: ManifestOAuthFlowKind::AuthorizationCode,
                 pkce: ManifestOAuthPkceMode::Disabled,
             },
+            resource: None,
             redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
             redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
             authorization_url: Some(
@@ -2053,6 +2349,7 @@ tables: []
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
             scopes: None,
         };
@@ -2077,6 +2374,7 @@ tables: []
                 kind: ManifestOAuthFlowKind::AuthorizationCode,
                 pkce: ManifestOAuthPkceMode::Disabled,
             },
+            resource: None,
             redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
             redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
             authorization_url: Some(
@@ -2096,6 +2394,7 @@ tables: []
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
             scopes: None,
         };

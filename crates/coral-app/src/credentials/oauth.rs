@@ -11,12 +11,13 @@ use base64::engine::general_purpose::{
 };
 use chrono::{DateTime, Utc};
 use coral_spec::{
-    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthEndpointUrls,
+    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec,
+    ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthEndpointUrls,
     ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
     ManifestOAuthScopeDelimiter,
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
@@ -84,10 +85,12 @@ pub(crate) struct OAuthCredentialMaterial {
 
 struct OAuthSessionCommon {
     input_key: String,
-    oauth: ManifestOAuthCredentialSpec,
     endpoints: ManifestOAuthEndpointUrls,
     client_id: String,
     client_secret: Option<String>,
+    client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
+    dynamic_client_registration: Option<DynamicClientRegistrationMaterial>,
+    resource: Option<String>,
 }
 
 struct AuthorizationCodeSessionConfig {
@@ -143,12 +146,43 @@ struct TokenResponse {
     expires_at: Option<DateTime<Utc>>,
 }
 
+struct ResolvedOAuthClient {
+    client_id: String,
+    client_secret: Option<String>,
+    client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
+    dynamic_client_registration: Option<DynamicClientRegistrationMaterial>,
+}
+
+struct DynamicClientRegistrationMaterial {
+    registration_client_uri: Option<String>,
+    registration_access_token: Option<String>,
+    client_id_issued_at: Option<String>,
+    client_secret_expires_at: Option<String>,
+}
+
+struct DynamicClientRegistrationResponse {
+    client_id: String,
+    client_secret: Option<String>,
+    client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
+    material: DynamicClientRegistrationMaterial,
+}
+
 struct OAuthRefreshConfig {
     token_url: String,
     client_id: String,
     client_secret: Option<String>,
     client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
     refresh_token: String,
+    resource: Option<String>,
+}
+
+struct OAuthAuthorizationRequest<'a> {
+    input_key: String,
+    oauth: ManifestOAuthCredentialSpec,
+    endpoints: ManifestOAuthEndpointUrls,
+    source_inputs: &'a BTreeMap<String, String>,
+    credential_inputs: BTreeMap<String, String>,
+    resource: Option<String>,
 }
 
 impl OAuthCredentialService {
@@ -176,29 +210,34 @@ impl OAuthCredentialService {
     {
         let oauth = request.oauth.clone();
         let endpoints = oauth_endpoint_urls(&oauth, request.source_inputs)?;
+        let resource = oauth_resource(&oauth, request.source_inputs)?;
         let credential_inputs = normalize_credential_inputs(request.credential_inputs)?;
         reject_unknown_credential_inputs(&oauth, &credential_inputs)?;
-        let client_id = resolve_client_id(&oauth, &credential_inputs)?;
-        let client_secret = resolve_client_secret(&oauth, &credential_inputs)?;
         match oauth.flow.kind {
             ManifestOAuthFlowKind::AuthorizationCode => {
                 self.authorize_authorization_code(
-                    request.input_key.to_string(),
-                    oauth,
-                    endpoints,
-                    client_id,
-                    client_secret,
+                    OAuthAuthorizationRequest {
+                        input_key: request.input_key.to_string(),
+                        oauth,
+                        endpoints,
+                        source_inputs: request.source_inputs,
+                        credential_inputs,
+                        resource,
+                    },
                     on_authorization,
                 )
                 .await
             }
             ManifestOAuthFlowKind::DeviceCode => {
                 self.authorize_device_code(
-                    request.input_key.to_string(),
-                    oauth,
-                    endpoints,
-                    client_id,
-                    client_secret,
+                    OAuthAuthorizationRequest {
+                        input_key: request.input_key.to_string(),
+                        oauth,
+                        endpoints,
+                        source_inputs: request.source_inputs,
+                        credential_inputs,
+                        resource,
+                    },
                     on_authorization,
                 )
                 .await
@@ -208,36 +247,51 @@ impl OAuthCredentialService {
 
     async fn authorize_authorization_code<F, Fut>(
         &self,
-        input_key: String,
-        oauth: ManifestOAuthCredentialSpec,
-        endpoints: ManifestOAuthEndpointUrls,
-        client_id: String,
-        client_secret: Option<String>,
+        request: OAuthAuthorizationRequest<'_>,
         on_authorization: F,
     ) -> Result<OAuthCredentialMaterial, AppError>
     where
         F: FnOnce(OAuthAuthorization) -> Fut,
         Fut: Future<Output = Result<(), AppError>>,
     {
+        let OAuthAuthorizationRequest {
+            input_key,
+            oauth,
+            endpoints,
+            source_inputs,
+            credential_inputs,
+            resource,
+        } = request;
         let (listener, callback_path, provider_redirect_uri) =
             bind_redirect_listener(&oauth).await?;
+        let client = resolve_oauth_client(
+            &self.http,
+            &oauth,
+            source_inputs,
+            &credential_inputs,
+            Some(&provider_redirect_uri),
+        )
+        .await?;
         let state = random_token();
         let code_verifier = pkce_code_verifier(&oauth);
         let authorization_url = build_authorization_url(
             &oauth,
             &endpoints,
             &provider_redirect_uri,
-            &client_id,
+            &client.client_id,
             &state,
             code_verifier.as_deref(),
+            resource.as_deref(),
         )?;
         let expires_at = Instant::now() + SESSION_TTL;
         let common = OAuthSessionCommon {
             input_key,
-            oauth,
             endpoints,
-            client_id,
-            client_secret,
+            client_id: client.client_id,
+            client_secret: client.client_secret,
+            client_secret_transport: client.client_secret_transport,
+            dynamic_client_registration: client.dynamic_client_registration,
+            resource,
         };
         let session = AuthorizationCodeSessionConfig {
             common,
@@ -265,12 +319,12 @@ impl OAuthCredentialService {
         credential_inputs: Vec<(String, String)>,
     ) -> Result<(), AppError> {
         let endpoints = oauth_endpoint_urls(oauth, source_inputs)?;
+        let _resource = oauth_resource(oauth, source_inputs)?;
         let credential_inputs = normalize_credential_inputs(credential_inputs)?;
         reject_unknown_credential_inputs(oauth, &credential_inputs)?;
-        let _client_id = resolve_client_id(oauth, &credential_inputs)?;
+        validate_oauth_client_inputs(oauth, &credential_inputs)?;
         match oauth.flow.kind {
             ManifestOAuthFlowKind::AuthorizationCode => {
-                let _client_secret = resolve_client_secret(oauth, &credential_inputs)?;
                 oauth
                     .redirect_bind_port()
                     .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -324,27 +378,30 @@ impl OAuthCredentialService {
 
     async fn authorize_device_code<F, Fut>(
         &self,
-        input_key: String,
-        oauth: ManifestOAuthCredentialSpec,
-        endpoints: ManifestOAuthEndpointUrls,
-        client_id: String,
-        client_secret: Option<String>,
+        request: OAuthAuthorizationRequest<'_>,
         on_authorization: F,
     ) -> Result<OAuthCredentialMaterial, AppError>
     where
         F: FnOnce(OAuthAuthorization) -> Fut,
         Fut: Future<Output = Result<(), AppError>>,
     {
-        if client_secret.is_some() {
-            return Err(AppError::InvalidInput(
-                "device_code OAuth methods must not declare a client secret".to_string(),
-            ));
-        }
+        let OAuthAuthorizationRequest {
+            input_key,
+            oauth,
+            endpoints,
+            source_inputs,
+            credential_inputs,
+            resource,
+        } = request;
+        let client =
+            resolve_oauth_client(&self.http, &oauth, source_inputs, &credential_inputs, None)
+                .await?;
         let device = request_device_code(
             &self.http,
             &oauth,
             &endpoints,
-            &client_id,
+            &client,
+            resource.as_deref(),
             DEVICE_CODE_REQUEST_TIMEOUT,
         )
         .await?;
@@ -358,10 +415,12 @@ impl OAuthCredentialService {
         let expires_in = device.expires_in;
         let common = OAuthSessionCommon {
             input_key,
-            oauth,
             endpoints,
-            client_id,
-            client_secret: None,
+            client_id: client.client_id,
+            client_secret: client.client_secret,
+            client_secret_transport: client.client_secret_transport,
+            dynamic_client_registration: client.dynamic_client_registration,
+            resource,
         };
         let session = DeviceCodeSessionConfig {
             common,
@@ -425,6 +484,15 @@ fn oauth_endpoint_urls(
         .map_err(|error| AppError::InvalidInput(error.to_string()))
 }
 
+fn oauth_resource(
+    oauth: &ManifestOAuthCredentialSpec,
+    source_inputs: &BTreeMap<String, String>,
+) -> Result<Option<String>, AppError> {
+    oauth
+        .resource(source_inputs)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))
+}
+
 fn normalize_credential_inputs(
     inputs: Vec<(String, String)>,
 ) -> Result<BTreeMap<String, String>, AppError> {
@@ -482,6 +550,11 @@ fn reject_unknown_credential_inputs(
     if let Some(secret) = oauth.client.secret.as_ref() {
         expected.insert(secret.input.as_str());
     }
+    if let Some(registration) = oauth.client.dynamic_registration.as_ref()
+        && let Some(input) = registration.initial_access_token_input.as_deref()
+    {
+        expected.insert(input);
+    }
     for key in inputs.keys() {
         if !expected.contains(key.as_str()) {
             return Err(AppError::InvalidInput(format!(
@@ -492,21 +565,58 @@ fn reject_unknown_credential_inputs(
     Ok(())
 }
 
-fn resolve_client_id(
+fn validate_oauth_client_inputs(
     oauth: &ManifestOAuthCredentialSpec,
     inputs: &BTreeMap<String, String>,
-) -> Result<String, AppError> {
+) -> Result<(), AppError> {
+    if maybe_resolve_client_id(oauth, inputs).is_some() {
+        let _client_secret = resolve_client_secret(oauth, inputs)?;
+        return Ok(());
+    }
+    if oauth.client.dynamic_registration.is_none() {
+        return Err(missing_client_id_error(oauth));
+    }
+    if let Some(registration) = oauth.client.dynamic_registration.as_ref()
+        && let Some(input) = registration.initial_access_token_input.as_deref()
+        && inputs.get(input).is_none_or(String::is_empty)
+    {
+        return Err(AppError::FailedPrecondition(format!(
+            "missing OAuth dynamic client registration initial access token input '{input}'"
+        )));
+    }
+    Ok(())
+}
+
+fn maybe_resolve_client_id(
+    oauth: &ManifestOAuthCredentialSpec,
+    inputs: &BTreeMap<String, String>,
+) -> Option<String> {
     if let Some(input_key) = oauth.client.id.input.as_deref()
         && let Some(value) = inputs.get(input_key)
         && !value.is_empty()
     {
-        return Ok(value.clone());
+        return Some(value.clone());
     }
-    if let Some(default) = oauth.client.id.default.as_deref()
-        && !default.is_empty()
-    {
-        return Ok(default.to_string());
+    oauth
+        .client
+        .id
+        .default
+        .as_deref()
+        .filter(|default| !default.is_empty())
+        .map(ToString::to_string)
+}
+
+fn resolve_client_id(
+    oauth: &ManifestOAuthCredentialSpec,
+    inputs: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    if let Some(client_id) = maybe_resolve_client_id(oauth, inputs) {
+        return Ok(client_id);
     }
+    Err(missing_client_id_error(oauth))
+}
+
+fn missing_client_id_error(oauth: &ManifestOAuthCredentialSpec) -> AppError {
     let detail = oauth
         .client
         .id
@@ -515,9 +625,7 @@ fn resolve_client_id(
         .map_or("client ID".to_string(), |input| {
             format!("client ID input '{input}'")
         });
-    Err(AppError::FailedPrecondition(format!(
-        "missing OAuth {detail}"
-    )))
+    AppError::FailedPrecondition(format!("missing OAuth {detail}"))
 }
 
 fn resolve_client_secret(
@@ -534,6 +642,41 @@ fn resolve_client_secret(
         )));
     };
     Ok(Some(value.clone()))
+}
+
+async fn resolve_oauth_client(
+    http: &reqwest::Client,
+    oauth: &ManifestOAuthCredentialSpec,
+    source_inputs: &BTreeMap<String, String>,
+    credential_inputs: &BTreeMap<String, String>,
+    redirect_uri: Option<&str>,
+) -> Result<ResolvedOAuthClient, AppError> {
+    if maybe_resolve_client_id(oauth, credential_inputs).is_some() {
+        return Ok(ResolvedOAuthClient {
+            client_id: resolve_client_id(oauth, credential_inputs)?,
+            client_secret: resolve_client_secret(oauth, credential_inputs)?,
+            client_secret_transport: oauth.client.secret.as_ref().map(|secret| secret.transport),
+            dynamic_client_registration: None,
+        });
+    }
+    let Some(registration) = oauth.client.dynamic_registration.as_ref() else {
+        return Err(missing_client_id_error(oauth));
+    };
+    let registered = register_dynamic_client(
+        http,
+        oauth,
+        registration,
+        source_inputs,
+        credential_inputs,
+        redirect_uri,
+    )
+    .await?;
+    Ok(ResolvedOAuthClient {
+        client_id: registered.client_id,
+        client_secret: registered.client_secret,
+        client_secret_transport: registered.client_secret_transport,
+        dynamic_client_registration: Some(registered.material),
+    })
 }
 
 async fn bind_redirect_listener(
@@ -593,6 +736,7 @@ fn build_authorization_url(
     client_id: &str,
     state: &str,
     code_verifier: Option<&str>,
+    resource: Option<&str>,
 ) -> Result<String, AppError> {
     let authorization_url = endpoints.authorization_url.as_deref().ok_or_else(|| {
         AppError::InvalidInput(
@@ -615,6 +759,9 @@ fn build_authorization_url(
                 &join_scope_values(scopes.scope.delimiter, &scopes.scope.values),
             );
         }
+        if let Some(resource) = resource {
+            query.append_pair("resource", resource);
+        }
         if let Some(verifier) = code_verifier {
             query
                 .append_pair("code_challenge", &pkce_challenge(verifier))
@@ -624,12 +771,219 @@ fn build_authorization_url(
     Ok(url.to_string())
 }
 
+async fn register_dynamic_client(
+    http: &reqwest::Client,
+    oauth: &ManifestOAuthCredentialSpec,
+    registration: &coral_spec::ManifestOAuthDynamicClientRegistrationSpec,
+    source_inputs: &BTreeMap<String, String>,
+    credential_inputs: &BTreeMap<String, String>,
+    redirect_uri: Option<&str>,
+) -> Result<DynamicClientRegistrationResponse, AppError> {
+    let registration_url = registration
+        .registration_url(source_inputs)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "client_name".to_string(),
+        json!(registration.client_name.as_deref().unwrap_or("Coral")),
+    );
+    payload.insert(
+        "application_type".to_string(),
+        json!(registration.application_type.label()),
+    );
+    payload.insert(
+        "token_endpoint_auth_method".to_string(),
+        json!(registration.token_endpoint_auth_method.label()),
+    );
+    match oauth.flow.kind {
+        ManifestOAuthFlowKind::AuthorizationCode => {
+            let redirect_uri = redirect_uri.ok_or_else(|| {
+                AppError::InvalidInput(
+                    "authorization_code OAuth dynamic client registration requires redirect_uri"
+                        .to_string(),
+                )
+            })?;
+            payload.insert("redirect_uris".to_string(), json!([redirect_uri]));
+            payload.insert(
+                "grant_types".to_string(),
+                json!(dynamic_client_registration_grant_types(
+                    "authorization_code",
+                    registration.request_refresh_token_grant
+                )),
+            );
+            payload.insert("response_types".to_string(), json!(["code"]));
+        }
+        ManifestOAuthFlowKind::DeviceCode => {
+            payload.insert(
+                "grant_types".to_string(),
+                json!(dynamic_client_registration_grant_types(
+                    "urn:ietf:params:oauth:grant-type:device_code",
+                    registration.request_refresh_token_grant
+                )),
+            );
+        }
+    }
+    if let Some(scopes) = oauth.scopes.as_ref() {
+        payload.insert(
+            "scope".to_string(),
+            json!(join_dynamic_client_registration_scope_values(
+                &scopes.scope.values
+            )),
+        );
+    }
+
+    let mut request = http
+        .post(registration_url)
+        .header(ACCEPT, "application/json")
+        .json(&payload);
+    if let Some(input) = registration.initial_access_token_input.as_deref() {
+        let token = credential_inputs
+            .get(input)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "missing OAuth dynamic client registration initial access token input '{input}'"
+                ))
+            })?;
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await.map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "OAuth dynamic client registration request failed: {error}"
+        ))
+    })?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "OAuth dynamic client registration response failed: {error}"
+        ))
+    })?;
+    if !status.is_success() {
+        return Err(AppError::FailedPrecondition(format!(
+            "OAuth dynamic client registration failed with HTTP {status}: {}",
+            truncate_detail(&body)
+        )));
+    }
+    parse_dynamic_client_registration_response(&body, registration.token_endpoint_auth_method)
+}
+
+fn dynamic_client_registration_grant_types(
+    primary_grant: &'static str,
+    request_refresh_token_grant: bool,
+) -> Vec<&'static str> {
+    let mut grant_types = vec![primary_grant];
+    if request_refresh_token_grant {
+        grant_types.push("refresh_token");
+    }
+    grant_types
+}
+
+fn parse_dynamic_client_registration_response(
+    body: &str,
+    requested_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod,
+) -> Result<DynamicClientRegistrationResponse, AppError> {
+    let body: Value = serde_json::from_str(body).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "OAuth dynamic client registration response was not JSON: {error}"
+        ))
+    })?;
+    if let Some(message) = oauth_error_message(&body) {
+        return Err(AppError::FailedPrecondition(format!(
+            "OAuth dynamic client registration returned error: {message}"
+        )));
+    }
+    let client_id = json_string_field(&body, "client_id")?.to_string();
+    let client_secret = body
+        .get("client_secret")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let response_auth_method =
+        parse_dynamic_client_registration_auth_method(&body, requested_auth_method)?;
+    let client_secret = match response_auth_method {
+        ManifestOAuthDynamicClientRegistrationAuthMethod::None => None,
+        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic
+        | ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost => client_secret,
+    };
+    let client_secret_transport =
+        dynamic_client_auth_method_transport(response_auth_method, client_secret.as_deref())?;
+    Ok(DynamicClientRegistrationResponse {
+        client_id,
+        client_secret,
+        client_secret_transport,
+        material: DynamicClientRegistrationMaterial {
+            registration_client_uri: optional_json_string_like_field(
+                &body,
+                "registration_client_uri",
+            ),
+            registration_access_token: optional_json_string_like_field(
+                &body,
+                "registration_access_token",
+            ),
+            client_id_issued_at: optional_json_string_like_field(&body, "client_id_issued_at"),
+            client_secret_expires_at: optional_json_string_like_field(
+                &body,
+                "client_secret_expires_at",
+            ),
+        },
+    })
+}
+
+fn parse_dynamic_client_registration_auth_method(
+    body: &Value,
+    requested_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod,
+) -> Result<ManifestOAuthDynamicClientRegistrationAuthMethod, AppError> {
+    let Some(value) = body.get("token_endpoint_auth_method") else {
+        return Ok(requested_auth_method);
+    };
+    let value = value.as_str().ok_or_else(|| {
+        AppError::FailedPrecondition(
+            "OAuth dynamic client registration response token_endpoint_auth_method was not a string"
+                .to_string(),
+        )
+    })?;
+    ManifestOAuthDynamicClientRegistrationAuthMethod::from_label(value).ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "OAuth dynamic client registration response token_endpoint_auth_method is unsupported: {value}"
+        ))
+    })
+}
+
+fn dynamic_client_auth_method_transport(
+    method: ManifestOAuthDynamicClientRegistrationAuthMethod,
+    client_secret: Option<&str>,
+) -> Result<Option<ManifestOAuthClientSecretTransport>, AppError> {
+    match method {
+        ManifestOAuthDynamicClientRegistrationAuthMethod::None => Ok(None),
+        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic
+            if client_secret.is_some() =>
+        {
+            Ok(Some(ManifestOAuthClientSecretTransport::BasicAuth))
+        }
+        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost
+            if client_secret.is_some() =>
+        {
+            Ok(Some(ManifestOAuthClientSecretTransport::RequestBody))
+        }
+        ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic
+        | ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost => {
+            Err(AppError::FailedPrecondition(
+                "OAuth dynamic client registration selected client-secret authentication but did not return client_secret".to_string(),
+            ))
+        }
+    }
+}
+
 fn join_scope_values(delimiter: ManifestOAuthScopeDelimiter, values: &[String]) -> String {
     let separator = match delimiter {
         ManifestOAuthScopeDelimiter::Space => " ",
         ManifestOAuthScopeDelimiter::Comma => ",",
     };
     values.join(separator)
+}
+
+fn join_dynamic_client_registration_scope_values(values: &[String]) -> String {
+    values.join(" ")
 }
 
 fn random_token() -> String {
@@ -866,7 +1220,8 @@ async fn request_device_code(
     http: &reqwest::Client,
     oauth: &ManifestOAuthCredentialSpec,
     endpoints: &ManifestOAuthEndpointUrls,
-    client_id: &str,
+    client: &ResolvedOAuthClient,
+    resource: Option<&str>,
     timeout: Duration,
 ) -> Result<DeviceAuthorizationResponse, AppError> {
     let device_authorization_url =
@@ -878,23 +1233,31 @@ async fn request_device_code(
                     "device_code OAuth method is missing device_authorization_url".to_string(),
                 )
             })?;
-    let mut form = vec![("client_id", client_id.to_string())];
+    let mut form = Vec::new();
     if let Some(scopes) = oauth.scopes.as_ref() {
         form.push((
             "scope",
             join_scope_values(scopes.scope.delimiter, &scopes.scope.values),
         ));
     }
+    if let Some(resource) = resource {
+        form.push(("resource", resource.to_string()));
+    }
     let request = async {
-        let response = http
+        let request = http
             .post(device_authorization_url)
-            .header(ACCEPT, "application/json")
-            .form(&form)
-            .send()
-            .await
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!("OAuth device code request failed: {error}"))
-            })?;
+            .header(ACCEPT, "application/json");
+        // RFC 8628 applies token-endpoint client-auth rules to device authorization requests.
+        let request = apply_oauth_client_auth(
+            request,
+            &mut form,
+            &client.client_id,
+            client.client_secret.as_deref(),
+            client.client_secret_transport,
+        )?;
+        let response = request.form(&form).send().await.map_err(|error| {
+            AppError::FailedPrecondition(format!("OAuth device code request failed: {error}"))
+        })?;
         let status = response.status();
         let body = response.text().await.map_err(|error| {
             AppError::FailedPrecondition(format!("OAuth device code response failed: {error}"))
@@ -964,23 +1327,29 @@ async fn poll_device_token(
     let deadline = Instant::now() + session.expires_in;
     let mut interval = session.interval;
     loop {
-        let form = vec![
-            ("client_id", session.common.client_id.clone()),
+        let mut form = vec![
             ("device_code", session.device_code.clone()),
             (
                 "grant_type",
                 "urn:ietf:params:oauth:grant-type:device_code".to_string(),
             ),
         ];
-        let response = http
+        if let Some(resource) = session.common.resource.as_deref() {
+            form.push(("resource", resource.to_string()));
+        }
+        let request = http
             .post(&session.common.endpoints.token_url)
-            .header(ACCEPT, "application/json")
-            .form(&form)
-            .send()
-            .await
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!("OAuth device token request failed: {error}"))
-            })?;
+            .header(ACCEPT, "application/json");
+        let request = apply_oauth_client_auth(
+            request,
+            &mut form,
+            &session.common.client_id,
+            session.common.client_secret.as_deref(),
+            session.common.client_secret_transport,
+        )?;
+        let response = request.form(&form).send().await.map_err(|error| {
+            AppError::FailedPrecondition(format!("OAuth device token request failed: {error}"))
+        })?;
         let status = response.status();
         let body = response.text().await.map_err(|error| {
             AppError::FailedPrecondition(format!("OAuth device token response failed: {error}"))
@@ -1043,21 +1412,18 @@ async fn exchange_authorization_code(
         ("code", code.to_string()),
         ("redirect_uri", session.provider_redirect_uri.clone()),
     ];
+    if let Some(resource) = session.common.resource.as_deref() {
+        form.push(("resource", resource.to_string()));
+    }
     let mut request = http
         .post(&session.common.endpoints.token_url)
         .header(ACCEPT, "application/json");
-    request = apply_token_request_client_auth(
+    request = apply_oauth_client_auth(
         request,
         &mut form,
         &session.common.client_id,
         session.common.client_secret.as_deref(),
-        session
-            .common
-            .oauth
-            .client
-            .secret
-            .as_ref()
-            .map(|secret| secret.transport),
+        session.common.client_secret_transport,
     )?;
     if let Some(verifier) = session.code_verifier.as_deref() {
         form.push(("code_verifier", verifier.to_string()));
@@ -1073,10 +1439,13 @@ async fn refresh_access_token(
         ("grant_type", "refresh_token".to_string()),
         ("refresh_token", refresh.refresh_token.clone()),
     ];
+    if let Some(resource) = refresh.resource.as_deref() {
+        form.push(("resource", resource.to_string()));
+    }
     let request = http
         .post(&refresh.token_url)
         .header(ACCEPT, "application/json");
-    let request = apply_token_request_client_auth(
+    let request = apply_oauth_client_auth(
         request,
         &mut form,
         &refresh.client_id,
@@ -1086,7 +1455,7 @@ async fn refresh_access_token(
     send_token_request(request, form, "OAuth token refresh").await
 }
 
-fn apply_token_request_client_auth(
+fn apply_oauth_client_auth(
     request: reqwest::RequestBuilder,
     form: &mut Vec<(&'static str, String)>,
     client_id: &str,
@@ -1213,6 +1582,17 @@ fn optional_json_u64_field(body: &Value, field: &str) -> Option<u64> {
         .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
 }
 
+fn optional_json_string_like_field(body: &Value, field: &str) -> Option<String> {
+    let value = body.get(field)?;
+    if let Some(value) = value.as_str().filter(|value| !value.is_empty()) {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.as_u64() {
+        return Some(value.to_string());
+    }
+    None
+}
+
 fn oauth_error_message(body: &Value) -> Option<String> {
     let error = body.get("error").and_then(Value::as_str)?;
     let description = body
@@ -1253,14 +1633,44 @@ fn oauth_credential_material(
         format!("{prefix}token_url"),
         session.endpoints.token_url.clone(),
     );
-    if let Some(secret) = session.oauth.client.secret.as_ref() {
+    if let Some(resource) = session.resource.as_deref() {
+        internal_metadata.insert(format!("{prefix}resource"), resource.to_string());
+    }
+    if let Some(transport) = session.client_secret_transport {
         internal_metadata.insert(
             format!("{prefix}client_secret_transport"),
-            secret.transport.label().to_string(),
+            transport.label().to_string(),
         );
     }
     if let Some(client_secret) = session.client_secret.as_deref() {
         internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
+    }
+    if let Some(registration) = session.dynamic_client_registration.as_ref() {
+        internal_metadata.insert(
+            format!("{prefix}dynamic_client_registration"),
+            "true".to_string(),
+        );
+        if let Some(value) = registration.registration_client_uri.as_deref() {
+            internal_metadata.insert(
+                format!("{prefix}registration_client_uri"),
+                value.to_string(),
+            );
+        }
+        if let Some(value) = registration.registration_access_token.as_deref() {
+            internal_metadata.insert(
+                format!("{prefix}registration_access_token"),
+                value.to_string(),
+            );
+        }
+        if let Some(value) = registration.client_id_issued_at.as_deref() {
+            internal_metadata.insert(format!("{prefix}client_id_issued_at"), value.to_string());
+        }
+        if let Some(value) = registration.client_secret_expires_at.as_deref() {
+            internal_metadata.insert(
+                format!("{prefix}client_secret_expires_at"),
+                value.to_string(),
+            );
+        }
     }
     OAuthCredentialMaterial {
         input_key: session.input_key.clone(),
@@ -1337,6 +1747,11 @@ fn oauth_refresh_config(
         .filter(|value| !value.is_empty())
         .cloned()
         .unwrap_or_else(|| oauth.token_url.clone());
+    let resource = material
+        .get(&format!("{metadata_prefix}resource"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| oauth.resource.clone());
     let client_secret_transport = material
         .get(&format!("{metadata_prefix}client_secret_transport"))
         .map(|value| {
@@ -1363,6 +1778,7 @@ fn oauth_refresh_config(
         client_secret,
         client_secret_transport,
         refresh_token,
+        resource,
     }))
 }
 
@@ -1450,17 +1866,23 @@ mod tests {
 
     use super::{
         AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthSessionCommon,
-        RefreshOAuthCredentialRequest, StartOAuthCredentialRequest, basic_client_authorization,
-        join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
-        parse_token_response, pkce_challenge, receive_callback, request_device_code,
+        RefreshOAuthCredentialRequest, ResolvedOAuthClient, StartOAuthCredentialRequest,
+        basic_client_authorization, dynamic_client_registration_grant_types,
+        join_dynamic_client_registration_scope_values, join_scope_values,
+        material_key_belongs_to_input, oauth_metadata_prefix,
+        parse_dynamic_client_registration_response, parse_token_response, pkce_challenge,
+        receive_callback, request_device_code,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
         ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
-        ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
-        ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec,
-        ManifestOAuthScopesSpec,
+        ManifestOAuthDynamicClientRegistrationApplicationType,
+        ManifestOAuthDynamicClientRegistrationAuthMethod,
+        ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
+        ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+        ManifestOAuthScopeSpec, ManifestOAuthScopesSpec,
     };
+    use serde_json::Value;
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
     use tokio::{io::AsyncReadExt as _, io::AsyncWriteExt as _};
@@ -1478,6 +1900,27 @@ mod tests {
         assert_eq!(
             join_scope_values(ManifestOAuthScopeDelimiter::Comma, &values),
             "repo,read:org"
+        );
+    }
+
+    #[test]
+    fn dynamic_client_registration_scope_metadata_uses_space_delimiter() {
+        let values = vec!["repo".to_string(), "read:org".to_string()];
+        assert_eq!(
+            join_dynamic_client_registration_scope_values(&values),
+            "repo read:org"
+        );
+    }
+
+    #[test]
+    fn dynamic_client_registration_grants_request_refresh_only_when_configured() {
+        assert_eq!(
+            dynamic_client_registration_grant_types("authorization_code", false),
+            vec!["authorization_code"]
+        );
+        assert_eq!(
+            dynamic_client_registration_grant_types("authorization_code", true),
+            vec!["authorization_code", "refresh_token"]
         );
     }
 
@@ -1516,6 +1959,23 @@ mod tests {
         assert!(token.expires_at.is_none());
     }
 
+    #[test]
+    fn dynamic_client_registration_response_rejects_unsupported_auth_method() {
+        let Err(error) = parse_dynamic_client_registration_response(
+            r#"{"client_id":"registered-client","token_endpoint_auth_method":"private_key_jwt"}"#,
+            ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+        ) else {
+            panic!("unsupported DCR auth method should fail");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("token_endpoint_auth_method is unsupported: private_key_jwt"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn expired_oauth_material_refreshes_access_token() {
         let fixture = OAuthFixture::new(Some(
@@ -1531,6 +1991,7 @@ mod tests {
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let prefix = oauth_metadata_prefix("API_TOKEN");
@@ -1597,6 +2058,7 @@ mod tests {
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let prefix = oauth_metadata_prefix("API_TOKEN");
@@ -1641,6 +2103,7 @@ mod tests {
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let prefix = oauth_metadata_prefix("API_TOKEN");
@@ -1697,6 +2160,7 @@ mod tests {
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let prefix = oauth_metadata_prefix("API_TOKEN");
@@ -1809,6 +2273,7 @@ mod tests {
                     input: Some("OAUTH_CLIENT_ID".to_string()),
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let service = OAuthCredentialService::new();
@@ -1879,26 +2344,127 @@ mod tests {
         assert!(captured.form.contains_key("code_verifier"));
         assert!(!captured.form.contains_key("client_secret"));
         assert!(captured.authorization.is_none());
+        let prefix = oauth_metadata_prefix("API_TOKEN");
         assert_eq!(
             completed
                 .internal_metadata
-                .get(&format!(
-                    "{}refresh_token",
-                    oauth_metadata_prefix("API_TOKEN")
-                ))
+                .get(&format!("{prefix}refresh_token"))
                 .map(String::as_str),
             Some("refresh-token")
         );
         assert_eq!(
             completed
                 .internal_metadata
-                .get(&format!("{}client_id", oauth_metadata_prefix("API_TOKEN")))
+                .get(&format!("{prefix}client_id"))
                 .map(String::as_str),
             Some("override-client")
         );
         assert_eq!(
             completed.safe_metadata.get("scope").map(String::as_str),
             Some("repo read:org")
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_client_registration_runs_before_authorization_code_session() {
+        let registration_fixture = DynamicRegistrationFixture::new(
+            r#"{"client_id":"registered-client","client_secret":"unused-public-secret","registration_client_uri":"https://provider.example.com/register/registered-client","registration_access_token":"registration-access","token_endpoint_auth_method":"none","client_id_issued_at":1710000000}"#,
+        );
+        let token_fixture = OAuthFixture::new(None);
+        let redirect_port = free_loopback_port();
+        let mut oauth = dynamic_registration_oauth_spec(
+            redirect_port,
+            &token_fixture.token_url,
+            &registration_fixture.registration_url,
+        );
+        oauth.scopes.as_mut().expect("scopes").scope.delimiter = ManifestOAuthScopeDelimiter::Comma;
+        let service = OAuthCredentialService::new();
+
+        let (authorization_tx, authorization_rx) = oneshot::channel();
+        let authorize = service.authorize(
+            StartOAuthCredentialRequest {
+                input_key: "MCP_ACCESS_TOKEN",
+                oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
+                credential_inputs: vec![(
+                    "OAUTH_INITIAL_ACCESS_TOKEN".to_string(),
+                    "initial-access".to_string(),
+                )],
+            },
+            move |authorization| async move {
+                authorization_tx
+                    .send(authorization.authorization_url)
+                    .map_err(|_authorization_url| {
+                        crate::bootstrap::AppError::FailedPrecondition(
+                            "authorization receiver closed".to_string(),
+                        )
+                    })
+            },
+        );
+        let callback = async {
+            let authorization_url = authorization_rx.await.expect("authorization url");
+            let authorization_url = Url::parse(&authorization_url).expect("authorization url");
+            let query = query_pairs(&authorization_url);
+            assert_eq!(
+                query.get("client_id").map(String::as_str),
+                Some("registered-client")
+            );
+            assert_eq!(
+                query.get("resource").map(String::as_str),
+                Some("https://mcp.example.com/mcp")
+            );
+            assert_eq!(
+                query.get("scope").map(String::as_str),
+                Some("repo,read:org")
+            );
+            callback(authorization_url.as_str()).await;
+        };
+
+        let (completed, ()) = tokio::join!(authorize, callback);
+        let completed = completed.expect("authorize oauth");
+        let registration = registration_fixture
+            .server
+            .await
+            .expect("registration server");
+        let token = token_fixture.token_server.await.expect("token server");
+
+        assert_dynamic_registration_request(&registration, redirect_port);
+        assert_eq!(
+            token.form.get("client_id").map(String::as_str),
+            Some("registered-client")
+        );
+        assert_eq!(
+            token.form.get("resource").map(String::as_str),
+            Some("https://mcp.example.com/mcp")
+        );
+        assert!(!token.form.contains_key("client_secret"));
+        let prefix = oauth_metadata_prefix("MCP_ACCESS_TOKEN");
+        assert_eq!(completed.access_token, "access-token");
+        assert_eq!(
+            completed
+                .internal_metadata
+                .get(&format!("{prefix}client_id"))
+                .map(String::as_str),
+            Some("registered-client")
+        );
+        assert_eq!(
+            completed
+                .internal_metadata
+                .get(&format!("{prefix}resource"))
+                .map(String::as_str),
+            Some("https://mcp.example.com/mcp")
+        );
+        assert_eq!(
+            completed
+                .internal_metadata
+                .get(&format!("{prefix}registration_access_token"))
+                .map(String::as_str),
+            Some("registration-access")
+        );
+        assert!(
+            !completed
+                .internal_metadata
+                .contains_key(&format!("{prefix}client_secret"))
         );
     }
 
@@ -1973,6 +2539,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dynamic_registration_device_code_session_authenticates_confidential_client() {
+        let registration_fixture = DynamicRegistrationFixture::new(
+            r#"{"client_id":"registered-device-client","client_secret":"registered-secret","token_endpoint_auth_method":"client_secret_basic"}"#,
+        );
+        let fixture = DeviceOAuthFixture::new();
+        let mut oauth = device_oauth_spec(&fixture.device_url, &fixture.token_url);
+        oauth.client.dynamic_registration = Some(ManifestOAuthDynamicClientRegistrationSpec {
+            registration_url: registration_fixture.registration_url.clone(),
+            client_name: Some("Coral MCP".to_string()),
+            initial_access_token_input: None,
+            token_endpoint_auth_method:
+                ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic,
+            application_type: ManifestOAuthDynamicClientRegistrationApplicationType::Native,
+            request_refresh_token_grant: true,
+        });
+        let service = OAuthCredentialService::new();
+
+        let (authorization_tx, authorization_rx) = oneshot::channel();
+        let authorize = service.authorize(
+            StartOAuthCredentialRequest {
+                input_key: "API_TOKEN",
+                oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
+                credential_inputs: Vec::new(),
+            },
+            move |authorization| async move {
+                authorization_tx.send(authorization).map_err(|_error| {
+                    crate::bootstrap::AppError::FailedPrecondition(
+                        "authorization receiver closed".to_string(),
+                    )
+                })
+            },
+        );
+        let authorization = async {
+            let authorization = authorization_rx.await.expect("authorization");
+            assert_eq!(authorization.user_code.as_deref(), Some("ABCD-1234"));
+            assert_eq!(
+                authorization.verification_uri.as_deref(),
+                Some("https://github.com/login/device")
+            );
+        };
+
+        let (completed, ()) = tokio::join!(authorize, authorization);
+        let completed = completed.expect("authorize oauth");
+        let registration = registration_fixture
+            .server
+            .await
+            .expect("registration server");
+        let captured = fixture.server.await.expect("device server");
+        let expected_authorization =
+            basic_client_authorization("registered-device-client", "registered-secret");
+
+        let registration_body: Value =
+            serde_json::from_str(&registration.body).expect("registration request body");
+        assert_eq!(
+            registration_body["grant_types"][0],
+            "urn:ietf:params:oauth:grant-type:device_code"
+        );
+        assert_eq!(registration_body["grant_types"][1], "refresh_token");
+        assert_eq!(
+            registration_body["token_endpoint_auth_method"],
+            "client_secret_basic"
+        );
+        assert_eq!(
+            captured.device.authorization.as_deref(),
+            Some(expected_authorization.as_str())
+        );
+        assert!(!captured.device.form.contains_key("client_id"));
+        assert_eq!(
+            captured.token.authorization.as_deref(),
+            Some(expected_authorization.as_str())
+        );
+        assert!(!captured.device.form.contains_key("client_secret"));
+        assert!(!captured.token.form.contains_key("client_secret"));
+        assert_eq!(
+            completed
+                .internal_metadata
+                .get(&format!(
+                    "{}client_secret",
+                    oauth_metadata_prefix("API_TOKEN")
+                ))
+                .map(String::as_str),
+            Some("registered-secret")
+        );
+    }
+
+    #[tokio::test]
     async fn device_code_oauth_session_renders_endpoint_templates_from_source_inputs() {
         let fixture = DeviceOAuthFixture::new();
         let device_url_template = fixture
@@ -2034,12 +2687,19 @@ mod tests {
         let endpoints = oauth
             .endpoint_urls(&EMPTY_SOURCE_INPUTS)
             .expect("render endpoints");
+        let client = ResolvedOAuthClient {
+            client_id: "device-client".to_string(),
+            client_secret: None,
+            client_secret_transport: None,
+            dynamic_client_registration: None,
+        };
 
         let result = request_device_code(
             &reqwest::Client::new(),
             &oauth,
             &endpoints,
-            "device-client",
+            &client,
+            None,
             std::time::Duration::from_millis(50),
         )
         .await;
@@ -2138,6 +2798,7 @@ mod tests {
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let endpoints = oauth
@@ -2146,10 +2807,12 @@ mod tests {
         let session = AuthorizationCodeSessionConfig {
             common: OAuthSessionCommon {
                 input_key: "API_TOKEN".to_string(),
-                oauth,
                 endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
+                client_secret_transport: None,
+                dynamic_client_registration: None,
+                resource: None,
             },
             state: "expected-state".to_string(),
             code_verifier: None,
@@ -2205,6 +2868,7 @@ mod tests {
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let endpoints = oauth
@@ -2213,10 +2877,12 @@ mod tests {
         let session = AuthorizationCodeSessionConfig {
             common: OAuthSessionCommon {
                 input_key: "API_TOKEN".to_string(),
-                oauth,
                 endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
+                client_secret_transport: None,
+                dynamic_client_registration: None,
+                resource: None,
             },
             state: "expected-state".to_string(),
             code_verifier: None,
@@ -2318,6 +2984,7 @@ mod tests {
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let service = OAuthCredentialService::new();
@@ -2378,6 +3045,7 @@ mod tests {
                     input: None,
                 },
                 secret: None,
+                dynamic_registration: None,
             },
         );
         let service = OAuthCredentialService::new();
@@ -2453,6 +3121,62 @@ mod tests {
         )
     }
 
+    fn dynamic_registration_oauth_spec(
+        redirect_port: u16,
+        token_url: &str,
+        registration_url: &str,
+    ) -> ManifestOAuthCredentialSpec {
+        let mut oauth = oauth_spec(
+            token_url,
+            redirect_port,
+            ManifestOAuthPkceMode::Required,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: None,
+                    input: Some("OAUTH_CLIENT_ID".to_string()),
+                },
+                secret: None,
+                dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                    registration_url: registration_url.to_string(),
+                    client_name: Some("Coral MCP".to_string()),
+                    initial_access_token_input: Some("OAUTH_INITIAL_ACCESS_TOKEN".to_string()),
+                    token_endpoint_auth_method:
+                        ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                    application_type: ManifestOAuthDynamicClientRegistrationApplicationType::Native,
+                    request_refresh_token_grant: true,
+                }),
+            },
+        );
+        oauth.resource = Some("https://mcp.example.com/mcp".to_string());
+        oauth
+    }
+
+    fn assert_dynamic_registration_request(
+        registration: &CapturedTokenRequest,
+        redirect_port: u16,
+    ) {
+        assert_eq!(
+            registration.authorization.as_deref(),
+            Some("Bearer initial-access")
+        );
+        assert_eq!(
+            registration.headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        let body: Value =
+            serde_json::from_str(&registration.body).expect("registration request body");
+        assert_eq!(body["client_name"], "Coral MCP");
+        assert_eq!(body["application_type"], "native");
+        assert_eq!(body["token_endpoint_auth_method"], "none");
+        assert_eq!(body["grant_types"][0], "authorization_code");
+        assert_eq!(body["grant_types"][1], "refresh_token");
+        assert_eq!(body["scope"], "repo read:org");
+        assert_eq!(
+            body["redirect_uris"][0],
+            format!("http://127.0.0.1:{redirect_port}/oauth/callback")
+        );
+    }
+
     fn oauth_spec_with_redirect_uri(
         token_url: &str,
         redirect_uri: &str,
@@ -2465,6 +3189,7 @@ mod tests {
                 kind: ManifestOAuthFlowKind::AuthorizationCode,
                 pkce,
             },
+            resource: None,
             redirect_uri: Some(redirect_uri.to_string()),
             redirect_uri_port_mode,
             authorization_url: Some("https://provider.example.com/oauth/authorize".to_string()),
@@ -2486,6 +3211,7 @@ mod tests {
                 kind: ManifestOAuthFlowKind::DeviceCode,
                 pkce: ManifestOAuthPkceMode::Disabled,
             },
+            resource: None,
             redirect_uri: None,
             redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
             authorization_url: None,
@@ -2497,6 +3223,7 @@ mod tests {
                     input: Some("OAUTH_CLIENT_ID".to_string()),
                 },
                 secret: None,
+                dynamic_registration: None,
             },
             scopes: Some(ManifestOAuthScopesSpec {
                 scope: ManifestOAuthScopeSpec {
@@ -2519,6 +3246,7 @@ mod tests {
                 input: "OAUTH_CLIENT_SECRET".to_string(),
                 transport,
             }),
+            dynamic_registration: None,
         }
     }
 
@@ -2568,6 +3296,31 @@ mod tests {
         }
     }
 
+    struct DynamicRegistrationFixture {
+        registration_url: String,
+        server: JoinHandle<CapturedTokenRequest>,
+    }
+
+    impl DynamicRegistrationFixture {
+        fn new(response_body: &'static str) -> Self {
+            let listener = StdTcpListener::bind("127.0.0.1:0").expect("registration listener");
+            let registration_url = format!(
+                "http://{}/register",
+                listener.local_addr().expect("registration addr")
+            );
+            let server = tokio::task::spawn_blocking(move || {
+                let (mut stream, _) = listener.accept().expect("accept registration request");
+                let request = read_http_request(&mut stream);
+                write_json_response(&mut stream, response_body);
+                request
+            });
+            Self {
+                registration_url,
+                server,
+            }
+        }
+    }
+
     struct DeviceOAuthFixture {
         device_url: String,
         token_url: String,
@@ -2608,6 +3361,8 @@ mod tests {
 
     struct CapturedTokenRequest {
         authorization: Option<String>,
+        headers: BTreeMap<String, String>,
+        body: String,
         form: BTreeMap<String, String>,
     }
 
@@ -2649,6 +3404,13 @@ mod tests {
         }
         let raw = String::from_utf8_lossy(&buffer);
         let (headers, body) = raw.split_once("\r\n\r\n").expect("split request");
+        let parsed_headers = headers
+            .lines()
+            .filter_map(|line| {
+                let (name, value) = line.split_once(": ")?;
+                Some((name.to_ascii_lowercase(), value.to_string()))
+            })
+            .collect();
         let authorization = headers.lines().find_map(|line| {
             line.strip_prefix("authorization: ")
                 .or_else(|| line.strip_prefix("Authorization: "))
@@ -2659,6 +3421,8 @@ mod tests {
             .collect();
         CapturedTokenRequest {
             authorization,
+            headers: parsed_headers,
+            body: body.to_string(),
             form,
         }
     }

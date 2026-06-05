@@ -1,6 +1,6 @@
 # ClickHouse Cloud MCP Connector
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 **Source:** ClickHouse Cloud remote MCP server
 **Backend:** MCP (Streamable HTTP, native)
 **Server URL:** `https://mcp.clickhouse.cloud/mcp`
@@ -13,8 +13,8 @@ against any service in your organization.
 ## Setup
 
 Coral talks to `mcp.clickhouse.cloud` directly over the MCP Streamable HTTP
-transport and drives the OAuth flow itself — no `mcp-remote` proxy and no
-manual token handling required.
+transport and drives the OAuth flow itself — no `mcp-remote` proxy, OAuth app
+setup, or manual token handling required.
 
 ### Register the source
 
@@ -23,10 +23,10 @@ coral source add --file sources/community/clickhouse_cloud/manifest.yaml --inter
 ```
 
 When prompted for `CLICKHOUSE_ACCESS_TOKEN`, choose **Connect with ClickHouse
-Cloud**. Coral binds a loopback callback on port 53683, opens your browser
-to ClickHouse's authorization page, exchanges the resulting code for an
-access token, and stores it as the source's secret. The catalog prints
-immediately after.
+Cloud**. Coral dynamically registers a local OAuth client with ClickHouse,
+binds a loopback callback on a free port, opens your browser to ClickHouse's
+authorization page, exchanges the resulting code for an access token, and
+stores it as the source's secret. The catalog prints immediately after.
 
 ### Verify
 
@@ -38,9 +38,9 @@ You should see your accessible ClickHouse Cloud organizations.
 
 ### Re-authenticating
 
-Access tokens expire after one hour. Automatic refresh is on the MCP-HTTP
-follow-up plan; until then, when queries start failing with
-`MCP_AUTH_REQUIRED`, re-run the same `coral source add` command above to
+Access tokens may expire. When the token response includes refresh metadata,
+Coral refreshes the access token before MCP requests. If queries start failing
+with `MCP_AUTH_REQUIRED`, re-run the same `coral source add` command above to
 mint a fresh access token. The browser may complete the flow without
 re-prompting if the session at ClickHouse is still valid.
 
