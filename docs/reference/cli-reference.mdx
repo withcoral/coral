@@ -97,7 +97,7 @@ GITHUB_TOKEN=ghp_... coral source add github
 Before installing or updating credentials, Coral prints the outbound network
 hosts declared by the source. Host values are resolved with the variables you
 provide, so a self-hosted base URL such as
-`GITHUB_API_BASE=https://github.example.com/api/v3` is shown before setup
+`GITHUB_API_BASE=https://github.example.com/api/v3` is shown before installation
 continues. In interactive mode, Coral asks you to confirm those hosts before
 collecting secrets or starting OAuth.
 
@@ -120,11 +120,7 @@ environment bypasses the retrieval choice.
 coral source add --interactive github
 ```
 
-If the source is already installed, running this command again replaces its
-stored credentials with the new values you provide. After setup, it prints the
-discovered tables and runs any optional top-level `test_queries` declared in the
-source spec to validate the connection. Any validation issue is reported as a
-warning here so the source remains installed and re-runnable.
+If the source is already installed, running this command again replaces its stored credentials with the new values you provide. After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
 
 Sources use OS credential storage by default when Coral can write, read, and
 delete a keychain probe item. If the keychain is unavailable in `auto` mode,
@@ -135,7 +131,7 @@ Coral stores the source secrets in plaintext file storage and shows
 ### `coral source add --file <PATH>`
 
 Add a custom source spec from a YAML file. Input values come from environment variables by default; add `--interactive` to be prompted.
-Coral resolves and prints the source's declared outbound hosts before setup continues.
+Coral resolves and prints the source's declared outbound hosts before installation continues.
 
 ```shellscript
 coral source add --file ./local-messages.yaml

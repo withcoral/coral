@@ -33,7 +33,7 @@ fn onboard_rejects_non_interactive_terminals() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "expected non-zero exit status");
     assert!(
-        stderr.contains("interactive source setup requires a TTY"),
+        stderr.contains("interactive source install requires a TTY"),
         "expected TTY error in stderr, got: {stderr}"
     );
 }
@@ -66,7 +66,6 @@ async fn onboard_update_credentials_confirms_hosts_before_reconfigure() {
                             })),
                         },
                     ],
-                    hosts: vec!["api.github.com".to_string()],
                     installed: true,
                     origin: SourceOrigin::Bundled as i32,
                     credential_storage: SourceCredentialStorage::File as i32,

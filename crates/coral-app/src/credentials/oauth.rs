@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use coral_spec::{
     ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthEndpointUrls,
     ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
-    ManifestOAuthScopeDelimiter, normalize_input_value,
+    ManifestOAuthScopeDelimiter,
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde_json::Value;
@@ -176,7 +176,7 @@ impl OAuthCredentialService {
     {
         let oauth = request.oauth.clone();
         let endpoints = oauth_endpoint_urls(&oauth, request.source_inputs)?;
-        let credential_inputs = normalize_credential_inputs(&oauth, request.credential_inputs)?;
+        let credential_inputs = normalize_credential_inputs(request.credential_inputs)?;
         reject_unknown_credential_inputs(&oauth, &credential_inputs)?;
         let client_id = resolve_client_id(&oauth, &credential_inputs)?;
         let client_secret = resolve_client_secret(&oauth, &credential_inputs)?;
@@ -265,7 +265,7 @@ impl OAuthCredentialService {
         credential_inputs: Vec<(String, String)>,
     ) -> Result<(), AppError> {
         let endpoints = oauth_endpoint_urls(oauth, source_inputs)?;
-        let credential_inputs = normalize_credential_inputs(oauth, credential_inputs)?;
+        let credential_inputs = normalize_credential_inputs(credential_inputs)?;
         reject_unknown_credential_inputs(oauth, &credential_inputs)?;
         let _client_id = resolve_client_id(oauth, &credential_inputs)?;
         match oauth.flow.kind {
@@ -426,26 +426,11 @@ fn oauth_endpoint_urls(
 }
 
 fn normalize_credential_inputs(
-    oauth: &ManifestOAuthCredentialSpec,
     inputs: Vec<(String, String)>,
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut normalized = BTreeMap::new();
-    let client_secret_input = oauth
-        .client
-        .secret
-        .as_ref()
-        .map(|secret| secret.input.as_str());
     for (key, value) in inputs {
         let key = normalize_credential_input_key(&key)?;
-        let value = if Some(key.as_str()) == client_secret_input {
-            if normalize_input_value(&value).is_empty() {
-                String::new()
-            } else {
-                value
-            }
-        } else {
-            normalize_input_value(&value)
-        };
         if normalized.insert(key.clone(), value).is_some() {
             return Err(AppError::InvalidInput(format!(
                 "credential input '{key}' is repeated"
@@ -1907,7 +1892,7 @@ mod tests {
                 source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: vec![(
                     "OAUTH_CLIENT_ID".to_string(),
-                    " override-client ".to_string(),
+                    "override-client".to_string(),
                 )],
             },
             move |authorization| async move {
@@ -2404,8 +2389,8 @@ mod tests {
                 oauth: &oauth,
                 source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: vec![
-                    ("OAUTH_CLIENT_ID".to_string(), " client ".to_string()),
-                    ("OAUTH_CLIENT_SECRET".to_string(), " secret ".to_string()),
+                    ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
+                    ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
                 ],
             },
             move |authorization| async move {
@@ -2433,34 +2418,7 @@ mod tests {
         );
         assert_eq!(
             captured.form.get("client_secret").map(String::as_str),
-            Some(" secret ")
-        );
-    }
-
-    #[test]
-    fn validate_credential_inputs_rejects_whitespace_only_client_secret() {
-        let oauth = oauth_spec(
-            "https://tokens.example.com/oauth/token",
-            free_loopback_port(),
-            ManifestOAuthPkceMode::Disabled,
-            confidential_client(ManifestOAuthClientSecretTransport::RequestBody),
-        );
-
-        let error = OAuthCredentialService::validate_credential_inputs(
-            &oauth,
-            &EMPTY_SOURCE_INPUTS,
-            vec![
-                ("OAUTH_CLIENT_ID".to_string(), " client ".to_string()),
-                ("OAUTH_CLIENT_SECRET".to_string(), "   ".to_string()),
-            ],
-        )
-        .expect_err("whitespace-only client secret should be missing");
-
-        assert!(
-            error
-                .to_string()
-                .contains("missing OAuth client secret input 'OAUTH_CLIENT_SECRET'"),
-            "unexpected error: {error}"
+            Some("secret")
         );
     }
 

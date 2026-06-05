@@ -26,7 +26,7 @@ impl ValidatedSourceManifest {
     ///
     /// Hosts are collected from the HTTP base URL, OAuth provider
     /// authorization/token endpoints, remote MCP server URLs, and S3 service
-    /// endpoints. A URL whose host depends on a setup-time input with no
+    /// endpoints. A URL whose host depends on a source variable input with no
     /// manifest default cannot be resolved statically; its unresolved `{{...}}`
     /// template string is returned verbatim so callers can still show it to the
     /// user. A DSL v4 `OpenAPI` surface that omits `base_url` derives its

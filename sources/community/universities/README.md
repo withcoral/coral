@@ -14,9 +14,9 @@ coral source add --file sources/community/universities/manifest.yaml
 
 ```bash
 coral sql "
-  SELECT name, country
-  FROM universities.universities
-  WHERE country = 'United States'
+  SELECT name, country 
+  FROM universities.universities 
+  WHERE country = 'United States' 
   LIMIT 2
 "
 

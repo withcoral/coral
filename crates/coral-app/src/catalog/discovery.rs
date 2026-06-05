@@ -228,7 +228,36 @@ impl CatalogDiscovery {
             same_schema_tables,
         }))
     }
+}
 
+fn catalog_items(catalog: CatalogInfo, kind: Option<CatalogItemKind>) -> Vec<CatalogItem> {
+    let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
+    if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
+        items.extend(catalog.tables.into_iter().map(|mut table| {
+            table.columns.clear();
+            CatalogItem::Table(table)
+        }));
+    }
+    if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
+        items.extend(
+            catalog
+                .table_functions
+                .into_iter()
+                .map(CatalogItem::TableFunction),
+        );
+    }
+    items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
+    items
+}
+
+fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
+    CatalogCounts {
+        table_count: u32::try_from(catalog.tables.len()).unwrap_or(u32::MAX),
+        table_function_count: u32::try_from(catalog.table_functions.len()).unwrap_or(u32::MAX),
+    }
+}
+
+impl CatalogDiscovery {
     pub(crate) async fn search_catalog(
         &self,
         workspace_name: &WorkspaceName,
@@ -300,33 +329,6 @@ impl CatalogDiscovery {
             })
             .collect();
         Ok(Some(page_items(matches, query.pagination)))
-    }
-}
-
-fn catalog_items(catalog: CatalogInfo, kind: Option<CatalogItemKind>) -> Vec<CatalogItem> {
-    let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
-    if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
-        items.extend(catalog.tables.into_iter().map(|mut table| {
-            table.columns.clear();
-            CatalogItem::Table(table)
-        }));
-    }
-    if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
-        items.extend(
-            catalog
-                .table_functions
-                .into_iter()
-                .map(CatalogItem::TableFunction),
-        );
-    }
-    items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
-    items
-}
-
-fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
-    CatalogCounts {
-        table_count: u32::try_from(catalog.tables.len()).unwrap_or(u32::MAX),
-        table_function_count: u32::try_from(catalog.table_functions.len()).unwrap_or(u32::MAX),
     }
 }
 

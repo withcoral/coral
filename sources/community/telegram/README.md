@@ -69,29 +69,29 @@ The Telegram Bot API does **not** provide any endpoint to retrieve a list of all
 
 ### Get Bot Profile
 ```sql
-SELECT id, username, first_name, can_join_groups
+SELECT id, username, first_name, can_join_groups 
 FROM telegram.me;
 ```
 
 ### Get Recent Messages
 ```sql
-SELECT update_id, chat_id, from_username, text, date
-FROM telegram.updates
+SELECT update_id, chat_id, from_username, text, date 
+FROM telegram.updates 
 LIMIT 10;
 ```
 
 ### Get Chat Profile Details
 Supports both username strings (for public channels/groups) and numeric IDs:
 ```sql
-SELECT id, type, title, username, bio, description
-FROM telegram.chats
+SELECT id, type, title, username, bio, description 
+FROM telegram.chats 
 WHERE chat_id = '@telegram';
 ```
 
 ### List Administrators of a Group
 ```sql
-SELECT user_id, username, status, is_anonymous
-FROM telegram.chat_administrators
+SELECT user_id, username, status, is_anonymous 
+FROM telegram.chat_administrators 
 WHERE chat_id = -1001234567890;
 ```
 
@@ -99,19 +99,19 @@ WHERE chat_id = -1001234567890;
 By default, Telegram omits bot administrators other than the current bot from the administrators list. To include them, query the table specifying the optional `return_bots = true` filter:
 ```sql
 SELECT user_id, username, status, is_anonymous, return_bots
-FROM telegram.chat_administrators
+FROM telegram.chat_administrators 
 WHERE chat_id = -1001234567890 AND return_bots = true;
 ```
 
 ### Get Chat Member Status & Count
 ```sql
 -- Check a user's role
-SELECT user_id, status, custom_title
-FROM telegram.chat_member
+SELECT user_id, status, custom_title 
+FROM telegram.chat_member 
 WHERE chat_id = -1001234567890 AND user_id = 987654321;
 
 -- Get total member count
-SELECT member_count
-FROM telegram.chat_member_count
+SELECT member_count 
+FROM telegram.chat_member_count 
 WHERE chat_id = -1001234567890;
 ```

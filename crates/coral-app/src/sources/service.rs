@@ -456,7 +456,7 @@ fn source_bindings_from_proto(
 fn source_variable_from_proto(variable: SourceVariable) -> SourceBinding {
     SourceBinding {
         key: variable.key,
-        value: coral_spec::normalize_input_value(&variable.value),
+        value: variable.value,
     }
 }
 
@@ -593,7 +593,6 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
             .into_iter()
             .map(candidate_source_input_to_proto)
             .collect(),
-        hosts: source.hosts,
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
@@ -845,17 +844,6 @@ mod tests {
     }
 
     #[test]
-    fn converts_source_secret_from_proto_without_trimming_value() {
-        let binding = source_secret_from_proto(SourceSecret {
-            key: "API_TOKEN".to_string(),
-            value: " token ".to_string(),
-        });
-
-        assert_eq!(binding.key, "API_TOKEN");
-        assert_eq!(binding.value, " token ");
-    }
-
-    #[test]
     fn converts_oauth_credential_retrieval_from_proto() {
         let request = oauth_credential_retrieval_from_proto(OAuthCredentialRetrieval {
             input_key: "API_TOKEN".to_string(),
@@ -867,7 +855,7 @@ mod tests {
                 },
                 OAuthCredentialInput {
                     key: "CLIENT_SECRET".to_string(),
-                    value: " client-secret ".to_string(),
+                    value: "client-secret".to_string(),
                 },
             ],
         })
@@ -879,7 +867,7 @@ mod tests {
         assert_eq!(request.credential_inputs[0].key, "CLIENT_ID");
         assert_eq!(request.credential_inputs[0].value, "client-id");
         assert_eq!(request.credential_inputs[1].key, "CLIENT_SECRET");
-        assert_eq!(request.credential_inputs[1].value, " client-secret ");
+        assert_eq!(request.credential_inputs[1].value, "client-secret");
     }
 
     #[test]

@@ -109,7 +109,6 @@ fn candidate_from_manifest(
         description: manifest.description().to_string(),
         version: manifest.source_version().map(ToString::to_string),
         inputs: manifest.declared_inputs().to_vec(),
-        hosts: manifest.outbound_hosts(),
         installed,
         origin,
         credential_storage: None,

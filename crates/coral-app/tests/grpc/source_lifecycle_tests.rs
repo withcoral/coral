@@ -840,11 +840,6 @@ async fn get_source_info_returns_available_bundled_metadata() {
         info.inputs.iter().any(|input| input.key == "GITHUB_TOKEN"),
         "expected bundled manifest inputs"
     );
-    assert!(
-        info.hosts.iter().any(|host| host == "api.github.com"),
-        "expected bundled manifest hosts, got {:?}",
-        info.hosts
-    );
 }
 
 #[tokio::test]
@@ -871,54 +866,6 @@ async fn resolve_bundled_source_hosts_applies_source_variables() {
             .iter()
             .any(|host| host == "github.enterprise.example"),
         "expected resolved GitHub Enterprise host, got {:?}",
-        response.hosts
-    );
-}
-
-#[tokio::test]
-async fn resolve_bundled_source_hosts_trims_source_variables_and_uses_default_for_whitespace() {
-    let harness = GrpcHarness::new().await;
-
-    let response = harness
-        .source_client()
-        .resolve_bundled_source_hosts(Request::new(ResolveBundledSourceHostsRequest {
-            workspace: Some(default_workspace()),
-            name: "github".to_string(),
-            variables: vec![SourceVariable {
-                key: "GITHUB_API_BASE".to_string(),
-                value: "  https://github.enterprise.example/api/v3  ".to_string(),
-            }],
-        }))
-        .await
-        .expect("resolve trimmed bundled source hosts")
-        .into_inner();
-
-    assert!(
-        response
-            .hosts
-            .iter()
-            .any(|host| host == "github.enterprise.example"),
-        "expected trimmed GitHub Enterprise host, got {:?}",
-        response.hosts
-    );
-
-    let response = harness
-        .source_client()
-        .resolve_bundled_source_hosts(Request::new(ResolveBundledSourceHostsRequest {
-            workspace: Some(default_workspace()),
-            name: "github".to_string(),
-            variables: vec![SourceVariable {
-                key: "GITHUB_API_BASE".to_string(),
-                value: "   ".to_string(),
-            }],
-        }))
-        .await
-        .expect("resolve default bundled source hosts")
-        .into_inner();
-
-    assert!(
-        response.hosts.iter().any(|host| host == "api.github.com"),
-        "expected default GitHub host for whitespace-only override, got {:?}",
         response.hosts
     );
 }

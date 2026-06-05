@@ -17,19 +17,6 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-/// Trims a user-supplied source input value for variable normalization and
-/// empty-value checks.
-///
-/// Variable inputs use the trimmed value because they commonly hold endpoint
-/// URLs, regions, and other copied configuration. Secret inputs use this only
-/// to decide whether a value is empty; callers must preserve non-empty secret
-/// values byte-for-byte because password-style credentials may carry
-/// significant leading or trailing whitespace.
-#[must_use]
-pub fn normalize_input_value(value: &str) -> String {
-    value.trim().to_string()
-}
-
 use crate::{ManifestError, ParsedTemplate, Result};
 
 /// Common top-level source metadata shared by every backend source spec.

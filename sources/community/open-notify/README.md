@@ -14,8 +14,8 @@ coral source add --file sources/community/open-notify/manifest.yaml
 
 ```bash
 coral sql "
-  SELECT name, craft
-  FROM open_notify.astronauts
+  SELECT name, craft 
+  FROM open_notify.astronauts 
   LIMIT 5
 "
 
