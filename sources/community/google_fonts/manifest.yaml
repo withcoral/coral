@@ -103,7 +103,7 @@ tables:
       - WOFF2
       - VF
       - FAMILY_TAGS
-      
+
       Notes:
         - The API accepts repeated `capability` query parameters and supports combining them
           (for example: `?capability=WOFF2&capability=VF`).
@@ -209,7 +209,7 @@ tables:
         nullable: true
         description: Variable font axes metadata.
 
-      - name: colorCapabilities
+      - name: color_capabilities
         type: Json
         nullable: true
 
@@ -371,7 +371,7 @@ tables:
         type: Json
         nullable: true
 
-      - name: colorCapabilities
+      - name: color_capabilities
         type: Json
         nullable: true
 
@@ -399,4 +399,3 @@ tables:
 
         expr:
           kind: current_row
-          

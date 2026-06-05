@@ -1,24 +1,28 @@
 # Google Fonts Connector
 
-Query the Google Fonts catalog through the Google Fonts Developer API as Coral tables.
+Query the Google Fonts catalog through the Google Fonts Developer API from Coral SQL.
 
-The connector exposes:
+This community source exposes Google Fonts metadata as Coral tables so users can browse the font catalog, inspect individual font families, discover supported scripts, and retrieve optional metadata such as variable font axes, design-space tags, and WOFF2 assets.
 
-* `google_fonts.fonts` — browse and filter the full catalog
-* `google_fonts.font` — inspect a specific family by exact name
+**Version:** 0.1.0
+**Backend:** HTTP
+**Tables:** 2
+**Base URL:** `https://www.googleapis.com/webfonts/v1`
 
-Supported metadata includes:
+## Why this source
 
-* Font family names
-* Categories
-* Variants
-* Script subsets
-* Download URLs
-* Variable font axes
-* Color font capabilities
-* Design-space tags
+Google Fonts is one of the most widely used open font repositories. Designers, developers, and content teams often need to:
 
----
+* Browse available font families.
+* Filter fonts by category.
+* Find fonts supporting specific scripts.
+* Discover recently added or trending fonts.
+* Inspect variable font metadata.
+* Retrieve WOFF2 download URLs.
+
+This source exposes that information directly through Coral SQL without requiring users to manually call the Google Fonts API.
+
+The initial release focuses on read-only catalog access and family-level metadata retrieval.
 
 # Authentication
 
