@@ -17,8 +17,6 @@ Requires a LEMON_SQUEEZY_API_KEY
 LEMON_SQUEEZY_API_KEY=your_api_key coral source add --file sources/community/lemon-squeezy/manifest.yaml
 ```
 
-Or add it interactively and paste the key when prompted:
-
 ```sh
 LEMON_SQUEEZY_API_KEY=your_api_key coral source add --file sources/community/lemon-squeezy/manifest.yaml --interactive
 ```
