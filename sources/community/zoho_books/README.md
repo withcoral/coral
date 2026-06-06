@@ -230,7 +230,8 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=authorization_code&
 client_id=YOUR_CLIENT_ID&
 client_secret=YOUR_CLIENT_SECRET&
-code=YOUR_AUTHORIZATION_CODE
+code=YOUR_AUTHORIZATION_CODE&
+redirect_uri=<redirect_uri>
 ```
 
 This returns an access token (and, when applicable, refresh token data) that you can use as `ZOHO_OAUTH_TOKEN`.
