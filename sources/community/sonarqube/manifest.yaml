@@ -1,0 +1,518 @@
+version: "1.0"
+dsl_version: 3
+name: sonar
+description: Query projects, issues, measures, and pull requests from SonarQube
+  (Cloud or self-hosted).
+test_queries:
+  - SELECT * FROM sonar.metrics_catalog LIMIT 5
+backend: http
+base_url: "{{ input.SONARQUBE_API_BASE }}"
+inputs:
+  SONARQUBE_API_BASE:
+    kind: variable
+    default: https://sonarcloud.io/api
+    hint: Base URL for the SonarQube API. Keep the default for SonarCloud, or use
+      your self-hosted URL like `https://sonarqube.example.com/api`.
+  SONARQUBE_API_KEY:
+    kind: secret
+    hint: A SonarQube User Token with read access. Generate this from My Account >
+      Security.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{ input.SONARQUBE_API_KEY }}
+tables:
+  - name: project_measures
+    description: Live source code quality metrics, security vulnerabilities, and bug counts
+    filters:
+      - name: component
+        required: true
+      - name: metric_keys
+        required: true
+    request:
+      path: /measures/component
+      method: GET
+      headers:
+        - name: Content-Type
+          from: template
+          template: application/json
+      query:
+        - name: component
+          from: filter
+          key: component
+        - name: metricKeys
+          from: filter
+          key: metric_keys
+    response:
+      rows_path:
+        - component
+        - measures
+    columns:
+      - name: component
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: component
+      - name: metric_keys
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: metric_keys
+      - name: metric
+        type: Utf8
+      - name: value
+        type: Utf8
+      - name: best_value
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - bestValue
+  - name: projects
+    description: Search projects by organization
+    filters:
+      - name: organization
+        required: true
+    request:
+      path: /projects/search
+      method: GET
+      query:
+        - name: organization
+          from: filter
+          key: organization
+    response:
+      rows_path:
+        - components
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
+    columns:
+      - name: organization
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: organization
+      - name: key
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: qualifier
+        type: Utf8
+      - name: visibility
+        type: Utf8
+      - name: last_analysis_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - lastAnalysisDate
+      - name: revision
+        type: Utf8
+  - name: issues
+    description: Search issues for a project
+    filters:
+      - name: projects
+        required: true
+    request:
+      path: /issues/search
+      method: GET
+      query:
+        - name: projects
+          from: filter
+          key: projects
+    response:
+      rows_path:
+        - issues
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
+    columns:
+      - name: projects
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: projects
+      - name: key
+        type: Utf8
+      - name: component
+        type: Utf8
+      - name: project
+        type: Utf8
+      - name: rule
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: message
+        type: Utf8
+      - name: severity
+        type: Utf8
+      - name: type
+        type: Utf8
+      - name: author
+        type: Utf8
+      - name: creation_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - creationDate
+      - name: effort
+        type: Utf8
+  - name: qualitygates_status
+    description: Quality gate status of a project
+    filters:
+      - name: project_key
+        required: true
+    request:
+      path: /qualitygates/project_status
+      method: GET
+      query:
+        - name: projectKey
+          from: filter
+          key: project_key
+    response:
+      rows_path:
+        - projectStatus
+        - conditions
+    columns:
+      - name: project_key
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: project_key
+      - name: status
+        type: Utf8
+      - name: metric_key
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - metricKey
+      - name: comparator
+        type: Utf8
+      - name: error_threshold
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - errorThreshold
+      - name: actual_value
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - actualValue
+  - name: hotspots
+    description: Search security hotspots
+    filters:
+      - name: project_key
+        required: true
+    request:
+      path: /hotspots/search
+      method: GET
+      query:
+        - name: projectKey
+          from: filter
+          key: project_key
+    response:
+      rows_path:
+        - hotspots
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
+    columns:
+      - name: project_key
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: project_key
+      - name: key
+        type: Utf8
+      - name: vulnerability_probability
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - vulnerabilityProbability
+      - name: status
+        type: Utf8
+      - name: message
+        type: Utf8
+      - name: author
+        type: Utf8
+      - name: creation_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - creationDate
+  - name: component_tree
+    description: File level measures
+    filters:
+      - name: component
+        required: true
+      - name: metric_keys
+        required: true
+    request:
+      path: /measures/component_tree
+      method: GET
+      query:
+        - name: component
+          from: filter
+          key: component
+        - name: metricKeys
+          from: filter
+          key: metric_keys
+    response:
+      rows_path:
+        - components
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
+    columns:
+      - name: component
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: component
+      - name: metric_keys
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: metric_keys
+      - name: key
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: qualifier
+        type: Utf8
+      - name: path
+        type: Utf8
+      - name: language
+        type: Utf8
+  - name: project_branches
+    description: List branches of a project
+    filters:
+      - name: project
+        required: true
+    request:
+      path: /project_branches/list
+      method: GET
+      query:
+        - name: project
+          from: filter
+          key: project
+    response:
+      rows_path:
+        - branches
+    columns:
+      - name: project
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: project
+      - name: name
+        type: Utf8
+      - name: is_main
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - isMain
+      - name: type
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: analysis_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - analysisDate
+  - name: metrics_catalog
+    description: List of all available metrics
+    request:
+      path: /metrics/search
+      method: GET
+    response:
+      rows_path:
+        - metrics
+    columns:
+      - name: key
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: domain
+        type: Utf8
+      - name: type
+        type: Utf8
+  - name: users
+    description: Search users
+    request:
+      path: /users/search
+      method: GET
+    response:
+      rows_path:
+        - users
+      allow_404_empty: true
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
+    columns:
+      - name: login
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: email
+        type: Utf8
+      - name: active
+        type: Boolean
+  - name: rules
+    description: Search coding rules
+    request:
+      path: /rules/search
+      method: GET
+    response:
+      rows_path:
+        - rules
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
+    columns:
+      - name: key
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: lang
+        type: Utf8
+      - name: type
+        type: Utf8
+      - name: severity
+        type: Utf8
+      - name: status
+        type: Utf8
+  - name: project_pull_requests
+    description: List pull requests of a project
+    filters:
+      - name: project
+        required: true
+    request:
+      path: /project_pull_requests/list
+      method: GET
+      query:
+        - name: project
+          from: filter
+          key: project
+    response:
+      rows_path:
+        - pullRequests
+    columns:
+      - name: project
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: project
+      - name: key
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: branch
+        type: Utf8
+      - name: base
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: analysis_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - analysisDate
+  - name: qualityprofiles
+    description: Search quality profiles
+    request:
+      path: /qualityprofiles/search
+      method: GET
+    response:
+      rows_path:
+        - profiles
+    columns:
+      - name: key
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: language
+        type: Utf8
+      - name: is_default
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - isDefault
+      - name: active_rule_count
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - activeRuleCount
+  - name: user_groups
+    description: Search user groups
+    request:
+      path: /user_groups/search
+      method: GET
+    response:
+      rows_path:
+        - groups
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
+    columns:
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: members_count
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - membersCount
