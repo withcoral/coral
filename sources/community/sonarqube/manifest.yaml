@@ -359,6 +359,14 @@ tables:
     response:
       rows_path:
         - metrics
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
     columns:
       - name: key
         type: Utf8
