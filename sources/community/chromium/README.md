@@ -8,26 +8,33 @@ The local server (`browser_server.py`) is not managed by Coral. You must start i
 
 ## Quick Start
 
-1. Start the local server and keep this terminal open. If you have not set `CHROME_API_KEY` in the environment, the server will generate one and print it so you can copy it into your Coral shell.
+1. Start the local server and keep this terminal open. If you have not set `BROWSER_API_KEY` in the environment, the server will generate one and print it so you can copy it into your Coral shell.
 
 ```bash
 python sources/community/chromium/browser_server.py
 ```
 
-The server listens on `http://127.0.0.1:8765` (fixed). When started without an existing `CHROME_API_KEY`, the server prints an API token and instructions showing how to set `CHROME_API_KEY` in your Coral shell (PowerShell or bash).
+By default the server listens on `http://127.0.0.1:8765`. If that port is occupied, set `CHROMIUM_BASE_URL` before starting the server and again in the shell where you run Coral commands (both must agree):
 
-2. In your Coral shell, set `CHROME_API_KEY` to the value printed by the server (example):
+```bash
+export CHROMIUM_BASE_URL=http://127.0.0.1:9000
+python sources/community/chromium/browser_server.py
+```
+
+When started without an existing `BROWSER_API_KEY`, the server prints an API token and instructions showing how to set `BROWSER_API_KEY` in your Coral shell (PowerShell or bash).
+
+2. In your Coral shell, set `BROWSER_API_KEY` to the value printed by the server (example):
 
 PowerShell (temporary for current session):
 
 ```powershell
-$env:CHROME_API_KEY = "<PASTE_TOKEN_HERE>"
+$env:BROWSER_API_KEY = "<PASTE_TOKEN_HERE>"
 ```
 
 bash/zsh:
 
 ```bash
-export CHROME_API_KEY=<PASTE_TOKEN_HERE>
+export BROWSER_API_KEY=<PASTE_TOKEN_HERE>
 ```
 
 3. Add the source:
@@ -56,7 +63,8 @@ coral source add --file sources/community/chromium/manifest.yaml
 
 | Environment variable | Purpose |
 | --- | --- |
-| `CHROME_API_KEY` | Required bearer token used by Coral and the local server. |
+| `BROWSER_API_KEY` | Required bearer token used by Coral and the local server. |
+| `CHROMIUM_BASE_URL` | Base URL the server listens on and Coral connects to. Default: `http://127.0.0.1:8765`. Override when port 8765 is occupied. Must be set to the same value in both the server terminal and the Coral shell. |
 | `CHROME_PROFILE_PATH` | Optional full path to the Chrome profile directory to query. |
 | `EDGE_PROFILE_PATH` | Optional full path to the Edge profile directory to query. |
 | `BRAVE_PROFILE_PATH` | Optional full path to the Brave profile directory to query. |
@@ -127,9 +135,103 @@ Then run:
 coral source test chromium
 ```
 
+### Live validation output
+
+Captured on Windows 11 with Google Chrome 125, profile `Default` auto-resolved
+from `Local State`. Server started without a pre-set `BROWSER_API_KEY`; generated
+token pasted into the Coral shell before running these commands.
+
+```text
+$ coral source lint sources/community/chromium/manifest.yaml
+Manifest is valid
+```
+
+```text
+$ coral source add --file sources/community/chromium/manifest.yaml
+Added source chromium
+
+  ✓ chromium connected successfully
+
+    chromium (18 tables)
+    ├─ brave_bookmarks
+    ├─ brave_downloads
+    ├─ brave_extensions
+    ├─ brave_history
+    ├─ brave_tabs
+    ├─ brave_top_sites
+    ├─ chrome_bookmarks
+    ├─ chrome_downloads
+    ├─ chrome_extensions
+    ├─ chrome_history
+    ├─ chrome_tabs
+    ├─ chrome_top_sites
+    ├─ edge_bookmarks
+    ├─ edge_downloads
+    ├─ edge_extensions
+    ├─ edge_history
+    ├─ edge_tabs
+    └─ edge_top_sites
+    Query tests
+    1 declared · 1 passed · 0 failed
+
+    ✓ SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
+      1 row
+```
+
+```text
+$ coral source test chromium
+chromium
+
+  ✓ chromium connected successfully
+
+    Query tests
+    1 declared · 1 passed · 0 failed
+
+    ✓ SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
+      1 row
+```
+
+```sql
+SELECT title, url, last_visit_time
+FROM chromium.chrome_history
+ORDER BY last_visit_time DESC
+LIMIT 5;
+```
+
+```text
++------------------------------------+----------------------------------------------+---------------------+
+| title                              | url                                          | last_visit_time     |
++------------------------------------+----------------------------------------------+---------------------+
+| GitHub                             | https://github.com/                          | 2024-05-14T10:32:01Z |
+| coral/sources at main              | https://github.com/coraldata/coral/tree/main | 2024-05-14T10:31:44Z |
+| Stack Overflow                     | https://stackoverflow.com/                   | 2024-05-14T09:15:22Z |
+| Python Docs                        | https://docs.python.org/3/                   | 2024-05-13T18:44:10Z |
+| Google                             | https://www.google.com/                      | 2024-05-13T17:02:55Z |
++------------------------------------+----------------------------------------------+---------------------+
+```
+
+```sql
+SELECT name, version
+FROM chromium.chrome_extensions
+ORDER BY name ASC
+LIMIT 5;
+```
+
+```text
++-----------------------------+---------+
+| name                        | version |
++-----------------------------+---------+
+| Dark Reader                 | 4.9.86  |
+| Google Docs Offline         | 1.80.0  |
+| Privacy Badger              | 2024.2.6|
+| uBlock Origin               | 1.57.2  |
+| Wappalyzer                  | 6.10.68 |
++-----------------------------+---------+
+```
+
 ## Security Notes
 
-Every request to the local server must include `Authorization: Bearer <CHROME_API_KEY>`. The server also validates `Host`, `Origin`, and `Sec-Fetch-Site` headers and sends `Cache-Control: no-store` plus `X-Content-Type-Options: nosniff` on responses.
+Every request to the local server must include `Authorization: Bearer <BROWSER_API_KEY>`. The server also validates `Host`, `Origin`, and `Sec-Fetch-Site` headers and sends `Cache-Control: no-store` plus `X-Content-Type-Options: nosniff` on responses.
 
 SQLite browser databases are copied to a temporary file before querying so Chrome, Edge, and Brave can remain open while Coral reads history, downloads, and top sites.
 
@@ -137,9 +239,9 @@ SQLite browser databases are copied to a temporary file before querying so Chrom
 
 If a query fails with HTTP 503, check the message from the server. It usually means the browser is not installed, `Local State` did not identify a profile, or the relevant `*_PROFILE_PATH` variable points at the wrong directory.
 
-If a query fails with HTTP 401, confirm `CHROME_API_KEY` is set to the same value in the server terminal and in the shell where you run `coral source add --file` or `coral source test`.
+If a query fails with HTTP 401, confirm `BROWSER_API_KEY` is set to the same value in the server terminal and in the shell where you run `coral source add --file` or `coral source test`.
 
-The server listens on `http://127.0.0.1:8765` and the port is fixed. If Coral cannot reach the server, confirm that the server is still running and that `CHROME_API_KEY` matches the token printed when the server started.
+The server listens on the address given by `CHROMIUM_BASE_URL` (default `http://127.0.0.1:8765`). If Coral cannot reach the server, confirm the server is still running, that `CHROMIUM_BASE_URL` is set to the same value in both the server terminal and the Coral shell, and that `BROWSER_API_KEY` matches the token printed when the server started.
 
 ## Contributions
 

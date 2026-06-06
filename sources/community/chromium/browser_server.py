@@ -313,21 +313,23 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
     server_version = "ChromiumLocalSource/0.1"
 
     def _check_auth(self):
-        expected_token = os.environ.get("CHROME_API_KEY")
+        expected_token = os.environ.get("BROWSER_API_KEY")
         if not expected_token:
-            self.send_error(503, "CHROME_API_KEY is not set on the local server.")
+            self.send_error(503, "BROWSER_API_KEY is not set on the local server.")
             return False
 
+        server_host = self.server.server_address[0]
+        server_port = self.server.server_port
         expected_hosts = {
-            f"127.0.0.1:{self.server.server_port}",
-            f"localhost:{self.server.server_port}",
+            f"{server_host}:{server_port}",
+            f"localhost:{server_port}",
         }
         if self.headers.get("Host") not in expected_hosts:
             self.send_error(400, "Unexpected Host header.")
             return False
 
         origin = self.headers.get("Origin")
-        allowed_origins = {f"http://{host}" for host in expected_hosts}
+        allowed_origins = {f"http://{h}" for h in expected_hosts}
         if origin and origin not in allowed_origins:
             self.send_error(403, "Unexpected Origin header.")
             return False
@@ -394,33 +396,36 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    # Fixed port per project policy
-    port = 8765
-    server = ThreadingHTTPServer(("127.0.0.1", port), BrowserAPIHandler)
+    base_url = os.environ.get("CHROMIUM_BASE_URL", "http://127.0.0.1:8765")
+    parsed_url = urlparse(base_url)
+    host = parsed_url.hostname or "127.0.0.1"
+    port = parsed_url.port or 8765
+    server = ThreadingHTTPServer((host, port), BrowserAPIHandler)
 
-    # If operator hasn't set CHROME_API_KEY, generate one and print instructions
-    token = os.environ.get("CHROME_API_KEY")
+    token = os.environ.get("BROWSER_API_KEY")
     if not token:
         token = secrets.token_hex(32)
-        print("No CHROME_API_KEY found. Generated one for you:")
+        print("No BROWSER_API_KEY found. Generated one for you:")
         print("")
         print(f"API token: {token}")
         print("")
         print("Set this token in the shell where you run Coral commands:")
         print("PowerShell (temporary for current session):")
-        print(f"  $env:CHROME_API_KEY = \"{token}\"")
+        print(f"  $env:BROWSER_API_KEY = \"{token}\"")
         print("PowerShell (persist across sessions):")
-        print(f"  setx CHROME_API_KEY {token}")
+        print(f"  setx BROWSER_API_KEY {token}")
         print("bash/zsh:")
-        print(f"  export CHROME_API_KEY={token}")
+        print(f"  export BROWSER_API_KEY={token}")
         print("")
-        print("Start Coral commands in a shell that has CHROME_API_KEY set to the above value.")
-        # Make the generated token available to this process for auth checks
-        os.environ["CHROME_API_KEY"] = token
+        print("Also export CHROMIUM_BASE_URL if you changed the port:")
+        print(f"  export CHROMIUM_BASE_URL={base_url}")
+        print("")
+        print("Start Coral commands in a shell that has BROWSER_API_KEY set to the above value.")
+        os.environ["BROWSER_API_KEY"] = token
     else:
-        print("Using CHROME_API_KEY from environment.")
+        print("Using BROWSER_API_KEY from environment.")
 
-    print(f"Starting Chromium local source server on http://127.0.0.1:{port}")
+    print(f"Starting Chromium local source server on {base_url}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
