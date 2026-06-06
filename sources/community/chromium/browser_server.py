@@ -45,6 +45,7 @@ BROWSERS = {
 CACHE_TTL = 60
 MAX_HISTORY_ROWS = 5000
 MAX_DOWNLOAD_ROWS = 2000
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _cached_profiles = {browser: None for browser in BROWSERS}
 _cache_times = {browser: 0.0 for browser in BROWSERS}
 _cache_errors = {browser: "" for browser in BROWSERS}
@@ -313,9 +314,9 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
     server_version = "ChromiumLocalSource/0.1"
 
     def _check_auth(self):
-        expected_token = os.environ.get("BROWSER_API_KEY")
+        expected_token = os.environ.get("CHROMIUM_API_KEY")
         if not expected_token:
-            self.send_error(503, "BROWSER_API_KEY is not set on the local server.")
+            self.send_error(503, "CHROMIUM_API_KEY is not set on the local server.")
             return False
 
         server_host = self.server.server_address[0]
@@ -397,33 +398,48 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     base_url = os.environ.get("CHROMIUM_BASE_URL", "http://127.0.0.1:8765")
-    parsed_url = urlparse(base_url)
-    host = parsed_url.hostname or "127.0.0.1"
-    port = parsed_url.port or 8765
+    try:
+        parsed_url = urlparse(base_url)
+        host = parsed_url.hostname or "127.0.0.1"
+        port = parsed_url.port or 8765
+    except ValueError as exc:
+        print(f"Error: CHROMIUM_BASE_URL is malformed ({exc}). "
+              "Example: http://127.0.0.1:8765", file=sys.stderr)
+        sys.exit(1)
+
+    if host not in _LOOPBACK_HOSTS:
+        print(
+            f"Error: CHROMIUM_BASE_URL host '{host}' is not a loopback address. "
+            "This server reads sensitive browser data and must only bind to "
+            "127.0.0.1, localhost, or ::1.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     server = ThreadingHTTPServer((host, port), BrowserAPIHandler)
 
-    token = os.environ.get("BROWSER_API_KEY")
+    token = os.environ.get("CHROMIUM_API_KEY")
     if not token:
         token = secrets.token_hex(32)
-        print("No BROWSER_API_KEY found. Generated one for you:")
+        print("No CHROMIUM_API_KEY found. Generated one for you:")
         print("")
         print(f"API token: {token}")
         print("")
         print("Set this token in the shell where you run Coral commands:")
         print("PowerShell (temporary for current session):")
-        print(f"  $env:BROWSER_API_KEY = \"{token}\"")
+        print(f"  $env:CHROMIUM_API_KEY = \"{token}\"")
         print("PowerShell (persist across sessions):")
-        print(f"  setx BROWSER_API_KEY {token}")
+        print(f"  setx CHROMIUM_API_KEY {token}")
         print("bash/zsh:")
-        print(f"  export BROWSER_API_KEY={token}")
+        print(f"  export CHROMIUM_API_KEY={token}")
         print("")
         print("Also export CHROMIUM_BASE_URL if you changed the port:")
         print(f"  export CHROMIUM_BASE_URL={base_url}")
         print("")
-        print("Start Coral commands in a shell that has BROWSER_API_KEY set to the above value.")
-        os.environ["BROWSER_API_KEY"] = token
+        print("Start Coral commands in a shell that has CHROMIUM_API_KEY set to the above value.")
+        os.environ["CHROMIUM_API_KEY"] = token
     else:
-        print("Using BROWSER_API_KEY from environment.")
+        print("Using CHROMIUM_API_KEY from environment.")
 
     print(f"Starting Chromium local source server on {base_url}")
     try:

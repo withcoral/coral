@@ -1,4 +1,3 @@
----
 name: chromium
 version: 0.1.0
 dsl_version: 3
@@ -8,9 +7,9 @@ description: >-
   and tabs for Chrome, Edge, and Brave through the manually started Chromium
   local source server.
 inputs:
-  BROWSER_API_KEY:
+  CHROMIUM_API_KEY:
     kind: secret
-    hint: "Run: export BROWSER_API_KEY=$(openssl rand -hex 32)"
+    hint: "Run: export CHROMIUM_API_KEY=$(openssl rand -hex 32)"
   CHROMIUM_BASE_URL:
     kind: variable
     default: "http://127.0.0.1:8765"
@@ -23,7 +22,7 @@ auth:
   headers:
     - name: Authorization
       from: template
-      template: Bearer {{input.BROWSER_API_KEY}}
+      template: Bearer {{input.CHROMIUM_API_KEY}}
 test_queries:
   - SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
 

@@ -8,33 +8,39 @@ The local server (`browser_server.py`) is not managed by Coral. You must start i
 
 ## Quick Start
 
-1. Start the local server and keep this terminal open. If you have not set `BROWSER_API_KEY` in the environment, the server will generate one and print it so you can copy it into your Coral shell.
+1. Start the local server and keep this terminal open. If you have not set `CHROMIUM_API_KEY` in the environment, the server will generate one and print it so you can copy it into your Coral shell.
 
 ```bash
 python sources/community/chromium/browser_server.py
 ```
 
-By default the server listens on `http://127.0.0.1:8765`. If that port is occupied, set `CHROMIUM_BASE_URL` before starting the server and again in the shell where you run Coral commands (both must agree):
+By default the server listens on `http://127.0.0.1:8765`. If that port is occupied, set `CHROMIUM_BASE_URL` to the same value in **both** the server terminal and the Coral shell before running any commands:
 
 ```bash
+# server terminal
 export CHROMIUM_BASE_URL=http://127.0.0.1:9000
 python sources/community/chromium/browser_server.py
 ```
 
-When started without an existing `BROWSER_API_KEY`, the server prints an API token and instructions showing how to set `BROWSER_API_KEY` in your Coral shell (PowerShell or bash).
+```bash
+# Coral shell (must match the server)
+export CHROMIUM_BASE_URL=http://127.0.0.1:9000
+```
 
-2. In your Coral shell, set `BROWSER_API_KEY` to the value printed by the server (example):
+When started without an existing `CHROMIUM_API_KEY`, the server prints an API token and instructions showing how to set `CHROMIUM_API_KEY` in your Coral shell (PowerShell or bash).
+
+2. In your Coral shell, set `CHROMIUM_API_KEY` to the value printed by the server (example):
 
 PowerShell (temporary for current session):
 
 ```powershell
-$env:BROWSER_API_KEY = "<PASTE_TOKEN_HERE>"
+$env:CHROMIUM_API_KEY = "<PASTE_TOKEN_HERE>"
 ```
 
 bash/zsh:
 
 ```bash
-export BROWSER_API_KEY=<PASTE_TOKEN_HERE>
+export CHROMIUM_API_KEY=<PASTE_TOKEN_HERE>
 ```
 
 3. Add the source:
@@ -63,7 +69,7 @@ coral source add --file sources/community/chromium/manifest.yaml
 
 | Environment variable | Purpose |
 | --- | --- |
-| `BROWSER_API_KEY` | Required bearer token used by Coral and the local server. |
+| `CHROMIUM_API_KEY` | Required bearer token used by Coral and the local server. |
 | `CHROMIUM_BASE_URL` | Base URL the server listens on and Coral connects to. Default: `http://127.0.0.1:8765`. Override when port 8765 is occupied. Must be set to the same value in both the server terminal and the Coral shell. |
 | `CHROME_PROFILE_PATH` | Optional full path to the Chrome profile directory to query. |
 | `EDGE_PROFILE_PATH` | Optional full path to the Edge profile directory to query. |
@@ -138,7 +144,7 @@ coral source test chromium
 ### Live validation output
 
 Captured on Windows 11 with Google Chrome 125, profile `Default` auto-resolved
-from `Local State`. Server started without a pre-set `BROWSER_API_KEY`; generated
+from `Local State`. Server started without a pre-set `CHROMIUM_API_KEY`; generated
 token pasted into the Coral shell before running these commands.
 
 ```text
@@ -231,7 +237,9 @@ LIMIT 5;
 
 ## Security Notes
 
-Every request to the local server must include `Authorization: Bearer <BROWSER_API_KEY>`. The server also validates `Host`, `Origin`, and `Sec-Fetch-Site` headers and sends `Cache-Control: no-store` plus `X-Content-Type-Options: nosniff` on responses.
+The server enforces loopback-only binding: `CHROMIUM_BASE_URL` must resolve to `127.0.0.1`, `localhost`, or `::1`. Any other host is rejected at startup with a clear error, so the server cannot be exposed on a LAN or external interface.
+
+Every request must include `Authorization: Bearer <CHROMIUM_API_KEY>`. The server also validates `Host`, `Origin`, and `Sec-Fetch-Site` headers and sends `Cache-Control: no-store` plus `X-Content-Type-Options: nosniff` on all responses.
 
 SQLite browser databases are copied to a temporary file before querying so Chrome, Edge, and Brave can remain open while Coral reads history, downloads, and top sites.
 
@@ -239,9 +247,9 @@ SQLite browser databases are copied to a temporary file before querying so Chrom
 
 If a query fails with HTTP 503, check the message from the server. It usually means the browser is not installed, `Local State` did not identify a profile, or the relevant `*_PROFILE_PATH` variable points at the wrong directory.
 
-If a query fails with HTTP 401, confirm `BROWSER_API_KEY` is set to the same value in the server terminal and in the shell where you run `coral source add --file` or `coral source test`.
+If a query fails with HTTP 401, confirm `CHROMIUM_API_KEY` is set to the same value in the server terminal and in the shell where you run `coral source add --file` or `coral source test`.
 
-The server listens on the address given by `CHROMIUM_BASE_URL` (default `http://127.0.0.1:8765`). If Coral cannot reach the server, confirm the server is still running, that `CHROMIUM_BASE_URL` is set to the same value in both the server terminal and the Coral shell, and that `BROWSER_API_KEY` matches the token printed when the server started.
+The server listens on the address given by `CHROMIUM_BASE_URL` (default `http://127.0.0.1:8765`). If Coral cannot reach the server, confirm the server is still running, that `CHROMIUM_BASE_URL` is set to the same value in both the server terminal and the Coral shell, and that `CHROMIUM_API_KEY` matches the token printed when the server started.
 
 ## Contributions
 
