@@ -118,14 +118,11 @@ ORDER BY 1 DESC;
 SELECT
   product_name,
   variant_name,
-  COUNT(*)                AS active_count,
-  ROUND(SUM(
-    CASE WHEN cancelled THEN 0 ELSE 1 END
-  ) * 100.0 / COUNT(*), 1) AS retention_pct
+  COUNT(*) AS active_subscriptions
 FROM lemon_squeezy.subscriptions
 WHERE status = 'active'
 GROUP BY 1, 2
-ORDER BY active_count DESC;
+ORDER BY active_subscriptions DESC;
 ```
 
 ### Customers with highest MRR
