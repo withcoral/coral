@@ -35,12 +35,12 @@ This manifest provides comprehensive access to the following tables:
 
 | Table Name | Description | Endpoint | Requires Filter | Paginated |
 |---|---|---|---|---|
-| `project_measures` | Live source code metrics, security vulnerabilities, and bug counts | `/measures/component` | `component`, `metricKeys` | No |
+| `project_measures` | Live source code metrics, security vulnerabilities, and bug counts | `/measures/component` | `component`, `metric_keys` | No |
 | `projects` | Search projects by organization | `/projects/search` | `organization` | Yes |
 | `issues` | Search issues for a project | `/issues/search` | `projects` | Yes |
-| `qualitygates_status` | Quality gate status of a project | `/qualitygates/project_status` | `projectKey` | No |
-| `hotspots` | Search security hotspots | `/hotspots/search` | `projectKey` | Yes |
-| `component_tree` | File-level measures | `/measures/component_tree` | `component`, `metricKeys` | Yes |
+| `qualitygates_status` | Quality gate status of a project | `/qualitygates/project_status` | `project_key` | No |
+| `hotspots` | Search security hotspots | `/hotspots/search` | `project_key` | Yes |
+| `component_tree` | File-level measures | `/measures/component_tree` | `component`, `metric_keys` | Yes |
 | `project_branches` | List branches of a project | `/project_branches/list` | `project` | No |
 | `metrics_catalog` | List of all available metrics | `/metrics/search` | *(None)* | No |
 | `users` | Search users | `/users/search` | *(None)* | Yes |
