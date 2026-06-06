@@ -23,7 +23,7 @@ export SONARQUBE_API_KEY="your-generated-token"
 export SONARQUBE_API_BASE="https://sonarcloud.io/api" # Or your self-hosted URL
 
 # Add the source to Coral
-coral source add --file manifest.yaml
+coral source add --file sources/community/sonarqube/manifest.yaml
 
 # Test the connection by running a simple query
 coral sql "SELECT * FROM sonar.metrics_catalog LIMIT 5"
