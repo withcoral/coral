@@ -2,9 +2,10 @@
 
 use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
 use coral_api::v1::{
-    CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
-    PaginationRequest, SearchCatalogRequest, SearchCatalogResponse,
+    CatalogCounts as ProtoCatalogCounts, CatalogItemKind as ProtoCatalogItemKind,
+    DescribeTableRequest, DescribeTableResponse, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, ListColumnsResponse, PaginationRequest, SearchCatalogRequest,
+    SearchCatalogResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -47,10 +48,11 @@ impl CatalogServiceApi for CatalogService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
-            let page = catalog
+            let catalog_page = catalog
                 .list_catalog(&workspace_name, schema_name, kind, pagination)
                 .await
                 .map_err(query_status)?;
+            let page = catalog_page.items;
             let pagination = pagination_to_proto(
                 page.total,
                 page.limit,
@@ -65,6 +67,10 @@ impl CatalogServiceApi for CatalogService {
                     .map(|item| catalog_item_to_proto(&workspace_name, item))
                     .collect(),
                 pagination: Some(pagination),
+                counts: Some(ProtoCatalogCounts {
+                    table_count: catalog_page.counts.table_count,
+                    table_function_count: catalog_page.counts.table_function_count,
+                }),
             }))
         })
         .await

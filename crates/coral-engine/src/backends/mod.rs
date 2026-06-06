@@ -70,10 +70,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{CoreError, QuerySource, RequestAuthenticator, SourceInputResolver};
+use crate::{
+    CoreError, QuerySource, RequestAuthenticator, RuntimeSourceComponent, SourceInputResolver,
+};
+#[cfg(test)]
 use coral_spec::ValidatedSourceManifest;
 
 pub(crate) mod common;
+mod composite;
 pub(crate) use common::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
     RegisteredSource, RegisteredTable, RegisteredTableFunction, SourceTableFunctions,
@@ -93,17 +97,40 @@ pub(crate) fn compile_query_source(
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
-    compile_validated_manifest(
-        source.source_spec(),
-        &BackendCompileRequest {
-            source,
-            runtime_context,
-            source_secrets: source.secrets().clone(),
-            source_variables: source.variables().clone(),
-            request_authenticators,
-            source_input_resolver,
-        },
-    )
+    if source.components().is_empty() {
+        return Err(CoreError::FailedPrecondition(format!(
+            "source '{}' has no runtime components",
+            source.source_name()
+        )));
+    }
+    let request = BackendCompileRequest {
+        source,
+        runtime_context,
+        source_secrets: source.secrets().clone(),
+        source_variables: source.variables().clone(),
+        request_authenticators,
+        source_input_resolver,
+    };
+    let compiled_components = source
+        .components()
+        .iter()
+        .map(|component| compile_component(component, &request))
+        .collect::<Vec<_>>();
+    Ok(composite::compile_source(
+        source.source_name().to_string(),
+        compiled_components,
+    ))
+}
+
+fn compile_component(
+    component: &RuntimeSourceComponent,
+    request: &BackendCompileRequest<'_>,
+) -> Box<dyn CompiledBackendSource> {
+    match component {
+        RuntimeSourceComponent::Http(manifest) => http::compile_manifest(manifest, request),
+        RuntimeSourceComponent::File(manifest) => file::compile_manifest(manifest, request),
+        RuntimeSourceComponent::Mcp(manifest) => mcp::compile_manifest(manifest, request),
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +159,7 @@ pub(crate) fn compile_source_manifest(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn compile_validated_manifest(
     manifest: &ValidatedSourceManifest,
     request: &BackendCompileRequest<'_>,
