@@ -3,9 +3,8 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query Squadcast incidents, services, and users via the Squadcast API v3.
-  Join with GitHub PRs, Sentry errors, PagerDuty incidents, and Linear issues
-  for cross-source SRE and incident management intelligence.
+  Query Squadcast services and users via the Squadcast API v3. Join users
+  with Linear issues by email for cross-source on-call team intelligence.
 base_url: "{{input.SQUADCAST_API_BASE_URL}}"
 
 inputs:
@@ -13,16 +12,16 @@ inputs:
     kind: secret
     hint: |
       A Squadcast access token. Obtain one from the Squadcast web app under
-      Profile -> Access Tokens, or exchange a refresh token for an access token
-      via the Squadcast auth endpoint.
+      API Tokens, then exchange that refresh token for an access token via the
+      authentication endpoint for your region.
 
       To exchange a refresh token:
-        curl -X POST https://auth.squadcast.com/oauth/access-token \
+        curl -X GET https://auth.squadcast.com/oauth/access-token \
           -H "X-Refresh-Token: <your-refresh-token>"
 
-      The returned access_token value is what you set here. Tokens expire
-      after 1 hour; re-run `coral source add --file sources/community/squadcast/manifest.yaml`
-      to refresh.
+      EU accounts must use https://auth.eu.squadcast.com/oauth/access-token.
+      Set the returned data.access_token value here and use data.expires_at to
+      determine when it must be refreshed.
 
       See https://apidocs.squadcast.com/
   SQUADCAST_API_BASE_URL:
@@ -37,7 +36,7 @@ inputs:
     hint: |
       Your Squadcast account owner ID. Find it in the Squadcast web app under
       Settings -> General Settings -> Organization ID. Required for querying
-      incidents and services.
+      services.
 
 auth:
   type: HeaderAuth
@@ -60,178 +59,14 @@ test_queries:
   - SELECT id, name FROM squadcast.services LIMIT 1
 
 tables:
-  - name: incidents
-    description: >-
-      Exports Squadcast incidents for a given time window via the incidents
-      export endpoint. Returns incident ID, title, description, status,
-      severity, service, assignee, triggered and resolved timestamps, and
-      the alert source that triggered each incident.
-    guide: |
-      Requires start_time, end_time (ISO 8601, e.g. 2025-01-01T00:00:00Z),
-      and the SQUADCAST_OWNER_ID input set at source-add time. Use the
-      status filter to scope to triggered, acknowledged, resolved, or
-      suppressed incidents. Join service_id with squadcast.services and
-      email with squadcast.users. Join triggered_at with GitHub deploy
-      created_at or Sentry first_seen to correlate incidents with code
-      changes and errors.
-    filters:
-      - name: start_time
-        required: true
-      - name: end_time
-        required: true
-      - name: status
-        required: false
-    request:
-      method: GET
-      path: /v3/incidents/export
-      query:
-        - name: owner_id
-          from: input
-          key: SQUADCAST_OWNER_ID
-        - name: start_time
-          from: filter
-          key: start_time
-        - name: end_time
-          from: filter
-          key: end_time
-        - name: type
-          from: literal
-          value: json
-        - name: status
-          from: filter
-          key: status
-    response:
-      rows_path:
-        - data
-    pagination:
-      mode: none
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Unique incident ID.
-        expr:
-          kind: path
-          path:
-            - id
-      - name: title
-        type: Utf8
-        nullable: true
-        description: Incident title as triggered by the alert source.
-        expr:
-          kind: path
-          path:
-            - title
-      - name: description
-        type: Utf8
-        nullable: true
-        description: Incident description or alert message body.
-        expr:
-          kind: path
-          path:
-            - description
-      - name: status
-        type: Utf8
-        nullable: true
-        description: >-
-          Incident status: triggered, acknowledged, resolved, or suppressed.
-        expr:
-          kind: path
-          path:
-            - status
-      - name: severity
-        type: Utf8
-        nullable: true
-        description: Incident severity level (critical, high, medium, or low).
-        expr:
-          kind: path
-          path:
-            - severity
-      - name: service_id
-        type: Utf8
-        nullable: true
-        description: ID of the Squadcast service that owns this incident; join to squadcast.services.
-        expr:
-          kind: path
-          path:
-            - service
-            - id
-      - name: service_name
-        type: Utf8
-        nullable: true
-        description: Name of the service that owns this incident.
-        expr:
-          kind: path
-          path:
-            - service
-            - name
-      - name: assignee_id
-        type: Utf8
-        nullable: true
-        description: ID of the user currently assigned to this incident.
-        expr:
-          kind: path
-          path:
-            - assignee
-            - id
-      - name: assignee_name
-        type: Utf8
-        nullable: true
-        description: Display name of the user currently assigned to this incident.
-        expr:
-          kind: path
-          path:
-            - assignee
-            - name
-      - name: triggered_at
-        type: Utf8
-        nullable: true
-        description: ISO 8601 timestamp when the incident was triggered.
-        expr:
-          kind: path
-          path:
-            - triggered_at
-      - name: acknowledged_at
-        type: Utf8
-        nullable: true
-        description: ISO 8601 timestamp when the incident was first acknowledged; null if not yet acknowledged.
-        expr:
-          kind: path
-          path:
-            - acknowledged_at
-      - name: resolved_at
-        type: Utf8
-        nullable: true
-        description: ISO 8601 timestamp when the incident was resolved; null if still open.
-        expr:
-          kind: path
-          path:
-            - resolved_at
-      - name: alert_source
-        type: Utf8
-        nullable: true
-        description: Name of the integration or alert source that triggered the incident.
-        expr:
-          kind: path
-          path:
-            - alert_source
-            - name
-      - name: raw
-        type: Json
-        nullable: true
-        description: Raw incident object.
-        expr:
-          kind: current_row
-
   - name: services
     description: >-
       Lists all Squadcast services for the account. Returns service ID, name,
-      description, escalation policy, on-call users, and status.
+      slug, description, escalation policy, ownership, maintenance state, and
+      timestamps.
     guide: |
-      Use id to join with service_id on squadcast.incidents to group incidents
-      by service. Join name with GitHub repository names or Sentry project slugs
-      for cross-source service identity. Requires SQUADCAST_OWNER_ID set at
-      source-add time.
+      Use id, name, slug, owner, and maintainer to inventory service ownership.
+      Requires SQUADCAST_OWNER_ID set at source-add time.
     request:
       method: GET
       path: /v3/services
@@ -248,7 +83,7 @@ tables:
       - name: id
         type: Utf8
         nullable: false
-        description: Unique service ID; join to service_id on squadcast.incidents.
+        description: Unique service ID.
         expr:
           kind: path
           path:
@@ -256,11 +91,19 @@ tables:
       - name: name
         type: Utf8
         nullable: true
-        description: Service display name; join with Sentry project slugs or GitHub repo names.
+        description: Service display name.
         expr:
           kind: path
           path:
             - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL-safe service identifier.
+        expr:
+          kind: path
+          path:
+            - slug
       - name: description
         type: Utf8
         nullable: true
@@ -278,22 +121,46 @@ tables:
           path:
             - escalation_policy
             - name
-      - name: on_call_now
+      - name: owner
         type: Json
         nullable: true
-        description: Array of users currently on call for this service.
+        description: Service owner object.
         expr:
           kind: path
           path:
-            - on_call_now
-      - name: status
+            - owner
+      - name: maintainer
+        type: Json
+        nullable: true
+        description: Service maintainer object.
+        expr:
+          kind: path
+          path:
+            - maintainer
+      - name: on_maintenance
+        type: Boolean
+        nullable: true
+        description: Whether the service is currently in maintenance mode.
+        expr:
+          kind: path
+          path:
+            - on_maintenance
+      - name: created_at
         type: Utf8
         nullable: true
-        description: Service health status.
+        description: ISO 8601 timestamp when the service was created.
         expr:
           kind: path
           path:
-            - status
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the service was last updated.
+        expr:
+          kind: path
+          path:
+            - updated_at
       - name: raw
         type: Json
         nullable: true
@@ -306,10 +173,9 @@ tables:
       Lists all users in the Squadcast account. Returns user ID, first and last
       name, display username, email address, and account role.
     guide: |
-      Use email to join with GitHub PR authors, Linear assignees, and
-      PagerDuty users for cross-source engineer identity resolution. Join
-      id with assignee_id on squadcast.incidents. username_for_display is
-      the display name used in Squadcast notifications and the UI.
+      Use email to join with Linear assignees for cross-source engineer
+      identity resolution. username_for_display is the display name used in
+      Squadcast notifications and the UI.
     request:
       method: GET
       path: /v3/users
@@ -322,7 +188,7 @@ tables:
       - name: id
         type: Utf8
         nullable: false
-        description: Unique user ID; join to assignee_id on squadcast.incidents.
+        description: Unique user ID.
         expr:
           kind: path
           path:
@@ -354,7 +220,7 @@ tables:
       - name: email
         type: Utf8
         nullable: true
-        description: User email address; primary join key with GitHub, Linear, and PagerDuty.
+        description: User email address; primary join key with Linear.
         expr:
           kind: path
           path:
