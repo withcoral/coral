@@ -109,7 +109,6 @@ tables:
         SELECT name, total_cost, json_get_str(metadata, 'linearId') AS ticket
         FROM langfuse.traces
 
-      status values: OPTIMISTIC (default), SCHEDULED, PROCESSING, COMPLETED, ERROR
     fetch_limit_default: 500
     filters:
       - name: user_id
@@ -336,8 +335,6 @@ tables:
         required: false
       - name: environment
         required: false
-      - name: model
-        required: false
       - name: from_start_time
         required: false
       - name: to_start_time
@@ -361,9 +358,6 @@ tables:
         - name: environment
           from: filter
           key: environment
-        - name: model
-          from: filter
-          key: model
         - name: fromStartTime
           from: filter
           key: from_start_time
@@ -568,7 +562,8 @@ tables:
     guide: |
       Use data_type = 'NUMERIC' for numeric scores and 'CATEGORICAL' for label-based
       scores. Filter by trace_id to see all scores for a specific trace. Filter by
-      name to track a specific evaluation dimension across all traces.
+      name to track a specific evaluation dimension across all traces. Use
+      from_timestamp / to_timestamp to limit the time window for large projects.
 
       source values: API (SDK calls), ANNOTATION (human), EVAL (LLM judge)
     fetch_limit_default: 500
@@ -582,6 +577,10 @@ tables:
       - name: data_type
         required: false
       - name: environment
+        required: false
+      - name: from_timestamp
+        required: false
+      - name: to_timestamp
         required: false
     request:
       method: GET
@@ -602,6 +601,12 @@ tables:
         - name: environment
           from: filter
           key: environment
+        - name: fromTimestamp
+          from: filter
+          key: from_timestamp
+        - name: toTimestamp
+          from: filter
+          key: to_timestamp
     response:
       rows_path:
         - data
@@ -723,10 +728,15 @@ tables:
     guide: |
       Use id to filter traces by session: WHERE session_id = '<id>' on the traces
       table. Sessions are useful for tracking multi-turn conversations and
-      computing per-session cost and latency aggregates.
+      computing per-session cost and latency aggregates. Use from_timestamp /
+      to_timestamp to limit the time window for large projects.
     fetch_limit_default: 200
     filters:
       - name: environment
+        required: false
+      - name: from_timestamp
+        required: false
+      - name: to_timestamp
         required: false
     request:
       method: GET
@@ -735,6 +745,12 @@ tables:
         - name: environment
           from: filter
           key: environment
+        - name: fromTimestamp
+          from: filter
+          key: from_timestamp
+        - name: toTimestamp
+          from: filter
+          key: to_timestamp
     response:
       rows_path:
         - data

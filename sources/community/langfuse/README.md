@@ -1,7 +1,7 @@
 # Langfuse
 
 **Version:** 0.2.0
-**Backend:** HTTP (Langfuse API v2)
+**Backend:** HTTP (Langfuse Public API)
 **Tables:** 5
 **Base URL:** `https://cloud.langfuse.com` (override with `LANGFUSE_BASE_URL`)
 
@@ -15,9 +15,9 @@ AI cost attribution — link every dollar of LLM spend to the feature it shipped
 |---|---|---|
 | `langfuse.projects` | Projects accessible with the API keys | — |
 | `langfuse.traces` | LLM application traces with cost, latency, and metadata | `name`, `user_id`, `session_id`, `tags`, `environment`, `from_timestamp`, `to_timestamp` |
-| `langfuse.observations` | Spans, generations, and events within traces | `trace_id`, `type`, `name`, `user_id`, `environment`, `model`, `from_start_time`, `to_start_time` |
-| `langfuse.scores` | Evaluation scores on traces or observations | `trace_id`, `observation_id`, `name`, `data_type`, `environment` |
-| `langfuse.sessions` | Multi-turn conversation sessions | `environment` |
+| `langfuse.observations` | Spans, generations, and events within traces | `trace_id`, `type`, `name`, `user_id`, `environment`, `from_start_time`, `to_start_time` |
+| `langfuse.scores` | Evaluation scores on traces or observations | `trace_id`, `observation_id`, `name`, `data_type`, `environment`, `from_timestamp`, `to_timestamp` |
+| `langfuse.sessions` | Multi-turn conversation sessions | `environment`, `from_timestamp`, `to_timestamp` |
 
 ## Authentication
 
@@ -149,6 +149,9 @@ LIMIT 20;
 
 ### Filter generations by model and time window
 
+The time-window predicate is pushed to Langfuse to bound the fetched rows.
+The `model` predicate is then evaluated locally by Coral.
+
 ```sql
 SELECT name, model, input_tokens, output_tokens, total_cost, start_time
 FROM langfuse.observations
@@ -215,11 +218,28 @@ GROUP BY name
 ORDER BY avg_score DESC;
 ```
 
+Use `from_timestamp` and `to_timestamp` to bound score history in large
+projects:
+
+```sql
+SELECT name,
+       ROUND(AVG(value), 3) AS avg_score,
+       COUNT(*)              AS count
+FROM langfuse.scores
+WHERE data_type = 'NUMERIC'
+  AND from_timestamp = '2026-05-01T00:00:00Z'
+  AND to_timestamp   = '2026-05-31T23:59:59Z'
+GROUP BY name
+ORDER BY avg_score DESC;
+```
+
 ### Sessions ordered by creation time
 
 ```sql
 SELECT id, created_at, project_id
 FROM langfuse.sessions
+WHERE from_timestamp = '2026-05-01T00:00:00Z'
+  AND to_timestamp   = '2026-05-31T23:59:59Z'
 ORDER BY created_at DESC
 LIMIT 10;
 ```
@@ -239,7 +259,7 @@ ORDER BY timestamp;
 SELECT t.name        AS operation,
        t.session_id,
        COUNT(o.id)   AS loop_iterations,
-       ROUND(SUM(t.total_cost), 4) AS wasted_cost_usd,
+       ROUND(SUM(o.total_cost), 4) AS wasted_cost_usd,
        MIN(t.timestamp) AS session_start
 FROM langfuse.traces t
 JOIN langfuse.observations o
@@ -315,8 +335,8 @@ the custom `linearId` field your app sets in trace metadata:
 SELECT t.name                                AS ai_operation,
        json_get_str(t.metadata, 'linearId') AS linear_id,
        li.title                              AS feature_title,
-       li.state                              AS ticket_state,
-       li.assignee__name                     AS owner,
+       li.state_name                         AS ticket_state,
+       li.assignee_name                      AS owner,
        ROUND(SUM(t.total_cost), 4)          AS cost_usd,
        COUNT(t.id)                           AS trace_count
 FROM langfuse.traces t
@@ -324,7 +344,7 @@ LEFT JOIN linear.issues li
   ON li.identifier = json_get_str(t.metadata, 'linearId')
 GROUP BY t.name,
          json_get_str(t.metadata, 'linearId'),
-         li.title, li.state, li.assignee__name
+         li.title, li.state_name, li.assignee_name
 ORDER BY cost_usd DESC
 LIMIT 20;
 ```
@@ -401,7 +421,7 @@ observations
 - `traces.latency` and `observations.latency` are in **seconds** (not milliseconds).
 - `traces.metadata` is a JSON object your application attaches at trace creation. Use `json_get_str(metadata, 'key')` to extract fields. This is the primary mechanism for linking traces to Linear tickets, GitHub PRs, or other business context.
 - `traces.input` and `traces.output` contain the raw LLM input/output payload. These can be large; avoid selecting them in high-volume aggregation queries.
-- `fetch_limit_default` is 500 for traces, 1000 for observations, 500 for scores, and 200 for sessions. Use `from_timestamp` / `to_timestamp` (traces) or `from_start_time` / `to_start_time` (observations) to work within a specific time window for large projects.
+- `fetch_limit_default` is 500 for traces, 1000 for observations, 500 for scores, and 200 for sessions. Use `from_timestamp` / `to_timestamp` for traces, scores, and sessions, or `from_start_time` / `to_start_time` for observations, to work within a specific time window for large projects.
 - All timestamp columns are ISO 8601 strings. Cast with `CAST(timestamp AS TIMESTAMP)` for date arithmetic.
 - Rate limits vary by Langfuse plan. The connector handles `429` responses automatically via `Retry-After`.
 
