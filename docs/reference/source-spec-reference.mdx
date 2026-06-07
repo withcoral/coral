@@ -144,15 +144,35 @@ auth:
 
 ```yaml
 auth:
+  kind: headers
+  headers:
+    - name: X-API-Key
+      key: API_TOKEN
+    - name: X-Application-Key
+      key: APPLICATION_KEY
+```
+
+```yaml
+auth:
   kind: none
 ```
 
-Auth keys must reference declared inputs. Auth describes where the app-resolved
-value is placed on the wire. It does not store values in materialized artifacts.
+Auth keys must reference declared secret inputs. `kind: headers` sends each
+listed header from its referenced secret input. Auth describes where the
+app-resolved value is placed on the wire. It does not store values in
+materialized artifacts.
 When Coral fetches OpenAPI or GraphQL descriptor/schema URLs during source
 materialization, it reuses interface auth only when that acquisition URL is
 same-origin with the runtime `base_url` or GraphQL `endpoint`. Cross-origin
 public descriptors are fetched without provider credentials.
+
+OpenAPI `url` and `base_url`, MCP Streamable HTTP
+`server.transport.url`, GraphQL `endpoint`, and GraphQL live-introspection
+endpoint overrides may be HTTPS templates using `{{input.KEY}}` tokens. URL
+template tokens must reference declared `kind: variable` inputs, not secrets,
+and must not include inline defaults. Coral validates the rendered URL during
+materialization and invocation. HTTP remains limited to localhost or loopback
+development URLs.
 
 OAuth credential-method endpoint URLs (`authorization_url`,
 `device_authorization_url`, and `token_url`) may use source-input templates, but
@@ -203,14 +223,16 @@ interfaces:
 | --- | --- | --- |
 | `id` | Yes | Interface id. |
 | `type` | Yes | Must be `openapi`. |
-| `url` | One of `url`/`file` | HTTPS OpenAPI descriptor URL. Localhost HTTP is allowed for development fixtures. |
+| `url` | One of `url`/`file` | HTTPS OpenAPI descriptor URL or `{{input.KEY}}` URL template. Localhost HTTP is allowed for development fixtures. |
 | `file` | One of `url`/`file` | Local OpenAPI descriptor file. |
-| `base_url` | No | Runtime provider base URL override. |
+| `base_url` | No | Runtime provider base URL override or `{{input.KEY}}` URL template. |
 | `auth` | No | Auth descriptor. |
 | `inputs` | No | Interface-local inputs. |
 
-Provider URLs are literal. Template tokens such as `{{input.API_BASE}}` are not
-supported in OpenAPI `url` or `base_url`; use a concrete URL in the SourceSpec.
+OpenAPI `url` and `base_url` may be literal URLs or HTTPS templates using
+`{{input.KEY}}` tokens. Template tokens must reference declared variable inputs,
+not secrets, and must not include inline defaults. Coral validates the rendered
+URL during source materialization and invocation.
 For local descriptor files, `coral source add --file <manifest>` resolves
 relative `file:` paths from the manifest directory before import. Direct API
 imports must send absolute file paths.
@@ -264,15 +286,16 @@ interfaces:
 | Field | Required | Description |
 | --- | --- | --- |
 | `server.transport.type` | Yes | `streamable_http` or `stdio`. |
-| `server.transport.url` | For Streamable HTTP | HTTPS URL. Localhost HTTP is allowed for development fixtures. |
+| `server.transport.url` | For Streamable HTTP | HTTPS URL or `{{input.KEY}}` URL template. Localhost HTTP is allowed for development fixtures. |
 | `server.transport.command` | For stdio | Local executable command. Coral executes it directly, not through a shell. |
 | `server.transport.args` | No | Stdio argument array. |
 | `server.auth` | No | Auth descriptor for Streamable HTTP. |
 | `server.env` | No | Stdio environment bindings from declared inputs. |
 
-Streamable HTTP `server.transport.url` is a literal provider URL. Template
-tokens such as `{{input.MCP_URL}}` are not supported for the upstream MCP
-endpoint.
+Streamable HTTP `server.transport.url` may be a literal URL or an HTTPS
+template using `{{input.KEY}}` tokens. Template tokens must reference declared
+variable inputs, not secrets, and must not include inline defaults. Coral
+validates the rendered endpoint during source materialization and invocation.
 
 During materialization, Coral snapshots upstream `tools/list` and generates one
 capability per supported tool. Coral maps MCP `ToolAnnotations` to effect
@@ -303,12 +326,14 @@ interfaces:
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `endpoint` | Yes | GraphQL endpoint. HTTPS is required except localhost development URLs. |
+| `endpoint` | Yes | GraphQL endpoint URL or `{{input.KEY}}` URL template. HTTPS is required except localhost development URLs. |
 | `schema` | Yes | Schema descriptor. |
 | `auth` | No | Auth descriptor for endpoint/schema fetch and invocation. |
 
-GraphQL endpoint and schema URLs are literal provider URLs. Template tokens are
-not supported for these fields.
+GraphQL `endpoint` and live-introspection endpoint overrides may be literal URLs
+or HTTPS templates using `{{input.KEY}}` tokens. Template tokens must reference
+declared variable inputs, not secrets, and must not include inline defaults.
+SDL and introspection JSON schema URLs are literal descriptor URLs.
 
 If `auth` is configured, Coral sends it while fetching GraphQL SDL,
 introspection JSON, or live introspection only when that schema acquisition URL

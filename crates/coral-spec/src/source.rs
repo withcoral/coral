@@ -22,7 +22,7 @@ use crate::{
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
     ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec,
-    ManifestOAuthScopesSpec, ParsedTemplate, Result,
+    ManifestOAuthScopesSpec, ParsedTemplate, Result, TemplateNamespace,
 };
 
 const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
@@ -116,7 +116,14 @@ pub struct McpServerDescriptor {
 pub enum AuthDescriptor {
     BearerInput { key: String },
     HeaderInput { name: String, key: String },
+    Headers { headers: Vec<AuthHeaderDescriptor> },
     None,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthHeaderDescriptor {
+    pub name: String,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,7 +429,15 @@ struct RawMcpEnvBinding {
 enum RawAuth {
     BearerInput { key: String },
     HeaderInput { name: String, key: String },
+    Headers { headers: Vec<RawAuthHeader> },
     None,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawAuthHeader {
+    name: String,
+    key: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -603,10 +618,7 @@ fn parse_interface(source_name: &str, raw: RawInterface) -> Result<SourceInterfa
         } => {
             let inputs = parse_inputs(source_name, &format!("interface '{id}'"), &inputs)?;
             let descriptor = match (url, file) {
-                (Some(url), None) => {
-                    validate_https_template(source_name, &id, "OpenAPI url", &url)?;
-                    OpenApiDescriptor::Url { url }
-                }
+                (Some(url), None) => OpenApiDescriptor::Url { url },
                 (None, Some(file)) => OpenApiDescriptor::File { file },
                 (Some(_), Some(_)) | (None, None) => {
                     return Err(ManifestError::validation(format!(
@@ -614,9 +626,6 @@ fn parse_interface(source_name: &str, raw: RawInterface) -> Result<SourceInterfa
                     )));
                 }
             };
-            if let Some(base_url) = base_url.as_ref() {
-                validate_https_template(source_name, &id, "OpenAPI base_url", base_url)?;
-            }
             Ok(SourceInterface::OpenApi(OpenApiInterface {
                 id,
                 descriptor,
@@ -637,7 +646,6 @@ fn parse_interface(source_name: &str, raw: RawInterface) -> Result<SourceInterfa
                     McpTransportDescriptor::Stdio { command, args }
                 }
                 RawMcpTransport::StreamableHttp { url } => {
-                    validate_https_template(source_name, &id, "MCP Streamable HTTP url", &url)?;
                     McpTransportDescriptor::StreamableHttp { url }
                 }
             };
@@ -665,35 +673,17 @@ fn parse_interface(source_name: &str, raw: RawInterface) -> Result<SourceInterfa
             auth,
             inputs,
         } => {
-            validate_https_template(source_name, &id, "GraphQL endpoint", &endpoint)?;
             let inputs = parse_inputs(source_name, &format!("interface '{id}'"), &inputs)?;
             let schema = match schema {
-                RawGraphqlSchema::SdlUrl { url } => {
-                    validate_https_url_literal(source_name, &id, "GraphQL SDL url", &url)?;
-                    GraphqlSchemaDescriptor::SdlUrl { url }
-                }
+                RawGraphqlSchema::SdlUrl { url } => GraphqlSchemaDescriptor::SdlUrl { url },
                 RawGraphqlSchema::SdlFile { file } => GraphqlSchemaDescriptor::SdlFile { file },
                 RawGraphqlSchema::IntrospectionJsonUrl { url } => {
-                    validate_https_url_literal(
-                        source_name,
-                        &id,
-                        "GraphQL introspection JSON url",
-                        &url,
-                    )?;
                     GraphqlSchemaDescriptor::IntrospectionJsonUrl { url }
                 }
                 RawGraphqlSchema::IntrospectionJsonFile { file } => {
                     GraphqlSchemaDescriptor::IntrospectionJsonFile { file }
                 }
                 RawGraphqlSchema::IntrospectionQuery { endpoint } => {
-                    if let Some(endpoint) = endpoint.as_ref() {
-                        validate_https_template(
-                            source_name,
-                            &id,
-                            "GraphQL introspection endpoint",
-                            endpoint,
-                        )?;
-                    }
                     GraphqlSchemaDescriptor::IntrospectionQuery { endpoint }
                 }
             };
@@ -737,6 +727,15 @@ impl From<RawAuth> for AuthDescriptor {
         match value {
             RawAuth::BearerInput { key } => Self::BearerInput { key },
             RawAuth::HeaderInput { name, key } => Self::HeaderInput { name, key },
+            RawAuth::Headers { headers } => Self::Headers {
+                headers: headers
+                    .into_iter()
+                    .map(|header| AuthHeaderDescriptor {
+                        name: header.name,
+                        key: header.key,
+                    })
+                    .collect(),
+            },
             RawAuth::None => Self::None,
         }
     }
@@ -1191,44 +1190,154 @@ fn validate_interface_references(
         .iter()
         .map(|input| (input.key.as_str(), input.kind))
         .collect::<BTreeMap<_, _>>();
-    let known = input_kind_by_key.keys().copied().collect::<BTreeSet<_>>();
-    let check_key = |key: &str, context: &str| {
-        if known.contains(key) {
-            Ok(())
-        } else {
-            Err(ManifestError::validation(format!(
-                "source '{source_name}' interface '{}' {context} references undeclared input '{key}'",
-                interface.id()
-            )))
-        }
-    };
-    let mut check_secret_key = |key: &str, context: &str| match input_kind_by_key.get(key) {
-        Some(ManifestInputKind::Secret) => Ok(()),
-        Some(ManifestInputKind::Variable) => Err(ManifestError::validation(format!(
-            "source '{source_name}' interface '{}' {context} must reference secret input '{key}'",
-            interface.id()
-        ))),
-        None => Err(ManifestError::validation(format!(
-            "source '{source_name}' interface '{}' {context} references undeclared input '{key}'",
-            interface.id()
-        ))),
-    };
     match interface {
         SourceInterface::OpenApi(interface) => {
-            validate_auth_ref(interface.auth.as_ref(), &mut check_secret_key)
+            validate_openapi_interface_references(source_name, interface, &input_kind_by_key)
         }
         SourceInterface::Mcp(interface) => {
-            validate_auth_ref(interface.server.auth.as_ref(), &mut check_secret_key)?;
-            for env in &interface.server.env {
-                check_key(&env.key, "env")?;
-            }
-            Ok(())
+            validate_mcp_interface_references(source_name, interface, &input_kind_by_key)
         }
         SourceInterface::Graphql(interface) => {
-            validate_auth_ref(interface.auth.as_ref(), &mut check_secret_key)
+            validate_graphql_interface_references(source_name, interface, &input_kind_by_key)
         }
         SourceInterface::File(_) => Ok(()),
     }
+}
+
+fn validate_declared_input_ref(
+    source_name: &str,
+    interface_id: &str,
+    input_kind_by_key: &BTreeMap<&str, ManifestInputKind>,
+    key: &str,
+    context: &str,
+) -> Result<()> {
+    if input_kind_by_key.contains_key(key) {
+        Ok(())
+    } else {
+        Err(ManifestError::validation(format!(
+            "source '{source_name}' interface '{interface_id}' {context} references undeclared input '{key}'"
+        )))
+    }
+}
+
+fn validate_secret_input_ref(
+    source_name: &str,
+    interface_id: &str,
+    input_kind_by_key: &BTreeMap<&str, ManifestInputKind>,
+    key: &str,
+    context: &str,
+) -> Result<()> {
+    match input_kind_by_key.get(key) {
+        Some(ManifestInputKind::Secret) => Ok(()),
+        Some(ManifestInputKind::Variable) => Err(ManifestError::validation(format!(
+            "source '{source_name}' interface '{interface_id}' {context} must reference secret input '{key}'"
+        ))),
+        None => Err(ManifestError::validation(format!(
+            "source '{source_name}' interface '{interface_id}' {context} references undeclared input '{key}'"
+        ))),
+    }
+}
+
+fn validate_openapi_interface_references(
+    source_name: &str,
+    interface: &OpenApiInterface,
+    input_kind_by_key: &BTreeMap<&str, ManifestInputKind>,
+) -> Result<()> {
+    if let OpenApiDescriptor::Url { url } = &interface.descriptor {
+        validate_provider_url_template(
+            source_name,
+            &interface.id,
+            "OpenAPI url",
+            url,
+            input_kind_by_key,
+        )?;
+    }
+    if let Some(base_url) = &interface.base_url {
+        validate_provider_url_template(
+            source_name,
+            &interface.id,
+            "OpenAPI base_url",
+            base_url,
+            input_kind_by_key,
+        )?;
+    }
+    let mut check_secret_key = |key: &str, context: &str| {
+        validate_secret_input_ref(source_name, &interface.id, input_kind_by_key, key, context)
+    };
+    validate_auth_ref(interface.auth.as_ref(), &mut check_secret_key)
+}
+
+fn validate_mcp_interface_references(
+    source_name: &str,
+    interface: &McpInterface,
+    input_kind_by_key: &BTreeMap<&str, ManifestInputKind>,
+) -> Result<()> {
+    if let McpTransportDescriptor::StreamableHttp { url } = &interface.server.transport {
+        validate_provider_url_template(
+            source_name,
+            &interface.id,
+            "MCP Streamable HTTP url",
+            url,
+            input_kind_by_key,
+        )?;
+    }
+    let mut check_secret_key = |key: &str, context: &str| {
+        validate_secret_input_ref(source_name, &interface.id, input_kind_by_key, key, context)
+    };
+    validate_auth_ref(interface.server.auth.as_ref(), &mut check_secret_key)?;
+    for env in &interface.server.env {
+        validate_declared_input_ref(
+            source_name,
+            &interface.id,
+            input_kind_by_key,
+            &env.key,
+            "env",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_graphql_interface_references(
+    source_name: &str,
+    interface: &GraphqlInterface,
+    input_kind_by_key: &BTreeMap<&str, ManifestInputKind>,
+) -> Result<()> {
+    validate_provider_url_template(
+        source_name,
+        &interface.id,
+        "GraphQL endpoint",
+        &interface.endpoint,
+        input_kind_by_key,
+    )?;
+    match &interface.schema {
+        GraphqlSchemaDescriptor::SdlUrl { url } => {
+            validate_https_url_literal(source_name, &interface.id, "GraphQL SDL url", url)?;
+        }
+        GraphqlSchemaDescriptor::IntrospectionJsonUrl { url } => {
+            validate_https_url_literal(
+                source_name,
+                &interface.id,
+                "GraphQL introspection JSON url",
+                url,
+            )?;
+        }
+        GraphqlSchemaDescriptor::IntrospectionQuery {
+            endpoint: Some(endpoint),
+        } => validate_provider_url_template(
+            source_name,
+            &interface.id,
+            "GraphQL introspection endpoint",
+            endpoint,
+            input_kind_by_key,
+        )?,
+        GraphqlSchemaDescriptor::SdlFile { .. }
+        | GraphqlSchemaDescriptor::IntrospectionJsonFile { .. }
+        | GraphqlSchemaDescriptor::IntrospectionQuery { endpoint: None } => {}
+    }
+    let mut check_secret_key = |key: &str, context: &str| {
+        validate_secret_input_ref(source_name, &interface.id, input_kind_by_key, key, context)
+    };
+    validate_auth_ref(interface.auth.as_ref(), &mut check_secret_key)
 }
 
 fn validate_auth_ref(
@@ -1238,6 +1347,12 @@ fn validate_auth_ref(
     match auth {
         Some(AuthDescriptor::BearerInput { key } | AuthDescriptor::HeaderInput { key, .. }) => {
             check_key(key, "auth")
+        }
+        Some(AuthDescriptor::Headers { headers }) => {
+            for header in headers {
+                check_key(&header.key, "auth")?;
+            }
+            Ok(())
         }
         Some(AuthDescriptor::None) | None => Ok(()),
     }
@@ -1256,18 +1371,51 @@ fn validate_interface_id(source_name: &str, id: &str) -> Result<()> {
     }
 }
 
-fn validate_https_template(
+fn validate_provider_url_template(
     source_name: &str,
     interface_id: &str,
     label: &str,
     template: &ParsedTemplate,
+    input_kind_by_key: &BTreeMap<&str, ManifestInputKind>,
 ) -> Result<()> {
-    if template.tokens().next().is_some() {
+    if template.tokens().next().is_none() {
+        return validate_https_url_literal(source_name, interface_id, label, template.raw());
+    }
+    if !template.raw().starts_with("https://") {
         return Err(ManifestError::validation(format!(
-            "source '{source_name}' interface '{interface_id}' {label} must be a literal URL; template tokens are not supported for provider URLs"
+            "source '{source_name}' interface '{interface_id}' {label} URL templates must start with https://"
         )));
     }
-    validate_https_url_literal(source_name, interface_id, label, template.raw())
+    for token in template.tokens() {
+        if token.namespace() != &TemplateNamespace::Input {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' interface '{interface_id}' {label} URL template token '{}' must use the input namespace",
+                token.raw()
+            )));
+        }
+        if token.default_value().is_some() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' interface '{interface_id}' {label} URL template token '{}' must declare defaults under top-level inputs",
+                token.raw()
+            )));
+        }
+        match input_kind_by_key.get(token.key()) {
+            Some(ManifestInputKind::Variable) => {}
+            Some(ManifestInputKind::Secret) => {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' interface '{interface_id}' {label} URL template must reference variable input '{}', not a secret",
+                    token.key()
+                )));
+            }
+            None => {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' interface '{interface_id}' {label} URL template references undeclared input '{}'",
+                    token.key()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_https_url_literal(
@@ -1318,7 +1466,7 @@ fn default_oauth_redirect_uri_port_mode() -> RawOAuthRedirectUriPortMode {
 #[cfg(test)]
 mod tests {
     use crate::{
-        ManifestCredentialMethodKind, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
+        AuthDescriptor, ManifestCredentialMethodKind, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
         ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, SourceInterface,
         parse_source_manifest_yaml,
     };
@@ -1521,6 +1669,72 @@ interfaces:
     }
 
     #[test]
+    fn parses_multi_header_auth() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+spec_version: 1
+kind: source
+name: datadog
+inputs:
+  - key: DD_API_KEY
+    kind: secret
+  - key: DD_APPLICATION_KEY
+    kind: secret
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: headers
+      headers:
+        - name: DD-API-KEY
+          key: DD_API_KEY
+        - name: DD-APPLICATION-KEY
+          key: DD_APPLICATION_KEY
+",
+        )
+        .expect("parse source spec");
+        let SourceInterface::OpenApi(interface) =
+            manifest.interfaces.first().expect("first interface")
+        else {
+            panic!("expected openapi interface");
+        };
+        assert!(matches!(
+            interface.auth.as_ref(),
+            Some(AuthDescriptor::Headers { headers }) if headers.len() == 2
+        ));
+    }
+
+    #[test]
+    fn multi_header_auth_must_reference_secret_inputs() {
+        let error = parse_source_manifest_yaml(
+            r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: DD_API_KEY
+    kind: secret
+  - key: account_id
+    kind: variable
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: headers
+      headers:
+        - name: DD-API-KEY
+          key: DD_API_KEY
+        - name: Account-ID
+          key: account_id
+",
+        )
+        .expect_err("variable auth input rejected");
+        assert!(error.to_string().contains("must reference secret input"));
+    }
+
+    #[test]
     fn secret_inputs_must_not_declare_defaults() {
         let error = parse_source_manifest_yaml(
             r"
@@ -1661,54 +1875,69 @@ interfaces:
     }
 
     #[test]
-    fn provider_urls_must_be_literal() {
-        for raw in [
+    fn provider_url_templates_may_reference_variables() {
+        parse_source_manifest_yaml(
             r"
 spec_version: 1
 kind: source
-name: bad
+name: datadog
 inputs:
-  - key: API_BASE
+  - key: DD_SITE
     kind: variable
-interfaces:
-  - id: rest
-    type: openapi
-    url: '{{input.API_BASE}}/openapi.json'
-",
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: API_BASE
-    kind: variable
+    default: datadoghq.com
 interfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.json
-    base_url: '{{input.API_BASE}}'
-",
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: API_BASE
-    kind: variable
-interfaces:
+    base_url: https://api.{{input.DD_SITE}}
   - id: graph
     type: graphql
-    endpoint: https://example.com/graphql
+    endpoint: https://api.{{input.DD_SITE}}/graphql
     schema:
-      kind: sdl_url
-      url: '{{input.API_BASE}}/schema.graphql'
+      kind: introspection_query
+  - id: tools
+    type: mcp
+    server:
+      transport:
+        type: streamable_http
+        url: https://mcp.{{input.DD_SITE}}/api/unstable/mcp-server/mcp
 ",
+        )
+        .expect("provider URL templates parse");
+    }
+
+    #[test]
+    fn provider_url_templates_reject_secret_inputs() {
+        let error = parse_source_manifest_yaml(
             r"
 spec_version: 1
 kind: source
 name: bad
 inputs:
-  - key: MCP_URL
+  - key: API_TOKEN
+    kind: secret
+interfaces:
+  - id: tools
+    type: mcp
+    server:
+      transport:
+        type: streamable_http
+        url: https://{{input.API_TOKEN}}.example.com/mcp
+",
+        )
+        .expect_err("secret URL input rejected");
+        assert!(error.to_string().contains("not a secret"));
+    }
+
+    #[test]
+    fn provider_url_templates_reject_remote_http() {
+        let error = parse_source_manifest_yaml(
+            r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: HOST
     kind: variable
 interfaces:
   - id: tools
@@ -1716,29 +1945,11 @@ interfaces:
     server:
       transport:
         type: streamable_http
-        url: '{{input.MCP_URL}}'
+        url: http://{{input.HOST}}/mcp
 ",
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: GRAPHQL_ENDPOINT
-    kind: variable
-interfaces:
-  - id: graph
-    type: graphql
-    endpoint: https://example.com/graphql
-    schema:
-      kind: introspection_query
-      endpoint: '{{input.GRAPHQL_ENDPOINT}}'
-",
-        ] {
-            let error = parse_source_manifest_yaml(raw).expect_err("provider URL rejected");
-            let message = error.to_string();
-            assert!(message.contains("literal URL"));
-            assert!(message.contains("template tokens"));
-        }
+        )
+        .expect_err("remote HTTP URL template rejected");
+        assert!(error.to_string().contains("must start with https://"));
     }
 
     #[test]

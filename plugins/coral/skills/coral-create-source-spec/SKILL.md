@@ -111,6 +111,7 @@ snapshots.
 - Auth descriptors reference input keys:
   - `kind: bearer_input`
   - `kind: header_input`
+  - `kind: headers`
   - `kind: none`
 - Descriptor/schema fetches receive interface auth only when the acquisition URL
   is same-origin with the runtime OpenAPI `base_url` or GraphQL `endpoint`.
@@ -118,6 +119,11 @@ snapshots.
 - Provider, descriptor, schema, and OAuth credential endpoint URLs use HTTPS.
   Localhost or loopback HTTP is only for development fixtures, and OAuth
   endpoint templates must not render to non-loopback HTTP.
+- OpenAPI `url`/`base_url`, MCP Streamable HTTP `server.transport.url`,
+  GraphQL `endpoint`, and GraphQL live-introspection endpoint overrides may use
+  `{{input.KEY}}` URL templates. Provider URL templates must reference declared
+  `kind: variable` inputs only; never use secret inputs or inline defaults in
+  those URL templates.
 - Add `test_queries` only for cheap read-only SQL checks.
 - Do not assume every capability gets a SQL binding. Mutations, actions,
   ambiguous output, and most upstream MCP tools are TypeScript-callable only.
@@ -155,6 +161,9 @@ interfaces:
         kind: bearer_input
         key: API_TOKEN
 ```
+
+Use `auth.kind: headers` when a provider requires multiple custom headers for
+one interface.
 
 Stdio MCP is a trusted local-source path and must use direct command/args, not a
 shell string.

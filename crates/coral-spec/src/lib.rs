@@ -95,9 +95,9 @@ pub use openapi::{
 };
 pub use parser::{parse_source_manifest_value, parse_source_manifest_yaml};
 pub use source::{
-    AuthDescriptor, FileFormatDescriptor as SourceFileFormatDescriptor, FileInterface,
-    GraphqlInterface, GraphqlSchemaDescriptor, McpEnvBinding, McpInterface, McpServerDescriptor,
-    McpTransportDescriptor, OpenApiDescriptor, OpenApiInterface, SourceInterface, SourceSpec,
-    SourceSpecKind, generated_source_spec_schema,
+    AuthDescriptor, AuthHeaderDescriptor, FileFormatDescriptor as SourceFileFormatDescriptor,
+    FileInterface, GraphqlInterface, GraphqlSchemaDescriptor, McpEnvBinding, McpInterface,
+    McpServerDescriptor, McpTransportDescriptor, OpenApiDescriptor, OpenApiInterface,
+    SourceInterface, SourceSpec, SourceSpecKind, generated_source_spec_schema,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};

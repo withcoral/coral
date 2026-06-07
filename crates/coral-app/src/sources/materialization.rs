@@ -13,7 +13,7 @@ use coral_importers::{ImportResult, RawInterfaceInput, import_source};
 use coral_spec::{
     AuthDescriptor, FileInterface, GraphqlInterface, GraphqlSchemaDescriptor, McpInterface,
     McpTransportDescriptor, OpenApiDescriptor, OpenApiInterface, ParsedTemplate,
-    SourceFileFormatDescriptor, SourceInterface, SourceSpec,
+    SourceFileFormatDescriptor, SourceInterface, SourceSpec, TemplateNamespace, TemplatePart,
 };
 use coral_sql::SqlBindingContributor;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -567,9 +567,15 @@ fn read_openapi_interface_document(
     match &interface.descriptor {
         OpenApiDescriptor::File { file } => read_file_descriptor(file),
         OpenApiDescriptor::Url { url } => {
-            let url = literal_template_url(url, "OpenAPI descriptor url")?;
-            let provider_origin =
-                literal_template_url_if_static(interface.base_url.as_ref(), "OpenAPI base_url");
+            let url =
+                render_provider_url_template(url, "OpenAPI descriptor url", provider_credentials)?;
+            let provider_origin = interface
+                .base_url
+                .as_ref()
+                .map(|base_url| {
+                    render_provider_url_template(base_url, "OpenAPI base_url", provider_credentials)
+                })
+                .transpose()?;
             let request_headers = descriptor_materialization_auth_headers(
                 interface.auth.as_ref(),
                 "OpenAPI descriptor acquisition",
@@ -593,7 +599,8 @@ fn read_mcp_tools_list(
                 "MCP tools/list acquisition",
                 provider_credentials,
             )?;
-            let endpoint = literal_template_url(url, "MCP Streamable HTTP url")?;
+            let endpoint =
+                render_provider_url_template(url, "MCP Streamable HTTP url", provider_credentials)?;
             read_mcp_tools_list_streamable_http(&interface.id, &endpoint, &request_headers)
         }
         McpTransportDescriptor::Stdio { command, args } => {
@@ -680,14 +687,17 @@ fn read_graphql_schema_input(
         }
         GraphqlSchemaDescriptor::SdlUrl { url } => {
             let url = literal_string_url(url, "GraphQL SDL URL")?;
-            let provider_origin =
-                literal_template_url_if_static(Some(&interface.endpoint), "GraphQL endpoint");
+            let provider_origin = render_provider_url_template(
+                &interface.endpoint,
+                "GraphQL endpoint",
+                provider_credentials,
+            )?;
             let request_headers = descriptor_materialization_auth_headers(
                 interface.auth.as_ref(),
                 "GraphQL SDL URL acquisition",
                 provider_credentials,
                 &url,
-                provider_origin.as_deref(),
+                Some(&provider_origin),
             )?;
             let bytes = read_url_descriptor(&url, "GraphQL SDL URL", &request_headers)?;
             let text = String::from_utf8(bytes).map_err(|error| {
@@ -711,14 +721,17 @@ fn read_graphql_schema_input(
         }
         GraphqlSchemaDescriptor::IntrospectionJsonUrl { url } => {
             let url = literal_string_url(url, "GraphQL introspection JSON URL")?;
-            let provider_origin =
-                literal_template_url_if_static(Some(&interface.endpoint), "GraphQL endpoint");
+            let provider_origin = render_provider_url_template(
+                &interface.endpoint,
+                "GraphQL endpoint",
+                provider_credentials,
+            )?;
             let request_headers = descriptor_materialization_auth_headers(
                 interface.auth.as_ref(),
                 "GraphQL introspection JSON URL acquisition",
                 provider_credentials,
                 &url,
-                provider_origin.as_deref(),
+                Some(&provider_origin),
             )?;
             let bytes =
                 read_url_descriptor(&url, "GraphQL introspection JSON URL", &request_headers)?;
@@ -743,15 +756,22 @@ fn read_graphql_live_introspection(
     provider_credentials: &ProviderCredentialMaterial,
 ) -> Result<RawInterfaceInput, AppError> {
     let endpoint_template = endpoint_override.unwrap_or(&interface.endpoint);
-    let endpoint = literal_template_url(endpoint_template, "GraphQL introspection endpoint")?;
-    let provider_origin =
-        literal_template_url_if_static(Some(&interface.endpoint), "GraphQL endpoint");
+    let endpoint = render_provider_url_template(
+        endpoint_template,
+        "GraphQL introspection endpoint",
+        provider_credentials,
+    )?;
+    let provider_origin = render_provider_url_template(
+        &interface.endpoint,
+        "GraphQL endpoint",
+        provider_credentials,
+    )?;
     let request_headers = descriptor_materialization_auth_headers(
         interface.auth.as_ref(),
         "GraphQL live introspection",
         provider_credentials,
         &endpoint,
-        provider_origin.as_deref(),
+        Some(&provider_origin),
     )?;
     let value = post_json_rpc_like_document(
         endpoint,
@@ -1141,6 +1161,16 @@ fn materialization_auth_headers(
                 value: provider_credential_value(provider_credentials, key, context)?,
             }])
         }
+        Some(AuthDescriptor::Headers { headers }) => headers
+            .iter()
+            .map(|header| {
+                validate_provider_header_name(&header.name, context)?;
+                Ok(ProviderRequestHeader {
+                    name: header.name.clone(),
+                    value: provider_credential_value(provider_credentials, &header.key, context)?,
+                })
+            })
+            .collect(),
     }
 }
 
@@ -1218,24 +1248,39 @@ fn validate_provider_header_name(name: &str, context: &str) -> Result<(), AppErr
         })
 }
 
-fn literal_template_url(template: &ParsedTemplate, field: &str) -> Result<String, AppError> {
-    if template.tokens().next().is_some() {
+fn render_provider_url_template(
+    template: &ParsedTemplate,
+    field: &str,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<String, AppError> {
+    let mut rendered = String::with_capacity(template.raw().len());
+    for part in template.parts() {
+        match part {
+            TemplatePart::Literal(literal) => rendered.push_str(literal),
+            TemplatePart::Token(token) => {
+                if token.namespace() != &TemplateNamespace::Input {
+                    return Err(AppError::FailedPrecondition(format!(
+                        "{field} contains unsupported template token '{}'",
+                        token.raw()
+                    )));
+                }
+                rendered.push_str(&provider_source_input_value(
+                    provider_credentials,
+                    token.key(),
+                    field,
+                )?);
+            }
+        }
+    }
+    let parsed = reqwest::Url::parse(&rendered).map_err(|error| {
+        AppError::InvalidInput(format!("{field} URL '{rendered}' is invalid: {error}"))
+    })?;
+    if !descriptor_url_is_allowed(&parsed) {
         return Err(AppError::FailedPrecondition(format!(
-            "{field} contains template tokens, but source materialization currently supports only literal provider acquisition URLs"
+            "{field} URL '{rendered}' must use HTTPS, except localhost development URLs"
         )));
     }
-    Ok(template.raw().to_string())
-}
-
-fn literal_template_url_if_static(
-    template: Option<&ParsedTemplate>,
-    _field: &str,
-) -> Option<String> {
-    let template = template?;
-    if template.tokens().next().is_some() {
-        return None;
-    }
-    Some(template.raw().to_string())
+    Ok(rendered)
 }
 
 fn literal_string_url(url: &str, field: &str) -> Result<String, AppError> {
@@ -1799,7 +1844,7 @@ mod tests {
     use std::net::TcpListener;
     use std::thread::JoinHandle;
 
-    use coral_spec::parse_source_manifest_yaml;
+    use coral_spec::{AuthHeaderDescriptor, parse_source_manifest_yaml};
     use tempfile::TempDir;
 
     use super::*;
@@ -2276,6 +2321,45 @@ interfaces:
                 name: "authorization".to_string(),
                 value: "Bearer secret-token".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn materialization_auth_headers_resolve_multiple_headers() {
+        let credentials = BTreeMap::from([
+            ("api_key".to_string(), "api-secret".to_string()),
+            ("app_key".to_string(), "app-secret".to_string()),
+        ]);
+        let headers = materialization_auth_headers(
+            Some(&AuthDescriptor::Headers {
+                headers: vec![
+                    AuthHeaderDescriptor {
+                        name: "DD-API-KEY".to_string(),
+                        key: "api_key".to_string(),
+                    },
+                    AuthHeaderDescriptor {
+                        name: "DD-APPLICATION-KEY".to_string(),
+                        key: "app_key".to_string(),
+                    },
+                ],
+            }),
+            "Datadog descriptor acquisition",
+            &credentials,
+        )
+        .expect("auth headers");
+
+        assert_eq!(
+            headers,
+            vec![
+                ProviderRequestHeader {
+                    name: "DD-API-KEY".to_string(),
+                    value: "api-secret".to_string(),
+                },
+                ProviderRequestHeader {
+                    name: "DD-APPLICATION-KEY".to_string(),
+                    value: "app-secret".to_string(),
+                },
+            ]
         );
     }
 

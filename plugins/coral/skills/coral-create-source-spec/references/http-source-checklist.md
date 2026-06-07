@@ -35,6 +35,8 @@ exports.
   server selection.
 - Keep the provider document stable enough for source materialization to be
   reproducible.
+- Provider URL templates may use `{{input.KEY}}` only for declared variable
+  inputs. Do not put secrets or inline defaults in provider URLs.
 - Coral sends interface auth while fetching the OpenAPI descriptor only when
   the descriptor URL is same-origin with `base_url`. Descriptors hosted on docs,
   raw source-control, or CDN origins must be fetchable without provider
@@ -51,8 +53,10 @@ exports.
 - Use `auth.kind: bearer_input` for raw access tokens sent as
   `Authorization: Bearer <token>`.
 - Use `auth.kind: header_input` for provider-specific API key headers.
+- Use `auth.kind: headers` when one interface requires multiple custom
+  provider headers.
 - Use `auth.kind: none` only when the interface is intentionally anonymous.
-- Auth keys must reference declared inputs.
+- Auth keys must reference declared secret inputs.
 - Descriptor fetch auth follows the same-origin rule above; runtime provider
   calls still use the interface auth.
 

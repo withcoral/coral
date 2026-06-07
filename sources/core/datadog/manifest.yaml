@@ -1,0 +1,57 @@
+spec_version: 1
+kind: source
+name: datadog
+description: Query Datadog monitors, dashboards, incidents, hosts, services, logs, metrics, traces, synthetics, users, and API metadata through Datadog REST APIs and the Datadog MCP Server.
+inputs:
+  - key: DD_SITE
+    kind: variable
+    label: Datadog site
+    default: datadoghq.com
+    hint: Datadog site host for your org, such as datadoghq.com, datadoghq.eu, us3.datadoghq.com, us5.datadoghq.com, ap1.datadoghq.com, or ap2.datadoghq.com. The Datadog MCP Server does not support GovCloud sites.
+    required: true
+  - key: DD_API_KEY
+    kind: secret
+    label: Datadog API key
+    hint: Datadog API key. Coral sends it as DD-API-KEY for REST calls and DD_API_KEY for Datadog MCP calls.
+    required: true
+  - key: DD_APPLICATION_KEY
+    kind: secret
+    label: Datadog application key
+    hint: Datadog application key with access to the Datadog resources you want Coral to query. Coral sends it as DD-APPLICATION-KEY for REST calls and DD_APPLICATION_KEY for Datadog MCP calls.
+    required: true
+interfaces:
+  - id: rest_v1
+    type: openapi
+    url: https://raw.githubusercontent.com/DataDog/datadog-api-client-python/master/.generator/schemas/v1/openapi.yaml
+    base_url: https://api.{{input.DD_SITE}}
+    auth:
+      kind: headers
+      headers:
+        - name: DD-API-KEY
+          key: DD_API_KEY
+        - name: DD-APPLICATION-KEY
+          key: DD_APPLICATION_KEY
+  - id: rest_v2
+    type: openapi
+    url: https://raw.githubusercontent.com/DataDog/datadog-api-client-python/master/.generator/schemas/v2/openapi.yaml
+    base_url: https://api.{{input.DD_SITE}}
+    auth:
+      kind: headers
+      headers:
+        - name: DD-API-KEY
+          key: DD_API_KEY
+        - name: DD-APPLICATION-KEY
+          key: DD_APPLICATION_KEY
+  - id: tools
+    type: mcp
+    server:
+      transport:
+        type: streamable_http
+        url: https://mcp.{{input.DD_SITE}}/api/unstable/mcp-server/mcp
+      auth:
+        kind: headers
+        headers:
+          - name: DD_API_KEY
+            key: DD_API_KEY
+          - name: DD_APPLICATION_KEY
+            key: DD_APPLICATION_KEY

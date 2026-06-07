@@ -21,7 +21,8 @@ use coral_exports::{Binding, CapabilityExport};
 use coral_spec::{
     AuthDescriptor, GraphqlInterface, ManifestInputKind, ManifestInputSpec, McpEnvBinding,
     McpInterface, McpTransportDescriptor, OpenApiInterface, ParsedTemplate, SourceInterface,
-    SourceSpec, openapi_document_metadata, parse_source_manifest_yaml,
+    SourceSpec, TemplateNamespace, TemplatePart, openapi_document_metadata,
+    parse_source_manifest_yaml,
 };
 use coral_upstream::{
     GraphqlRequestPlan, HttpRequestPlan, McpConnectionTarget, McpToolCallPlan, RedactableString,
@@ -612,7 +613,7 @@ async fn rest_invocation_plan(
 ) -> Result<UpstreamInvocationPlan, InvokeCapabilityResponse> {
     let spec = load_installed_source_spec(&resolved.source_materialized_dir)?;
     let interface = openapi_interface(&spec, &resolved.capability.interface_id)?;
-    let base_url = rest_base_url(&resolved.source_materialized_dir, interface)?;
+    let base_url = rest_base_url(&resolved.source_materialized_dir, interface, resolved)?;
     reject_unconsumed_rest_args(binding, args)?;
     let mut url = rest_url(&base_url, binding, args)?;
     let auth_headers = auth_headers(
@@ -654,9 +655,14 @@ async fn rest_invocation_plan(
 fn rest_base_url(
     materialized_dir: &Path,
     interface: &OpenApiInterface,
+    resolved: &ResolvedInvocation,
 ) -> Result<String, InvokeCapabilityResponse> {
     if let Some(base_url) = &interface.base_url {
-        return render_literal_template(base_url, "openapi.base_url");
+        return render_source_input_template(
+            base_url,
+            "openapi.base_url",
+            &resolved.source_variables,
+        );
     }
 
     let document_path = materialized_dir
@@ -730,7 +736,11 @@ async fn mcp_invocation_plan(
                 interface.server.auth.as_ref(),
             )
             .await?;
-            let endpoint = render_literal_template(url, "mcp.server.transport.url")?;
+            let endpoint = render_source_input_template(
+                url,
+                "mcp.server.transport.url",
+                &resolved.source_variables,
+            )?;
             let endpoint = Url::parse(&endpoint).map_err(|error| {
                 error_response(
                     "invalid_request",
@@ -773,7 +783,11 @@ async fn graphql_invocation_plan(
     let spec = load_installed_source_spec(&resolved.source_materialized_dir)?;
     let interface = graphql_interface(&spec, &resolved.capability.interface_id)?;
     let variables = graphql_variables(binding, args)?;
-    let endpoint = render_literal_template(&interface.endpoint, "graphql.endpoint")?;
+    let endpoint = render_source_input_template(
+        &interface.endpoint,
+        "graphql.endpoint",
+        &resolved.source_variables,
+    )?;
     let endpoint = Url::parse(&endpoint).map_err(|error| {
         error_response(
             "invalid_request",
@@ -1005,20 +1019,48 @@ fn graphql_interface<'a>(
         })
 }
 
-fn render_literal_template(
+fn render_source_input_template(
     template: &ParsedTemplate,
     field: &str,
+    source_variables: &BTreeMap<String, String>,
 ) -> Result<String, InvokeCapabilityResponse> {
-    if template.tokens().next().is_some() {
+    let mut rendered = String::with_capacity(template.raw().len());
+    for part in template.parts() {
+        match part {
+            TemplatePart::Literal(literal) => rendered.push_str(literal),
+            TemplatePart::Token(token) => {
+                if token.namespace() != &TemplateNamespace::Input {
+                    return Err(error_response(
+                        "invalid_request",
+                        format!(
+                            "{field} contains unsupported template token '{}'",
+                            token.raw()
+                        ),
+                        json!({ "field": field, "token": token.raw() }),
+                    ));
+                }
+                let value = source_variables.get(token.key()).ok_or_else(|| {
+                    error_response(
+                        "credential_failure",
+                        format!(
+                            "{field} requires source variable '{}', but the installed source has no value",
+                            token.key()
+                        ),
+                        json!({ "field": field, "input": token.key() }),
+                    )
+                })?;
+                rendered.push_str(value);
+            }
+        }
+    }
+    if !is_allowed_runtime_base_url(&rendered) {
         return Err(error_response(
-            "unsupported_credentials",
-            format!(
-                "{field} contains template tokens; credential-aware rendering is not implemented in capability invocation yet"
-            ),
-            json!({ "field": field }),
+            "invalid_request",
+            format!("{field} rendered to an unsupported provider URL"),
+            json!({ "field": field, "url": rendered }),
         ));
     }
-    Ok(template.raw().to_string())
+    Ok(rendered)
 }
 
 fn rest_url(
@@ -1635,6 +1677,16 @@ async fn auth_headers(
             let material = credential_material(resolved, runtime, inputs).await?;
             let value = required_credential(&material, key, resolved)?;
             Ok(vec![(name.clone(), RedactableString::new(value))])
+        }
+        Some(AuthDescriptor::Headers { headers }) => {
+            let material = credential_material(resolved, runtime, inputs).await?;
+            headers
+                .iter()
+                .map(|header| {
+                    let value = required_credential(&material, &header.key, resolved)?;
+                    Ok((header.name.clone(), RedactableString::new(value)))
+                })
+                .collect()
         }
     }
 }

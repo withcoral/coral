@@ -16,6 +16,7 @@ Coral can ship SourceSpec-backed sources with the CLI. This page lists active bu
 
 | Source | Interfaces | Description |
 | --- | --- | --- |
+| [datadog](#datadog) | `mcp, openapi` | Query Datadog monitors, dashboards, incidents, hosts, services, logs, metrics, traces, synthetics, users, and API metadata through Datadog REST APIs and the Datadog MCP Server. |
 | [github](#github) | `graphql, openapi` | Query GitHub repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata. |
 | [linear](#linear) | `graphql` | Query Linear issues, teams, users, projects, cycles, initiatives, comments, workflow states, and API metadata through Linear's GraphQL API. |
 | [slack](#slack) | `mcp` | Use Slack's hosted MCP server over Streamable HTTP to search Slack, read messages and canvases, manage users, and send messages as the authenticated user. |
@@ -37,6 +38,21 @@ To update active bundled sources, upgrade the Coral binary. Installed source ide
 
 Each source has its own set of interactive inputs — API tokens, base URLs, or
 other per-install configuration.
+
+### `datadog`
+
+`DD_API_KEY` (required)
+
+Datadog API key. Coral sends it as DD-API-KEY for REST calls and DD_API_KEY for Datadog MCP calls.
+
+`DD_APPLICATION_KEY` (required)
+
+Datadog application key with access to the Datadog resources you want Coral to query. Coral sends it as DD-APPLICATION-KEY for REST calls and DD_APPLICATION_KEY for Datadog MCP calls.
+
+`DD_SITE` (required)<br />
+default `datadoghq.com`
+
+Datadog site host for your org, such as datadoghq.com, datadoghq.eu, us3.datadoghq.com, us5.datadoghq.com, ap1.datadoghq.com, or ap2.datadoghq.com. The Datadog MCP Server does not support GovCloud sites.
 
 ### `github`
 

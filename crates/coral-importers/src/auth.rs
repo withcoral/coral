@@ -20,6 +20,19 @@ pub(crate) fn credential_requirements(
                 }],
             }
         }
+        Some(AuthDescriptor::Headers { headers }) => CredentialRequirementSet {
+            alternatives: vec![CredentialRequirementAlternative {
+                requirements: headers
+                    .iter()
+                    .map(|header| CredentialRequirement {
+                        scheme_id: format!("{}_input", spec.name),
+                        scopes: Vec::new(),
+                        source_input_key: Some(header.key.clone()),
+                    })
+                    .collect(),
+                anonymous: false,
+            }],
+        },
         Some(AuthDescriptor::None) | None => CredentialRequirementSet::anonymous(),
     }
 }

@@ -140,11 +140,13 @@ operations into capabilities. Read-like, row-shaped capabilities may also get
 SQL bindings; mutations remain discoverable and callable through TypeScript
 when the experimental mutation gate permits invocation.
 
-OpenAPI `url` and `base_url` values must be literal URLs. Template tokens such
-as `{{input.API_BASE}}` are not supported for provider acquisition or runtime
-base URLs. When using local `file:` descriptors, `coral source add --file`
-resolves relative paths from the manifest directory; direct API imports must
-send absolute paths.
+OpenAPI `url` and `base_url` values may be literal URLs or HTTPS templates
+using `{{input.KEY}}` tokens. Template tokens must reference declared
+`kind: variable` inputs, not secrets, and must not include inline defaults.
+Coral validates the rendered URL during source materialization and invocation.
+When using local `file:` descriptors, `coral source add --file` resolves
+relative paths from the manifest directory; direct API imports must send
+absolute paths.
 
 If the interface has `auth`, Coral uses it while fetching the OpenAPI `url`
 only when that descriptor URL is same-origin with `base_url`. Public OpenAPI
@@ -198,8 +200,10 @@ infer effects from tool names or descriptions. Most MCP tools are TypeScript
 callable only. SQL bindings are generated only for read tools with structured
 output schemas.
 
-Streamable HTTP `url` values must be literal URLs. Template tokens such as
-`{{input.MCP_URL}}` are not supported for upstream MCP endpoints.
+Streamable HTTP `url` values may be literal URLs or HTTPS templates using
+`{{input.KEY}}` tokens. Template tokens must reference declared variable inputs,
+not secrets, and must not include inline defaults. Coral validates the rendered
+endpoint during source materialization and invocation.
 
 ## Example: GraphQL Source
 
@@ -252,9 +256,10 @@ reports stale or incompatible generated GraphQL artifacts after a binary
 upgrade, re-add the source so operation documents and exports are regenerated
 from the current schema.
 
-GraphQL `endpoint` and schema URL values must be literal URLs. Template tokens
-such as `{{input.GRAPHQL_ENDPOINT}}` are not supported for provider acquisition
-or runtime GraphQL endpoints.
+GraphQL `endpoint` and live-introspection endpoint overrides may be literal URLs
+or HTTPS templates using `{{input.KEY}}` tokens. Template tokens must reference
+declared variable inputs, not secrets, and must not include inline defaults.
+SDL and introspection JSON schema URLs remain literal descriptor URLs.
 
 GraphQL SQL bindings are generated only when a query has a deterministic,
 row-shaped output. Mutations and ambiguous output shapes remain TypeScript
@@ -324,12 +329,22 @@ auth:
 
 ```yaml
 auth:
+  kind: headers
+  headers:
+    - name: X-API-Key
+      key: API_TOKEN
+    - name: X-Application-Key
+      key: APPLICATION_KEY
+```
+
+```yaml
+auth:
   kind: none
 ```
 
-Auth keys must reference declared inputs. Secret values never enter provider
-snapshots, capabilities, source exports, workspace exports, logs, MCP results,
-or Code Mode globals.
+Auth keys must reference declared secret inputs. Secret values never enter
+provider snapshots, capabilities, source exports, workspace exports, logs, MCP
+results, or Code Mode globals.
 
 During materialization, descriptor/schema acquisition does not blindly reuse
 runtime auth. OpenAPI and GraphQL descriptor URLs receive interface auth only

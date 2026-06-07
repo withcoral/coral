@@ -597,6 +597,26 @@
         {
           "type": "object",
           "properties": {
+            "headers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RawAuthHeader"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "headers"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "headers"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "kind": {
               "type": "string",
               "const": "none"
@@ -607,6 +627,22 @@
           ],
           "additionalProperties": false
         }
+      ]
+    },
+    "RawAuthHeader": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "key"
       ]
     },
     "RawMcpServer": {
