@@ -41,7 +41,33 @@ Feature values must be booleans. Unknown feature keys are preserved in `config.t
 
 | Feature | Default | Description |
 | ------- | ------- | ----------- |
-| `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
+| `feedback` | `false` | Compatibility flag retained for existing config entries. The MCP `feedback` tool is always exposed. |
+
+## Runtime exposure
+
+Runtime exposure is configured under `[runtime]`.
+
+```toml
+[runtime]
+exposure = "both"
+```
+
+`exposure` controls which generated bindings the local server exposes at runtime:
+
+| Value | Description |
+| ----- | ----------- |
+| `both` | Expose TypeScript invocation bindings and SQL projection bindings. |
+| `typescript` | Expose only TypeScript invocation bindings. SQL query support and SQL refs are hidden. |
+| `sql` | Expose only SQL projection bindings. TypeScript invocation refs and direct capability invocation are hidden. |
+
+You can override this for one process with:
+
+```shellscript
+coral --runtime-exposure typescript mcp-stdio
+coral --runtime-exposure sql mcp-stdio
+```
+
+`CORAL_RUNTIME_EXPOSURE` accepts the same values. Precedence is CLI override, then `CORAL_RUNTIME_EXPOSURE`, then `[runtime].exposure`, then the default `both`.
 
 ## OpenTelemetry
 

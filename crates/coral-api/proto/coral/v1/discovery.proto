@@ -1,0 +1,259 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Product binding kind used by generated exports.
+enum ExportBindingKind {
+  // Do not filter by binding kind.
+  EXPORT_BINDING_KIND_UNSPECIFIED = 0;
+  // Generated TypeScript invocation binding.
+  EXPORT_BINDING_KIND_TYPESCRIPT = 1;
+  // SQL table projection binding.
+  EXPORT_BINDING_KIND_SQL_TABLE = 2;
+  // SQL table-function projection binding.
+  EXPORT_BINDING_KIND_SQL_FUNCTION = 3;
+}
+
+// Searches generated workspace exports.
+message SearchExportsRequest {
+  // Workspace whose current exports should be searched.
+  Workspace workspace = 1;
+  // Text, typed ref, capability id, generated tool path, TypeScript path, or SQL ref to search.
+  string query = 2;
+  // Optional immutable source id filter.
+  string source_id = 3;
+  // Optional immutable source key filter.
+  string source_key = 4;
+  // Optional mutable display-name filter.
+  string display_name = 5;
+  // Optional binding kind filter.
+  ExportBindingKind kind = 6;
+  // Optional capability kind filter, rendered as snake_case text.
+  string capability_kind = 7;
+  // Optional effect filter, rendered as snake_case text.
+  string effect = 8;
+  // Optional page request. Missing or zero limit applies the search default.
+  PaginationRequest pagination = 9;
+  // Optional allowed binding kinds for surfaces that expose a subset of runtime bindings.
+  repeated ExportBindingKind allowed_kinds = 10;
+}
+
+// Compact generated-export search item.
+message SearchExportItem {
+  // Preferred human/agent alias when one exists.
+  string alias = 1;
+  // Stable generated capability id.
+  string capability_id = 2;
+  // Usable typed refs, such as typescript:..., sql_table:..., sql_function:...
+  repeated string refs = 3;
+  // Immutable installed source id.
+  string source_id = 4;
+  // Mutable display name.
+  string display_name = 5;
+  // Immutable source key used for generated aliases.
+  string source_key = 6;
+  // Capability kind, rendered as snake_case text.
+  string capability_kind = 7;
+  // Effects, rendered as snake_case text.
+  repeated string effects = 8;
+  // Short title.
+  string title = 9;
+  // Short description.
+  string description = 10;
+  // Available product bindings.
+  repeated ExportBindingKind available_bindings = 11;
+  // Number of diagnostics attached to this export row.
+  uint32 diagnostic_count = 12;
+  // Ranking score, higher is better.
+  uint32 score = 13;
+  // Search fields that contributed to the rank.
+  repeated string matched_fields = 14;
+  // Short human-readable explanation of the rank.
+  string rank_reason = 15;
+  // Full generated Code Mode call path, such as tools.github.issues.list, when invokable.
+  string full_path = 16;
+  // Whether the provider marks this capability deprecated.
+  bool deprecated = 17;
+  // Support status, rendered as snake_case text.
+  string support_status = 18;
+}
+
+// Generated-export search response.
+message SearchExportsResponse {
+  // Matching export items.
+  repeated SearchExportItem items = 1;
+  // Total matches before pagination.
+  uint32 total = 2;
+  // Whether another page exists.
+  bool has_more = 3;
+  // Offset to request for the next page, or 0 when no next page exists.
+  uint32 next_offset = 4;
+  // Applied page limit.
+  uint32 limit = 5;
+  // Applied page offset.
+  uint32 offset = 6;
+  // Workspace/source diagnostics that affected discovery, such as stale source artifacts.
+  repeated ExportDiagnosticDescription diagnostics = 7;
+}
+
+// Describes one generated export by typed ref, capability id, or alias.
+message DescribeExportRequest {
+  // Workspace whose current exports should be inspected.
+  Workspace workspace = 1;
+  // Typed ref, capability id, or unambiguous alias.
+  string reference = 2;
+}
+
+// Candidate returned when an untyped describe reference is ambiguous.
+message DescribeExportCandidate {
+  // Candidate alias.
+  string alias = 1;
+  // Candidate capability id.
+  string capability_id = 2;
+  // Candidate typed refs.
+  repeated string refs = 3;
+  // Candidate binding kinds.
+  repeated ExportBindingKind binding_kinds = 4;
+  // Full generated Code Mode call path, when the candidate is invokable.
+  string full_path = 5;
+  // Whether the provider marks this capability deprecated.
+  bool deprecated = 6;
+  // Support status, rendered as snake_case text.
+  string support_status = 7;
+}
+
+// TypeScript binding metadata in a structured describe response.
+message TypeScriptBindingDescription {
+  // Typed ref.
+  string ref = 1;
+  // Generated Code Mode path segments under `tools`.
+  repeated string path = 2;
+  // Generated input type name.
+  string args_type_name = 3;
+  // Generated result type name.
+  string result_type_name = 4;
+  // Full generated Code Mode call path, such as tools.github.issues.list.
+  string full_path = 5;
+}
+
+// SQL column metadata in a structured describe response.
+message SqlColumnDescription {
+  // Column name.
+  string name = 1;
+  // Coral SQL data type label.
+  string data_type = 2;
+  // Whether the column may contain null values.
+  bool nullable = 3;
+  // Column description.
+  string description = 4;
+}
+
+// SQL input metadata in a structured describe response.
+message SqlInputDescription {
+  // Input argument name.
+  string name = 1;
+  // Whether callers must provide this argument.
+  bool required = 2;
+  // Coral SQL data type label.
+  string data_type = 3;
+}
+
+// SQL binding metadata in a structured describe response.
+message SqlBindingDescription {
+  // SQL binding kind.
+  ExportBindingKind kind = 1;
+  // Typed SQL ref.
+  string ref = 2;
+  // SQL reference.
+  string sql_reference = 3;
+  // Projection row shape.
+  string row_shape = 4;
+  // Result columns.
+  repeated SqlColumnDescription columns = 5;
+  // Table-function inputs.
+  repeated SqlInputDescription inputs = 6;
+}
+
+// Export diagnostic metadata in a structured describe response.
+message ExportDiagnosticDescription {
+  // Stable diagnostic code.
+  string code = 1;
+  // Diagnostic severity.
+  string severity = 2;
+  // Generation or runtime stage that emitted the diagnostic.
+  string stage = 3;
+  // Human-readable diagnostic message.
+  string message = 4;
+  // Optional source reference.
+  string source_ref = 5;
+  // Structured diagnostic details.
+  JsonValue details = 6;
+}
+
+// Full generated-export description.
+message ExportDescription {
+  // Stable generated capability id.
+  string capability_id = 1;
+  // Preferred human/agent alias when one exists.
+  string alias = 2;
+  // Usable typed refs, such as typescript:..., sql_table:..., sql_function:...
+  repeated string refs = 3;
+  // Immutable installed source id.
+  string source_id = 4;
+  // Mutable display name.
+  string display_name = 5;
+  // Immutable source key used for generated aliases.
+  string source_key = 6;
+  // Interface id within the installed source.
+  string interface_id = 7;
+  // Provider-normalized operation id.
+  string operation_id = 8;
+  // Short title.
+  string title = 9;
+  // Short description.
+  string description = 10;
+  // Capability kind, rendered as snake_case text.
+  string capability_kind = 11;
+  // Effects, rendered as snake_case text.
+  repeated string effects = 12;
+  // TypeScript binding path, when present.
+  repeated string typescript_path = 13;
+  // Structured SourceCapabilitySet capability for this export.
+  JsonValue capability = 14;
+  // Structured TypeScript binding metadata, when present.
+  TypeScriptBindingDescription typescript_binding = 17;
+  // Structured SQL binding metadata, when present.
+  repeated SqlBindingDescription sql_bindings = 18;
+  // Structured diagnostics for this export row.
+  repeated ExportDiagnosticDescription diagnostics = 19;
+  // Full generated Code Mode call path, such as tools.github.issues.list, when invokable.
+  string full_path = 20;
+  // Whether the provider marks this capability deprecated.
+  bool deprecated = 21;
+  // Support status, rendered as snake_case text.
+  string support_status = 22;
+}
+
+// Describe resolution response.
+message DescribeExportResponse {
+  // Whether the requested reference resolved to an export.
+  bool found = 1;
+  // Whether the requested untyped reference was ambiguous.
+  bool ambiguous = 2;
+  // Resolved export entry when found and not ambiguous.
+  ExportDescription entry = 3;
+  // Candidate refs when ambiguous.
+  repeated DescribeExportCandidate candidates = 4;
+  // Workspace/source diagnostics that affected discovery, such as stale source artifacts.
+  repeated ExportDiagnosticDescription diagnostics = 5;
+}
+
+// Generated export discovery APIs.
+service DiscoveryService {
+  // Searches generated workspace exports.
+  rpc Search(SearchExportsRequest) returns (SearchExportsResponse);
+  // Describes one generated export.
+  rpc Describe(DescribeExportRequest) returns (DescribeExportResponse);
+}

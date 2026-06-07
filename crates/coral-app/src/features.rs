@@ -13,7 +13,7 @@ use crate::state::{
 /// Runtime feature keys recognized by Coral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
-    /// Expose the optional MCP `feedback` tool.
+    /// Compatibility flag retained for existing feedback config entries.
     Feedback,
 }
 
@@ -69,7 +69,7 @@ const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
     feature: Feature::Feedback,
     key: "feedback",
     default_enabled: false,
-    description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
+    description: "Compatibility flag for existing feedback config entries. The MCP feedback tool is always exposed.",
     enable_flag: "enable-feedback",
     disable_flag: "disable-feedback",
 }];

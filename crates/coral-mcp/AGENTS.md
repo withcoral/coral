@@ -14,19 +14,18 @@
 ## Does Not Own
 
 - managed-source workflow logic
-- query-runtime internals
+- discovery, Code Mode, capability, or SQL runtime internals
 - hand-rolled JSON-RPC or initialize-state tracking
 - standalone process bootstrap
 
 ## Invariants
 
-- Keep MCP thin over app/query RPCs.
+- Keep MCP thin over app API RPCs.
 - Keep `coral-cli` as the canonical launch surface; this crate stays a library
   adapter over an existing client.
-- Prefer typed discovery from app/query APIs over scraping SQL metadata when a
-  direct RPC already exists.
-- Decode query payloads through `coral-client`; do not fork Arrow IPC handling
-  here.
+- Prefer typed discovery from app Discovery APIs over scraping SQL metadata.
+- Decode SQL query payloads through `coral-client`; do not fork Arrow IPC
+  handling here.
 - Shape MCP surfaces for agent ergonomics, not raw proto parity.
 - Treat MCP tools, resources, prompts, and other user-facing protocol surfaces
   as documented surfaces; when they change, update the relevant docs under

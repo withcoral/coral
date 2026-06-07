@@ -9,8 +9,7 @@ description: "Data sources that ship with Coral."
 
 {/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
 
-Coral supports connecting to some data sources out of the box. These bundled specs live in [sources/core](https://github.com/withcoral/coral/tree/main/sources/core).<br />
-If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).
+Coral can ship SourceSpec-backed sources with the CLI. This page lists active bundled sources that use `spec_version: 1`, `kind: source`. If the source you need is not available, extend Coral by [writing a custom source spec](/guides/write-a-custom-source).
 
 <Tip>
   Run `coral source discover` to see the bundled sources available in your
@@ -19,21 +18,23 @@ If the source you need is not available, you can extend Coral by [writing a cust
 
 ## Bundled data sources
 
-| Source | Backend | Description |
+| Source | Interfaces | Description |
 | --- | --- | --- |
-| [demo](#demo) | `http` | A small demo source used in snapshot tests |
-| [minimal](#minimal) | `http` | Coral bundled source: minimal |
+| [demo](#demo) | `openapi` | A small demo source used in snapshot tests |
+| [minimal](#minimal) | `file` | Coral bundled source: minimal |
 
 ## Supported data source types
 
-Supported sources fall into two categories.
+SourceSpec supports four interface kinds.
 
-- **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.
-- **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.
+- **OpenAPI** — Coral snapshots REST provider operations and derives capabilities.
+- **Upstream MCP** — Coral snapshots provider `tools/list` and derives tool capabilities.
+- **GraphQL** — Coral imports SDL or introspection and generates bounded root-field capabilities.
+- **File** — Coral imports explicit read-only JSON, JSONL, CSV, or Parquet file relations.
 
 ## Upgrading bundled sources
 
-To update bundled sources, upgrade the Coral binary. Coral resolves each bundled manifest from the current binary at validate or query time, so spec fixes and newly required inputs are picked up automatically, you don't need to remove and re-add the source. Your configured variables and secrets stay in local state across upgrades.
+To update active bundled sources, upgrade the Coral binary. Installed source identity, variables, and secrets stay in local state. Generated capability/export artifacts are materialized at source add; re-add the source when the bundled SourceSpec or provider snapshot should be regenerated.
 
 ## Configure a source
 
@@ -42,7 +43,7 @@ other per-install configuration.
 
 ### `demo`
 
-`DEMO_API_BASE` (optional)<br />
+`DEMO_API_BASE` (required)<br />
 default `https://api.example.com`
 
 For self-hosted deploys, use https://\<host\>/api/v3.
@@ -51,11 +52,6 @@ Use the `admin` account's `token` value.
 `DEMO_TOKEN` (required)
 
 Create an API token in Settings → Tokens
-
-Credential methods:
-
-- **Connect with demo** — Sign in through the demo provider in your browser.
-- **Paste token** — Create a read-only API token in Settings.
 
 ### `minimal`
 

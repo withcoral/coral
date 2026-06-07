@@ -1,63 +1,70 @@
 ---
 title: "Quickstart"
-description: "Set up Coral in minutes: run the onboarding flow, connect your first sources, and start querying your data."
+description: "Set up Coral in minutes: import a SourceSpec, add your first source, and start querying your data."
 ---
 
-This tutorial gets you from a fresh [install](/getting-started/installation) of Coral, to your first SQL query.
+This tutorial gets you from a fresh [install](/getting-started/installation) of Coral to your first SQL query.
 
 <Tip>
   Prefer the CLI experience? Run `coral onboard` for an interactive wizard that
   walks you through the whole setup described in this page.
 </Tip>
 
-## 1. Discover bundled sources
+## 1. Create a SourceSpec
 
 ```shellscript
-coral source discover
+mkdir -p /tmp/coral-quickstart
+printf '{"id":1,"text":"hello"}\n{"id":2,"text":"world"}\n' > /tmp/coral-quickstart/messages.jsonl
+cat > /tmp/coral-quickstart/messages.source.yaml <<'YAML'
+spec_version: 1
+kind: source
+name: local_messages
+interfaces:
+  - id: messages
+    type: file
+    files:
+      - ./messages.jsonl
+    format:
+      kind: jsonl
+YAML
 ```
 
-This lists the bundled sources available in your build. Coral comes with [bundled sources](/reference/bundled-sources) for GitHub, Slack, Datadog, Linear, Sentry, and more.
+This defines a local JSONL file source. Active bundled sources, when present in your build, are listed with `coral source discover`; this branch only treats SourceSpec-backed entries as active bundled sources.
 
 ## 2. Add a source
 
-For example, add GitHub. Pass `--interactive` and Coral will prompt you for each required input:
-
 ```shellscript
-coral source add --interactive github
+coral source add --file /tmp/coral-quickstart/messages.source.yaml
 ```
 
-Once connected, the source's data is available as SQL tables. To update a source's credentials later, run the same command again.
+Once connected, the source's data is available as SQL tables.
 
 <Tip>
-  For scripted setups, omit `--interactive` and Coral reads each input from an
-  environment variable of the same name — e.g. `GITHUB_TOKEN=ghp_... coral
-  source add github`.
+  For SourceSpecs with declared variables or secrets, Coral reads each input
+  from an environment variable of the same name, or prompts when you pass
+  `--interactive`.
 </Tip>
 
 ## 3. Query your data
 
 You can now query any connected source using SQL.
 
-Use `coral.tables` to see all available tables:
+Use `information_schema.tables` to see all available tables:
 
 ```shellscript
-coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
+coral sql "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema <> 'information_schema' ORDER BY 1, 2"
 ```
-
-Assuming you've connected GitHub, try listing open issues for a repo:
 
 ```shellscript
 coral sql "
-  SELECT number, title, state, created_at
-  FROM github.issues
-  WHERE owner = 'withcoral' AND repo = 'coral' AND state = 'open'
-  ORDER BY created_at DESC
-  LIMIT 10
+  SELECT id, text
+  FROM local_messages.messages
+  ORDER BY id
 "
 ```
 
 ## Next steps
 
 - **[Use Coral over MCP](/guides/use-coral-over-mcp)** — expose Coral to Claude Code, Cursor, or VS Code over MCP so your agent can query sources directly
-- **[Write a custom source spec](/guides/write-a-custom-source)** — connect any HTTP API or local dataset that isn't bundled yet
+- **[Write a custom source spec](/guides/write-a-custom-source)** — connect any HTTP API or local dataset
 - **[Install Coral skills](/getting-started/installation#skills)** — teach your coding agent how to use Coral

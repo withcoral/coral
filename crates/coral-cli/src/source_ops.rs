@@ -8,7 +8,7 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use anyhow::{Context as _, bail};
+use anyhow::Context as _;
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
@@ -20,17 +20,15 @@ use coral_api::v1::{
     import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
-use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
-    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
-    ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
-    parse_source_manifest_yaml,
+    FileInterface, GraphqlSchemaDescriptor, ManifestCredentialMethod, ManifestCredentialMethodKind,
+    ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec,
+    OpenApiDescriptor, SourceInterface, SourceSpec, parse_source_manifest_yaml,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use dialoguer::console::style;
 use dialoguer::{Input, Password, Select, theme::ColorfulTheme};
-use serde_yaml::Value as YamlValue;
 use tonic::Request;
 use url::{Host, Url};
 
@@ -382,7 +380,7 @@ async fn validate_source_request(
 
 pub(crate) fn load_validated_manifest_file(
     file: &Path,
-) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
+) -> Result<(String, SourceSpec), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(file)?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     let manifest_dir = manifest_file_parent_dir(file)?;
@@ -407,98 +405,142 @@ fn manifest_file_parent_dir(file: &Path) -> Result<PathBuf, anyhow::Error> {
 
 fn durable_manifest_file_yaml(
     manifest_yaml: &str,
-    manifest: &ValidatedSourceManifest,
+    manifest: &SourceSpec,
     manifest_dir: &Path,
 ) -> Result<String, anyhow::Error> {
-    let Some(v4) = manifest.as_v4() else {
-        return Ok(manifest_yaml.to_string());
-    };
-    let mut replacement_files = BTreeMap::new();
-    for surface in &v4.surfaces {
-        let SurfaceDescriptor::File { file } = &surface.descriptor else {
-            continue;
-        };
-        let canonical = canonicalize_manifest_descriptor(file, manifest_dir)?;
-        if canonical != *file {
-            replacement_files.insert(surface.id.as_str(), canonical);
-        }
-    }
-    if replacement_files.is_empty() {
-        return Ok(manifest_yaml.to_string());
-    }
-
-    let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
-    let surfaces_key = YamlValue::String("surfaces".to_string());
-    let id_key = YamlValue::String("id".to_string());
-    let file_key = YamlValue::String("file".to_string());
-    let surfaces = value
-        .as_mapping_mut()
-        .and_then(|mapping| mapping.get_mut(&surfaces_key))
-        .and_then(YamlValue::as_sequence_mut)
-        .ok_or_else(|| anyhow::anyhow!("DSL v4 manifest is missing surfaces"))?;
-    for surface in surfaces {
-        let Some(mapping) = surface.as_mapping_mut() else {
-            continue;
-        };
-        let Some(surface_id) = mapping.get(&id_key).and_then(YamlValue::as_str) else {
-            continue;
-        };
-        let Some(file) = replacement_files.get(surface_id) else {
-            continue;
-        };
-        mapping.insert(
-            file_key.clone(),
-            YamlValue::String(file.display().to_string()),
-        );
-    }
-    serde_yaml::to_string(&value).map_err(Into::into)
+    let mut value = serde_yaml::from_str::<serde_yaml::Value>(manifest_yaml)
+        .context("failed to parse manifest YAML for durable path rewriting")?;
+    rewrite_manifest_file_paths(&mut value, manifest, manifest_dir)?;
+    serde_yaml::to_string(&value).context("failed to serialize manifest YAML with durable paths")
 }
 
-fn canonicalize_manifest_descriptor(
-    file: &Path,
+fn rewrite_manifest_file_paths(
+    value: &mut serde_yaml::Value,
+    manifest: &SourceSpec,
     manifest_dir: &Path,
-) -> Result<PathBuf, anyhow::Error> {
-    let (candidate, relative_base) = if file.is_absolute() {
-        (file.to_path_buf(), None)
+) -> Result<(), anyhow::Error> {
+    let Some(interfaces) = value
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(serde_yaml::Value::String("interfaces".to_string())))
+        .and_then(serde_yaml::Value::as_sequence_mut)
+    else {
+        return Ok(());
+    };
+    for interface in &manifest.interfaces {
+        let Some(raw_interface) = interfaces
+            .iter_mut()
+            .find(|candidate| yaml_field(candidate, "id") == Some(interface.id()))
+        else {
+            continue;
+        };
+        match interface {
+            SourceInterface::OpenApi(openapi) => {
+                if let OpenApiDescriptor::File { file } = &openapi.descriptor {
+                    set_yaml_path_field(raw_interface, "file", file, manifest_dir)?;
+                }
+            }
+            SourceInterface::Graphql(graphql) => {
+                if let Some(schema) = raw_interface.as_mapping_mut().and_then(|mapping| {
+                    mapping.get_mut(serde_yaml::Value::String("schema".to_string()))
+                }) {
+                    match &graphql.schema {
+                        GraphqlSchemaDescriptor::SdlFile { file }
+                        | GraphqlSchemaDescriptor::IntrospectionJsonFile { file } => {
+                            set_yaml_path_field(schema, "file", file, manifest_dir)?;
+                        }
+                        GraphqlSchemaDescriptor::SdlUrl { .. }
+                        | GraphqlSchemaDescriptor::IntrospectionJsonUrl { .. }
+                        | GraphqlSchemaDescriptor::IntrospectionQuery { .. } => {}
+                    }
+                }
+            }
+            SourceInterface::File(file) => {
+                rewrite_file_interface_paths(raw_interface, file, manifest_dir)?;
+            }
+            SourceInterface::Mcp(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_file_interface_paths(
+    raw_interface: &mut serde_yaml::Value,
+    interface: &FileInterface,
+    manifest_dir: &Path,
+) -> Result<(), anyhow::Error> {
+    let Some(files) = raw_interface
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(serde_yaml::Value::String("files".to_string())))
+        .and_then(serde_yaml::Value::as_sequence_mut)
+    else {
+        return Ok(());
+    };
+    for (raw_file, parsed_file) in files.iter_mut().zip(&interface.files) {
+        *raw_file = serde_yaml::Value::String(durable_local_path(parsed_file, manifest_dir)?);
+    }
+    Ok(())
+}
+
+fn set_yaml_path_field(
+    value: &mut serde_yaml::Value,
+    key: &str,
+    path: &Path,
+    manifest_dir: &Path,
+) -> Result<(), anyhow::Error> {
+    if let Some(mapping) = value.as_mapping_mut() {
+        mapping.insert(
+            serde_yaml::Value::String(key.to_string()),
+            serde_yaml::Value::String(durable_local_path(path, manifest_dir)?),
+        );
+    }
+    Ok(())
+}
+
+fn durable_local_path(path: &Path, manifest_dir: &Path) -> Result<String, anyhow::Error> {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
     } else {
-        (manifest_dir.join(file), Some(manifest_dir))
+        manifest_dir.join(path)
     };
     let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {
         format!(
-            "failed to inspect OpenAPI descriptor '{}' resolved from manifest directory '{}'",
-            file.display(),
-            manifest_dir.display()
+            "failed to inspect source descriptor '{}'",
+            candidate.display()
         )
     })?;
     if metadata.file_type().is_symlink() {
-        bail!(
-            "OpenAPI descriptor '{}' must not be a symlink",
-            file.display()
+        anyhow::bail!(
+            "source descriptor '{}' must not be a symlink",
+            candidate.display()
         );
     }
     if !metadata.file_type().is_file() {
-        bail!(
-            "OpenAPI descriptor '{}' must be a regular file",
-            file.display()
+        anyhow::bail!(
+            "source descriptor '{}' must be a regular file",
+            candidate.display()
         );
     }
     let canonical = candidate.canonicalize().with_context(|| {
         format!(
-            "failed to canonicalize OpenAPI descriptor '{}' resolved from manifest directory '{}'",
-            file.display(),
-            manifest_dir.display()
+            "failed to canonicalize source descriptor '{}'",
+            candidate.display()
         )
     })?;
-    if let Some(base) = relative_base
-        && !canonical.starts_with(base)
-    {
-        bail!(
-            "relative OpenAPI descriptor '{}' resolves outside manifest directory '{}'",
-            file.display(),
-            base.display()
+    if !path.is_absolute() && !canonical.starts_with(manifest_dir) {
+        anyhow::bail!(
+            "relative source descriptor '{}' resolves outside manifest directory '{}'",
+            path.display(),
+            manifest_dir.display()
         );
     }
-    Ok(canonical)
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
+fn yaml_field<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
+    value
+        .as_mapping()
+        .and_then(|mapping| mapping.get(serde_yaml::Value::String(key.to_string())))
+        .and_then(serde_yaml::Value::as_str)
 }
 
 pub(crate) async fn print_source_info(

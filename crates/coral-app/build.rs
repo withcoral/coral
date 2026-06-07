@@ -30,11 +30,16 @@ struct BundledEntry {
 }
 
 fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
+    assert!(
+        root.exists(),
+        "bundled source root '{}' does not exist",
+        root.display()
+    );
     let mut entries = fs::read_dir(root)
         .unwrap_or_else(|error| panic!("read bundled sources '{}': {error}", root.display()))
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|entry| {
+        .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
             let manifest_path = find_manifest_file(&entry.path()).unwrap_or_else(|| {
                 panic!(
@@ -44,6 +49,9 @@ fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
             });
             println!("cargo:rerun-if-changed={}", manifest_path.display());
             let raw = fs::read_to_string(&manifest_path).expect("read bundled manifest");
+            if !is_source_spec_manifest(&raw) {
+                return None;
+            }
             let manifest_name = manifest_name(&raw).unwrap_or_else(|| {
                 panic!(
                     "bundled source '{}' is missing a top-level string name",
@@ -54,14 +62,27 @@ fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
                 manifest_name, name,
                 "bundled source directory '{name}' must match manifest name '{manifest_name}'"
             );
-            BundledEntry {
+            Some(BundledEntry {
                 name,
                 manifest_yaml: raw,
-            }
+            })
         })
         .collect::<Vec<_>>();
+    assert!(
+        !entries.is_empty(),
+        "bundled source root '{}' must contain at least one active SourceSpec manifest",
+        root.display()
+    );
     entries.sort_by(|left, right| left.name.cmp(&right.name));
     entries
+}
+
+fn is_source_spec_manifest(raw: &str) -> bool {
+    let Ok(root) = serde_yaml::from_str::<Value>(raw) else {
+        return false;
+    };
+    root.get("spec_version").and_then(Value::as_i64) == Some(1)
+        && root.get("kind").and_then(Value::as_str) == Some("source")
 }
 
 fn write_entries(generated: &mut String, const_name: &str, entries: &[BundledEntry]) {

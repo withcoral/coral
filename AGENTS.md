@@ -4,15 +4,39 @@
 
 - `crates/coral-api`: protobuf contract and generated Rust bindings.
 - `crates/coral-app`: local server composition, state, workspaces, source
-  lifecycle, and workspace-scoped catalog discovery behavior.
+  lifecycle, materialization, capability invocation, Code Mode, and
+  workspace-scoped discovery behavior.
 - `crates/coral-cli`: terminal adapter.
-- `crates/coral-client`: intentionally thin local transport bootstrap plus
-  Arrow IPC decode/render helpers.
-- `crates/coral-engine`: engine-side backend compilation, runtime registration,
-  and query execution.
+- `crates/coral-client`: intentionally thin API transport plus Arrow IPC
+  decode/render helpers.
+- `crates/coral-capabilities`: provider-neutral capability contracts,
+  invocation schemas, effect profiles, upstream binding facts, and diagnostics.
+  `model.rs` owns serializable contract data; `schema.rs` owns executable
+  Code Mode input/output schema derivation.
+- `crates/coral-importers`: provider snapshot parsing and capability
+  generation for SourceSpec interfaces. Provider-specific import passes live in
+  `openapi.rs`, `mcp.rs`, `graphql.rs`, and `file.rs`; source-level
+  orchestration stays in `lib.rs`; shared helper modules such as `auth.rs`,
+  `hash.rs`, `naming.rs`, and `schema_shape.rs` should stay focused and small.
+- `crates/coral-exports`: source/workspace export contracts, binding
+  contributors, TypeScript binding metadata, SQL binding metadata, and
+  discovery items.
+- `crates/coral-sql`: SQL projection derivation, DataFusion registration, and
+  SQL execution over app-resolved runtime plans. `projection.rs` owns SQL
+  binding derivation, `metadata.rs` owns query/table metadata contracts,
+  `error.rs` owns SQL errors/statuses, `validation.rs` owns read-only SQL
+  allowlisting, `info.rs` owns SQL metadata rendering from bindings,
+  `runtime.rs` owns workspace/session setup, and `table_provider.rs` owns
+  provider-backed DataFusion table execution.
+- `crates/coral-upstream`: neutral provider invocation execution for REST,
+  upstream MCP, and GraphQL plans. `model.rs` owns public plans/responses and
+  errors, while `http.rs`, `graphql.rs`, and `mcp.rs` own transport-specific
+  execution.
+- `crates/coral-code-mode`: Code Mode isolate/cell runtime and host bridge
+  contract.
 - `crates/coral-mcp`: MCP stdio adapter over `coral-client`.
-- `crates/coral-spec`: declarative source-spec parsing, validation,
-  input discovery, and normalized source-definition models.
+- `crates/coral-spec`: SourceSpec parsing, validation, input discovery, and
+  provider interface descriptor models.
 - `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
   canonical in-repo home for maintained Coral agent skills.
 
@@ -26,10 +50,10 @@
   change.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
-  local server bootstrap, source registration, or `coral.tables` catalog query
-  latency. CI installs the bundled `github` source with fake credentials and
-  fails when release `coral sql "select * from coral.tables"` has a hyperfine
-  mean above 750 ms.
+  local server bootstrap, source registration/materialization, MCP
+  `tools/list`, discovery search/describe, Code Mode startup, or SQL runtime
+  latency. CI installs a local SourceSpec JSONL fixture and fails when a release
+  `coral sql` query against that fixture has a hyperfine mean above 750 ms.
 - `make rust-checks` is the Rust-only local gate and should keep using
   `--all-features`; the embedded UI feature is a normal CLI build surface.
 - The built UI artifact is produced by repo/CI orchestration (`make ui-build`
@@ -37,33 +61,35 @@
   Rust builds may compile without `ui/dist`, because UI development normally
   serves assets from Vite while the CLI provides the loopback API server.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
-- Keep transport contract concerns in `coral-api`, source-spec concerns in
-  `coral-spec`, app/state concerns in `coral-app`, and query/runtime
-  concerns in `coral-engine`.
-- Keep app-owned runtime package assembly in `coral-app`. `coral-engine`
-  should compile generic runtime components, not interpret DSL v4 authored
-  manifests, materialized fingerprints, semantic IR, or projection catalogs.
-- For DSL v4 materialization, the user owns when a source is generated or
-  regenerated. Coral materializes at source add, queries only from the
-  installed materialized package, never silently refreshes descriptors or
-  projections, and should fail loudly on missing or incompatible artifacts with
-  guidance to re-add the source.
+- Keep transport contract concerns in `coral-api`, SourceSpec concerns in
+  `coral-spec`, app/state/materialization concerns in `coral-app`, capability
+  contracts in `coral-capabilities`, import/provider-snapshot concerns in
+  `coral-importers`, export/discovery contracts in `coral-exports`, SQL
+  projection/runtime concerns in `coral-sql`, and provider invocation
+  execution in `coral-upstream`.
+- Keep app-owned source materialization and runtime plan assembly in
+  `coral-app`. SQL projection code belongs in `coral-sql`; provider invocation
+  transport belongs in `coral-upstream`; source manifests are parsed only by
+  `coral-spec`.
+- SourceSpec is the only active source contract. Coral materializes at source
+  add from `spec_version: 1`, `kind: source`, queries/invokes only from the
+  installed materialized capability/export package, never silently refreshes
+  descriptors or projections, and should fail loudly on missing or incompatible
+  artifacts with guidance to re-add the source.
 - Keep shared Arrow IPC decoding and result rendering in `coral-client`.
-- Treat `coral-app` as an internal composition root even if sibling crates use
-  its bootstrap seam today.
-- If a caller needs explicit local server control, prefer `coral-client::local`
-  over widening the default client surface.
+- Treat `coral-app` as an internal composition root. If a caller needs explicit
+  local server control inside this workspace, use
+  `coral_app::{ServerBuilder, RunningServer}` directly rather than widening
+  `coral-client`.
 - Keep process environment access owned by the right crate. `coral-app` owns
   runtime/bootstrap env reads, `coral-cli` owns CLI-surface env reads, and
   other crates should receive explicit values from callers instead of reading
   ambient process environment directly.
-- Changes to CLI or MCP surfaces must include corresponding documentation
-  updates under `docs/` in the same change.
-- Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
-  specs under `sources/core-v4/**` with distinct manifest names such as
-  `<name>_v4`. Do not bundle `sources/core-v4` into the binary; install preview
-  v4 sources with `coral source add --file`. Do not replace or migrate an
-  existing v3 source merely because a preview v4 spec exists.
+- Changes to CLI, MCP, Discovery, Capability, Code Mode, or SourceSpec surfaces
+  must include corresponding documentation updates under `docs/` in the same
+  change.
+- Active custom sources use `SourceSpec` with `spec_version: 1`,
+  `kind: source`, and explicit `interfaces`.
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.
@@ -78,7 +104,7 @@
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled
-  sources under `sources/core/**`, `docs/docs.json`, and the changelog.
+  source docs, `docs/docs.json`, and the changelog.
 - The live docs site deploys from the long-lived `docs` branch, not `main`, so
   the published catalog matches the latest released binary. `main` still owns
   docs freshness, but merging to `main` no longer publishes the site by itself:
@@ -109,8 +135,8 @@
 - When proposing or updating a PR title, use Conventional Commits:
   `type(scope): summary`.
 - When using a scope, prefer one that matches the primary area changed,
-  usually the crate name minus the `coral-` prefix, `docs`,
-  `sources/core/<name>`, or `sources/community/<name>`.
+  usually the crate name minus the `coral-` prefix, `docs`, or
+  `sources/<name>`.
 - Keep the PR title up to date as the branch evolves. If the change shifts in
   scope or intent, update the title to match the current final shape of the
   branch.

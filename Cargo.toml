@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/coral-*", "crates/auth/*", "xtask"]
+members = ["crates/coral-*", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -47,6 +47,7 @@ print_stdout = "warn"
 assert_cmd = "2"
 anyhow = "1"
 arrow = "58.1.0"
+async-channel = "2.5.0"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
 base64 = "0.22"
@@ -55,11 +56,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
+csv = "1.4.0"
 datafusion = "53"
 datafusion-datasource = "53"
 datafusion-datasource-json = "53"
 datafusion-functions-json = "0.53"
 datafusion-tracing = "53.0.2"
+deno_core_icudata = "0.77.0"
 dialoguer = "0.12"
 etcetera = "0.11"
 fs2 = "0.4"
@@ -93,6 +96,7 @@ sqlparser = "0.59.0"
 strsim = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 tokio-stream = "0.1"
 toml = "0.9"
 toml_edit = "0.25.10"
@@ -106,19 +110,25 @@ tracing = "0.1.44"
 tracing-opentelemetry = "0.32.1"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tempfile = "3"
-url = "2"
+url = { version = "2", features = ["serde"] }
 urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
+v8 = "=147.4.0"
 walkdir = "2"
 wiremock = "0.6"
 
 coral-api = { path = "crates/coral-api" }
 coral-app = { path = "crates/coral-app" }
+coral-capabilities = { path = "crates/coral-capabilities" }
 coral-cli = { path = "crates/coral-cli" }
 coral-client = { path = "crates/coral-client" }
-coral-engine = { path = "crates/coral-engine" }
+coral-code-mode = { path = "crates/coral-code-mode" }
+coral-exports = { path = "crates/coral-exports" }
+coral-importers = { path = "crates/coral-importers" }
 coral-mcp = { path = "crates/coral-mcp" }
+coral-sql = { path = "crates/coral-sql" }
 coral-spec = { path = "crates/coral-spec" }
+coral-upstream = { path = "crates/coral-upstream" }
 
 [profile.dev]
 debug = 2

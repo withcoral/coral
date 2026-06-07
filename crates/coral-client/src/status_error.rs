@@ -128,9 +128,9 @@ mod tests {
 
     #[test]
     fn plain_status_without_details_falls_back_to_message() {
-        let status = Status::new(Code::FailedPrecondition, "raw legacy message");
+        let status = Status::new(Code::FailedPrecondition, "raw fallback message");
         match decode_status_error(&status) {
-            DecodedStatusError::Plain(message) => assert_eq!(message, "raw legacy message"),
+            DecodedStatusError::Plain(message) => assert_eq!(message, "raw fallback message"),
             DecodedStatusError::Structured(_) => panic!("expected Plain"),
         }
     }

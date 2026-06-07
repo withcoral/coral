@@ -99,6 +99,12 @@ struct PersistedWorkspaceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedInstalledSource {
     #[serde(default)]
+    source_id: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    source_key: String,
+    #[serde(default)]
     version: Option<String>,
     #[serde(default)]
     variables: BTreeMap<String, String>,
@@ -113,6 +119,9 @@ impl PersistedInstalledSource {
     fn into_installed_source(self, source_name: SourceName) -> InstalledSource {
         InstalledSource {
             name: source_name,
+            source_id: self.source_id,
+            display_name: self.display_name,
+            source_key: self.source_key,
             version: self.version,
             variables: self.variables,
             secrets: self.secrets,
@@ -125,6 +134,9 @@ impl PersistedInstalledSource {
 impl From<&InstalledSource> for PersistedInstalledSource {
     fn from(value: &InstalledSource) -> Self {
         Self {
+            source_id: value.source_id.clone(),
+            display_name: value.display_name.clone(),
+            source_key: value.source_key.clone(),
             version: value.version.clone(),
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
@@ -411,6 +423,9 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                     .expect("source config entry should be a table after initialization");
                 source_table.remove("version");
             }
+            source_item["source_id"] = value(source.source_id.clone());
+            source_item["display_name"] = value(source.display_name.clone());
+            source_item["source_key"] = value(source.source_key.clone());
             source_item["variables"] = Item::Value(render_inline_table(&source.variables));
             source_item["secrets"] = Item::Value(render_string_array(&source.secrets));
             if let Some(credential_storage) = source.credential_storage {
@@ -444,10 +459,16 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
         let mut catalog = SourceCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            let mut workspace_sources = BTreeMap::new();
             for (source_name, source) in workspace_config.sources {
                 let source_name = SourceName::parse(&source_name)?;
-                catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
+                let source = source
+                    .into_installed_source(source_name)
+                    .with_allocated_missing_identity(workspace_sources.values());
+                validate_unique_source_identity(&workspace_name, &source, &workspace_sources)?;
+                workspace_sources.insert(source.name.clone(), source);
             }
+            catalog.0.insert(workspace_name, workspace_sources);
         }
         Ok(Self {
             version: value.version,
@@ -475,6 +496,28 @@ impl From<&AppConfig> for PersistedAppConfig {
             workspaces,
         }
     }
+}
+
+fn validate_unique_source_identity(
+    workspace_name: &WorkspaceName,
+    source: &InstalledSource,
+    existing_sources: &BTreeMap<SourceName, InstalledSource>,
+) -> Result<(), AppError> {
+    for existing in existing_sources.values() {
+        if existing.source_id == source.source_id {
+            return Err(AppError::InvalidInput(format!(
+                "duplicate source_id '{}' for sources '{}' and '{}' in workspace '{}'",
+                source.source_id, existing.name, source.name, workspace_name
+            )));
+        }
+        if existing.source_key == source.source_key {
+            return Err(AppError::InvalidInput(format!(
+                "duplicate source_key '{}' for sources '{}' and '{}' in workspace '{}'",
+                source.source_key, existing.name, source.name, workspace_name
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn render_inline_table(values: &BTreeMap<String, String>) -> Value {
@@ -518,6 +561,9 @@ mod tests {
     fn installed_source(name: &str) -> InstalledSource {
         InstalledSource {
             name: SourceName::parse(name).expect("source"),
+            source_id: format!("src_{name}"),
+            display_name: name.to_string(),
+            source_key: name.to_string(),
             version: Some("1.1.4".to_string()),
             variables: BTreeMap::from([(
                 "GITHUB_API_BASE".to_string(),
@@ -816,6 +862,86 @@ origin = "bundled"
         )
         .expect_err("invalid source key should fail");
         assert!(error.to_string().contains("source name"));
+    }
+
+    #[test]
+    fn source_identity_backfill_uses_workspace_unique_suffixes() {
+        let raw = r#"
+version = 1
+
+[workspaces.default.sources."foo-bar"]
+origin = "bundled"
+
+[workspaces.default.sources.foo_bar]
+origin = "bundled"
+"#;
+        let config = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("config should parse"),
+        )
+        .expect("source identities should backfill");
+
+        let foo_dash = config
+            .catalog
+            .get_source(
+                &default_workspace(),
+                &SourceName::parse("foo-bar").expect("source"),
+            )
+            .expect("foo-bar source");
+        let foo_underscore = config
+            .catalog
+            .get_source(
+                &default_workspace(),
+                &SourceName::parse("foo_bar").expect("source"),
+            )
+            .expect("foo_bar source");
+
+        assert_eq!(foo_dash.source_key, "foo_bar");
+        assert_eq!(foo_dash.source_id, "src_foo_bar");
+        assert_eq!(foo_underscore.source_key, "foo_bar_2");
+        assert_eq!(foo_underscore.source_id, "src_foo_bar_2");
+    }
+
+    #[test]
+    fn duplicate_source_identity_is_rejected_when_loading() {
+        let duplicate_source_id = r#"
+version = 1
+
+[workspaces.default.sources.github]
+source_id = "src_duplicate"
+source_key = "github"
+origin = "bundled"
+
+[workspaces.default.sources.git_hub]
+source_id = "src_duplicate"
+source_key = "git_hub"
+origin = "bundled"
+"#;
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(duplicate_source_id)
+                .expect("duplicate source id config should parse"),
+        )
+        .expect_err("duplicate source id should fail");
+        assert!(error.to_string().contains("duplicate source_id"));
+
+        let duplicate_source_key = r#"
+version = 1
+
+[workspaces.default.sources.github]
+source_id = "src_github"
+source_key = "github"
+origin = "bundled"
+
+[workspaces.default.sources.git_hub]
+source_id = "src_git_hub"
+source_key = "github"
+origin = "bundled"
+"#;
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(duplicate_source_key)
+                .expect("duplicate source key config should parse"),
+        )
+        .expect_err("duplicate source key should fail");
+        assert!(error.to_string().contains("duplicate source_key"));
     }
 
     #[test]

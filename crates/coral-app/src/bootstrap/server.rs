@@ -14,14 +14,17 @@ use std::task::{Context, Poll};
 use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
-use coral_api::v1::catalog_service_server::CatalogServiceServer;
+use coral_api::v1::capability_service_server::CapabilityServiceServer;
+use coral_api::v1::code_mode_service_server::CodeModeServiceServer;
+use coral_api::v1::discovery_service_server::DiscoveryServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::{
-    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+    CAPABILITY_RESPONSE_MAX_MESSAGE_SIZE, CODE_MODE_RESPONSE_MAX_MESSAGE_SIZE,
+    DISCOVERY_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
+    QUERY_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -36,10 +39,12 @@ use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use crate::EngineExtensionsProvider;
-use crate::catalog::service::CatalogService;
+use crate::capability::service::CapabilityService;
+use crate::code_mode::service::CodeModeService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
+use crate::discovery::manager::DiscoveryManager;
+use crate::discovery::service::DiscoveryService;
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -47,6 +52,7 @@ use crate::feedback::publisher::{
 use crate::feedback::service::FeedbackService;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::runtime::{RuntimeConfig, RuntimeExposureMode};
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
@@ -78,9 +84,9 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerMode,
-    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     enable_stderr_logs: bool,
+    runtime_exposure_override: Option<RuntimeExposureMode>,
 }
 
 impl Default for ServerConfig {
@@ -94,9 +100,9 @@ impl ServerConfig {
         Self {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
-            engine_extensions_providers: Vec::new(),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             enable_stderr_logs: false,
+            runtime_exposure_override: None,
         }
     }
 
@@ -110,18 +116,14 @@ impl ServerConfig {
         self
     }
 
-    pub(crate) fn add_engine_extensions_provider(
-        mut self,
-        engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
-    ) -> Self {
-        self.engine_extensions_providers
-            .push(engine_extensions_provider);
-        self
-    }
-
     #[must_use]
     pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.enable_stderr_logs = enable_stderr_logs;
+        self
+    }
+
+    pub(crate) fn with_runtime_exposure(mut self, mode: RuntimeExposureMode) -> Self {
+        self.runtime_exposure_override = Some(mode);
         self
     }
 }
@@ -200,21 +202,6 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Adds an engine extensions provider used for query runtime builds.
-    ///
-    /// Providers are evaluated in call order, so later providers can add or
-    /// override engine extensions produced by earlier providers.
-    pub fn add_engine_extensions_provider(
-        mut self,
-        engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
-    ) -> Self {
-        self.config = self
-            .config
-            .add_engine_extensions_provider(engine_extensions_provider);
-        self
-    }
-
-    #[must_use]
     /// Enables or disables local stderr log rendering for this server.
     ///
     /// `MCP` stdio adapters can enable this for diagnostics while keeping
@@ -222,6 +209,13 @@ impl ServerBuilder {
     /// leave it disabled and rely on OTEL export for logs.
     pub fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.config = self.config.with_stderr_logs(enable_stderr_logs);
+        self
+    }
+
+    #[must_use]
+    /// Overrides which generated runtime bindings this server exposes.
+    pub fn with_runtime_exposure(mut self, mode: RuntimeExposureMode) -> Self {
+        self.config = self.config.with_runtime_exposure(mode);
         self
     }
 
@@ -247,6 +241,14 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
+        let runtime_config = RuntimeConfig::load(&layout)?;
+        let runtime_exposure = if let Some(runtime_exposure) = self.config.runtime_exposure_override
+        {
+            runtime_exposure
+        } else {
+            env.runtime_exposure_override()?
+                .unwrap_or(runtime_config.exposure)
+        };
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -267,6 +269,12 @@ impl ServerBuilder {
             credential_manager.clone(),
             layout.clone(),
         );
+        let discovery_manager =
+            crate::discovery::manager::DiscoveryManager::new_with_runtime_exposure(
+                config_store.clone(),
+                layout.clone(),
+                runtime_exposure,
+            );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let body_capture_max_bytes = telemetry_config
@@ -278,10 +286,10 @@ impl ServerBuilder {
 
         let query_manager = QueryManager::new(
             config_store,
-            credential_manager,
+            credential_manager.clone(),
             query_runtime_context,
             layout,
-            self.config.engine_extensions_providers,
+            runtime_exposure,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -290,10 +298,15 @@ impl ServerBuilder {
         };
         start_server(
             source_manager,
+            discovery_manager,
             query_manager,
+            credential_manager,
             feedback_manager,
             trace_service,
-            self.config.mode,
+            ServerStartOptions {
+                mode: self.config.mode,
+                runtime_exposure,
+            },
         )
         .await
     }
@@ -306,6 +319,7 @@ impl ServerBuilder {
 /// does not wait for the task to finish.
 pub struct RunningServer {
     endpoint_uri: String,
+    runtime_exposure: RuntimeExposureMode,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
@@ -319,6 +333,12 @@ impl RunningServer {
     /// over server configuration.
     pub fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
+    }
+
+    #[must_use]
+    /// Returns the runtime exposure policy used by this server.
+    pub fn runtime_exposure(&self) -> RuntimeExposureMode {
+        self.runtime_exposure
     }
 
     /// Shuts the server down and waits for the background task to finish.
@@ -369,15 +389,39 @@ impl Drop for RunningServer {
     }
 }
 
+struct ServerStartOptions {
+    mode: ServerMode,
+    runtime_exposure: RuntimeExposureMode,
+}
+
 async fn start_server(
     source_manager: SourceManager,
+    discovery_manager: DiscoveryManager,
     query_manager: QueryManager,
+    credential_manager: CredentialManager,
     feedback_manager: FeedbackManager,
     trace_service: Option<TraceService>,
-    mode: ServerMode,
+    options: ServerStartOptions,
 ) -> Result<RunningServer, AppError> {
+    let runtime_exposure = options.runtime_exposure;
     let source_service = SourceService::new(source_manager, query_manager.clone());
-    let catalog_service = CatalogService::new(query_manager.clone());
+    let discovery_service = DiscoveryService::new(discovery_manager.clone());
+    let capability_invoker = crate::capability::service::CapabilityInvoker::new(
+        discovery_manager.clone(),
+        credential_manager.clone(),
+        runtime_exposure,
+    );
+    let capability_service = CapabilityService::new(
+        discovery_manager.clone(),
+        credential_manager.clone(),
+        runtime_exposure,
+    );
+    let code_mode_service = CodeModeService::new(
+        discovery_manager,
+        query_manager.clone(),
+        capability_invoker,
+        runtime_exposure,
+    );
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
     let mut routes = Routes::default()
@@ -385,8 +429,16 @@ async fn start_server(
             source_service,
         )))
         .add_service(GrpcMethodAnnotatedService::new(
-            CatalogServiceServer::new(catalog_service)
-                .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
+            DiscoveryServiceServer::new(discovery_service)
+                .max_encoding_message_size(DISCOVERY_RESPONSE_MAX_MESSAGE_SIZE),
+        ))
+        .add_service(GrpcMethodAnnotatedService::new(
+            CapabilityServiceServer::new(capability_service)
+                .max_encoding_message_size(CAPABILITY_RESPONSE_MAX_MESSAGE_SIZE),
+        ))
+        .add_service(GrpcMethodAnnotatedService::new(
+            CodeModeServiceServer::new(code_mode_service)
+                .max_encoding_message_size(CODE_MODE_RESPONSE_MAX_MESSAGE_SIZE),
         ))
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
@@ -402,11 +454,11 @@ async fn start_server(
         ));
     }
 
-    let listener = TcpListener::bind(mode.bind_addr()).await?;
+    let listener = TcpListener::bind(options.mode.bind_addr()).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    let task = match mode {
+    let task = match options.mode {
         ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes),
         ServerMode::EmbeddedUi { assets, .. } => {
             start_grpc_web_server(listener, shutdown_rx, routes, assets)
@@ -415,6 +467,7 @@ async fn start_server(
 
     Ok(RunningServer {
         endpoint_uri,
+        runtime_exposure,
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })
@@ -608,34 +661,26 @@ fn static_fallback_error_response(status: StatusCode, body: &'static str) -> Axu
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::indexing_slicing,
-        reason = "JSON row assertions intentionally fail loudly in tests"
-    )]
-
     use std::borrow::Cow;
     use std::net::{Ipv4Addr, TcpListener};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::Duration;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
-    use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
-    use coral_api::v1::{
-        ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-        ListTracesRequest, Workspace, import_source_response,
-    };
+    use coral_api::v1::{ExecuteSqlRequest, ListSourcesRequest, ListTracesRequest, Workspace};
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
-    use coral_engine::QueryRuntimeContext;
+    use coral_sql::QueryRuntimeContext;
     use tempfile::TempDir;
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
 
     use super::{
-        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        ServerBuilder, ServerMode, ServerStartOptions, StaticAsset, StaticAssetsProvider,
+        is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
+    use crate::RuntimeExposureMode;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
@@ -644,10 +689,47 @@ mod tests {
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
-    use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "This test intentionally controls CORAL_RUNTIME_EXPOSURE in an isolated subprocess."
+    )]
+    async fn explicit_runtime_exposure_override_does_not_parse_invalid_env() {
+        const RUN_ENV: &str = "CORAL_RUN_RUNTIME_EXPOSURE_BUILDER_OVERRIDE_TEST";
+        const CONFIG_DIR_ENV: &str = "CORAL_RUNTIME_EXPOSURE_BUILDER_OVERRIDE_CONFIG_DIR";
+        if std::env::var_os(RUN_ENV).is_some() {
+            let config_dir = std::env::var_os(CONFIG_DIR_ENV)
+                .map(PathBuf::from)
+                .expect("config dir should be set in subprocess");
+            let server = ServerBuilder::new()
+                .with_config_dir(config_dir)
+                .with_runtime_exposure(RuntimeExposureMode::Sql)
+                .start()
+                .await
+                .expect("start server with explicit runtime exposure");
+            assert_eq!(server.runtime_exposure(), RuntimeExposureMode::Sql);
+            server.shutdown().await.expect("shutdown");
+            return;
+        }
+
+        let temp = TempDir::new().expect("temp dir");
+        let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
+            .env(RUN_ENV, "1")
+            .env(CONFIG_DIR_ENV, temp.path().join("coral-config"))
+            .env(crate::bootstrap::consts::CORAL_RUNTIME_EXPOSURE, "invalid")
+            .arg("--exact")
+            .arg(
+                "bootstrap::server::tests::explicit_runtime_exposure_override_does_not_parse_invalid_env",
+            )
+            .arg("--nocapture")
+            .status()
+            .expect("run subprocess");
+        assert!(status.success(), "subprocess should pass");
     }
 
     fn disable_internal_tracing(config_dir: &Path) {
@@ -708,21 +790,28 @@ enabled = false
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let discovery_manager =
+            crate::discovery::manager::DiscoveryManager::new(config_store.clone(), layout.clone());
         let query_manager = QueryManager::new(
             config_store,
-            credential_manager,
+            credential_manager.clone(),
             QueryRuntimeContext::default(),
             layout,
-            vec![Arc::new(NoopEngineExtensionsProvider)],
+            RuntimeExposureMode::Both,
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
             source_manager,
+            discovery_manager,
             query_manager,
+            credential_manager,
             feedback_manager,
             Some(trace_service),
-            ServerMode::NativeGrpc,
+            ServerStartOptions {
+                mode: ServerMode::NativeGrpc,
+                runtime_exposure: RuntimeExposureMode::Both,
+            },
         )
         .await
         .expect("start server");
@@ -780,13 +869,6 @@ enabled = false
                 None
             }
         }
-    }
-
-    #[test]
-    fn server_builder_accepts_engine_extensions_providers() {
-        let _builder = ServerBuilder::new()
-            .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
-            .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
     }
 
     #[test]
@@ -862,102 +944,6 @@ enabled = false
             native_grpc.status(),
             reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
-
-        running.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn embedded_ui_server_streams_import_source_over_grpc_web() {
-        let temp = TempDir::new().expect("temp dir");
-        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
-            .with_config_dir(temp.path().join("coral-config"))
-            .start()
-            .await
-            .expect("start embedded UI server");
-        let endpoint = running.endpoint_uri();
-        let path = format!("{endpoint}/coral.v1.SourceService/ImportSource");
-        let client = reqwest::Client::new();
-
-        let response = client
-            .post(&path)
-            .header("content-type", "application/grpc-web+proto")
-            .header("x-grpc-web", "1")
-            .body(grpc_web_body(&ImportSourceRequest {
-                workspace: Some(default_workspace()),
-                manifest_yaml: r#"
-name: stream_test
-version: 0.1.0
-dsl_version: 3
-backend: http
-base_url: "https://example.com"
-tables:
-  - name: messages
-    description: Messages
-    request:
-      method: GET
-      path: /messages
-    response: {}
-    columns:
-      - name: id
-        type: Utf8
-"#
-                .to_string(),
-                variables: Vec::new(),
-                secrets: Vec::new(),
-                oauth_credential_retrievals: Vec::new(),
-            }))
-            .send()
-            .await
-            .expect("gRPC-Web streaming request");
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let body = response.bytes().await.expect("gRPC-Web streaming body");
-        let body = body.as_ref();
-        assert!(body.len() >= 5, "expected framed gRPC-Web response body");
-        assert_eq!(body[0], 0, "expected first frame to be a data frame");
-        let len = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
-        let frame = body.get(5..5 + len).expect("complete gRPC-Web data frame");
-        let trailer_offset = 5 + len;
-        assert!(
-            body.len() >= trailer_offset + 5,
-            "expected final gRPC-Web trailer frame"
-        );
-        assert_eq!(
-            body[trailer_offset], 0x80,
-            "expected final frame to be uncompressed trailers"
-        );
-        let trailer_len = u32::from_be_bytes([
-            body[trailer_offset + 1],
-            body[trailer_offset + 2],
-            body[trailer_offset + 3],
-            body[trailer_offset + 4],
-        ]) as usize;
-        let trailer_end = trailer_offset + 5 + trailer_len;
-        let trailers = body
-            .get(trailer_offset + 5..trailer_end)
-            .expect("complete gRPC-Web trailer frame");
-        assert_eq!(
-            body.len(),
-            trailer_end,
-            "expected trailers to be the final gRPC-Web frame"
-        );
-        let trailers = std::str::from_utf8(trailers).expect("trailers are UTF-8");
-        assert!(
-            trailers.lines().any(|line| {
-                line.strip_prefix("grpc-status:")
-                    .is_some_and(|status| status.trim() == "0")
-            }),
-            "expected successful gRPC-Web trailer status, got {trailers:?}"
-        );
-        let event = <ImportSourceResponse as prost::Message>::decode(frame)
-            .expect("decode import source response")
-            .event
-            .expect("stream event");
-        match event {
-            import_source_response::Event::Source(source) => {
-                assert_eq!(source.name, "stream_test");
-            }
-            other => panic!("unexpected stream event: {other:?}"),
-        }
 
         running.shutdown().await.expect("shutdown");
     }
@@ -1057,119 +1043,6 @@ tables:
         TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).is_ok()
     }
 
-    #[tokio::test]
-    async fn file_tilde_sources_resolve_from_app_owned_runtime_context() {
-        if !loopback_sockets_available() {
-            return;
-        }
-
-        let temp = TempDir::new().expect("temp dir");
-        let fake_home = temp.path().join("fake-home");
-        let config_dir = temp.path().join("coral-config");
-        let data_dir = fake_home.join("fixture-data");
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
-        std::fs::write(
-            data_dir.join("messages.jsonl"),
-            r#"{"type":"user","text":"hello"}
-{"type":"assistant","text":"world"}
-"#,
-        )
-        .expect("write fixture");
-
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let query_manager = QueryManager::new(
-            config_store,
-            credential_manager,
-            QueryRuntimeContext {
-                home_dir: Some(fake_home.clone()),
-                ..QueryRuntimeContext::default()
-            },
-            layout,
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
-        let running = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            None,
-            ServerMode::NativeGrpc,
-        )
-        .await
-        .expect("start server");
-        let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
-            .expect("endpoint")
-            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .connect()
-            .await
-            .expect("connect");
-        let mut source_client = SourceServiceClient::new(channel.clone());
-        let mut query_client = QueryServiceClient::new(channel)
-            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-
-        let mut import_stream = source_client
-            .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(default_workspace()),
-                manifest_yaml: r#"
-name: tilde_demo
-version: 0.1.0
-dsl_version: 3
-backend: file
-tables:
-  - name: messages
-    description: Fixture messages
-    format: jsonl
-    source:
-      location: file://~/fixture-data/
-      glob: "**/*.jsonl"
-    columns:
-      - name: type
-        type: Utf8
-      - name: text
-        type: Utf8
-"#
-                .to_string(),
-                variables: Vec::new(),
-                secrets: Vec::new(),
-                oauth_credential_retrievals: Vec::new(),
-            }))
-            .await
-            .expect("create source")
-            .into_inner();
-        let imported = import_stream
-            .message()
-            .await
-            .expect("import source stream")
-            .and_then(|response| match response.event {
-                Some(import_source_response::Event::Source(source)) => Some(source),
-                _ => None,
-            })
-            .expect("import source response");
-        assert_eq!(imported.name, "tilde_demo");
-
-        let response = query_client
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql: "SELECT text FROM tilde_demo.messages ORDER BY text".to_string(),
-            }))
-            .await
-            .expect("execute sql")
-            .into_inner();
-        let result = coral_client::decode_execute_sql_response(&response).expect("decode");
-        let rows = coral_client::batches_to_json_rows(result.batches()).expect("rows");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["text"], "hello");
-        assert_eq!(rows[1]["text"], "world");
-    }
-
     /// an `ExecuteSql` response larger than
     /// the previous tonic 4 MB default must round-trip cleanly. Before the
     /// fix, this query failed with `h2 protocol error … PROTOCOL_ERROR`.
@@ -1188,19 +1061,26 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let discovery_manager =
+            crate::discovery::manager::DiscoveryManager::new(config_store.clone(), layout.clone());
         let query_manager = QueryManager::new(
             config_store,
-            credential_manager,
+            credential_manager.clone(),
             QueryRuntimeContext::default(),
             layout,
-            vec![Arc::new(NoopEngineExtensionsProvider)],
+            RuntimeExposureMode::Both,
         );
         let running = start_server(
             source_manager,
+            discovery_manager,
             query_manager,
+            credential_manager,
             feedback_manager,
             None,
-            ServerMode::NativeGrpc,
+            ServerStartOptions {
+                mode: ServerMode::NativeGrpc,
+                runtime_exposure: RuntimeExposureMode::Both,
+            },
         )
         .await
         .expect("start server");
@@ -1236,128 +1116,5 @@ tables:
 
         let result = coral_client::decode_execute_sql_response(&response).expect("decode");
         assert_eq!(result.row_count(), 1);
-    }
-
-    /// an invalid column against a wide manifest must surface as a clean `tonic::Status`,
-    /// not a transport-level `h2 protocol error`. Pre-fix, `DataFusion`'s
-    /// "Valid fields are …" error enumerating ~600 field names
-    /// overflowed HTTP/2 trailers; the CLI saw `PROTOCOL_ERROR` instead
-    /// of the intended status.
-    ///
-    /// Also verifies the behavior change: wrapped `SchemaError` now maps
-    /// to `Code::InvalidArgument` (via `find_root()`), not `Code::Internal`.
-    #[tokio::test]
-    async fn invalid_column_on_wide_manifest_returns_clean_status() {
-        use std::fmt::Write as _;
-
-        use crate::bootstrap::MAX_STATUS_DETAIL_BYTES;
-
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        let data_dir = temp.path().join("wide-data");
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
-        // No rows needed — the test cares only about schema width.
-        let location = format!("file://{}/", data_dir.display());
-
-        let mut manifest = String::new();
-        manifest.push_str("name: wide_demo\n");
-        manifest.push_str("version: 0.1.0\n");
-        manifest.push_str("dsl_version: 3\n");
-        manifest.push_str("backend: file\n");
-        manifest.push_str("tables:\n");
-        manifest.push_str("  - name: wide\n");
-        manifest.push_str("    description: Wide fixture\n");
-        manifest.push_str("    format: jsonl\n");
-        manifest.push_str("    source:\n");
-        writeln!(manifest, "      location: {location}").expect("write to String");
-        manifest.push_str("      glob: \"**/*.jsonl\"\n");
-        manifest.push_str("    columns:\n");
-        for i in 0..600 {
-            writeln!(manifest, "      - name: col_{i:04}\n        type: Utf8")
-                .expect("write to String");
-        }
-
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let query_manager = QueryManager::new(
-            config_store,
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout,
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
-        let running = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            None,
-            ServerMode::NativeGrpc,
-        )
-        .await
-        .expect("start server");
-        let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
-            .expect("endpoint")
-            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .connect()
-            .await
-            .expect("connect");
-        let mut source_client = SourceServiceClient::new(channel.clone());
-        let mut query_client = QueryServiceClient::new(channel)
-            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-
-        let mut import_stream = source_client
-            .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(default_workspace()),
-                manifest_yaml: manifest,
-                variables: Vec::new(),
-                secrets: Vec::new(),
-                oauth_credential_retrievals: Vec::new(),
-            }))
-            .await
-            .expect("import wide source")
-            .into_inner();
-        let imported = import_stream
-            .message()
-            .await
-            .expect("import wide source stream")
-            .and_then(|response| match response.event {
-                Some(import_source_response::Event::Source(source)) => Some(source),
-                _ => None,
-            })
-            .expect("import wide source response");
-        assert_eq!(imported.name, "wide_demo");
-
-        let status = query_client
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql: "SELECT bogus_column FROM wide_demo.wide LIMIT 0".to_string(),
-            }))
-            .await
-            .expect_err("expected gRPC Status, not a transport-level PROTOCOL_ERROR");
-
-        assert_eq!(
-            status.code(),
-            tonic::Code::InvalidArgument,
-            "wrapped schema error should map to InvalidArgument via find_root(); message = {:?}",
-            status.message()
-        );
-        assert!(
-            status.message().len() <= MAX_STATUS_DETAIL_BYTES,
-            "status message was {} bytes; truncator should have clipped it to <= {MAX_STATUS_DETAIL_BYTES}",
-            status.message().len(),
-        );
-        assert!(
-            status.message().contains("No column named"),
-            "missing expected schema-error head in: {:?}",
-            status.message()
-        );
     }
 }

@@ -90,8 +90,7 @@ fn plain_fallback(operation: &str, code: tonic::Code) -> (String, Option<String>
         tonic::Code::InvalidArgument => (
             format!("{operation} request is invalid"),
             Some(
-                "Check the SQL and retry. Use `coral://guide`, `coral.tables`, \
-                 and `coral.columns` for discovery."
+                "Check the request and retry. Use `search` and `describe` to inspect available refs before executing Code Mode."
                     .to_string(),
             ),
         ),
@@ -103,7 +102,7 @@ fn plain_fallback(operation: &str, code: tonic::Code) -> (String, Option<String>
         ),
         tonic::Code::FailedPrecondition => (
             format!("{operation} prerequisites are not satisfied"),
-            Some("Check database catalog metadata, configured inputs, and required filters, then retry.".to_string()),
+            Some("Use `search` and `describe` to confirm available bindings, configured inputs, and runtime exposure before retrying.".to_string()),
         ),
         tonic::Code::Unavailable => (
             format!("{operation} is unavailable"),
@@ -381,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_status_to_error_data_keeps_legacy_message() {
+    fn plain_status_to_error_data_keeps_plain_message() {
         let status = Status::new(Code::NotFound, "resource not found: github.pulls");
 
         let error = status_to_error_data(&status);

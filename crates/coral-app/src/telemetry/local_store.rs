@@ -72,7 +72,7 @@ pub(crate) enum LocalTraceStoreError {
 #[derive(Debug, Clone)]
 pub(crate) struct JsonlSpanExporter {
     writer: Arc<Mutex<RollingJsonlWriter>>,
-    resource_json: Arc<Mutex<String>>,
+    resource: Arc<Mutex<JsonValue>>,
     shutdown_called: Arc<AtomicBool>,
 }
 
@@ -80,15 +80,16 @@ impl JsonlSpanExporter {
     pub(crate) fn new(dir: PathBuf, retention: Duration) -> Result<Self, LocalTraceStoreError> {
         Ok(Self {
             writer: Arc::new(Mutex::new(RollingJsonlWriter::new(dir, retention)?)),
-            resource_json: Arc::new(Mutex::new("{}".to_string())),
+            resource: Arc::new(Mutex::new(JsonValue::Object(JsonMap::new()))),
             shutdown_called: Arc::new(AtomicBool::new(false)),
         })
     }
 
-    fn resource_json(&self) -> String {
-        self.resource_json
-            .lock()
-            .map_or_else(|_| "{}".to_string(), |resource_json| resource_json.clone())
+    fn resource(&self) -> JsonValue {
+        self.resource.lock().map_or_else(
+            |_| JsonValue::Object(JsonMap::new()),
+            |resource| resource.clone(),
+        )
     }
 }
 
@@ -101,10 +102,10 @@ impl SpanExporter for JsonlSpanExporter {
             return Ok(());
         }
 
-        let resource_json = self.resource_json();
+        let resource = self.resource();
         let records = batch
             .iter()
-            .map(|span| span_record(&resource_json, span))
+            .map(|span| span_record(&resource, span))
             .collect::<Vec<_>>();
         self.writer
             .lock()
@@ -127,8 +128,8 @@ impl SpanExporter for JsonlSpanExporter {
     }
 
     fn set_resource(&mut self, resource: &Resource) {
-        if let Ok(mut resource_json) = self.resource_json.lock() {
-            *resource_json = resource_json_from_resource(resource);
+        if let Ok(mut cached_resource) = self.resource.lock() {
+            *cached_resource = resource_from_resource(resource);
         }
     }
 }
@@ -428,14 +429,14 @@ pub(crate) struct TraceSpanRecord {
     pub(crate) start_time_unix_nanos: i64,
     pub(crate) end_time_unix_nanos: i64,
     pub(crate) duration_nanos: i64,
-    pub(crate) attributes_json: String,
-    pub(crate) events_json: String,
-    pub(crate) links_json: String,
-    pub(crate) resource_json: String,
+    pub(crate) attributes: JsonValue,
+    pub(crate) events: JsonValue,
+    pub(crate) links: JsonValue,
+    pub(crate) resource: JsonValue,
     pub(crate) scope_name: String,
     pub(crate) scope_version: Option<String>,
     pub(crate) scope_schema_url: Option<String>,
-    pub(crate) scope_attributes_json: String,
+    pub(crate) scope_attributes: JsonValue,
     pub(crate) trace_flags: i32,
     pub(crate) trace_state: String,
     pub(crate) is_remote: bool,
@@ -465,7 +466,7 @@ struct TraceListSpanRecord {
     status: StoredTraceStatus,
     start_time_unix_nanos: i64,
     end_time_unix_nanos: i64,
-    attributes_json: String,
+    attributes: JsonValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,7 +475,7 @@ struct TracePrimaryCandidate {
     name: String,
     status: StoredTraceStatus,
     start_time_unix_nanos: i64,
-    attributes_json: String,
+    attributes: JsonValue,
     priority: u8,
 }
 
@@ -698,7 +699,7 @@ impl TracePrimaryCandidate {
             name: span.name.clone(),
             status: span.status,
             start_time_unix_nanos: span.start_time_unix_nanos,
-            attributes_json: span.attributes_json.clone(),
+            attributes: span.attributes.clone(),
             priority: primary_priority(&span.name, span.parent_span_id.as_deref()),
         }
     }
@@ -1096,26 +1097,21 @@ fn summary_from_list_aggregate(
             row_count_recorded: false,
         },
         |primary| {
-            let attributes = parse_attributes(&primary.attributes_json);
-            let status = status_from_attributes(attributes.as_ref()).unwrap_or_else(|| {
+            let attributes = &primary.attributes;
+            let status = status_from_attributes(Some(attributes)).unwrap_or_else(|| {
                 if primary.status == StoredTraceStatus::Unspecified {
                     fallback_status
                 } else {
                     primary.status
                 }
             });
-            let row_count = attributes
-                .as_ref()
-                .and_then(|attrs| attr_u64(attrs, "row_count"));
+            let row_count = attr_u64(attributes, "row_count");
 
             TraceSummaryRecord {
                 trace_id: aggregate.trace_id.clone(),
                 root_span_id: primary.span_id.clone(),
                 name: primary.name.clone(),
-                query: attributes
-                    .as_ref()
-                    .and_then(|attrs| attr_string(attrs, "sql"))
-                    .unwrap_or_default(),
+                query: attr_string(attributes, "sql").unwrap_or_default(),
                 status,
                 start_time_unix_nanos: aggregate.start_time_unix_nanos,
                 end_time_unix_nanos: aggregate.end_time_unix_nanos,
@@ -1156,26 +1152,21 @@ fn summary_from_aggregate(
             row_count_recorded: false,
         },
         |primary| {
-            let attributes = parse_attributes(&primary.attributes_json);
-            let status = status_from_attributes(attributes.as_ref()).unwrap_or_else(|| {
+            let attributes = &primary.attributes;
+            let status = status_from_attributes(Some(attributes)).unwrap_or_else(|| {
                 if primary.status == StoredTraceStatus::Unspecified {
                     fallback_status
                 } else {
                     primary.status
                 }
             });
-            let row_count = attributes
-                .as_ref()
-                .and_then(|attrs| attr_u64(attrs, "row_count"));
+            let row_count = attr_u64(attributes, "row_count");
 
             TraceSummaryRecord {
                 trace_id: aggregate.trace_id.clone(),
                 root_span_id: primary.span_id.clone(),
                 name: primary.name.clone(),
-                query: attributes
-                    .as_ref()
-                    .and_then(|attrs| attr_string(attrs, "sql"))
-                    .unwrap_or_default(),
+                query: attr_string(attributes, "sql").unwrap_or_default(),
                 status,
                 start_time_unix_nanos: aggregate.start_time_unix_nanos,
                 end_time_unix_nanos: aggregate.end_time_unix_nanos,
@@ -1188,7 +1179,7 @@ fn summary_from_aggregate(
     )
 }
 
-fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
+fn span_record(resource: &JsonValue, span: &SpanData) -> TraceSpanRecord {
     let span_context = &span.span_context;
     let parent_span_id =
         (span.parent_span_id != SpanId::INVALID).then(|| span.parent_span_id.to_string());
@@ -1206,10 +1197,10 @@ fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
         start_time_unix_nanos: unix_nanos(span.start_time),
         end_time_unix_nanos: unix_nanos(span.end_time),
         duration_nanos: duration_nanos(span.start_time, span.end_time),
-        attributes_json: key_values_json(span.attributes.iter()).to_string(),
-        events_json: events_json(span).to_string(),
-        links_json: links_json(span).to_string(),
-        resource_json: resource_json.to_string(),
+        attributes: key_values_json(span.attributes.iter()),
+        events: events_value(span),
+        links: links_value(span),
+        resource: resource.clone(),
         scope_name: span.instrumentation_scope.name().to_string(),
         scope_version: span
             .instrumentation_scope
@@ -1219,15 +1210,11 @@ fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
             .instrumentation_scope
             .schema_url()
             .map(ToString::to_string),
-        scope_attributes_json: key_values_json(span.instrumentation_scope.attributes()).to_string(),
+        scope_attributes: key_values_json(span.instrumentation_scope.attributes()),
         trace_flags: i32::from(span_context.trace_flags().to_u8()),
         trace_state: span_context.trace_state().header(),
         is_remote: span_context.is_remote(),
     }
-}
-
-fn parse_attributes(attributes_json: &str) -> Option<JsonValue> {
-    serde_json::from_str(attributes_json).ok()
 }
 
 fn status_from_attributes(attributes: Option<&JsonValue>) -> Option<StoredTraceStatus> {
@@ -1274,16 +1261,16 @@ fn key_value_pairs_json<'a>(
 ) -> JsonValue {
     let mut map = JsonMap::new();
     for (key, value) in pairs {
-        map.insert(key.to_string(), otel_value_json(value));
+        map.insert(key.to_string(), otel_value(value));
     }
     JsonValue::Object(map)
 }
 
-fn resource_json_from_resource(resource: &Resource) -> String {
-    key_value_pairs_json(resource.iter().map(|(key, value)| (key.as_str(), value))).to_string()
+fn resource_from_resource(resource: &Resource) -> JsonValue {
+    key_value_pairs_json(resource.iter().map(|(key, value)| (key.as_str(), value)))
 }
 
-fn events_json(span: &SpanData) -> JsonValue {
+fn events_value(span: &SpanData) -> JsonValue {
     json!({
         "events": span.events.events.iter().map(|event| {
             json!({
@@ -1295,7 +1282,7 @@ fn events_json(span: &SpanData) -> JsonValue {
     })
 }
 
-fn links_json(span: &SpanData) -> JsonValue {
+fn links_value(span: &SpanData) -> JsonValue {
     json!({
         "links": span.links.links.iter().map(|link| {
             let span_context = &link.span_context;
@@ -1311,7 +1298,7 @@ fn links_json(span: &SpanData) -> JsonValue {
     })
 }
 
-fn otel_value_json(value: &OtelValue) -> JsonValue {
+fn otel_value(value: &OtelValue) -> JsonValue {
     match value {
         OtelValue::Bool(value) => JsonValue::Bool(*value),
         OtelValue::I64(value) => JsonValue::Number((*value).into()),
@@ -1441,11 +1428,11 @@ mod tests {
         let span = detail.spans.first().expect("trace span");
 
         assert_eq!(span.name, "coral.query");
-        assert!(span.attributes_json.contains(r#""test.attribute":"value""#));
-        assert!(!span.attributes_json.contains("coral.http.request.body"));
-        assert!(
-            span.resource_json
-                .contains(r#""service.name":"coral-test""#)
+        assert_eq!(span.attributes.get("test.attribute"), Some(&json!("value")));
+        assert!(span.attributes.get("coral.http.request.body").is_none());
+        assert_eq!(
+            span.resource.get("service.name"),
+            Some(&json!("coral-test"))
         );
     }
 
@@ -1544,10 +1531,10 @@ mod tests {
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
         let mut record = trace_record("trace-1", "span-1");
-        record.attributes_json = r#"{"sql":"SELECT 1","status":"ok","row_count":1}"#.to_string();
+        record.attributes = json!({"sql":"SELECT 1","status":"ok","row_count":1});
         let mut value = serde_json::to_value(&record).expect("record value");
         value.as_object_mut().expect("record object").insert(
-            "events_json".to_string(),
+            "events".to_string(),
             json!({ "large_detail_payload": ["ignored by list"] }),
         );
         fs::write(
@@ -1668,7 +1655,7 @@ mod tests {
 
         let mut root_record = trace_record("split-trace", "root-span");
         root_record.status = StoredTraceStatus::Unspecified;
-        root_record.attributes_json = r#"{"sql":"SELECT 1"}"#.to_string();
+        root_record.attributes = json!({"sql":"SELECT 1"});
         root_record.start_time_unix_nanos = unix_nanos(child_time - Duration::from_secs(1));
         root_record.end_time_unix_nanos = unix_nanos(root_time + Duration::from_millis(1));
         root_record.duration_nanos = root_record
@@ -1711,7 +1698,7 @@ mod tests {
 
         let mut query_record = trace_record("nested-query-trace", "query-span");
         query_record.parent_span_id = Some("parent-span".to_string());
-        query_record.attributes_json = r#"{"sql":"SELECT nested"}"#.to_string();
+        query_record.attributes = json!({"sql":"SELECT nested"});
         query_record.start_time_unix_nanos = unix_nanos(query_time);
         query_record.end_time_unix_nanos = unix_nanos(query_time + Duration::from_millis(1));
         query_record.duration_nanos = 1_000_000;
@@ -1858,7 +1845,7 @@ mod tests {
 
         let mut query_record = trace_record("nested-detail-trace", "query-span");
         query_record.parent_span_id = Some("parent-span".to_string());
-        query_record.attributes_json = r#"{"sql":"SELECT nested"}"#.to_string();
+        query_record.attributes = json!({"sql":"SELECT nested"});
         query_record.start_time_unix_nanos = unix_nanos(query_time);
         query_record.end_time_unix_nanos = unix_nanos(query_time + Duration::from_millis(1));
         query_record.duration_nanos = 1_000_000;
@@ -1890,7 +1877,7 @@ mod tests {
         let newer_modified = base_time + Duration::from_millis(10);
 
         let mut older_record = trace_record("duplicate-trace", "duplicate-span");
-        older_record.attributes_json = r#"{"sql":"SELECT 'old'"}"#.to_string();
+        older_record.attributes = json!({"sql":"SELECT 'old'"});
         older_record.start_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(500));
         older_record.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(600));
         let older_path = dir.join(timestamped_jsonl_path(older_modified));
@@ -1898,7 +1885,7 @@ mod tests {
         set_modified_time(&older_path, older_modified);
 
         let mut newer_record = trace_record("duplicate-trace", "duplicate-span");
-        newer_record.attributes_json = r#"{"sql":"SELECT 'new'"}"#.to_string();
+        newer_record.attributes = json!({"sql":"SELECT 'new'"});
         newer_record.start_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(500));
         newer_record.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(700));
         let newer_path = dir.join(timestamped_jsonl_path(newer_modified));
@@ -1912,12 +1899,8 @@ mod tests {
         assert_eq!(detail.spans.len(), 1);
         assert_eq!(detail.summary.query, "SELECT 'new'");
         assert_eq!(
-            detail
-                .spans
-                .first()
-                .expect("duplicate span")
-                .attributes_json,
-            r#"{"sql":"SELECT 'new'"}"#
+            detail.spans.first().expect("duplicate span").attributes,
+            json!({"sql":"SELECT 'new'"})
         );
     }
 
@@ -1929,12 +1912,12 @@ mod tests {
         let base_time = SystemTime::now() - Duration::from_secs(10);
 
         let mut older_record = trace_record("same-file-duplicate-trace", "duplicate-span");
-        older_record.attributes_json = r#"{"sql":"SELECT 'old'"}"#.to_string();
+        older_record.attributes = json!({"sql":"SELECT 'old'"});
         older_record.start_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(500));
         older_record.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(600));
 
         let mut newer_record = trace_record("same-file-duplicate-trace", "duplicate-span");
-        newer_record.attributes_json = r#"{"sql":"SELECT 'new'"}"#.to_string();
+        newer_record.attributes = json!({"sql":"SELECT 'new'"});
         newer_record.start_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(500));
         newer_record.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(700));
         let path = dir.join(timestamped_jsonl_path(base_time));
@@ -1955,12 +1938,8 @@ mod tests {
         assert_eq!(summary.query, "SELECT 'new'");
         assert_eq!(detail.summary.query, "SELECT 'new'");
         assert_eq!(
-            detail
-                .spans
-                .first()
-                .expect("duplicate span")
-                .attributes_json,
-            r#"{"sql":"SELECT 'new'"}"#
+            detail.spans.first().expect("duplicate span").attributes,
+            json!({"sql":"SELECT 'new'"})
         );
     }
 
@@ -2107,14 +2086,14 @@ mod tests {
             start_time_unix_nanos: 1,
             end_time_unix_nanos: 2,
             duration_nanos: 1,
-            attributes_json: "{}".to_string(),
-            events_json: "[]".to_string(),
-            links_json: "[]".to_string(),
-            resource_json: "{}".to_string(),
+            attributes: json!({}),
+            events: json!([]),
+            links: json!([]),
+            resource: json!({}),
             scope_name: "test".to_string(),
             scope_version: None,
             scope_schema_url: None,
-            scope_attributes_json: "{}".to_string(),
+            scope_attributes: json!({}),
             trace_flags: 0,
             trace_state: String::new(),
             is_remote: false,

@@ -1,456 +1,67 @@
+spec_version: 1
+kind: source
 name: slack
-version: 2.1.1
-dsl_version: 3
-backend: http
-description: >-
-  Query channels, messages, thread replies, and users from your Slack workspace.
+description: Use Slack's hosted MCP server over Streamable HTTP to search Slack, read messages and canvases, manage users, and send messages as the authenticated user.
 inputs:
-  SLACK_TOKEN:
-    kind: secret
-    credential:
-      methods:
-        - type: oauth
-          label: Connect with Slack
-          description: Authorize Slack with OAuth and store a user token.
-          hint: |
-            Create a [user-token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback%22%5D%2C%22scopes%22%3A%7B%22user%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Aread%22%2C%22channels%3Aread%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%2C%22pkce_enabled%22%3Atrue%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D),
-            which pre-fills the scopes and redirect URL, then enter its
-            Client ID below and authorize in your browser. Reads the
-            channels the authorizing user belongs to.
-          oauth:
-            flow:
-              type: authorization_code
-              pkce: required
-            redirect_uri: http://localhost:53682/oauth/callback
-            redirect_uri_port_mode: fixed
-            endpoints:
-              authorization_url: https://slack.com/oauth/v2_user/authorize
-              token_url: https://slack.com/api/oauth.v2.user.access
-            client:
-              id:
-                input: SLACK_OAUTH_CLIENT_ID
-            scopes:
-              scope:
-                delimiter: comma
-                values:
-                  - channels:read
-                  - groups:read
-                  - channels:history
-                  - groups:history
-                  - users:read
-                  - users:read.email
-        - type: source_config
-          label: Paste Slack OAuth Token
-          description: Paste an existing Slack OAuth token with the required scopes.
-          hint: |
-            Paste the OAuth token from your app's OAuth & Permissions
-            page. If you don't have an app, create a [bot-token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%2C%22description%22%3A%22Coral+data+access%22%7D%2C%22oauth_config%22%3A%7B%22scopes%22%3A%7B%22bot%22%3A%5B%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%5D%7D%7D%2C%22features%22%3A%7B%22bot_user%22%3A%7B%22display_name%22%3A%22Coral%22%2C%22always_online%22%3Afalse%7D%7D%7D),
-            install it, then paste its bot token. Reads the channels the
-            bot has been added to.
-    hint: |
-      Slack has no general-purpose API for reading messages, so you need
-      a Slack app with an OAuth token. Both methods use these scopes:
-      `channels:read`, `channels:history`, `groups:read`,
-      `groups:history`, `users:read`, `users:read.email`. See the
-      [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
-base_url: https://slack.com
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.SLACK_TOKEN}}
-test_queries:
-  - SELECT * FROM slack.channels LIMIT 1
-functions:
-  - name: messages
-    description: Messages in a Slack channel.
-    args:
-      - name: channel
-        required: true
-        bind:
-          arg: channel
-      - name: oldest
-        bind:
-          arg: oldest
-      - name: latest
-        bind:
-          arg: latest
-    request:
-      method: GET
-      path: /api/conversations.history
-      query:
-        - name: channel
-          from: arg
-          key: channel
-        - name: oldest
-          from: arg
-          key: oldest
-        - name: latest
-          from: arg
-          key: latest
-    response:
-      ok_path:
-        - ok
-      error_path:
-        - error
-      rows_path:
-        - messages
-    pagination:
-      mode: cursor_query
-      page_size:
-        default: 200
-        max: 200
-        query_param: limit
-      cursor_param: cursor
-      response_cursor_path:
-        - response_metadata
-        - next_cursor
-    columns:
-      - name: user_id
-        type: Utf8
-        nullable: true
-        description: User ID of the message author
-        expr:
-          kind: path
-          path:
-            - user
-      - name: text
-        type: Utf8
-        nullable: true
-        description: Message text content
-        expr:
-          kind: path
-          path:
-            - text
-      - name: ts
-        type: Timestamp
-        nullable: false
-        description: Message time from Slack `ts`, exposed as a UTC Timestamp
-        expr:
-          kind: format_timestamp
-          input: seconds
-          expr:
-            kind: path
-            path:
-              - ts
-      - name: thread_ts
-        type: Utf8
-        nullable: true
-        description: Thread parent timestamp (null if not in a thread)
-        expr:
-          kind: path
-          path:
-            - thread_ts
-      - name: reply_count
-        type: Int64
-        nullable: true
-        description: Number of replies in thread
-        expr:
-          kind: path
-          path:
-            - reply_count
-      - name: subtype
-        type: Utf8
-        nullable: true
-        description: Message subtype
-        expr:
-          kind: path
-          path:
-            - subtype
-  - name: thread_replies
-    description: Slack thread replies for a specific channel and parent message.
-    args:
-      - name: channel
-        required: true
-        bind:
-          arg: channel
-      - name: thread_ts
-        required: true
-        bind:
-          arg: thread_ts
-      - name: oldest
-        bind:
-          arg: oldest
-      - name: latest
-        bind:
-          arg: latest
-      - name: inclusive
-        bind:
-          arg: inclusive
-      - name: include_all_metadata
-        bind:
-          arg: include_all_metadata
-    request:
-      method: GET
-      path: /api/conversations.replies
-      query:
-        - name: channel
-          from: arg
-          key: channel
-        - name: ts
-          from: arg
-          key: thread_ts
-        - name: oldest
-          from: arg
-          key: oldest
-        - name: latest
-          from: arg
-          key: latest
-        - name: inclusive
-          from: arg
-          key: inclusive
-        - name: include_all_metadata
-          from: arg
-          key: include_all_metadata
-    response:
-      ok_path:
-        - ok
-      error_path:
-        - error
-      rows_path:
-        - messages
-    pagination:
-      mode: cursor_query
-      page_size:
-        default: 200
-        max: 200
-        query_param: limit
-      cursor_param: cursor
-      response_cursor_path:
-        - response_metadata
-        - next_cursor
-    columns:
-      - name: thread_ts
-        type: Utf8
-        nullable: true
-        description: Thread parent timestamp
-        expr:
-          kind: path
-          path:
-            - thread_ts
-      - name: user_id
-        type: Utf8
-        nullable: true
-        description: User ID of the reply author
-        expr:
-          kind: path
-          path:
-            - user
-      - name: text
-        type: Utf8
-        nullable: true
-        description: Reply text content
-        expr:
-          kind: path
-          path:
-            - text
-      - name: ts
-        type: Timestamp
-        nullable: false
-        description: Reply time from Slack `ts`, exposed as a UTC Timestamp
-        expr:
-          kind: format_timestamp
-          input: seconds
-          expr:
-            kind: path
-            path:
-              - ts
-      - name: reply_count
-        type: Int64
-        nullable: true
-        description: Number of replies in thread (present on parent messages)
-        expr:
-          kind: path
-          path:
-            - reply_count
-      - name: subtype
-        type: Utf8
-        nullable: true
-        description: Message subtype
-        expr:
-          kind: path
-          path:
-            - subtype
-tables:
-  - name: channels
-    description: Slack channels with topic, purpose, and member count
-    guide: |
-      Start here to inventory channels. Use `id` values from here in
-      related tables and drill-down queries.
-    request:
-      method: GET
-      path: /api/conversations.list
-      query:
-        - name: types
-          from: literal
-          value: public_channel,private_channel
-    response:
-      ok_path:
-        - ok
-      error_path:
-        - error
-      rows_path:
-        - channels
-    pagination:
-      mode: cursor_query
-      page_size:
-        default: 200
-        max: 200
-        query_param: limit
-      cursor_param: cursor
-      response_cursor_path:
-        - response_metadata
-        - next_cursor
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Channel ID
-        expr:
-          kind: path
-          path:
-            - id
-      - name: name
-        type: Utf8
-        nullable: false
-        description: Channel name
-        expr:
-          kind: path
-          path:
-            - name
-      - name: topic
-        type: Utf8
-        nullable: true
-        description: Channel topic text
-        expr:
-          kind: path
-          path:
-            - topic
-            - value
-      - name: purpose
-        type: Utf8
-        nullable: true
-        description: Channel purpose text
-        expr:
-          kind: path
-          path:
-            - purpose
-            - value
-      - name: num_members
-        type: Int64
-        nullable: true
-        description: Number of members in the channel
-        expr:
-          kind: path
-          path:
-            - num_members
-      - name: is_archived
-        type: Boolean
-        nullable: false
-        description: Whether the channel is archived
-        expr:
-          kind: path
-          path:
-            - is_archived
-      - name: created
-        type: Int64
-        nullable: false
-        description: Unix timestamp when the channel was created
-        expr:
-          kind: path
-          path:
-            - created
-  - name: users
-    description: Slack workspace users with profile info (email requires users:read.email scope)
-    guide: |
-      Start here to inventory users. Use `id` values from here in
-      related tables and drill-down queries.
-    request:
-      method: GET
-      path: /api/users.list
-      query: []
-    response:
-      ok_path:
-        - ok
-      error_path:
-        - error
-      rows_path:
-        - members
-    pagination:
-      mode: cursor_query
-      page_size:
-        default: 200
-        max: 200
-        query_param: limit
-      cursor_param: cursor
-      response_cursor_path:
-        - response_metadata
-        - next_cursor
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: User ID
-        expr:
-          kind: path
-          path:
-            - id
-      - name: name
-        type: Utf8
-        nullable: false
-        description: Username
-        expr:
-          kind: path
-          path:
-            - name
-      - name: real_name
-        type: Utf8
-        nullable: true
-        description: User real name
-        expr:
-          kind: path
-          path:
-            - real_name
-      - name: display_name
-        type: Utf8
-        nullable: true
-        description: User display name in Slack
-        expr:
-          kind: path
-          path:
-            - profile
-            - display_name
-      - name: email
-        type: Utf8
-        nullable: true
-        description: User email address (requires users:read.email scope)
-        expr:
-          kind: path
-          path:
-            - profile
-            - email
-      - name: is_bot
-        type: Boolean
-        nullable: false
-        description: Whether the user is a bot
-        expr:
-          kind: path
-          path:
-            - is_bot
-      - name: is_admin
-        type: Boolean
-        nullable: true
-        description: Whether the user is a workspace admin
-        expr:
-          kind: path
-          path:
-            - is_admin
-      - name: deleted
-        type: Boolean
-        nullable: true
-        description: Whether the user account is deactivated
-        expr:
-          kind: path
-          path:
-            - deleted
+    - key: SLACK_USER_TOKEN
+      kind: secret
+      label: Slack user OAuth token
+      hint: User OAuth token for Slack's hosted MCP server. Install interactively to authorize with Slack OAuth, or set this to an existing user token.
+      required: true
+      credential:
+          methods:
+              - type: oauth
+                label: Connect with Slack
+                description: Authorize Slack with OAuth and store a user token for Slack's hosted MCP server.
+                hint: The Slack app must be internal or directory-published, have MCP access and PKCE enabled, and allow the redirect URL http://localhost:53682/oauth/callback.
+                oauth:
+                    flow:
+                        type: authorization_code
+                        pkce: required
+                    redirect_uri: http://localhost:53682/oauth/callback
+                    redirect_uri_port_mode: fixed
+                    endpoints:
+                        authorization_url: https://slack.com/oauth/v2_user/authorize
+                        token_url: https://slack.com/api/oauth.v2.user.access
+                    client:
+                        id:
+                            input: SLACK_OAUTH_CLIENT_ID
+                    scopes:
+                        scope:
+                            delimiter: comma
+                            values:
+                                - search:read.public
+                                - search:read.private
+                                - search:read.mpim
+                                - search:read.im
+                                - search:read.files
+                                - files:read
+                                - emoji:read
+                                - search:read.users
+                                - chat:write
+                                - channels:history
+                                - groups:history
+                                - mpim:history
+                                - im:history
+                                - channels:write
+                                - groups:write
+                                - im:write
+                                - mpim:write
+                                - reactions:write
+                                - canvases:read
+                                - canvases:write
+                                - users:read
+                                - users:read.email
+                                - channels:read
+                                - groups:read
+                                - mpim:read
+interfaces:
+    - id: tools
+      type: mcp
+      server:
+          transport:
+              type: streamable_http
+              url: https://mcp.slack.com/mcp
+          auth:
+              kind: bearer_input
+              key: SLACK_USER_TOKEN

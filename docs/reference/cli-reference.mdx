@@ -5,18 +5,29 @@ description: "Reference for Coral CLI commands and options."
 
 ## Global feature flags
 
-Experimental runtime features can be overridden for a single process with
-top-level flags:
+Use `--runtime-exposure` to restrict the local server to TypeScript invocation
+bindings, SQL projection bindings, or both:
+
+```shellscript
+coral --runtime-exposure both mcp-stdio
+coral --runtime-exposure typescript mcp-stdio
+coral --runtime-exposure sql mcp-stdio
+```
+
+This is a process-local override. To persist a default, set
+`[runtime].exposure` in [`config.toml`](/reference/configuration#runtime-exposure).
+
+Experimental runtime feature flags provide process-local feature overrides:
 
 ```shellscript
 coral --enable-<FEATURE> <COMMAND>
 coral --disable-<FEATURE> <COMMAND>
-coral --enable-feedback mcp-stdio
-coral --disable-feedback mcp-stdio
 ```
 
 These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
 `coral features disable <FEATURE>` to persist a preference.
+
+The MCP `feedback` tool is part of the core MCP surface and is always exposed.
 
 ## `coral sql`
 
@@ -34,30 +45,66 @@ coral sql "<SQL>"
 
 JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
 
-Use `DESCRIBE <schema>.<table>` to inspect a table's result columns:
+Use `SHOW TABLES`, `SHOW COLUMNS`, or `DESCRIBE <schema>.<table>` to inspect
+registered SQL surfaces:
 
 ```shellscript
+coral sql "SHOW TABLES"
+coral sql "SHOW COLUMNS FROM datadog.hosts"
 coral sql "DESCRIBE datadog.hosts"
 ```
 
-`DESCRIBE` expects a table. To inspect table functions, query
-`coral.table_functions`.
+`DESCRIBE` expects a table. To inspect generated table-function bindings, use
+MCP `search`/`describe`.
 
 `DESCRIBE SELECT ...` still describes the result schema of the query itself.
+`SHOW FUNCTIONS` is also accepted for SQL function discovery.
+
+## `coral invoke`
+
+Invoke one generated capability and exit.
+
+```shellscript
+coral invoke <reference> --json '<args>'
+```
+
+`<reference>` can be a typed ref such as `typescript:github.rest.issues.list`, a
+generated Code Mode path such as `tools.github.rest.issues.list`, a capability id,
+or an unambiguous alias. `--json` must be a JSON object and defaults to `{}`.
+
+The command resolves the reference through generated-export discovery, invokes
+the same app-owned capability service that Code Mode uses, and prints a JSON
+wrapper:
+
+```json
+{
+  "ok": true,
+  "complete": true,
+  "partial": false,
+  "errors": [],
+  "source_status": [],
+  "value": {},
+  "error": null,
+  "envelope": {}
+}
+```
+
+Provider or validation failures print the wrapper with `ok: false` and exit
+non-zero. Mutating capabilities still respect Coral's mutation gate.
 
 ## `coral source`
 
-Manage configured sources, either the bundled ones, or your custom source specs.
+Manage configured sources from active bundled SourceSpecs or YAML files you import.
 
 ### `coral source discover`
 
-List the [bundled sources](/reference/bundled-sources) available in your current Coral build.
+List the active [bundled SourceSpec sources](/reference/bundled-sources) available in your current Coral build.
 
 ```shellscript
 coral source discover
 ```
 
-The output includes each source name, the bundled version currently shipped in the binary, and whether it is already `installed` or still `available`.
+The output includes each active bundled source name and whether it is already `installed` or still `available`.
 
 ### `coral source list`
 
@@ -72,7 +119,7 @@ The output includes the source's secret storage route: `keychain` or
 
 ### `coral source info <NAME>`
 
-Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`.
+Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for active bundled SourceSpecs and imported sources installed via `coral source add --file`.
 
 ```shellscript
 coral source info datadog
@@ -86,13 +133,11 @@ coral source info datadog --verbose
 
 ### `coral source add <NAME>`
 
-Add a bundled source or update its credentials.
+Add an active bundled SourceSpec source or update its credentials.
 
 By default, Coral reads each declared input from an environment variable of the same name. If a required input is missing, the command exits with an error listing the missing keys.
 
-```shellscript
-GITHUB_TOKEN=ghp_... coral source add github
-```
+Use `coral source discover` to list valid bundled names for your build.
 
 Pass `--interactive` to be prompted for variables and secrets instead. If a
 missing secret declares credential methods, Coral shows those choices in the
@@ -110,7 +155,7 @@ Environment variables still win, so a secret value already present in the
 environment bypasses the retrieval choice.
 
 ```shellscript
-coral source add --interactive github
+coral source add --interactive <name>
 ```
 
 If the source is already installed, running this command again replaces its stored credentials with the new values you provide. After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
@@ -231,15 +276,16 @@ This command is intended to be launched by an MCP-capable client rather than use
 
 This server exposes:
 
-| Type     | Name             | Description                      |
-| -------- | ---------------- | -------------------------------- |
-| Tool     | `sql`            | Execute read-only SQL against the Coral database |
-| Tool     | `list_catalog`   | List database tables and table functions |
-| Tool     | `search_catalog` | Search database catalog metadata by regex |
-| Tool     | `describe_table` | Show compact database table metadata |
-| Tool     | `list_columns`   | List columns for one database table |
-| Resource | `coral://guide`  | Database workflow guide for agents |
-| Resource | `coral://tables` | Database table summaries         |
+| Type | Name       | Description                                        |
+| ---- | ---------- | -------------------------------------------------- |
+| Tool | `search`   | Search current workspace exports and capabilities  |
+| Tool | `describe` | Describe a typed ref, capability id, or alias      |
+| Tool | `exec`     | Run Code Mode, waiting briefly for fast completion |
+| Tool | `wait`     | Read Code Mode events, or terminate a run          |
+| Tool | `feedback` | Blocked-agent feedback tool                        |
+
+SQL remains available through the CLI `coral sql` command and, for MCP agents,
+inside Code Mode with `coral.sql.query(...)`.
 
 ## `coral completion <SHELL>`
 

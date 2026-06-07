@@ -29,13 +29,11 @@ AGENTS.md @withcoral/core-maintainers
 /crates/coral-app/ @withcoral/runtime
 /crates/coral-client/ @withcoral/runtime
 /crates/coral-cli/ @withcoral/cli
-/crates/coral-engine/ @withcoral/engine
 /crates/coral-mcp/ @withcoral/mcp
 /crates/coral-spec/ @withcoral/sources
 
 # Sources
 /sources/ @withcoral/sources
-/sources/community/ @jsummerfield
 
 # UI
 /ui/ @withcoral/ui

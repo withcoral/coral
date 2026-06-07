@@ -1,0 +1,63 @@
+[package]
+name = "coral-code-mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints.rust]
+missing_docs = "warn"
+unreachable_pub = "warn"
+unsafe_code = { level = "allow", priority = 1 }
+unused_crate_dependencies = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -2 }
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+unwrap_used = "warn"
+get_unwrap = "warn"
+unwrap_in_result = "warn"
+indexing_slicing = "warn"
+string_slice = "warn"
+panic_in_result_fn = "warn"
+unchecked_time_subtraction = "warn"
+let_underscore_must_use = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "warn"
+assertions_on_result_states = "warn"
+dbg_macro = "warn"
+mem_forget = "warn"
+rc_mutex = "warn"
+float_cmp_const = "warn"
+lossy_float_literal = "warn"
+disallowed_methods = "deny"
+print_stderr = "warn"
+print_stdout = "warn"
+
+[features]
+default = []
+code-mode = [
+    "dep:async-channel",
+    "dep:async-trait",
+    "dep:deno_core_icudata",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:v8",
+]
+
+[dependencies]
+async-channel = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+deno_core_icudata = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+v8 = { workspace = true, optional = true }
+
+[dev-dependencies]
+pretty_assertions = "1"
+tokio.workspace = true

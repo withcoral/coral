@@ -11,7 +11,6 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 ### Features
 
 * **app:** refresh oauth access tokens ([#764](https://github.com/withcoral/coral/issues/764)) ([a05c753](https://github.com/withcoral/coral/commit/a05c7532c0a53f7098607004ab5cb1f3349cc704))
-* implement DSL v4 materialization and runtime ([#934](https://github.com/withcoral/coral/issues/934)) ([d4b4bd0](https://github.com/withcoral/coral/commit/d4b4bd0a0fd9637af34f8b18725d9ef3692016ff))
 * **mcp:** native Streamable HTTP transport + OAuth for MCP sources ([#871](https://github.com/withcoral/coral/issues/871)) ([92219d1](https://github.com/withcoral/coral/commit/92219d1d1d79fbc77c5ceda854df59fa26e504c5))
 * **sources/core/gmail:** add Gmail source ([#407](https://github.com/withcoral/coral/issues/407)) ([4f1ef6f](https://github.com/withcoral/coral/commit/4f1ef6fa7faa352aad9d5c6fcd7a77466246c11c))
 * **sources/sentry:** add OAuth device flow ([#435](https://github.com/withcoral/coral/issues/435)) ([cb4c000](https://github.com/withcoral/coral/commit/cb4c000799279d55dd062488ec52b504c8205423))
@@ -37,7 +36,6 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 ### Performance Improvements
 
-* **catalog:** reduce startup catalog/runtime work ([#967](https://github.com/withcoral/coral/issues/967)) ([b387275](https://github.com/withcoral/coral/commit/b387275d9a3c6cee7ff9cb47b779b0d1d9da4b43))
 * **engine:** narrow request input context ([#962](https://github.com/withcoral/coral/issues/962)) ([4e30419](https://github.com/withcoral/coral/commit/4e304196ba6b6e478a7c448b7864886a175664c8))
 * **engine:** reuse default HTTP source client ([#945](https://github.com/withcoral/coral/issues/945)) ([36c0269](https://github.com/withcoral/coral/commit/36c02690df92f8ee8b43cfda7f43b87993b33710))
 * **engine:** stream HTTP/MCP scans into bounded RecordBatches ([#1126](https://github.com/withcoral/coral/issues/1126)) ([d491ade](https://github.com/withcoral/coral/commit/d491ade347fb37fc0901e87a36d25344667a39a0))
@@ -65,14 +63,12 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 ### ⚠ BREAKING CHANGES
 
-* **file:** add unified file backend ([#453](https://github.com/withcoral/coral/issues/453))
 
 ### Features
 
 * **app:** add keychain secret storage ([#761](https://github.com/withcoral/coral/issues/761)) ([6b03b48](https://github.com/withcoral/coral/commit/6b03b48eacd5c6d2901384954285cdcb96a9d2c2))
 * **app:** keep local HTTP body previews off spans ([#376](https://github.com/withcoral/coral/issues/376)) ([20235d0](https://github.com/withcoral/coral/commit/20235d07a5468037f44bcb16d95c736da6f65b75))
 * **community:** add OpenSSF Scorecard source — security health checks for any GitHub repo ([#832](https://github.com/withcoral/coral/issues/832)) ([a0d40dd](https://github.com/withcoral/coral/commit/a0d40dd3173f5f47a168bd2cb0f834c732a73d4f))
-* **file:** add unified file backend ([#453](https://github.com/withcoral/coral/issues/453)) ([0ddaabc](https://github.com/withcoral/coral/commit/0ddaabc30de02913e6c0cf8c76b83115cc936297))
 * **mcp:** add MCP-backed source support ([#402](https://github.com/withcoral/coral/issues/402)) ([a7f167f](https://github.com/withcoral/coral/commit/a7f167fca549cbc59f38560316f0ca293a5da580))
 * **sources/community/advice-slip:** add Advice Slip source ([#857](https://github.com/withcoral/coral/issues/857)) ([cb3979f](https://github.com/withcoral/coral/commit/cb3979fdb6ac9e7c9e6d3f28bad6b32f1ec35da3))
 * **sources/community/adzuna:** add Adzuna search community source ([#815](https://github.com/withcoral/coral/issues/815)) ([099b42e](https://github.com/withcoral/coral/commit/099b42e409d3bb81e43eaabce83a8141815f6bfb))
@@ -151,20 +147,16 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 ### ⚠ BREAKING CHANGES
 
-* **catalog:** expose unified catalog discovery ([#459](https://github.com/withcoral/coral/issues/459))
 
 ### Features
 
-* **app:** add catalog discovery service ([#448](https://github.com/withcoral/coral/issues/448)) ([25bac74](https://github.com/withcoral/coral/commit/25bac749b731b4c872f149d668a2352ae67e4be3))
 * **app:** add OAuth authorization-code credential flow ([#377](https://github.com/withcoral/coral/issues/377)) ([3dd4dcc](https://github.com/withcoral/coral/commit/3dd4dcc6eb11a072a5b7e28ef9010e4c1dbe61df))
 * **app:** add SQL explain API ([#305](https://github.com/withcoral/coral/issues/305)) ([f6fc6e0](https://github.com/withcoral/coral/commit/f6fc6e0d3d2e5b8b009dc6fe9a4207a75766a5ea))
 * **app:** add trace storage and inspection API ([#275](https://github.com/withcoral/coral/issues/275)) ([39ac1a8](https://github.com/withcoral/coral/commit/39ac1a8154f403d7e778dfc0817d568dc668d5d0))
-* **catalog:** expose unified catalog discovery ([#459](https://github.com/withcoral/coral/issues/459)) ([72677f6](https://github.com/withcoral/coral/commit/72677f641c5517440c4e094d53c37382a8c5b842))
 * **cli:** collect OAuth source credentials ([#378](https://github.com/withcoral/coral/issues/378)) ([9a8b087](https://github.com/withcoral/coral/commit/9a8b0875f9a5e1a8a9949b5b08cd0cb140a78d5f))
 * **cli:** friendly not-found error for `coral source remove` ([#209](https://github.com/withcoral/coral/issues/209)) ([34e64ce](https://github.com/withcoral/coral/commit/34e64ce51143c61b1c063959f21e45ac16dd28e3))
 * **docs:** autogenerate changelog page from CHANGELOG.md ([#232](https://github.com/withcoral/coral/issues/232)) ([ef79160](https://github.com/withcoral/coral/commit/ef791604f27a399dfb9e30ba61e6b9a747ba3c56))
 * **engine:** execute Notion search as table function ([#352](https://github.com/withcoral/coral/issues/352)) ([37e537b](https://github.com/withcoral/coral/commit/37e537b69c7d3acd9bff83d9f81c66f4226fea51))
-* **engine:** expose search metadata catalog ([#312](https://github.com/withcoral/coral/issues/312)) ([890232b](https://github.com/withcoral/coral/commit/890232bd3a77f667fcf062b7171cffe1f207e736))
 * **github:** add starred_at to stargazers table ([#421](https://github.com/withcoral/coral/issues/421)) ([a6372c9](https://github.com/withcoral/coral/commit/a6372c9ce98ba6de8890999517fe8f563d527fe3))
 * **sources/community/airflow:** add Apache Airflow community source ([#511](https://github.com/withcoral/coral/issues/511)) ([f9f0272](https://github.com/withcoral/coral/commit/f9f0272f6c00c785634e9d4d4df5df8fb7c60820))
 * **sources/community/beehiiv:** add Beehiiv community source ([#569](https://github.com/withcoral/coral/issues/569)) ([91d8769](https://github.com/withcoral/coral/commit/91d8769f937599323b76d84b5b284f260457cfd9))
@@ -260,11 +252,7 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 * **engine:** instrument optimizer rules ([#300](https://github.com/withcoral/coral/issues/300)) ([b5c6d13](https://github.com/withcoral/coral/commit/b5c6d1352026d4a9549e1265c20a9f2f74448000))
 * **engine:** plan source-scoped table functions ([#243](https://github.com/withcoral/coral/issues/243)) ([3d8ace5](https://github.com/withcoral/coral/commit/3d8ace5128a6f540d3f903c36ef86845a4d2acd2))
 * **feedback:** upload MCP feedback reports to Coral ([#353](https://github.com/withcoral/coral/issues/353)) ([838fb9a](https://github.com/withcoral/coral/commit/838fb9a3e5b96b4000edd0f36f4cec41c9a907f8))
-* **mcp:** add describe_table discovery ([#282](https://github.com/withcoral/coral/issues/282)) ([9233c47](https://github.com/withcoral/coral/commit/9233c47bdd6c2b8291c76db0dfd552f9ce9259f4))
 * **mcp:** add protocol spans and error telemetry ([#328](https://github.com/withcoral/coral/issues/328)) ([6ef2464](https://github.com/withcoral/coral/commit/6ef24647956b5a3bfb86241cca50f143eec3ec01))
-* **mcp:** add regex table discovery ([#281](https://github.com/withcoral/coral/issues/281)) ([543f4ce](https://github.com/withcoral/coral/commit/543f4cece9c02c642f250f9ee0747490d245a73d))
-* **mcp:** list table columns progressively ([#283](https://github.com/withcoral/coral/issues/283)) ([54037d3](https://github.com/withcoral/coral/commit/54037d33c60707339abdff58f44a4cb24bb48c97))
-* **mcp:** paginate list_tables discovery ([#265](https://github.com/withcoral/coral/issues/265)) ([a651d38](https://github.com/withcoral/coral/commit/a651d38257d3c175e0f79dcf2ec74e9fea13f1e6))
 * **plugin:** add Coral Codex plugin ([#315](https://github.com/withcoral/coral/issues/315)) ([730d31a](https://github.com/withcoral/coral/commit/730d31ad9f173fa2ca3003619238fba88861daa1))
 * **sources/wandb:** add W&B experiment metrics source ([#316](https://github.com/withcoral/coral/issues/316)) ([1083477](https://github.com/withcoral/coral/commit/10834779da41f6d703d840dd29414cf60fd6d73c))
 * **sources:** roll out source-scoped table functions ([#244](https://github.com/withcoral/coral/issues/244)) ([dcc7d0d](https://github.com/withcoral/coral/commit/dcc7d0dbd0b18b37d688380e5646ad24758babae))
@@ -277,8 +265,6 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 * **engine:** preserve structured table-not-found references ([#299](https://github.com/withcoral/coral/issues/299)) ([28ce34f](https://github.com/withcoral/coral/commit/28ce34f31f65cdc0a4967475eaa263486ab3f4f1))
 * **mcp:** advertise object-root output schema ([#415](https://github.com/withcoral/coral/issues/415)) ([2cef7de](https://github.com/withcoral/coral/commit/2cef7de7184657e8bb89ffbf4fdf22a356722bd0))
 * **mcp:** align search table output schema with response ([#349](https://github.com/withcoral/coral/issues/349)) ([3048f5c](https://github.com/withcoral/coral/commit/3048f5cec2b23156a87bb666af934737b1be42c1))
-* **mcp:** preserve structured resource errors ([#295](https://github.com/withcoral/coral/issues/295)) ([c1286a3](https://github.com/withcoral/coral/commit/c1286a35a2a78bf9d089b2498edafbb73f54cb09))
-* **mcp:** return guide in table search results ([#340](https://github.com/withcoral/coral/issues/340)) ([5196b22](https://github.com/withcoral/coral/commit/5196b22910c5fb313fa221d4de01ebd257fd86d1))
 * quote qualified table hints ([#280](https://github.com/withcoral/coral/issues/280)) ([3be0ff6](https://github.com/withcoral/coral/commit/3be0ff6066a1a8cbe706fe8d0e044721126542fd))
 * **sources:** push down repository owner filter ([#284](https://github.com/withcoral/coral/issues/284)) ([703f349](https://github.com/withcoral/coral/commit/703f349c3ada3bd78dfceb98abacb8e0076fec48))
 * **spec:** allow function-only HTTP manifests ([#310](https://github.com/withcoral/coral/issues/310)) ([4e7e127](https://github.com/withcoral/coral/commit/4e7e1277ecc0f84a11d629f9e3d2d0726e950d9f))
@@ -312,7 +298,6 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 ### Bug Fixes
 
-* **catalog:** expose column nullability ([#254](https://github.com/withcoral/coral/issues/254)) ([a3e517e](https://github.com/withcoral/coral/commit/a3e517ed5ee0827acacd29ee6b45ea563943d818))
 * **docs:** correct How Coral works wording ([#270](https://github.com/withcoral/coral/issues/270)) ([9616f87](https://github.com/withcoral/coral/commit/9616f8790eb05e84c78539bda3ace84cb65611ce))
 * **engine:** allow literal regex patterns and escaped SIMILAR TO wildcards ([#223](https://github.com/withcoral/coral/issues/223)) ([43bdd28](https://github.com/withcoral/coral/commit/43bdd285fa1592cb607a8ef6b9d685cddb54d6b9))
 * **engine:** include filters in provider hints ([#260](https://github.com/withcoral/coral/issues/260)) ([21e7ef2](https://github.com/withcoral/coral/commit/21e7ef2f7fcecbcc9a39ab917d454ad0f57c21f8))
@@ -381,7 +366,6 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 ### Bug Fixes
 
-* **engine:** default coral.columns to schema order ([#105](https://github.com/withcoral/coral/issues/105)) ([56fd5a4](https://github.com/withcoral/coral/commit/56fd5a4dcc591401577cc4252259df034c947747))
 * **engine:** enforce static schema provider immutability ([#109](https://github.com/withcoral/coral/issues/109)) ([5476d4d](https://github.com/withcoral/coral/commit/5476d4d3b5bb044336085e16064bf0ec0bf02baa))
 * **engine:** retry github 403 reset-based rate limits ([#110](https://github.com/withcoral/coral/issues/110)) ([62bb4cf](https://github.com/withcoral/coral/commit/62bb4cf3f357b6ca455bedf68e38748df1081fcd))
 * **engine:** skip fabricated zero rows for malformed HTTP series points ([#112](https://github.com/withcoral/coral/issues/112)) ([3be695d](https://github.com/withcoral/coral/commit/3be695dba20822bf408e975331e2a3ca4f326925))

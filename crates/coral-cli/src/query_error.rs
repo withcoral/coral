@@ -202,8 +202,8 @@ mod tests {
 
     #[test]
     fn plain_status_includes_grpc_code() {
-        let rendered = render_plain(Code::Internal, "legacy opaque failure");
-        assert_eq!(rendered, "Error (internal error): legacy opaque failure\n");
+        let rendered = render_plain(Code::Internal, "opaque failure");
+        assert_eq!(rendered, "Error (internal error): opaque failure\n");
     }
 
     #[test]

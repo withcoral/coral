@@ -1,12 +1,16 @@
 //! Client-side bootstrap for local Coral clients.
 
 use coral_api::v1::Workspace;
-use coral_api::v1::catalog_service_client::CatalogServiceClient;
+use coral_api::v1::capability_service_client::CapabilityServiceClient;
+use coral_api::v1::code_mode_service_client::CodeModeServiceClient;
+use coral_api::v1::discovery_service_client::DiscoveryServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::{
-    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
+    CAPABILITY_RESPONSE_MAX_MESSAGE_SIZE, CODE_MODE_RESPONSE_MAX_MESSAGE_SIZE,
+    DISCOVERY_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
+    QUERY_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
@@ -32,8 +36,14 @@ type GrpcService = InstrumentedGrpcService<RawGrpcService>;
 /// Public source-management gRPC client.
 pub type SourceClient = SourceServiceClient<GrpcService>;
 
-/// Public catalog-discovery gRPC client.
-pub type CatalogClient = CatalogServiceClient<GrpcService>;
+/// Public capability-invocation gRPC client.
+pub type CapabilityClient = CapabilityServiceClient<GrpcService>;
+
+/// Public Code Mode gRPC client.
+pub type CodeModeClient = CodeModeServiceClient<GrpcService>;
+
+/// Public generated-export discovery gRPC client.
+pub type DiscoveryClient = DiscoveryServiceClient<GrpcService>;
 
 /// Public SQL query gRPC client.
 pub type QueryClient = QueryServiceClient<GrpcService>;
@@ -47,7 +57,9 @@ pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 #[derive(Clone)]
 pub struct AppClient {
     source: SourceClient,
-    catalog: CatalogClient,
+    capability: CapabilityClient,
+    code_mode: CodeModeClient,
+    discovery: DiscoveryClient,
     query: QueryClient,
     feedback: FeedbackClient,
 }
@@ -68,14 +80,21 @@ impl AppClient {
         let grpc_endpoint = GrpcClientEndpoint::from_endpoint_uri(endpoint_uri);
         let channel = endpoint.connect().await?;
         let source_client = SourceClient::new(grpc_service(channel.clone(), &grpc_endpoint));
-        let catalog_client = CatalogClient::new(grpc_service(channel.clone(), &grpc_endpoint))
-            .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);
+        let capability_client =
+            CapabilityClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+                .max_decoding_message_size(CAPABILITY_RESPONSE_MAX_MESSAGE_SIZE);
+        let code_mode_client = CodeModeClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(CODE_MODE_RESPONSE_MAX_MESSAGE_SIZE);
+        let discovery_client = DiscoveryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(DISCOVERY_RESPONSE_MAX_MESSAGE_SIZE);
         let query_client = QueryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
         let feedback_client = FeedbackClient::new(grpc_service(channel, &grpc_endpoint));
         Ok(Self {
             source: source_client,
-            catalog: catalog_client,
+            capability: capability_client,
+            code_mode: code_mode_client,
+            discovery: discovery_client,
             query: query_client,
             feedback: feedback_client,
         })
@@ -88,9 +107,21 @@ impl AppClient {
     }
 
     #[must_use]
-    /// Returns a cloned catalog-discovery client.
-    pub fn catalog_client(&self) -> CatalogClient {
-        self.catalog.clone()
+    /// Returns a cloned capability-invocation client.
+    pub fn capability_client(&self) -> CapabilityClient {
+        self.capability.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned Code Mode client.
+    pub fn code_mode_client(&self) -> CodeModeClient {
+        self.code_mode.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned generated-export discovery client.
+    pub fn discovery_client(&self) -> DiscoveryClient {
+        self.discovery.clone()
     }
 
     #[must_use]

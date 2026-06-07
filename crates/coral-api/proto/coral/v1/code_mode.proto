@@ -1,0 +1,278 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Initializes a Code Mode session.
+message InitializeCodeModeRequest {
+  // Workspace bound to this Code Mode session.
+  Workspace workspace = 1;
+  // Whether mutation/action invocation is enabled for the session.
+  bool experimental_mutations = 2;
+}
+
+// Initialized Code Mode session metadata.
+message InitializeCodeModeResponse {
+  // Host bridge protocol version.
+  uint32 protocol_version = 1;
+  // Workspace id.
+  string workspace_id = 2;
+  // Whether mutation/action invocation is enabled.
+  bool experimental_mutations = 3;
+  // Whether search is available.
+  bool supports_search = 4;
+  // Whether describe is available.
+  bool supports_describe = 5;
+  // Whether SQL execution is available.
+  bool supports_sql = 6;
+  // Whether capability invocation is available.
+  bool supports_invoke = 7;
+}
+
+// Executes one Code Mode run and waits briefly for fast completion.
+message ExecCodeModeRequest {
+  // Workspace bound to the run.
+  Workspace workspace = 1;
+  // JavaScript/TypeScript source text to execute.
+  string source = 2;
+}
+
+// Code Mode run response.
+message ExecCodeModeResponse {
+  // Run id.
+  string run_id = 1;
+  // Cell id.
+  string cell_id = 2;
+  // Run status.
+  CodeModeRunStatus status = 3;
+  // Ordered run events.
+  repeated CodeModeRunEvent events = 4;
+}
+
+// Waits for Code Mode run events.
+message WaitCodeModeRequest {
+  // Workspace bound to the run.
+  Workspace workspace = 1;
+  // Run id.
+  string run_id = 2;
+  // Optional event cursor. Zero means no cursor.
+  uint64 after_event_id = 3;
+}
+
+// Code Mode wait response.
+message WaitCodeModeResponse {
+  // Run id.
+  string run_id = 1;
+  // Cell id.
+  string cell_id = 2;
+  // Run status.
+  CodeModeRunStatus status = 3;
+  // Ordered run events.
+  repeated CodeModeRunEvent events = 4;
+}
+
+// Code Mode run status.
+enum CodeModeRunStatus {
+  // Status was not set.
+  CODE_MODE_RUN_STATUS_UNSPECIFIED = 0;
+  // Run is still executing.
+  CODE_MODE_RUN_STATUS_RUNNING = 1;
+  // Run completed successfully.
+  CODE_MODE_RUN_STATUS_COMPLETED = 2;
+  // Run failed.
+  CODE_MODE_RUN_STATUS_FAILED = 3;
+  // Run was terminated.
+  CODE_MODE_RUN_STATUS_TERMINATED = 4;
+}
+
+// Code Mode run failure cause.
+enum CodeModeRunErrorCause {
+  // Cause was not set.
+  CODE_MODE_RUN_ERROR_CAUSE_UNSPECIFIED = 0;
+  // User-authored JavaScript threw an exception.
+  CODE_MODE_RUN_ERROR_CAUSE_USER_EXCEPTION = 1;
+  // The run exceeded its output budget.
+  CODE_MODE_RUN_ERROR_CAUSE_OUTPUT_BUDGET_EXCEEDED = 2;
+  // The run exceeded the JavaScript heap limit.
+  CODE_MODE_RUN_ERROR_CAUSE_HEAP_LIMIT_EXCEEDED = 3;
+  // The requested nested tool is unavailable.
+  CODE_MODE_RUN_ERROR_CAUSE_TOOL_UNAVAILABLE = 4;
+  // A nested tool call failed.
+  CODE_MODE_RUN_ERROR_CAUSE_NESTED_TOOL_FAILED = 5;
+  // A SQL query failed.
+  CODE_MODE_RUN_ERROR_CAUSE_SQL_ERROR = 6;
+  // Coral hit an internal error.
+  CODE_MODE_RUN_ERROR_CAUSE_INTERNAL = 7;
+}
+
+// Code Mode run error.
+message CodeModeRunError {
+  // Machine-readable cause.
+  CodeModeRunErrorCause cause = 1;
+  // Human-readable error text.
+  string message = 2;
+  // Correlation id for internal errors when available.
+  string correlation_id = 3;
+}
+
+// JSON null marker.
+message CodeModeJsonNull {}
+
+// JSON value carried by Code Mode events.
+message CodeModeJsonValue {
+  // JSON value kind.
+  oneof kind {
+    // Null value.
+    CodeModeJsonNull null_value = 1;
+    // Boolean value.
+    bool bool_value = 2;
+    // Signed integer value.
+    int64 integer_value = 3;
+    // Unsigned integer value.
+    uint64 unsigned_integer_value = 4;
+    // Floating-point value.
+    double double_value = 5;
+    // String value.
+    string string_value = 6;
+    // Object value.
+    CodeModeJsonObject object_value = 7;
+    // Array value.
+    CodeModeJsonArray array_value = 8;
+  }
+}
+
+// JSON object carried by Code Mode events.
+message CodeModeJsonObject {
+  // Object fields.
+  map<string, CodeModeJsonValue> fields = 1;
+}
+
+// JSON array carried by Code Mode events.
+message CodeModeJsonArray {
+  // Array values.
+  repeated CodeModeJsonValue values = 1;
+}
+
+// Code Mode run event.
+message CodeModeRunEvent {
+  // Monotonic per-run event id.
+  uint64 id = 1;
+  // Event payload.
+  oneof event {
+    // Run started.
+    CodeModeRunStarted run_started = 2;
+    // Cell started.
+    CodeModeCellStarted cell_started = 3;
+    // Content item emitted by the run.
+    CodeModeContentItem content_item = 4;
+    // Final result item emitted by the run.
+    CodeModeResultItem result_item = 5;
+    // Run completed.
+    CodeModeRunCompleted run_completed = 6;
+    // Run failed.
+    CodeModeRunFailed run_failed = 7;
+    // Nested tool call started.
+    CodeModeToolStarted tool_started = 8;
+    // Nested tool call completed.
+    CodeModeToolCompleted tool_completed = 9;
+    // Nested tool call failed.
+    CodeModeToolFailed tool_failed = 10;
+  }
+}
+
+// Run-started event payload.
+message CodeModeRunStarted {
+  // Run id.
+  string run_id = 1;
+}
+
+// Cell-started event payload.
+message CodeModeCellStarted {
+  // Run id.
+  string run_id = 1;
+  // Cell id.
+  string cell_id = 2;
+}
+
+// Content item event payload.
+message CodeModeContentItem {
+  // Cell id.
+  string cell_id = 1;
+  // Content item.
+  CodeModeJsonValue item = 2;
+}
+
+// Result item event payload.
+message CodeModeResultItem {
+  // Cell id.
+  string cell_id = 1;
+  // Result item.
+  CodeModeJsonValue item = 2;
+}
+
+// Run-completed event payload.
+message CodeModeRunCompleted {
+  // Run id.
+  string run_id = 1;
+}
+
+// Run-failed event payload.
+message CodeModeRunFailed {
+  // Run id.
+  string run_id = 1;
+  // Error that failed the run.
+  CodeModeRunError error = 2;
+}
+
+// Tool-started event payload.
+message CodeModeToolStarted {
+  // Cell id.
+  string cell_id = 1;
+  // Runtime tool call id.
+  string tool_call_id = 2;
+  // Tool name.
+  string tool_name = 3;
+}
+
+// Tool-completed event payload.
+message CodeModeToolCompleted {
+  // Cell id.
+  string cell_id = 1;
+  // Runtime tool call id.
+  string tool_call_id = 2;
+  // Tool name.
+  string tool_name = 3;
+}
+
+// Tool-failed event payload.
+message CodeModeToolFailed {
+  // Cell id.
+  string cell_id = 1;
+  // Runtime tool call id.
+  string tool_call_id = 2;
+  // Tool name.
+  string tool_name = 3;
+  // Error that failed the tool call.
+  CodeModeRunError error = 4;
+}
+
+// Terminates a Code Mode run.
+message TerminateCodeModeRequest {
+  // Workspace bound to the run.
+  Workspace workspace = 1;
+  // Run id.
+  string run_id = 2;
+}
+
+// Code Mode lifecycle APIs.
+service CodeModeService {
+  // Initializes Code Mode.
+  rpc Initialize(InitializeCodeModeRequest) returns (InitializeCodeModeResponse);
+  // Starts one run and returns promptly.
+  rpc Exec(ExecCodeModeRequest) returns (ExecCodeModeResponse);
+  // Waits for run events.
+  rpc Wait(WaitCodeModeRequest) returns (WaitCodeModeResponse);
+  // Terminates a run.
+  rpc Terminate(TerminateCodeModeRequest) returns (WaitCodeModeResponse);
+}

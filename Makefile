@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build rust-checks perf-check architecture-check removed-contract-check license-check lint-proto docs-generate docs-check schema-generate schema-check
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -16,7 +16,13 @@ rust-checks:
 
 perf-check:
 	cargo build --locked -p coral-cli --release
-	cargo run --locked -p xtask --release -- perf-check --coral-bin target/release/coral
+	cargo run --locked -p xtask --release -- perf-check
+
+architecture-check:
+	cargo run --locked -p xtask -- architecture-check
+
+removed-contract-check:
+	cargo run --locked -p xtask -- removed-contract-check
 
 # ----------------------------------------------------------------------------
 # Dependency license scan
@@ -41,26 +47,12 @@ lint-proto:
 	cd crates/coral-api && buf lint
 
 # ----------------------------------------------------------------------------
-# Source manifest linting
-# ----------------------------------------------------------------------------
-# Lints sources/ with ryl (Rust-native yamllint port).
-#
-#   make lint-sources   # check only — run before pushing changes
-#   make fix-sources    # apply ryl's safe auto-fixes in place
-
-lint-sources:
-	ryl sources
-
-fix-sources:
-	ryl --fix sources
-
-# ----------------------------------------------------------------------------
 # Source docs generation
 # ----------------------------------------------------------------------------
 # Regenerates the source catalog pages and Mintlify navigation from
-# sources/core/*/manifest.y{a,}ml and sources/community/*/manifest.y{a,}ml
-# via the xtask binary. docs-check intentionally skips the community source
-# catalog so PRs do not fail on aggregate community source catalog drift.
+# SourceSpec manifests via the xtask binary. docs-check intentionally skips the
+# community source catalog so PRs do not fail on aggregate community source
+# catalog drift.
 #
 #   make docs-generate   # write/refresh the generated files in docs/
 #   make docs-check      # CI freshness check: non-zero exit if stale

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::parser::parse_source_manifest_yaml;
-use crate::{ManifestError, Result, ValidatedSourceManifest};
+use crate::{ManifestError, Result, SourceSpec};
 
 /// Read and parse a source manifest from a file path.
 ///
@@ -12,7 +12,7 @@ use crate::{ManifestError, Result, ValidatedSourceManifest};
 ///
 /// Returns a [`ManifestError`] if the file cannot be read or the manifest
 /// violates any validation rules.
-pub fn load_manifest_path(path: &Path) -> Result<ValidatedSourceManifest> {
+pub fn load_manifest_path(path: &Path) -> Result<SourceSpec> {
     let raw = fs::read_to_string(path).map_err(|e| {
         ManifestError::validation(format!("failed to read {}: {e}", path.display()))
     })?;
@@ -23,7 +23,7 @@ pub fn load_manifest_path(path: &Path) -> Result<ValidatedSourceManifest> {
 #[cfg(test)]
 mod tests {
     use super::load_manifest_path;
-    use crate::{ManifestError, Result, ValidatedSourceManifest};
+    use crate::{ManifestError, Result, SourceSpec};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,7 +38,7 @@ mod tests {
     ///
     /// Invalid source manifests are skipped after logging an error; the returned vector
     /// contains only successfully loaded manifests.
-    fn load_manifests<P: AsRef<Path>>(root: P) -> Result<Vec<ValidatedSourceManifest>> {
+    fn load_manifests<P: AsRef<Path>>(root: P) -> Result<Vec<SourceSpec>> {
         let root = root.as_ref();
         if !root.exists() {
             return Ok(Vec::new());
@@ -127,30 +127,24 @@ mod tests {
         fs::create_dir_all(&source_dir).expect("create source dir");
         fs::write(
             source_dir.join("source.yml"),
-            r#"
+            r"
 name: otel_metrics
-version: 0.1.0
-dsl_version: 3
-backend: file
-tables:
-  - name: metrics
-    description: Metrics exported as parquet
-    format: parquet
-    source:
-      location: file:///tmp/coral-otel-metrics/
-      glob: "**/*.parquet"
-      partitions:
-        - name: date
-          type: Utf8
-    columns: []
-"#,
+spec_version: 1
+kind: source
+interfaces:
+  - id: files
+    type: file
+    files: [./metrics.parquet]
+    format:
+      kind: parquet
+",
         )
         .expect("write manifest");
 
         let manifests = load_manifests(&root).expect("parquet manifest should load");
         assert_eq!(manifests.len(), 1);
         let manifest = manifests.first().expect("parquet manifest");
-        assert_eq!(manifest.schema_name(), "otel_metrics");
+        assert_eq!(manifest.name, "otel_metrics");
 
         drop(fs::remove_dir_all(&root));
     }
@@ -162,32 +156,24 @@ tables:
         fs::create_dir_all(&source_dir).expect("create source dir");
         fs::write(
             source_dir.join(format!("{SOURCE_MANIFEST_NAME}.yml")),
-            r#"
+            r"
 name: claude
-version: 0.1.0
-dsl_version: 3
-backend: file
-tables:
-  - name: messages
-    description: Claude Code conversation messages
-    format: jsonl
-    source:
-      location: file:///tmp/claude-jsonl/
-      glob: "**/*.jsonl"
-    columns:
-      - name: type
-        type: Utf8
-      - name: sessionId
-        type: Utf8
-"#,
+spec_version: 1
+kind: source
+interfaces:
+  - id: files
+    type: file
+    files: [./messages.jsonl]
+    format:
+      kind: jsonl
+",
         )
         .expect("write manifest");
 
         let manifests = load_manifests(&root).expect("jsonl manifest should load");
         assert_eq!(manifests.len(), 1);
         let manifest = manifests.first().expect("jsonl manifest");
-        assert_eq!(manifest.schema_name(), "claude");
-        assert_eq!(manifest.backend(), crate::SourceBackend::File);
+        assert_eq!(manifest.name, "claude");
 
         drop(fs::remove_dir_all(&root));
     }
@@ -201,35 +187,28 @@ tables:
         fs::create_dir_all(&good_dir).expect("create good dir");
         fs::write(
             good_dir.join("source.yml"),
-            r#"
+            r"
 name: good_plugin
-version: 0.1.0
-dsl_version: 3
-backend: file
-tables:
-  - name: data
-    description: Some data
-    format: parquet
-    source:
-      location: file:///tmp/good/
-      glob: "**/*.parquet"
-    columns: []
-"#,
+spec_version: 1
+kind: source
+interfaces:
+  - id: files
+    type: file
+    files: [./data.parquet]
+    format:
+      kind: parquet
+",
         )
         .expect("write good manifest");
 
-        // Create a malformed source (missing dsl_version)
+        // Create a malformed source with missing SourceSpec markers.
         let bad_dir = root.join("bad");
         fs::create_dir_all(&bad_dir).expect("create bad dir");
         fs::write(
             bad_dir.join("source.yml"),
             r"
 name: bad_plugin
-version: 0.1.0
-backend: http
-tables:
-  - name: stuff
-    columns: []
+interfaces: []
 ",
         )
         .expect("write bad manifest");
@@ -237,7 +216,7 @@ tables:
         let manifests = load_manifests(&root).expect("should not error on malformed source");
         assert_eq!(manifests.len(), 1, "only the valid source should be loaded");
         let manifest = manifests.first().expect("valid manifest");
-        assert_eq!(manifest.schema_name(), "good_plugin");
+        assert_eq!(manifest.name, "good_plugin");
 
         drop(fs::remove_dir_all(&root));
     }
@@ -249,27 +228,24 @@ tables:
         fs::create_dir_all(&source_dir).expect("create source dir");
         fs::write(
             source_dir.join("source.yaml"),
-            r#"
+            r"
 name: my_plugin
-version: 0.1.0
-dsl_version: 3
-backend: file
-tables:
-  - name: data
-    description: Some data
-    format: parquet
-    source:
-      location: file:///tmp/my/
-      glob: "**/*.parquet"
-    columns: []
-"#,
+spec_version: 1
+kind: source
+interfaces:
+  - id: files
+    type: file
+    files: [./data.parquet]
+    format:
+      kind: parquet
+",
         )
         .expect("write manifest with .yaml extension");
 
         let manifests = load_manifests(&root).expect(".yaml manifest should load");
         assert_eq!(manifests.len(), 1);
         let manifest = manifests.first().expect("yaml manifest");
-        assert_eq!(manifest.schema_name(), "my_plugin");
+        assert_eq!(manifest.name, "my_plugin");
 
         drop(fs::remove_dir_all(&root));
     }
@@ -284,20 +260,17 @@ tables:
         for ext in &["yml", "yaml"] {
             fs::write(
                 source_dir.join(format!("source.{ext}")),
-                r#"
+                r"
 name: dual
-version: 0.1.0
-dsl_version: 3
-backend: file
-tables:
-  - name: data
-    description: Some data
-    format: parquet
-    source:
-      location: file:///tmp/dual/
-      glob: "**/*.parquet"
-    columns: []
-"#,
+spec_version: 1
+kind: source
+interfaces:
+  - id: files
+    type: file
+    files: [./data.parquet]
+    format:
+      kind: parquet
+",
             )
             .expect("write manifest");
         }

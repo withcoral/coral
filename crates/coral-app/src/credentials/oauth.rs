@@ -1798,10 +1798,8 @@ mod tests {
     #[tokio::test]
     async fn public_pkce_oauth_session_exchanges_and_returns_token_material() {
         let fixture = OAuthFixture::new(None);
-        let redirect_port = free_loopback_port();
-        let oauth = oauth_spec(
+        let oauth = oauth_spec_with_random_redirect(
             &fixture.token_url,
-            redirect_port,
             ManifestOAuthPkceMode::Required,
             ManifestOAuthClientSpec {
                 id: ManifestOAuthClientIdSpec {
@@ -1851,15 +1849,7 @@ mod tests {
                 Some("S256")
             );
             assert!(!query.contains_key("client_secret"));
-            let callback_url = format!(
-                "http://127.0.0.1:{redirect_port}/oauth/callback?state={}&code=test-code",
-                query.get("state").expect("state")
-            );
-            reqwest::get(callback_url)
-                .await
-                .expect("callback response")
-                .error_for_status()
-                .expect("callback success");
+            callback(authorization_url.as_str()).await;
         };
 
         let (completed, ()) = tokio::join!(authorize, callback);
@@ -2064,10 +2054,8 @@ mod tests {
     #[tokio::test]
     async fn confidential_oauth_session_uses_basic_auth_secret_transport() {
         let fixture = OAuthFixture::new(None);
-        let redirect_port = free_loopback_port();
-        let oauth = oauth_spec(
+        let oauth = oauth_spec_with_random_redirect(
             &fixture.token_url,
-            redirect_port,
             ManifestOAuthPkceMode::Disabled,
             confidential_client(ManifestOAuthClientSecretTransport::BasicAuth),
         );
@@ -2259,10 +2247,8 @@ mod tests {
     #[tokio::test]
     async fn confidential_oauth_session_uses_request_body_secret_transport() {
         let fixture = OAuthFixture::new(None);
-        let redirect_port = free_loopback_port();
-        let oauth = oauth_spec(
+        let oauth = oauth_spec_with_random_redirect(
             &fixture.token_url,
-            redirect_port,
             ManifestOAuthPkceMode::Disabled,
             confidential_client(ManifestOAuthClientSecretTransport::RequestBody),
         );
@@ -2448,6 +2434,20 @@ mod tests {
             token_url,
             &format!("http://127.0.0.1:{redirect_port}/oauth/callback"),
             ManifestOAuthRedirectUriPortMode::Fixed,
+            pkce,
+            client,
+        )
+    }
+
+    fn oauth_spec_with_random_redirect(
+        token_url: &str,
+        pkce: ManifestOAuthPkceMode,
+        client: ManifestOAuthClientSpec,
+    ) -> ManifestOAuthCredentialSpec {
+        oauth_spec_with_redirect_uri(
+            token_url,
+            "http://127.0.0.1/oauth/callback",
+            ManifestOAuthRedirectUriPortMode::Random,
             pkce,
             client,
         )

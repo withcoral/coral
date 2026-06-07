@@ -29,9 +29,13 @@ bindings.
 - Prefer additive protobuf evolution. New fields and messages are fine; avoid
   changes that break older generated clients or change the meaning of existing
   defaults.
+- `buf.yaml` intentionally exempts RPC request/response naming and uniqueness
+  rules for the existing public service messages. Do not rename stable wire
+  messages just to satisfy those style rules; use additive evolution unless a
+  breaking contract change is explicitly chosen.
 - Be careful with proto3 `optional`. Use presence tracking only when unset must
   be distinguished from the default value; do not add `optional` by default to
   strings or booleans just to signal "this may be absent".
 - Enums should be forward-compatible and easy to consume. Reserve the zero
   value for the default/unknown state and avoid overlapping sentinel meanings
-  unless there is a strong compatibility reason.
+  unless there is a strong contract reason.

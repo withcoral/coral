@@ -1,26 +1,19 @@
-//! Thin local transport bootstrap and shared query-result helpers for Coral.
+//! Thin transport bootstrap and shared query-result helpers for Coral.
 //!
 //! `coral-client` intentionally stays narrow today. It owns:
 //!
 //! - endpoint dialing into the generated gRPC transport surface
 //! - lightweight shared Arrow IPC decoding helpers
 //! - lightweight shared result-format rendering used by CLI and MCP
-//! - lightweight client-side decoding helpers for shared transport DTOs
 //!
 //! It does **not** currently try to present a richer domain SDK. Callers that
 //! need more abstraction should add it above this crate rather than widening
 //! the transport/bootstrap seam here.
 //!
-//! For tests or embedding scenarios that need explicit control over local server
-//! configuration or lifecycle, use [`local`] rather than treating those
-//! bootstrap seams as the default client surface.
-
 mod client;
 mod error;
 mod grpc;
-pub mod local;
 mod propagation;
-mod sources;
 mod status_error;
 
 use std::io::{Cursor, Write};
@@ -40,11 +33,10 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient,
-    default_workspace,
+    AppClient, CapabilityClient, CodeModeClient, DEFAULT_WORKSPACE_ID, DiscoveryClient,
+    FeedbackClient, QueryClient, SourceClient, default_workspace,
 };
 pub use error::{ClientError, QueryResultError};
-pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,
 };

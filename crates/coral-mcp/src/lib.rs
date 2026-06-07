@@ -9,10 +9,12 @@
 //!   existing [`coral_client::AppClient`], typically bootstrapped by
 //!   `coral-cli`.
 //!
-//! The exposed MCP surface is intentionally small:
+//! The primary MCP workflow surface is intentionally small:
 //!
-//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally `feedback`
-//! - resources: `coral://guide`, `coral://tables`
+//! - tools: `search`, `describe`, `exec`, `wait`, and `feedback`
+//!
+//! Runtime exposure controls TypeScript and SQL discovery metadata plus Code
+//! Mode globals; it does not add top-level SQL MCP tools.
 //!
 //! Protocol lifecycle, initialization, and stdio transport behavior should stay
 //! inside the SDK integration rather than being reimplemented locally.
@@ -36,13 +38,78 @@ use rmcp::ServiceExt;
 pub use error::McpError;
 pub(crate) use server::CoralMcpServer;
 
-/// Optional MCP surface features.
+/// MCP surface options.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {
-    /// Expose the feedback submission tool.
-    pub feedback_enabled: bool,
+    /// Runtime bindings visible through discovery and Code Mode guidance.
+    pub runtime_exposure: McpRuntimeExposure,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
+}
+
+/// MCP-visible runtime exposure policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpRuntimeExposure {
+    /// Whether generated TypeScript invocation bindings are visible.
+    pub typescript_enabled: bool,
+    /// Whether SQL projection bindings and `coral.sql.query(...)` are visible.
+    pub sql_enabled: bool,
+}
+
+impl McpRuntimeExposure {
+    /// Expose both generated TypeScript and SQL bindings.
+    #[must_use]
+    pub const fn both() -> Self {
+        Self {
+            typescript_enabled: true,
+            sql_enabled: true,
+        }
+    }
+
+    /// Expose only generated TypeScript bindings.
+    #[must_use]
+    pub const fn typescript_only() -> Self {
+        Self {
+            typescript_enabled: true,
+            sql_enabled: false,
+        }
+    }
+
+    /// Expose only SQL bindings.
+    #[must_use]
+    pub const fn sql_only() -> Self {
+        Self {
+            typescript_enabled: false,
+            sql_enabled: true,
+        }
+    }
+
+    /// Whether a search kind is visible under this exposure.
+    #[must_use]
+    pub fn exposes_tool_kind(self, kind: &str) -> bool {
+        match kind {
+            "typescript" => self.typescript_enabled,
+            "sql_table" | "sql_function" => self.sql_enabled,
+            _ => false,
+        }
+    }
+
+    /// Stable label for this exposure policy.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match (self.typescript_enabled, self.sql_enabled) {
+            (true, true) => "both",
+            (true, false) => "typescript",
+            (false, true) => "sql",
+            (false, false) => "none",
+        }
+    }
+}
+
+impl Default for McpRuntimeExposure {
+    fn default() -> Self {
+        Self::both()
+    }
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.

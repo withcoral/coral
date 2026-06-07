@@ -18,7 +18,7 @@ use harness::MockServer;
 use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams},
+    model::CallToolRequestParams,
     service::RunningService,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
@@ -66,9 +66,25 @@ async fn start_mcp_client_with_args(
     server: &MockServer,
     args: &[&str],
 ) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
+    start_mcp_client_with_global_args_and_args(server, &[], args).await
+}
+
+async fn start_mcp_client_with_global_args(
+    server: &MockServer,
+    global_args: &[&str],
+) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
+    start_mcp_client_with_global_args_and_args(server, global_args, &[]).await
+}
+
+async fn start_mcp_client_with_global_args_and_args(
+    server: &MockServer,
+    global_args: &[&str],
+    args: &[&str],
+) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
     let transport = TokioChildProcess::new(
         tokio::process::Command::new(env!("CARGO_BIN_EXE_coral")).configure(|cmd| {
-            cmd.arg("mcp-stdio")
+            cmd.args(global_args)
+                .arg("mcp-stdio")
                 .args(args)
                 .env("CORAL_ENDPOINT", server.endpoint_uri())
                 .env("CORAL_CONFIG_DIR", server.config_dir());
@@ -76,15 +92,6 @@ async fn start_mcp_client_with_args(
     )?;
     let client = ().serve(transport).await?;
     Ok(client)
-}
-
-fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
-    match &result.contents[0] {
-        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
-        other @ rmcp::model::ResourceContents::BlobResourceContents { .. } => {
-            panic!("unexpected resource contents: {other:?}")
-        }
-    }
 }
 
 async fn structured_tool_content(
@@ -250,7 +257,7 @@ async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error::Error>> {
+async fn mcp_stdio_lists_tools() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
 
@@ -260,71 +267,29 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec![
-            "sql",
-            "list_catalog",
-            "search_catalog",
-            "describe_table",
-            "list_columns"
-        ]
+        vec!["search", "describe", "exec", "wait", "feedback"]
     );
     assert!(
         tools[0]
             .description
             .as_deref()
-            .expect("sql description")
-            .contains("3 table(s) are currently visible")
+            .expect("search description")
+            .contains("Search generated Coral exports")
     );
     assert!(
         tools[1]
             .description
             .as_deref()
-            .expect("list_catalog description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .expect("describe description")
+            .contains("Describe a generated Coral export")
     );
     assert!(
         tools[2]
             .description
             .as_deref()
-            .expect("search_catalog description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .expect("exec description")
+            .contains("Run Code Mode source")
     );
-    let catalog_requests = server.list_catalog_requests();
-    let count_request = catalog_requests
-        .last()
-        .expect("tools/list should request catalog counts");
-    assert_eq!(count_request.kind, 0);
-    let count_pagination = count_request
-        .pagination
-        .as_ref()
-        .expect("count request pagination");
-    assert_eq!(count_pagination.limit, 1);
-    assert_eq!(count_pagination.offset, 0);
-
-    let resources = client.list_all_resources().await?;
-    assert_eq!(
-        resources
-            .iter()
-            .map(|resource| resource.uri.as_str())
-            .collect::<Vec<_>>(),
-        vec!["coral://guide", "coral://tables"]
-    );
-
-    let guide = client
-        .read_resource(ReadResourceRequestParams::new("coral://guide"))
-        .await?;
-    let guide_text = text_content(&guide);
-    assert!(guide_text.contains("## Available Schemas"));
-    assert!(guide_text.contains("- local_messages"));
-    assert!(guide_text.contains(
-        "FROM coral.columns WHERE schema_name = 'local_messages' AND table_name = 'events'"
-    ));
-
-    let tables = client
-        .read_resource(ReadResourceRequestParams::new("coral://tables"))
-        .await?;
-    let tables_json: Value = serde_json::from_str(text_content(&tables))?;
-    assert_eq!(tables_json["tables"][0]["name"], "local_messages.events");
 
     client.cancel().await?;
     server.shutdown().await;
@@ -332,10 +297,40 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
+async fn mcp_stdio_runtime_exposure_sql_hides_typescript_schema()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
-    let client = start_mcp_client_with_args(&server, &["--enable-feedback"]).await?;
+    let client = start_mcp_client_with_global_args(&server, &["--runtime-exposure", "sql"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    let search_schema = tools[0].input_schema.as_ref();
+    let kind_enum = search_schema
+        .get("properties")
+        .and_then(|properties| properties.get("kind"))
+        .and_then(|kind| kind.get("enum"))
+        .and_then(Value::as_array)
+        .expect("search kind enum")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(kind_enum, vec!["sql_table", "sql_function"]);
+    assert!(
+        !tools[0]
+            .description
+            .as_deref()
+            .expect("search description")
+            .contains("TypeScript bindings")
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_lists_feedback_tool() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
 
     let tools = client.list_all_tools().await?;
     assert_eq!(
@@ -343,14 +338,7 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec![
-            "sql",
-            "list_catalog",
-            "search_catalog",
-            "describe_table",
-            "list_columns",
-            "feedback"
-        ]
+        vec!["search", "describe", "exec", "wait", "feedback"]
     );
 
     client.cancel().await?;
@@ -401,7 +389,7 @@ async fn mcp_stdio_features_enable_command_enables_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_features_disable_command_removes_feedback_tool()
+async fn mcp_stdio_features_disable_command_keeps_feedback_tool()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     run_features_command(&server, &["enable", "feedback"])?;
@@ -410,8 +398,8 @@ async fn mcp_stdio_features_disable_command_removes_feedback_tool()
 
     let tools = client.list_all_tools().await?;
     assert!(
-        tools.iter().all(|tool| tool.name.as_ref() != "feedback"),
-        "feedback tool should not be listed after `coral features disable feedback`"
+        tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
+        "feedback tool should remain listed after `coral features disable feedback`"
     );
 
     client.cancel().await?;
@@ -420,7 +408,7 @@ async fn mcp_stdio_features_disable_command_removes_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_feature_config_can_leave_feedback_disabled()
+async fn mcp_stdio_feature_config_cannot_hide_feedback_tool()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     write_config(
@@ -434,8 +422,8 @@ feedback = false
 
     let tools = client.list_all_tools().await?;
     assert!(
-        tools.iter().all(|tool| tool.name.as_ref() != "feedback"),
-        "feedback tool should not be listed when [features].feedback is false"
+        tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
+        "feedback tool should remain listed when [features].feedback is false"
     );
 
     client.cancel().await?;
@@ -468,7 +456,7 @@ feedback = false
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_disable_feedback_override_overrides_config_enabled()
+async fn mcp_stdio_disable_feedback_override_keeps_feedback_tool()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     write_config(
@@ -482,8 +470,8 @@ feedback = true
 
     let tools = client.list_all_tools().await?;
     assert!(
-        tools.iter().all(|tool| tool.name.as_ref() != "feedback"),
-        "feedback tool should not be listed when --disable-feedback is set"
+        tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
+        "feedback tool should remain listed when --disable-feedback is set"
     );
 
     client.cancel().await?;
@@ -567,8 +555,8 @@ future_flag = true
     assert!(
         tools
             .iter()
-            .all(|tool| tool.get("name").and_then(Value::as_str) != Some("feedback")),
-        "invalid feature config must not enable feedback: {tools_list}"
+            .any(|tool| tool.get("name").and_then(Value::as_str) == Some("feedback")),
+        "invalid feature config must not hide feedback: {tools_list}"
     );
 
     drop(stdin);
@@ -581,219 +569,149 @@ future_flag = true
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
+async fn mcp_stdio_capability_tools_return_structured_content()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
 
-    assert_list_catalog_tool(&client, &server).await?;
-    assert_search_catalog_tool(&client, &server).await?;
-    assert_describe_table_tool(&client, &server).await?;
-    assert_list_columns_tool(&client).await?;
-    assert_sql_tool(&client).await?;
+    assert_search_tool(&client, &server).await?;
+    assert_describe_tool(&client, &server).await?;
+    assert_exec_and_wait_tools(&client, &server).await?;
 
     client.cancel().await?;
     server.shutdown().await;
     Ok(())
 }
 
-async fn assert_list_catalog_tool(
-    client: &RunningService<RoleClient, ()>,
-    server: &MockServer,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let structured_catalog =
-        structured_tool_content(client, CallToolRequestParams::new("list_catalog")).await?;
-    assert_eq!(structured_catalog["total"], 3);
-    assert_eq!(structured_catalog["limit"], 50);
-    assert_eq!(structured_catalog["offset"], 0);
-    assert_eq!(structured_catalog["has_more"], false);
-    assert_eq!(
-        structured_catalog["items"][0]["name"],
-        "local_messages.events"
-    );
-    assert_eq!(structured_catalog["items"][0]["kind"], "table");
-    let requests = server.list_catalog_requests();
-    let request = requests.last().expect("list catalog request");
-    assert_eq!(request.schema_name, "");
-    assert_eq!(request.kind, 0);
-    let request_pagination = request.pagination.as_ref().expect("request pagination");
-    assert_eq!(request_pagination.limit, 50);
-    assert_eq!(request_pagination.offset, 0);
-
-    let all_kinds = structured_tool_content(
-        client,
-        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "kind": null
-        }))),
-    )
-    .await?;
-    assert_eq!(all_kinds["total"], 3);
-    assert_eq!(all_kinds["items"][0]["kind"], "table");
-
-    let paginated = structured_tool_content(
-        client,
-        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "kind": "table",
-            "limit": 2,
-            "offset": 0
-        }))),
-    )
-    .await?;
-    assert_eq!(paginated["total"], 3);
-    assert_eq!(paginated["has_more"], true);
-    assert_eq!(paginated["next_offset"], 2);
-    assert_eq!(paginated["items"].as_array().expect("items").len(), 2);
-
-    let functions = structured_tool_content(
-        client,
-        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-            "kind": "table_function"
-        }))),
-    )
-    .await?;
-    assert_eq!(functions["total"], 0);
-    assert!(functions["items"].as_array().expect("items").is_empty());
-
-    client
-        .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "kind": "invalid"
-            }))),
-        )
-        .await
-        .expect_err("invalid catalog kind should fail");
-    Ok(())
-}
-
-async fn assert_search_catalog_tool(
+async fn assert_search_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let search = structured_tool_content(
         client,
-        CallToolRequestParams::new("search_catalog").with_arguments(json_object(&json!({
-            "pattern": "fixture.*messages",
-            "schema": "local_messages",
-            "kind": "table",
-            "ignore_case": true
+        CallToolRequestParams::new("search").with_arguments(json_object(&json!({
+            "query": "issues",
+            "kind": "typescript",
+            "limit": 5
         }))),
     )
     .await?;
-    assert_eq!(search["total"], 1);
-    assert_eq!(search["items"][0]["name"], "local_messages.messages");
+    assert_eq!(search["items"][0]["alias"], "github.rest.listIssues");
+    assert_eq!(search["items"][0]["deprecated"], false);
+    assert_eq!(search["items"][0]["support_status"], "generated");
+    assert_eq!(search["limit"], 5);
     assert_eq!(
-        search["items"][0]["sql_reference"],
-        "local_messages.messages"
+        search["diagnostics"][0]["code"],
+        "SOURCE_ARTIFACTS_UNAVAILABLE"
     );
-    assert!(
-        search["items"][0]["matched_fields"]
-            .as_array()
-            .expect("matched fields")
-            .iter()
-            .any(|field| field == "description")
-    );
-    let search_requests = server.search_catalog_requests();
-    let search_request = search_requests.last().expect("search catalog request");
-    assert_eq!(search_request.pattern, "fixture.*messages");
-    assert_eq!(search_request.schema_name, "local_messages");
+    assert_eq!(search["diagnostics"][0]["details"]["source_name"], "codex");
+    assert!(search.get("rows").is_none());
+    assert!(search.get("pagination").is_none());
+    let search_requests = server.search_exports_requests();
+    let search_request = search_requests.last().expect("search exports request");
+    assert_eq!(search_request.query, "issues");
     assert_eq!(search_request.kind, 1);
-    let search_pagination = search_request
+    let pagination = search_request
         .pagination
         .as_ref()
         .expect("search pagination");
-    assert_eq!(search_pagination.limit, 20);
-    assert_eq!(search_pagination.offset, 0);
-    assert!(search_request.ignore_case);
-
-    let guide_search = structured_tool_content(
-        client,
-        CallToolRequestParams::new("search_catalog").with_arguments(json_object(&json!({
-            "pattern": "Query fixture messages",
-            "schema": "local_messages"
-        }))),
-    )
-    .await?;
-    assert_eq!(guide_search["total"], 1);
-    assert!(
-        guide_search["items"][0]["matched_fields"]
-            .as_array()
-            .expect("matched fields")
-            .iter()
-            .any(|field| field == "guide")
-    );
+    assert_eq!(pagination.limit, 5);
+    assert_eq!(pagination.offset, 0);
     Ok(())
 }
 
-async fn assert_describe_table_tool(
+async fn assert_describe_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let describe_before = server.describe_table_requests().len();
-    let execute_sql_before = server.execute_sql_requests().len();
     let described = structured_tool_content(
         client,
-        CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "table": "messages"
+        CallToolRequestParams::new("describe").with_arguments(json_object(&json!({
+            "reference": "typescript:github.rest.listIssues",
+            "view": "detailed"
         }))),
     )
     .await?;
     assert_eq!(described["found"], true);
-    assert_eq!(described["name"], "local_messages.messages");
-    assert_eq!(described["column_count"], 3);
-
-    let describe_requests = server.describe_table_requests();
-    assert_eq!(describe_requests.len(), describe_before + 1);
-    let describe_request = &describe_requests[describe_before];
-    assert_eq!(describe_request.schema_name, "local_messages");
-    assert_eq!(describe_request.table_name, "messages");
-    assert_eq!(server.execute_sql_requests().len(), execute_sql_before);
+    assert_eq!(
+        described["entry"]["capability_id"],
+        "src_github.rest.list_issues"
+    );
+    assert_eq!(
+        described["entry"]["capability"]["operation_id"],
+        "list_issues"
+    );
+    assert_eq!(
+        described["entry"]["full_path"],
+        "tools.github.rest.listIssues"
+    );
+    assert_eq!(described["entry"]["deprecated"], false);
+    assert_eq!(described["entry"]["support_status"], "generated");
+    assert!(described.get("description").is_none());
+    assert_eq!(
+        described["entry"]["diagnostics"][0]["details"]["field"],
+        "query.q"
+    );
+    let describe_requests = server.describe_export_requests();
+    let describe_request = describe_requests.last().expect("describe export request");
+    assert_eq!(
+        describe_request.reference,
+        "typescript:github.rest.listIssues"
+    );
     Ok(())
 }
 
-async fn assert_list_columns_tool(
+async fn assert_exec_and_wait_tools(
     client: &RunningService<RoleClient, ()>,
+    server: &MockServer,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let columns = structured_tool_content(
+    let exec = structured_tool_content(
         client,
-        CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "table": "messages",
-            "required_only": true
+        CallToolRequestParams::new("exec").with_arguments(json_object(&json!({
+            "source": "return 1;"
         }))),
     )
     .await?;
-    assert_eq!(columns["total"], 2);
-    assert_eq!(columns["columns"][0]["column_name"], "owner");
-    assert_eq!(columns["columns"][1]["column_name"], "repo");
+    assert_eq!(exec["status"]["name"], "CODE_MODE_RUN_STATUS_COMPLETED");
+    assert_eq!(exec["run_id"], "run_1");
+    assert_eq!(server.initialize_code_mode_requests().len(), 1);
+    let exec_requests = server.exec_code_mode_requests();
+    let exec_request = exec_requests.last().expect("exec code mode request");
+    assert_eq!(exec_request.source, "return 1;");
 
-    let filtered_columns = structured_tool_content(
+    let wait = structured_tool_content(
         client,
-        CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "table": "messages",
-            "pattern": "text"
+        CallToolRequestParams::new("wait").with_arguments(json_object(&json!({
+            "run_id": "run_1",
+            "after_event_id": 1
         }))),
     )
     .await?;
-    assert_eq!(filtered_columns["total"], 1);
-    assert_eq!(filtered_columns["columns"][0]["column_name"], "text");
-    Ok(())
-}
+    assert_eq!(wait["run_id"], "run_1");
+    assert_eq!(wait["status"]["name"], "CODE_MODE_RUN_STATUS_COMPLETED");
+    let wait_requests = server.wait_code_mode_requests();
+    let wait_request = wait_requests.last().expect("wait code mode request");
+    assert_eq!(wait_request.run_id, "run_1");
+    assert_eq!(wait_request.after_event_id, 1);
 
-async fn assert_sql_tool(
-    client: &RunningService<RoleClient, ()>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let sql = structured_tool_content(
+    let terminated = structured_tool_content(
         client,
-        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-            "sql": "SELECT text FROM local_messages.messages ORDER BY text"
+        CallToolRequestParams::new("wait").with_arguments(json_object(&json!({
+            "run_id": "run_1",
+            "terminate": true
         }))),
     )
     .await?;
-    assert_eq!(sql["rows"][0]["text"], "hello");
+    assert_eq!(terminated["run_id"], "run_1");
+    assert_eq!(
+        terminated["status"]["name"],
+        "CODE_MODE_RUN_STATUS_TERMINATED"
+    );
+    let terminate_requests = server.terminate_code_mode_requests();
+    let terminate_request = terminate_requests
+        .last()
+        .expect("terminate code mode request");
+    assert_eq!(terminate_request.run_id, "run_1");
     Ok(())
 }
 
@@ -802,26 +720,18 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
 
-    let invalid_sql = client
-        .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "DELETE FROM local_messages.messages"
-            }))),
-        )
-        .await?;
-    assert_eq!(invalid_sql.is_error, Some(true));
-    assert_eq!(
-        invalid_sql.structured_content.expect("structured content")["error"]["summary"],
-        "Query request is invalid"
-    );
+    client
+        .call_tool(CallToolRequestParams::new("sql"))
+        .await
+        .expect_err("removed SQL tool should fail without ending the session");
 
-    let catalog = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+    let search = client
+        .call_tool(CallToolRequestParams::new("search"))
         .await?;
-    assert_eq!(catalog.is_error, Some(false));
+    assert_eq!(search.is_error, Some(false));
     assert_eq!(
-        catalog.structured_content.expect("structured content")["items"][0]["name"],
-        "local_messages.events"
+        search.structured_content.expect("structured content")["items"][0]["alias"],
+        "github.rest.listIssues"
     );
 
     client.cancel().await?;

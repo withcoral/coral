@@ -5,12 +5,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
+use coral_spec::{SourceSpec, parse_source_manifest_yaml};
 use walkdir::WalkDir;
 
 /// Discover every immediate `manifest.y{a,}ml` beneath `sources_dir`, parse it,
-/// and return the validated manifests sorted by schema name.
-pub(crate) fn load_catalog_manifests(sources_dir: &Path) -> Result<Vec<ValidatedSourceManifest>> {
+/// and return the validated manifests sorted by source name.
+pub(crate) fn load_catalog_manifests(sources_dir: &Path) -> Result<Vec<SourceSpec>> {
+    if !sources_dir.exists() {
+        return Ok(Vec::new());
+    }
     let entries =
         fs::read_dir(sources_dir).with_context(|| format!("reading {}", sources_dir.display()))?;
 
@@ -28,13 +31,27 @@ pub(crate) fn load_catalog_manifests(sources_dir: &Path) -> Result<Vec<Validated
         };
         let raw = fs::read_to_string(&manifest_path)
             .with_context(|| format!("reading {}", manifest_path.display()))?;
+        if !is_source_spec_manifest(&raw) {
+            continue;
+        }
         let manifest = parse_source_manifest_yaml(&raw)
             .with_context(|| format!("parsing {}", manifest_path.display()))?;
         manifests.push(manifest);
     }
 
-    manifests.sort_by(|left, right| left.schema_name().cmp(right.schema_name()));
+    manifests.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(manifests)
+}
+
+fn is_source_spec_manifest(raw: &str) -> bool {
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(raw) else {
+        return false;
+    };
+    value
+        .get("spec_version")
+        .and_then(serde_yaml::Value::as_i64)
+        == Some(1)
+        && value.get("kind").and_then(serde_yaml::Value::as_str) == Some("source")
 }
 
 /// Expand the caller's path list into concrete manifest files, deduplicated.

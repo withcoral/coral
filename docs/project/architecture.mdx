@@ -5,135 +5,202 @@ description: "Crate structure, request flow, and key design choices."
 
 ## Overview
 
-Coral is split into seven crates. The two entry points, the CLI and the MCP server, share the same runtime through `coral-client` and `coral-app`.
+Coral materializes provider sources into a capability-first package, then builds
+product surfaces from that package.
 
 ```mermaid
 graph TD
-    CLI["coral-cli"] --> Client["coral-client"]
-    MCP["coral-mcp"] --> Client
-    Client -->|gRPC| App["coral-app"]
-    App --> Spec["coral-spec"]
-    App --> Engine["coral-engine"]
-    Engine --> DF["DataFusion"]
-    App --> State["Local config + secrets"]
+    Spec["SourceSpec"] --> Raw["Raw interface inputs"]
+    Raw --> Snapshot["Provider snapshots"]
+    Snapshot --> Capabilities["SourceCapabilitySet"]
+    Capabilities --> Exports["SourceExports"]
+    Exports --> Workspace["WorkspaceExports"]
+    Workspace --> Discovery["search / describe"]
+    Workspace --> CodeMode["Code Mode TypeScript bindings"]
+    Workspace --> Sql["SQL projections"]
+    CodeMode --> Invoke["CapabilityService.Invoke"]
+    Sql --> Runtime["App-generated runtime plans"]
+    Invoke --> Runtime
+    Runtime --> Upstream["coral-upstream"]
 ```
 
-## Request flow
-
-A query follows this path:
-
-1. **Entry point:** a user runs `coral sql` or an agent calls the `sql` MCP tool
-2. **Bootstrap:** the caller decides whether to start a local `coral-app` server or dial an existing endpoint
-3. **`coral-client`:** connects to that endpoint and sends the request over gRPC
-4. **`coral-app`:** loads installed sources from local state, delegates spec validation to `coral-spec`, and hands validated specs to `coral-engine`
-5. **`coral-engine`:** compiles specs into DataFusion table providers, registers them in a session, and executes SQL
-6. **Result:** Arrow record batches flow back through gRPC to the client, which formats them as table or JSON output (CLI) or structured MCP tool results (MCP)
+SQL is first-class, but it is a projection of capabilities, not the primitive
+source model. The durable source artifacts are provider snapshots,
+`capabilities.yaml`, and `exports/source-exports.yaml`. Runtime plans are built
+by `coral-app` from installed artifacts, current credentials, and feature flags.
 
 ## Crates
 
 ### `coral-cli`
 
-The user-facing command-line interface.
-
-| Owns | Details |
-| --- | --- |
-| Command parsing | `coral sql`, `coral source`, `coral onboard`, `coral mcp-stdio` |
-| Interactive prompts | Variables and secrets during `source add` |
-| Output formatting | Table and JSON via `coral-client` helpers |
-
-Intentionally thin at the binary boundary — `main.rs` is a small wrapper, `bootstrap.rs` owns CLI bootstrap, and `lib.rs` owns shared command parsing and dispatch for Coral binaries. Query/result helpers stay in `coral-client`.
-For black-box CLI tests, contributors can enable the `CORAL_ENDPOINT` bootstrap override with `cargo nextest run --locked -p coral-cli --features cli-test-server`.
+The terminal adapter. It owns command parsing, interactive source input
+collection, and terminal rendering. It keeps source lifecycle, SourceSpec
+semantics, SQL execution, capability invocation, and Arrow IPC details in the
+inner crates.
 
 ### `coral-client`
 
-Shared client library used by both `coral-cli` and `coral-mcp`.
-
-| Owns               | Details                                                                              |
-| ------------------ | ------------------------------------------------------------------------------------ |
-| Endpoint dialing   | `AppClient::connect(endpoint)` builds typed gRPC clients for an existing endpoint    |
-| Explicit local bootstrap | `local::{ServerBuilder, ServerMode, RunningServer}` for callers that need local server control |
-| Result decoding    | Arrow IPC → record batches                                                           |
-| Error decoding     | Decodes AIP-193 `ErrorInfo` from `tonic::Status` details (`status_error.rs`)         |
-| Formatting helpers | `format_batches_table`, `format_batches_json`                                        |
+The API transport and result helper crate. It builds generated gRPC clients for
+an existing endpoint, decodes Arrow IPC query results, formats table/JSON
+output, and decodes structured transport errors. It does not bootstrap local
+servers or depend on app/source/runtime crates.
 
 ### `coral-app`
 
-The local server and core orchestrator.
+The local composition root. It owns server bootstrap, workspaces, config,
+credentials, source lifecycle, materialization, installed artifact loading,
+workspace export composition, discovery search/describe, capability invocation,
+SQL orchestration, and Code Mode service lifecycle.
 
-| Owns | Details |
-| --- | --- |
-| Server bootstrap | In-process gRPC server lifecycle (`bootstrap/`) |
-| Source management | Install, add from file, list, validate, remove (`sources/`) |
-| Workspace state | Config, secrets, and workspace layout (`state/`, `storage/`) |
-| Feedback persistence | Workspace-scoped blocked-agent feedback reports (`feedback/`) |
-| Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
-| Catalog discovery | Lists/searches/describes query-visible tables and columns (`catalog/`) |
-
-This is the largest crate. It ties `coral-spec` and `coral-engine` together and manages all persistent local state.
+Local process entry points that need in-process server control use
+`coral_app::ServerBuilder`; transport callers use `coral-client`.
 
 ### `coral-spec`
 
-Source spec parsing and validation.
+The SourceSpec parser and validator. It accepts `spec_version: 1`,
+`kind: source`, source inputs, and `openapi`, `mcp`, `graphql`, and `file`
+interfaces. It rejects removed source-contract keys before deserializing. It
+does not import provider documents, generate capabilities, derive projections,
+execute providers, or know about app state.
 
-| Owns                    | Details                                                                        |
-| ----------------------- | ------------------------------------------------------------------------------ |
-| YAML parsing            | Deserializes source specs into typed Rust structs                              |
-| Validation              | Structural invariants, required fields, backend-specific rules (`validate.rs`) |
-| Input discovery         | Extracts required variables and secrets from specs (`inputs.rs`)               |
-| Backend-specific models | HTTP, MCP, and file spec shapes (`backends/`)                                  |
+### `coral-importers`
 
-Produces a validated spec model that `coral-engine` consumes. No runtime or I/O, pure data transformation.
+Provider import and capability generation. It parses raw OpenAPI documents,
+upstream MCP `tools/list` snapshots, GraphQL SDL/introspection snapshots, and
+explicit file source facts into provider snapshots, then derives
+`SourceCapabilitySet` values.
 
-### `coral-engine`
+### `coral-capabilities`
 
-Query execution engine.
+Provider-neutral capability contracts: stable capability ids, invocation
+schemas, effect profiles, credential requirements, upstream binding facts,
+shape hints, output contracts, provenance, and diagnostics. It has no Coral
+crate dependencies.
 
-| Owns                    | Details                                                                               |
-| ----------------------- | ------------------------------------------------------------------------------------- |
-| Backend compilation     | Turns validated specs into DataFusion `TableProvider` implementations (`backends/`)   |
-| Runtime registry        | Registers table providers into a DataFusion session (`runtime/`)                      |
-| Query contracts         | Engine-facing types for catalog and query results (`contracts/`)                      |
-| Backend implementations | HTTP, MCP, and native file backends (`backends/http`, `backends/mcp`, `backends/file`) |
+### `coral-exports`
+
+Generated source/workspace export contracts. It owns `SourceExports`,
+`WorkspaceExports`, the binding contributor port, TypeScript binding metadata,
+SQL binding metadata structs, search items, describe resolution, export refs,
+and collision handling. It does not depend on SQL execution, app state, MCP, or
+provider runtimes.
+
+### `coral-sql`
+
+SQL projection and execution. It implements the SQL binding contributor, derives
+and validates SQL projection metadata, registers DataFusion tables/functions,
+executes read-only SQL, and converts provider/file results into Arrow rows.
+It consumes app-resolved runtime plans; it does not resolve secrets or compose
+workspace exports.
+
+### `coral-upstream`
+
+Neutral provider invocation execution. It executes app-built REST, upstream MCP
+`tools/call`, and GraphQL HTTP plans and returns provider response envelopes.
+It does not resolve credentials, own app state, expose MCP product tools, or
+return Arrow.
+
+### `coral-code-mode`
+
+The Code Mode isolate/cell runtime and host bridge contract. It owns execution
+lifecycle, stored values, output limits, events, cancellation, and sandbox
+boundaries. It calls app services through a host bridge and has no direct
+network, filesystem, secret, SQL-runtime, or provider-runtime access.
 
 ### `coral-mcp`
 
-The MCP stdio server.
-
-| Owns            | Details                                                             |
-| --------------- | ------------------------------------------------------------------- |
-| MCP protocol    | Tool and resource handlers via the `rmcp` SDK (`server.rs`)         |
-| Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs`; discovery semantics come from `coral-app` |
-| Tools           | `sql`, `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, optional `feedback` |
-| Resources       | `coral://guide`, `coral://tables`                                   |
-
-Uses `coral-client` to reach `coral-app`, same transport as the CLI.
+The MCP stdio adapter over `coral-client`. It exposes a small stable agent
+surface: `search`, `describe`, `exec`, `wait`, and `feedback`. It
+does not expose direct SQL tools, catalog tools, or raw capability calls. SQL runs
+inside Code Mode through `coral.sql.query(...)`.
 
 ### `coral-api`
 
-The shared gRPC contract.
+The protobuf contract and generated Rust bindings for local transport:
+generated-export discovery, SQL execution, capability invocation, Code Mode,
+source management, and feedback.
 
-| Owns                 | Details                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------- |
-| Protobuf definitions | `proto/coral/v1/` — `query.proto`, `sources.proto`, `catalog.proto`, `resources.proto` |
-| Generated bindings   | Tonic-generated Rust types and service traits                                          |
+## Request Flow
 
-All inter-crate communication between `coral-client` and `coral-app` goes through these generated types.
+Source add/materialization:
 
-## Dependency graph
+1. `coral-cli` or another local entry point asks `coral-app` to add a source.
+2. `coral-spec` parses and validates the SourceSpec.
+3. `coral-app` resolves declared inputs and acquires raw interface inputs.
+4. `coral-importers` builds provider snapshots and a `SourceCapabilitySet`.
+5. `coral-exports` and `coral-sql` contribute TypeScript and SQL bindings.
+6. `coral-app` validates and atomically installs provider snapshots,
+   generated GraphQL operation documents, `capabilities.yaml`, and
+   `exports/source-exports.yaml`.
+
+MCP discovery and execution:
+
+1. An MCP client calls `search` or `describe`.
+2. `coral-mcp` forwards to `DiscoveryService` through `coral-client`.
+3. `coral-app` composes current `WorkspaceExports` and returns typed refs,
+   capability ids, effect-profile metadata, diagnostics, and SQL projection
+   metadata when available.
+4. The agent runs Code Mode through `exec` and `wait`.
+5. Code Mode generated methods under `tools.*` call `CapabilityService.Invoke`;
+   SQL uses `coral.sql.query(...)`.
+
+SQL execution:
+
+1. CLI `coral sql` or Code Mode `coral.sql.query` calls `SqlService`.
+2. `coral-app` loads installed capabilities/exports and resolves the referenced
+   SQL binding metadata.
+3. `coral-sql` executes the read-only query through DataFusion.
+4. Provider-backed scans use app-built runtime plans and `coral-upstream`; file
+   scans use trusted installed file refs.
+5. Arrow record batches return through `coral-api` and `coral-client`.
+
+Capability invocation:
+
+1. A generated TypeScript method calls `CapabilityService.Invoke` with a
+   captured capability id and binding ref from `search`/`describe` metadata.
+2. `coral-app` revalidates the capability, binding, source existence,
+   credentials, and mutation gate before network.
+3. `coral-app` builds an `UpstreamInvocationPlan` or file-read plan.
+4. `coral-upstream` executes REST, upstream MCP, or GraphQL calls and returns a
+   provider envelope.
+
+## Dependency Graph
 
 ```mermaid
 graph TD
     CLI["coral-cli"] --> Client["coral-client"]
     MCP["coral-mcp"] --> Client
     Client --> API["coral-api"]
-    API --> App["coral-app"]
+    CLI --> App["coral-app"]
+    App --> API
     App --> Spec["coral-spec"]
-    App --> Engine["coral-engine"]
+    App --> Importers["coral-importers"]
+    App --> Exports["coral-exports"]
+    App --> Sql["coral-sql"]
+    App --> Upstream["coral-upstream"]
+    App --> CodeMode["coral-code-mode"]
+    Importers --> Spec
+    Importers --> Cap["coral-capabilities"]
+    Exports --> Cap
+    Sql --> Cap
+    Sql --> Exports
+    Sql --> Upstream
+    Upstream --> Cap
 ```
 
-`coral-spec` and `coral-engine` do not depend on each other. `coral-app` is the integration point that connects them.
+`coral-capabilities` has no Coral crate dependencies. `coral-exports` owns the
+binding contributor port and must not depend on `coral-sql`. `coral-client`
+does not depend on `coral-app`.
 
-## Key design choices
+## Key Design Choices
 
-- **Local gRPC server.** The CLI and MCP server don't embed the engine directly, they go through a local gRPC server managed by `coral-app`. This keeps the engine lifecycle in one place and makes the client/server boundary explicit.
-- **Spec vs engine separation.** `coral-spec` is pure validation (no I/O, no runtime). `coral-engine` is pure execution (no YAML parsing, no persistence). `coral-app` bridges the two.
+- **Capability center.** Provider snapshots and capabilities are the source
+  truth. SQL, TypeScript, MCP, and Code Mode are export/runtime surfaces.
+- **App-owned authority.** `coral-app` owns installed source identity,
+  workspace exports, credential resolution, mutation gating, and runtime plan
+  assembly.
+- **No silent regeneration.** Query and invocation load installed artifacts and
+  fail closed when required generated artifacts are missing or incompatible.
+- **Small MCP surface.** MCP discovers and runs Code Mode. Direct SQL/catalog
+  tools are intentionally absent from MCP; one-shot capability invocation lives
+  in the CLI through `coral invoke`.

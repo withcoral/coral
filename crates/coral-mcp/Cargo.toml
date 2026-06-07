@@ -22,6 +22,7 @@ tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 
 coral-api.workspace = true
+coral-capabilities.workspace = true
 coral-client.workspace = true
 
 [dev-dependencies]

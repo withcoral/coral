@@ -55,8 +55,8 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 | ------------------------------ | ------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `endpoint`                     | string  | unset                                                                  | OTLP/HTTP base URL. When unset, no signals are exported to an external collector. |
 | `headers`                      | string  | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
-| `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
-| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off,coral.mcp.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `log_filter`                   | string  | `coral_app=info,coral_sql=info`                                        | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
+| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_sql=trace,coral_sql::datafusion=off,coral.http.body=off,coral.mcp.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
 | `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
 
 ### `[trace_history]`
@@ -75,7 +75,7 @@ Example with auth headers and a hosted endpoint:
 endpoint = "https://otlp.example.com"
 headers = "x-api-key=secret, x-tenant=acme"
 service_name = "coral-laptop"
-trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace"
+trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_sql=trace"
 ```
 
 ## What gets emitted
@@ -86,12 +86,12 @@ Coral emits five families of trace spans, all exported with the W3C Trace Contex
 
 #### Adjusting what gets exported
 
-`[otel].trace_filter` uses [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/targets/struct.Targets.html) syntax. Enable noisy targets when you want them (`coral_engine::datafusion` covers physical-plan and optimizer-rule spans, off by default to keep export volume low), and disable any you do not (`coral_engine::http` silences the HTTP backend):
+`[otel].trace_filter` uses [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/targets/struct.Targets.html) syntax. Enable noisy targets when you want them (`coral_sql::datafusion` covers physical-plan and optimizer-rule spans, off by default to keep export volume low), and disable any you do not:
 
 ```toml
 [otel]
 endpoint = "http://localhost:4318"
-trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace,coral_engine::http=off"
+trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_sql=trace,coral_sql::datafusion=trace"
 ```
 
 If the filter fails to parse, Coral logs a warning and falls back to the default. Changing `[otel].trace_filter` does not reduce local trace capture — the local trace UI uses a fixed filter so debugging evidence stays available regardless of export policy.
@@ -118,11 +118,11 @@ Service-map tools that require paired client/server spans (such as HyperDX) need
 
 #### MCP source-call spans (Coral as the MCP client)
 
-MCP-backed source calls (the `mcp` backend reaching out to a remote tool server) are exported as OpenTelemetry `client` spans with operation name set to the called tool. Attributes include `coral.source`, `coral.mcp.relation`, `coral.mcp.tool`, `coral.mcp.transport` (`stdio` or `streamable_http`), `coral.mcp.request_id`, and a stable `error.type` label drawn from the [MCP error reasons](/reference/source-spec-reference#mcp-error-reasons).
+Upstream MCP source calls are exported as OpenTelemetry `client` spans with operation name set to the called tool. Attributes include `coral.source`, `coral.mcp.tool`, `coral.mcp.transport` (`stdio` or `streamable_http`), `coral.mcp.request_id`, and a stable `error.type` label drawn from the [MCP error reasons](/reference/source-spec-reference#mcp-error-reasons).
 
 Streamable HTTP calls additionally carry `url.full`, `server.address`, `server.port`, `peer.service`, `http.host`, and `net.peer.name`, and Coral injects W3C Trace Context headers into the HTTP request so an instrumented MCP server can continue the trace. Stdio calls carry `coral.mcp.command` and `coral.mcp.args.count`; trace-context propagation is not yet wired for stdio.
 
-These spans live under the `coral_engine::mcp` target — not to be confused with the `coral.mcp.*` server spans above, which come from Coral acting as the MCP server.
+These spans are distinct from the `coral.mcp.*` server spans above, which come from Coral acting as the MCP server.
 
 ### Logs
 

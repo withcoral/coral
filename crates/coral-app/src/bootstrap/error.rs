@@ -1,10 +1,7 @@
 //! Defines bootstrap and application-management errors for the local app.
 
-use coral_api::{
-    CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
-};
-use coral_engine::{CoreError, StatusCode};
+use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
+use coral_sql::{SqlError, StatusCode};
 use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
@@ -22,16 +19,6 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
-    /// A DSL v4 source has missing or stale generated runtime artifacts.
-    #[error(
-        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
-    )]
-    MissingOrIncompatibleV4Materialization {
-        /// Source name whose installed artifacts failed validation.
-        source_name: String,
-        /// Specific materialization mismatch or missing-artifact detail.
-        detail: String,
-    },
     /// Provider-managed credential refresh failed during active source use.
     #[error("credential refresh failed: {0}")]
     CredentialRefresh(String),
@@ -83,9 +70,8 @@ pub(crate) const MAX_STATUS_DETAIL_BYTES: usize = 4 * 1024;
 /// Generic safety-net truncation for `tonic::Status` details.
 ///
 /// Intentionally format-agnostic: no string heuristics on `DataFusion`
-/// error shapes, no "did you mean?" hints (those live in the structured
-/// error-conversion path where we have typed `Column` data — see
-/// `coral_engine::runtime::query`). This function's only job is to keep
+/// error shapes, no "did you mean?" hints (those belong in structured
+/// SQL/runtime error-conversion paths). This function's only job is to keep
 /// whatever string it's given under the trailer budget.
 fn truncate_status_detail(detail: String) -> String {
     const MARKER: &str = "… (truncated)";
@@ -129,45 +115,17 @@ pub(crate) fn app_status(error: AppError) -> Status {
     Status::new(app_code(&error), truncate_status_detail(error.to_string()))
 }
 
-pub(crate) fn core_status(error: CoreError) -> Status {
-    match error {
-        CoreError::QueryFailure(sqe) => {
-            let mut metadata = sqe.metadata().clone();
-            metadata.insert(
-                CORAL_ERROR_METADATA_SUMMARY.to_string(),
-                sqe.summary().to_string(),
-            );
-            if !sqe.detail().is_empty() {
-                metadata.insert(
-                    CORAL_ERROR_METADATA_DETAIL.to_string(),
-                    truncate_status_detail(sqe.detail().to_string()),
-                );
-            }
-            if let Some(hint) = sqe.hint() {
-                metadata.insert(CORAL_ERROR_METADATA_HINT.to_string(), hint.to_string());
-            }
-
-            let mut details: Vec<ErrorDetail> = vec![ErrorDetail::ErrorInfo(
-                tonic_types::ErrorInfo::new(sqe.reason(), CORAL_ERROR_DOMAIN, metadata),
-            )];
-            if sqe.retryable() {
-                details.push(ErrorDetail::RetryInfo(tonic_types::RetryInfo::new(None)));
-            }
-
-            let plain = render_plain_message(sqe.summary(), sqe.detail(), sqe.hint());
-            Status::with_error_details_vec(
-                grpc_code(sqe.status()),
-                truncate_status_detail(plain),
-                details,
-            )
-        }
-        other => Status::new(
-            grpc_code(other.status_code()),
-            truncate_status_detail(other.to_string()),
-        ),
-    }
+pub(crate) fn core_status(error: &SqlError) -> Status {
+    Status::new(
+        grpc_code(error.status_code()),
+        truncate_status_detail(error.to_string()),
+    )
 }
 
+#[expect(
+    dead_code,
+    reason = "kept for structured query errors once sql diagnostics regain hints"
+)]
 fn render_plain_message(summary: &str, detail: &str, hint: Option<&str>) -> String {
     let mut message = summary.to_string();
     if !detail.is_empty() {
@@ -186,7 +144,6 @@ fn grpc_code(status: StatusCode) -> Code {
         StatusCode::InvalidArgument => Code::InvalidArgument,
         StatusCode::NotFound => Code::NotFound,
         StatusCode::FailedPrecondition => Code::FailedPrecondition,
-        StatusCode::Unavailable => Code::Unavailable,
         StatusCode::Unimplemented => Code::Unimplemented,
         StatusCode::Internal => Code::Internal,
     }
@@ -197,7 +154,6 @@ fn app_code(error: &AppError) -> Code {
         AppError::SourceNotFound(_) => Code::NotFound,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
-        | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {

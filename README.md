@@ -7,8 +7,9 @@
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://withcoral.com/discord)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/withcoral/coral)
 
-Coral gives agents a local-first SQL runtime over APIs, files, and other data
-sources. Query it from the CLI, inspect schemas and tables, or expose the same
+Coral gives agents a local-first capability system over APIs, GraphQL, upstream
+MCP servers, files, and other data sources. Query SQL projections from the CLI,
+discover generated capabilities with `search` and `describe`, or expose the same
 runtime over MCP so agents can use it without bespoke tool glue.
 
 You can ask your agents complex questions about your data:
@@ -30,7 +31,7 @@ tends to create:
 - high token traffic
 - brittle glue code and prompts
 
-Coral gives agents one query interface instead:
+Coral gives agents one local capability interface instead:
 
 - query multiple live sources through SQL
 - keep workflows inspectable and scriptable
@@ -49,9 +50,9 @@ Full [benchmark report](https://withcoral.com/benchmarks).
 
 ## How Coral works
 
-Coral sits between your agents and your data sources: your agents write SQL,
-and Coral translates it into API calls or file reads, then returns a single
-result set.
+Coral sits between your agents and your data sources: agents discover generated
+capabilities, run TypeScript bindings or SQL projections through Code Mode, and
+Coral translates those calls into provider API calls or file reads.
 
 ```mermaid
 graph LR
@@ -82,11 +83,11 @@ graph LR
 **Sources.** A _source spec_ is a YAML file that declares how to reach an API
 or local dataset and which tables and columns it exposes. A _source_ is that
 spec plus the credentials and variables you configured for it. When you run
-`coral source add github`, Coral installs the `github` source and exposes it
-at query time as the `github` SQL schema, so tables like `github.issues` and
-`github.pulls` become queryable. Start with the
-[bundled sources](https://withcoral.com/docs/reference/bundled-sources) or
-[write your own](https://withcoral.com/docs/guides/write-a-custom-source).
+`coral source add --file ./messages.source.yaml`, Coral installs the source
+declared by that file and exposes it at query time as a SQL schema, such as
+`local_messages.messages`. Start with the
+[quickstart](https://withcoral.com/docs/getting-started/quickstart) or
+[write your own source spec](https://withcoral.com/docs/guides/write-a-custom-source).
 
 **Joins across sources.** Because every source appears as SQL tables, you can
 `JOIN` across them in one statement, and Coral executes the join locally
@@ -114,15 +115,17 @@ keep things responsive and cut unnecessary API traffic.
 For a deeper understanding of the internals, see the
 [architecture page](https://withcoral.com/docs/project/architecture).
 
-## Bundled sources
+## Source specs
 
-Coral supports many data sources out of the box, like Datadog, GitHub, Linear, Sentry, Stripe and more — plus local JSONL and Parquet files.
+Coral connects to data through SourceSpec YAML files. SourceSpecs can describe
+HTTP APIs, MCP tools, GraphQL endpoints, and local files such as JSONL or
+Parquet.
 
-Run `coral source discover` to see what's in your build, or check the
-[bundled sources reference](https://withcoral.com/docs/reference/bundled-sources)
-for the canonical list. If the source you need isn't there, you can
-[write a custom source](https://withcoral.com/docs/guides/write-a-custom-source),
-or [let us know you'd like Coral to support a data source you use](https://github.com/withcoral/coral/issues/new).
+Use `coral source add --file ./my-source.yaml` to install a SourceSpec. If your
+build includes active bundled SourceSpecs, `coral source discover` lists them;
+otherwise, start with the
+[quickstart](https://withcoral.com/docs/getting-started/quickstart) or
+[write a custom source](https://withcoral.com/docs/guides/write-a-custom-source).
 
 ## Quickstart
 
@@ -150,46 +153,52 @@ Or on Windows 10/11 x86_64, download
 
 See [all install options](https://withcoral.com/docs/getting-started/installation).
 
-### 2. Discover bundled sources
+### 2. Create a SourceSpec
 
 ```bash
-coral source discover
+mkdir -p /tmp/coral-quickstart
+printf '{"id":1,"text":"hello"}\n{"id":2,"text":"world"}\n' > /tmp/coral-quickstart/messages.jsonl
+cat > /tmp/coral-quickstart/messages.source.yaml <<'YAML'
+spec_version: 1
+kind: source
+name: local_messages
+interfaces:
+  - id: messages
+    type: file
+    files:
+      - ./messages.jsonl
+    format:
+      kind: jsonl
+YAML
 ```
 
-This lists the bundled sources available in your build.
+This defines a local JSONL file source.
 
 ### 3. Add a source
 
-For example, add GitHub interactively:
-
 ```bash
-coral source add --interactive github
+coral source add --file /tmp/coral-quickstart/messages.source.yaml
 ```
 
-Coral prompts for any required variables or secrets. For scripted setup, omit
-`--interactive` and provide each input as an environment variable of the same
-name, such as `GITHUB_TOKEN=ghp_... coral source add github`. Once connected,
-the source's data is available as SQL tables. To update a source's credentials
-later, run the same command again.
+Once connected, the source's data is available as SQL tables. For SourceSpecs
+with declared variables or secrets, Coral reads each input from an environment
+variable of the same name, or prompts when you pass `--interactive`.
 
 ### 4. Query your data
 
-Use `coral.tables` and `coral.table_functions` to see available query surfaces:
+Use `information_schema.tables` to see available SQL tables:
 
 ```bash
-coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
-coral sql "SELECT schema_name, function_name FROM coral.table_functions ORDER BY 1, 2"
+coral sql "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema <> 'information_schema' ORDER BY 1, 2"
 ```
 
-Assuming you've connected GitHub, try listing open issues for a repo:
+Query the local JSONL source:
 
 ```bash
 coral sql "
-  SELECT number, title, state, created_at
-  FROM github.issues
-  WHERE owner = 'withcoral' AND repo = 'coral' AND state = 'open'
-  ORDER BY created_at DESC
-  LIMIT 10
+  SELECT id, text
+  FROM local_messages.messages
+  ORDER BY id
 "
 ```
 
@@ -204,8 +213,8 @@ coral sql "
 ## Use Coral with an agent
 
 Coral ships with a built-in MCP server that presents Coral to your agent as a
-read-only SQL database. Once you've added at least one source, wire Coral into
-your agent:
+compact capability interface. Once you've added at least one source, wire Coral
+into your agent:
 
 ```bash
 claude mcp add --scope user coral -- coral mcp-stdio   # Claude Code
@@ -215,19 +224,18 @@ codex mcp add coral -- coral mcp-stdio                 # Codex
 For Cursor, VS Code, Claude Desktop, OpenCode, and manual config examples,
 see [Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp).
 
-Coral also publishes a set of skills that teach your agent the
-discovery-first SQL workflow (`list_catalog`, `coral.tables`,
-`coral.table_functions`, `coral.columns`, etc.):
+Coral also publishes a set of skills that teach your agent the capability-first
+workflow (`search`, `describe`, `exec`, `wait`, and `information_schema` for SQL
+inspection):
 
 ```bash
 npx skills add withcoral/skills
 ```
 
-Once connected, ask your agent to "list the tables available in Coral" or to
-run a small query. It should use `list_catalog`, `search_catalog`, or the
-`coral.tables` / `coral.table_functions` metadata tables as database catalog
-discovery, then answer with SQL over your visible schemas, tables, and table
-functions.
+Once connected, ask your agent to "list the tables available in Coral" or to run
+a small query. It should use `search` and `describe` for capability discovery,
+then `coral.sql.query(...)` with `information_schema` or source tables when SQL
+projection bindings are visible.
 
 ## Local state
 
@@ -245,9 +253,9 @@ Important files include:
 - imported source specs under `workspaces/<workspace>/sources/<source>/manifest.yaml`
 - source secrets stored separately within the same local trust boundary
 
-Bundled source specs are not copied into the config directory. Coral resolves
-them from the current binary when you validate or query a bundled source, so
-upgrades pick up newer bundled manifests without re-adding the source.
+Imported SourceSpecs are materialized into the local Coral config directory.
+Re-run `coral source add --file ./my-source.yaml` when the spec or provider
+snapshot changes and you want Coral to regenerate its local artifacts.
 
 ## Development
 

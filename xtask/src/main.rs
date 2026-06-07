@@ -10,6 +10,8 @@
 //!     plugin tree into a distribution checkout.
 //!   - `perf-check` runs command-level performance regression checks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
+//!   - `architecture-check` validates capability/export crate boundaries.
+//!   - `removed-contract-check` scans for deleted source-contract names.
 
 #![allow(
     clippy::print_stderr,
@@ -25,6 +27,7 @@ use clap::{Parser, Subcommand};
 
 mod detect;
 mod docs;
+mod gates;
 mod perf;
 mod schemas;
 mod skills;
@@ -52,6 +55,10 @@ enum Command {
     PerfCheck(perf::Args),
     /// Regenerate checked-in generated JSON schemas.
     GenerateSchemas(schemas::Args),
+    /// Validate capability architecture crate boundaries.
+    ArchitectureCheck,
+    /// Scan for deleted source-contract names.
+    RemovedContractCheck,
 }
 
 #[derive(Debug, clap::Args)]
@@ -100,5 +107,7 @@ fn run(command: &Command) -> Result<bool> {
         Command::ExportSkills(args) => skills::export(&args.dest),
         Command::PerfCheck(args) => perf::run(args),
         Command::GenerateSchemas(args) => schemas::run(args),
+        Command::ArchitectureCheck => gates::architecture_check(),
+        Command::RemovedContractCheck => gates::removed_contract_check(),
     }
 }

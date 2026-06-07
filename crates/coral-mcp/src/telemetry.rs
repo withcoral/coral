@@ -72,37 +72,6 @@ pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tra
     span
 }
 
-pub(crate) fn list_resources_span(trace_parent: Option<&str>) -> tracing::Span {
-    let span = tracing::info_span!(
-        target: "coral_mcp::server",
-        "coral.mcp.list_resources",
-        error.type = field::Empty,
-        exception.message = field::Empty,
-        mcp.method = "resources/list",
-        otel.kind = "server",
-        otel.name = "coral.mcp.list_resources",
-        status = field::Empty,
-    );
-    apply_trace_parent(&span, trace_parent);
-    span
-}
-
-pub(crate) fn read_resource_span(uri: &str, trace_parent: Option<&str>) -> tracing::Span {
-    let span = tracing::info_span!(
-        target: "coral_mcp::server",
-        "coral.mcp.read_resource",
-        error.type = field::Empty,
-        exception.message = field::Empty,
-        mcp.method = "resources/read",
-        mcp.resource.uri = uri,
-        otel.kind = "server",
-        otel.name = "coral.mcp.read_resource",
-        status = field::Empty,
-    );
-    apply_trace_parent(&span, trace_parent);
-    span
-}
-
 fn apply_trace_parent(span: &tracing::Span, trace_parent: Option<&str>) {
     let Some(trace_parent) = trace_parent else {
         return;

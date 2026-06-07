@@ -1,13 +1,12 @@
 use coral_api::v1::{ExecuteSqlRequest, Source, SourceInfo};
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
-    manifest_input_from_proto,
 };
 use dialoguer::console::{measure_text_width, style};
 use dialoguer::{Select, theme::ColorfulTheme};
 use tonic::Request;
 
-use crate::{browser, source_ops};
+use crate::{browser, source_inputs::manifest_input_from_proto, source_ops};
 
 const SOURCE_DESCRIPTION_PREVIEW_LIMIT: usize = 88;
 
@@ -300,7 +299,7 @@ async fn show_next_steps_screen(
         });
         match action {
             Some(NextStepAction::RunExampleQuery) => {
-                let sql = "SELECT schema_name, COUNT(*) AS table_count FROM coral.tables GROUP BY schema_name ORDER BY 1";
+                let sql = "SELECT table_schema, COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema <> 'information_schema' GROUP BY table_schema ORDER BY 1";
                 match run_first_query(app, sql).await {
                     Ok(output) => {
                         println!();

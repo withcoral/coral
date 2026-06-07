@@ -4,6 +4,80 @@ package coral.v1;
 
 import "coral/v1/resources.proto";
 
+// A column exposed by a query-visible table.
+message Column {
+  // The column name as exposed by the query engine.
+  string name = 1;
+  // The DataFusion/Arrow data type rendered as text.
+  string data_type = 2;
+  // Whether the column can contain null values.
+  bool nullable = 3;
+  // Whether the column is provider-derived metadata, such as a filter or computed column.
+  bool is_virtual = 4;
+  // Whether the column must be constrained before querying the table.
+  bool is_required_filter = 5;
+  // Human-readable column description.
+  string description = 6;
+  // Zero-based position of the column within the table.
+  uint32 ordinal_position = 7;
+}
+
+// A query-visible table in one workspace.
+message Table {
+  // Workspace whose source set makes this table visible.
+  Workspace workspace = 1;
+  // The schema name used for SQL qualification.
+  string schema_name = 2;
+  // The bare table name within the schema.
+  string name = 3;
+  // The user-facing table description.
+  string description = 4;
+  // The columns exposed by the table.
+  repeated Column columns = 5;
+  // Required filter names, if any.
+  repeated string required_filters = 6;
+  // User-facing query guidance.
+  string guide = 7;
+}
+
+// An argument accepted by a source-scoped table function.
+message TableFunctionArgument {
+  // Argument name as used in a named SQL function call.
+  string name = 1;
+  // Whether callers must provide this argument.
+  bool required = 2;
+  // Allowed values, if the source declares an enum-like value set.
+  repeated string values = 3;
+}
+
+// A result column returned by a source-scoped table function.
+message TableFunctionResultColumn {
+  // Column name returned by the table function.
+  string name = 1;
+  // The DataFusion/Arrow data type rendered as text.
+  string data_type = 2;
+  // Whether the column can contain null values.
+  bool nullable = 3;
+  // Human-readable column description.
+  string description = 4;
+}
+
+// A source-scoped table function in one workspace.
+message TableFunction {
+  // Workspace whose source set makes this function visible.
+  Workspace workspace = 1;
+  // The schema name used for SQL qualification.
+  string schema_name = 2;
+  // The bare function name within the schema.
+  string name = 3;
+  // The user-facing function description.
+  string description = 4;
+  // Arguments accepted by the function.
+  repeated TableFunctionArgument arguments = 5;
+  // Columns returned by the function.
+  repeated TableFunctionResultColumn result_columns = 6;
+}
+
 // Executes one SQL statement against the sources registered in one workspace.
 message ExecuteSqlRequest {
   // Workspace that scopes the queryable source set.

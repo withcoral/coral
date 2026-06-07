@@ -13,7 +13,7 @@ use tonic::Request;
 use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
 
 #[tokio::test]
-async fn broken_source_does_not_block_healthy_sources() {
+async fn missing_unused_secret_material_does_not_block_sources() {
     let harness = GrpcHarness::new().await;
 
     harness
@@ -25,7 +25,7 @@ async fn broken_source_does_not_block_healthy_sources() {
         .await;
     harness
         .import_source(
-            fixture_manifest_with_inputs_yaml(),
+            fixture_manifest_with_inputs_yaml(harness.temp_path()),
             vec![SourceVariable {
                 key: "API_BASE".to_string(),
                 value: "https://example.com".to_string(),
@@ -48,25 +48,11 @@ async fn broken_source_does_not_block_healthy_sources() {
     )
     .expect("remove broken source secret file");
 
-    let tables = harness.list_tables().await;
-    assert!(
-        tables
-            .iter()
-            .any(|table| table.schema_name == "local_messages"),
-        "healthy source should remain queryable"
-    );
-    assert!(
-        !tables
-            .iter()
-            .any(|table| table.schema_name == "secured_messages"),
-        "broken source should be omitted from registered tables"
-    );
-
     let healthy = harness
         .query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
-            sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
+            sql: "SELECT COUNT(*) AS n FROM local_messages.read_files".to_string(),
         }))
         .await
         .expect("healthy source query should succeed")
@@ -79,13 +65,20 @@ async fn broken_source_does_not_block_healthy_sources() {
     .expect("healthy rows");
     assert_eq!(healthy_rows[0]["n"], 2);
 
-    let broken = harness
+    let secured = harness
         .query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
-            sql: "SELECT * FROM secured_messages.messages".to_string(),
+            sql: "SELECT COUNT(*) AS n FROM secured_messages.read_files".to_string(),
         }))
         .await
-        .expect_err("broken source query should fail");
-    assert_eq!(broken.code(), tonic::Code::NotFound);
+        .expect("source with unused missing secret should still query")
+        .into_inner();
+    let secured_rows = batches_to_json_rows(
+        decode_execute_sql_response(&secured)
+            .expect("decode secured query")
+            .batches(),
+    )
+    .expect("secured rows");
+    assert_eq!(secured_rows[0]["n"], 2);
 }

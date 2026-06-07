@@ -15,6 +15,7 @@ mod embedded_ui;
 pub mod env;
 mod onboard;
 mod query_error;
+mod source_inputs;
 mod source_ops;
 
 use std::borrow::Cow;
@@ -27,15 +28,22 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{
+    DescribeExportRequest, ExecuteSqlRequest, ExportDescription, InvokeCapabilityError,
+    InvokeCapabilityRequest, InvokeCapabilityResponse, JsonValue as ProtoJsonValue,
+    json_value as proto_json_value,
+};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table, manifest_input_from_proto,
+    format_batches_table,
 };
 use dialoguer::console::measure_text_width;
+use serde_json::{Value, json};
 use tonic::Request;
+
+use crate::source_inputs::manifest_input_from_proto;
 
 #[cfg(test)]
 use tempfile as _;
@@ -51,18 +59,45 @@ const DEFAULT_SERVER_PORT: u16 = 1457;
     version = concat!(env!("CARGO_PKG_VERSION"), "+", env!("CORAL_GIT_SHA")),
     arg_required_else_help = true
 )]
-/// A local-first SQL interface for APIs, files, and other data sources.
+/// A local-first capability interface for APIs, files, and other data sources.
 struct Cli {
+    /// Runtime bindings to expose from the local server
+    #[arg(
+        long = "runtime-exposure",
+        value_enum,
+        global = true,
+        value_name = "MODE"
+    )]
+    runtime_exposure: Option<RuntimeExposureArg>,
     #[command(flatten)]
     feature_overrides: FeatureOverrideArgs,
     #[command(subcommand)]
     command: Command,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum RuntimeExposureArg {
+    Both,
+    Typescript,
+    Sql,
+}
+
+impl From<RuntimeExposureArg> for coral_app::RuntimeExposureMode {
+    fn from(value: RuntimeExposureArg) -> Self {
+        match value {
+            RuntimeExposureArg::Both => Self::Both,
+            RuntimeExposureArg::Typescript => Self::TypeScript,
+            RuntimeExposureArg::Sql => Self::Sql,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
+    /// Invoke a generated capability by typed ref, generated path, capability id, or alias
+    Invoke(InvokeArgs),
     /// Manage data sources
     Source(SourceArgs),
     /// Interactive wizard to set up Coral and explore use cases
@@ -112,6 +147,16 @@ struct SqlArgs {
     format: OutputFormat,
     /// SQL query to execute
     sql: String,
+}
+
+#[derive(Debug, Args)]
+/// Invoke a generated capability
+struct InvokeArgs {
+    /// Typed ref, generated Code Mode path, capability id, or unambiguous alias
+    reference: String,
+    /// JSON object arguments for the capability
+    #[arg(long = "json", value_name = "JSON", default_value = "{}")]
+    json: String,
 }
 
 #[derive(Debug, Default)]
@@ -358,9 +403,11 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
-                RequiredRuntime::AppClient
-            }
+            Command::Sql(_)
+            | Command::Invoke(_)
+            | Command::Source(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => RequiredRuntime::AppClient,
             Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
@@ -424,9 +471,11 @@ where
 /// formatting fails.
 pub async fn run_from_env() -> Result<(), CliError> {
     let Cli {
+        runtime_exposure,
         feature_overrides,
         command,
     } = Cli::parse();
+    let runtime_exposure = runtime_exposure.map(Into::into);
     let feature_overrides = feature_overrides.into_overrides();
     let ctx = coral_app::RunContext {
         trace_parent: env::trace_parent(),
@@ -437,16 +486,31 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
+                runtime_exposure,
             })
             .await
             .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
+            let runtime_exposure = bootstrap.runtime_exposure;
             let result = if is_mcp_stdio {
-                run_app_command(app, command, Some(&ctx), &feature_overrides).await
+                run_app_command(
+                    app,
+                    command,
+                    Some(&ctx),
+                    &feature_overrides,
+                    runtime_exposure,
+                )
+                .await
             } else {
                 coral_app::run_with_context(
                     &ctx,
-                    Box::pin(run_app_command(app, command, None, &feature_overrides)),
+                    Box::pin(run_app_command(
+                        app,
+                        command,
+                        None,
+                        &feature_overrides,
+                        runtime_exposure,
+                    )),
                 )
                 .await
             };
@@ -456,7 +520,11 @@ pub async fn run_from_env() -> Result<(), CliError> {
         RequiredRuntime::None => {
             coral_app::run_with_context(
                 &ctx,
-                Box::pin(run_no_runtime_command(command, &feature_overrides)),
+                Box::pin(run_no_runtime_command(
+                    command,
+                    &feature_overrides,
+                    runtime_exposure,
+                )),
             )
             .await
         }
@@ -481,8 +549,18 @@ pub fn open_url(url: &str) -> Result<(), std::io::Error> {
 }
 
 #[cfg(feature = "embedded-ui")]
-async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_ui_server(args.port).await?;
+async fn run_ui(
+    args: UiArgs,
+    runtime_exposure: Option<coral_app::RuntimeExposureMode>,
+) -> Result<(), anyhow::Error> {
+    let server = bootstrap::start_ui_server(
+        args.port,
+        bootstrap::BootstrapOptions {
+            runtime_exposure,
+            ..Default::default()
+        },
+    )
+    .await?;
     let endpoint = server.endpoint_uri().to_string();
 
     println!("Coral UI listening on {endpoint}");
@@ -509,6 +587,7 @@ async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
 async fn run_no_runtime_command(
     command: Command,
     feature_overrides: &coral_app::features::FeatureOverrides,
+    runtime_exposure: Option<coral_app::RuntimeExposureMode>,
 ) -> Result<(), CliError> {
     match command {
         Command::Completion(args) => {
@@ -519,8 +598,12 @@ async fn run_no_runtime_command(
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => run_ui(args).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Ui(args) => run_ui(args, runtime_exposure).await.map_err(Into::into),
+        Command::Sql(_)
+        | Command::Invoke(_)
+        | Command::Source(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -530,7 +613,8 @@ async fn run_app_command(
     app: AppClient,
     command: Command,
     ctx: Option<&coral_app::RunContext>,
-    feature_overrides: &coral_app::features::FeatureOverrides,
+    _feature_overrides: &coral_app::features::FeatureOverrides,
+    runtime_exposure: coral_app::RuntimeExposureMode,
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
@@ -554,18 +638,26 @@ async fn run_app_command(
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
         }
+        Command::Invoke(args) => run_invoke(&app, args).await?,
         Command::Source(args) => run_source(&app, args).await?,
         Command::Onboard => {
             onboard::run(&app).await?;
         }
         Command::McpStdio(_) => {
-            let features = coral_app::features::FeatureStore::discover(None)
-                .and_then(|store| store.load_with_overrides(feature_overrides))
-                .map_err(anyhow::Error::from)?;
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
-                    feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+                    runtime_exposure: match runtime_exposure {
+                        coral_app::RuntimeExposureMode::Both => {
+                            coral_mcp::McpRuntimeExposure::both()
+                        }
+                        coral_app::RuntimeExposureMode::TypeScript => {
+                            coral_mcp::McpRuntimeExposure::typescript_only()
+                        }
+                        coral_app::RuntimeExposureMode::Sql => {
+                            coral_mcp::McpRuntimeExposure::sql_only()
+                        }
+                    },
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                 },
             ))
@@ -585,6 +677,201 @@ async fn run_app_command(
     }
 
     Ok(())
+}
+
+async fn run_invoke(app: &AppClient, args: InvokeArgs) -> Result<(), CliError> {
+    let args_value = serde_json::from_str::<Value>(&args.json)
+        .map_err(|error| anyhow::anyhow!("--json must be a JSON object: {error}"))?;
+    if !args_value.is_object() {
+        return Err(anyhow::anyhow!("--json must be a JSON object").into());
+    }
+    let args_json = serde_json::to_string(&args_value).map_err(anyhow::Error::from)?;
+
+    let mut discovery_client = app.discovery_client();
+    let describe = discovery_client
+        .describe(Request::new(DescribeExportRequest {
+            workspace: Some(default_workspace()),
+            reference: args.reference.clone(),
+        }))
+        .await
+        .map_err(anyhow::Error::from)?
+        .into_inner();
+    if describe.ambiguous {
+        let candidates = describe
+            .candidates
+            .iter()
+            .map(|candidate| {
+                let refs = if candidate.refs.is_empty() {
+                    String::new()
+                } else {
+                    format!(" refs=[{}]", candidate.refs.join(", "))
+                };
+                let full_path = if candidate.full_path.is_empty() {
+                    String::new()
+                } else {
+                    format!(" full_path={}", candidate.full_path)
+                };
+                format!("{}{}{}", candidate.capability_id, refs, full_path)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow::anyhow!(
+            "reference '{}' is ambiguous; use a typed ref or full path:\n{}",
+            args.reference,
+            candidates
+        )
+        .into());
+    }
+    if !describe.found {
+        let diagnostic_messages = describe
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let suffix = if diagnostic_messages.is_empty() {
+            String::new()
+        } else {
+            format!("\n{diagnostic_messages}")
+        };
+        return Err(
+            anyhow::anyhow!("reference '{}' was not found{}", args.reference, suffix).into(),
+        );
+    }
+    let entry = describe
+        .entry
+        .ok_or_else(|| anyhow::anyhow!("describe response was missing resolved entry"))?;
+    let typescript_binding = entry.typescript_binding.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("'{}' has no TypeScript invocation binding", args.reference)
+    })?;
+
+    let mut capability_client = app.capability_client();
+    let response = capability_client
+        .invoke(Request::new(InvokeCapabilityRequest {
+            workspace: Some(default_workspace()),
+            capability_id: entry.capability_id.clone(),
+            binding_ref: typescript_binding.r#ref.clone(),
+            binding_path: typescript_binding.path.clone(),
+            args_json,
+        }))
+        .await
+        .map_err(anyhow::Error::from)?
+        .into_inner();
+    let ok = response.ok;
+    let error_message = response
+        .error
+        .as_ref()
+        .map(|error| error.message.clone())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| "capability invocation failed".to_string());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&invoke_response_to_json(
+            response,
+            &entry,
+            &typescript_binding.r#ref,
+            &typescript_binding.full_path,
+        ))
+        .map_err(anyhow::Error::from)?
+    );
+    if ok {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("{error_message}").into())
+    }
+}
+
+fn invoke_response_to_json(
+    response: InvokeCapabilityResponse,
+    entry: &ExportDescription,
+    binding_ref: &str,
+    full_path: &str,
+) -> Value {
+    let error = response.error.map_or(Value::Null, invoke_error_to_json);
+    let partial = !response.ok && provider_error_has_partial_data(&error);
+    let complete = response.ok && !partial;
+    let errors = if response.ok {
+        Vec::new()
+    } else if error.is_null() {
+        vec![json!({
+            "kind": "unknown",
+            "message": "capability invocation failed",
+            "details": null,
+        })]
+    } else {
+        vec![error.clone()]
+    };
+    json!({
+        "ok": response.ok,
+        "complete": complete,
+        "partial": partial,
+        "errors": errors,
+        "source_status": [{
+            "source_id": entry.source_id.as_str(),
+            "capability_id": entry.capability_id.as_str(),
+            "binding_ref": binding_ref,
+            "full_path": full_path,
+            "ok": response.ok,
+            "complete": complete,
+            "partial": partial,
+            "error": if response.ok { Value::Null } else { error.clone() },
+        }],
+        "value": response.value.map_or(Value::Null, proto_json_value_to_json),
+        "error": error,
+        "envelope": response.envelope.map_or(Value::Null, proto_json_value_to_json),
+    })
+}
+
+fn invoke_error_to_json(error: InvokeCapabilityError) -> Value {
+    json!({
+        "kind": error.kind,
+        "message": error.message,
+        "details": error.details.map_or(Value::Null, proto_json_value_to_json),
+    })
+}
+
+fn provider_error_has_partial_data(error_value: &Value) -> bool {
+    if error_value
+        .pointer("/details/provider_error/partial_data")
+        .is_some_and(|value| !value.is_null())
+    {
+        return true;
+    }
+    let Some(detail) = error_value
+        .pointer("/details/provider_error/detail")
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    serde_json::from_str::<Value>(detail)
+        .ok()
+        .and_then(|value| value.get("partial_data").cloned())
+        .is_some_and(|value| !value.is_null())
+}
+
+fn proto_json_value_to_json(value: ProtoJsonValue) -> Value {
+    match value.kind {
+        Some(proto_json_value::Kind::NullValue(_)) | None => Value::Null,
+        Some(proto_json_value::Kind::BoolValue(value)) => Value::Bool(value),
+        Some(proto_json_value::Kind::IntegerValue(value)) => json!(value),
+        Some(proto_json_value::Kind::UnsignedIntegerValue(value)) => json!(value),
+        Some(proto_json_value::Kind::DoubleValue(value)) => json!(value),
+        Some(proto_json_value::Kind::StringValue(value)) => Value::String(value),
+        Some(proto_json_value::Kind::ObjectValue(object)) => Value::Object(
+            object
+                .fields
+                .into_iter()
+                .map(|(key, value)| (key, proto_json_value_to_json(value)))
+                .collect(),
+        ),
+        Some(proto_json_value::Kind::ArrayValue(array)) => Value::Array(
+            array
+                .values
+                .into_iter()
+                .map(proto_json_value_to_json)
+                .collect(),
+        ),
+    }
 }
 
 fn run_features(
@@ -808,12 +1095,12 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
             let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
             if interactive {
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(
-                    manifest.declared_inputs(),
+                    &manifest.declared_inputs,
                 )?;
                 source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
             } else {
                 let (variables, secrets) = source_ops::collect_inputs_from_env(
-                    manifest.declared_inputs(),
+                    &manifest.declared_inputs,
                     format!(
                         "coral source add --interactive --file {}",
                         source_ops::shell_quote_arg(&file.display().to_string())
@@ -837,8 +1124,13 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use coral_api::v1::{
+        ExportDescription, InvokeCapabilityError, InvokeCapabilityResponse, JsonArray, JsonNull,
+        JsonObject,
+    };
+    use serde_json::{Value, json};
 
-    use super::{Cli, RequiredRuntime, command_enables_stderr_logs};
+    use super::{Cli, RequiredRuntime, RuntimeExposureArg, command_enables_stderr_logs};
 
     #[test]
     fn server_command_is_not_available() {
@@ -889,6 +1181,138 @@ mod tests {
     }
 
     #[test]
+    fn invoke_command_uses_app_bootstrap_and_parses_json_args() {
+        let cli = Cli::try_parse_from([
+            "coral",
+            "invoke",
+            "tools.slack.slackSearchPublic",
+            "--json",
+            r#"{"query":"from:me"}"#,
+        ])
+        .expect("invoke args should parse");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+        let super::Command::Invoke(args) = cli.command else {
+            panic!("expected invoke command");
+        };
+        assert_eq!(args.reference, "tools.slack.slackSearchPublic");
+        assert_eq!(args.json, r#"{"query":"from:me"}"#);
+    }
+
+    #[test]
+    fn invoke_response_wrapper_preserves_partial_provider_metadata() {
+        let entry = ExportDescription {
+            source_id: "src_github".to_string(),
+            capability_id: "src_github/rest/search_issues".to_string(),
+            ..ExportDescription::default()
+        };
+        let response = InvokeCapabilityResponse {
+            ok: false,
+            value: None,
+            error: Some(InvokeCapabilityError {
+                kind: "graphql_error".to_string(),
+                message: "provider returned partial data".to_string(),
+                details: Some(json_to_proto_value(json!({
+                    "provider_error": {
+                        "partial_data": {
+                            "viewer": null
+                        }
+                    }
+                }))),
+            }),
+            envelope: None,
+        };
+
+        let wrapped = super::invoke_response_to_json(
+            response,
+            &entry,
+            "typescript:github.rest.search.issues",
+            "tools.github.rest.search.issues",
+        );
+
+        assert_eq!(wrapped.pointer("/ok").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            wrapped.pointer("/complete").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            wrapped.pointer("/partial").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            wrapped
+                .pointer("/source_status/0/source_id")
+                .and_then(Value::as_str),
+            Some("src_github")
+        );
+        assert_eq!(
+            wrapped
+                .pointer("/source_status/0/capability_id")
+                .and_then(Value::as_str),
+            Some("src_github/rest/search_issues")
+        );
+        assert_eq!(
+            wrapped
+                .pointer("/source_status/0/binding_ref")
+                .and_then(Value::as_str),
+            Some("typescript:github.rest.search.issues")
+        );
+        assert_eq!(
+            wrapped
+                .pointer("/source_status/0/full_path")
+                .and_then(Value::as_str),
+            Some("tools.github.rest.search.issues")
+        );
+        assert_eq!(
+            wrapped
+                .pointer("/source_status/0/complete")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            wrapped
+                .pointer("/source_status/0/partial")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            wrapped.pointer("/errors/0/kind").and_then(Value::as_str),
+            Some("graphql_error")
+        );
+    }
+
+    fn json_to_proto_value(value: serde_json::Value) -> super::ProtoJsonValue {
+        let kind = match value {
+            serde_json::Value::Null => super::proto_json_value::Kind::NullValue(JsonNull {}),
+            serde_json::Value::Bool(value) => super::proto_json_value::Kind::BoolValue(value),
+            serde_json::Value::Number(value) => {
+                if let Some(value) = value.as_i64() {
+                    super::proto_json_value::Kind::IntegerValue(value)
+                } else if let Some(value) = value.as_u64() {
+                    super::proto_json_value::Kind::UnsignedIntegerValue(value)
+                } else {
+                    super::proto_json_value::Kind::DoubleValue(value.as_f64().unwrap_or_default())
+                }
+            }
+            serde_json::Value::String(value) => super::proto_json_value::Kind::StringValue(value),
+            serde_json::Value::Array(values) => {
+                super::proto_json_value::Kind::ArrayValue(JsonArray {
+                    values: values.into_iter().map(json_to_proto_value).collect(),
+                })
+            }
+            serde_json::Value::Object(fields) => {
+                super::proto_json_value::Kind::ObjectValue(JsonObject {
+                    fields: fields
+                        .into_iter()
+                        .map(|(key, value)| (key, json_to_proto_value(value)))
+                        .collect(),
+                })
+            }
+        };
+        super::ProtoJsonValue { kind: Some(kind) }
+    }
+
+    #[test]
     fn mcp_stdio_invocation_enables_stderr_logs() {
         assert!(command_enables_stderr_logs(["coral", "mcp-stdio"]));
     }
@@ -908,6 +1332,38 @@ mod tests {
             .expect("global feature override should parse before subcommand");
 
         assert!(matches!(cli.command, super::Command::McpStdio(_)));
+    }
+
+    #[test]
+    fn global_runtime_exposure_override_parses_before_subcommand() {
+        let cli = Cli::try_parse_from(["coral", "--runtime-exposure", "sql", "mcp-stdio"])
+            .expect("global runtime exposure should parse before subcommand");
+
+        assert!(matches!(cli.command, super::Command::McpStdio(_)));
+        assert!(matches!(
+            cli.runtime_exposure,
+            Some(RuntimeExposureArg::Sql)
+        ));
+    }
+
+    #[cfg(feature = "embedded-ui")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ui_server_uses_global_runtime_exposure_override() {
+        let server = super::bootstrap::start_ui_server(
+            0,
+            super::bootstrap::BootstrapOptions {
+                runtime_exposure: Some(coral_app::RuntimeExposureMode::Sql),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("ui server should start with explicit runtime exposure");
+
+        assert_eq!(
+            server.runtime_exposure(),
+            coral_app::RuntimeExposureMode::Sql
+        );
+        server.shutdown().await.expect("shutdown");
     }
 
     #[test]

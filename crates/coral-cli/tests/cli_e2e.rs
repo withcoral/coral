@@ -124,6 +124,9 @@ async fn source_list_renders_dash_for_missing_authored_version() {
                 variables: Vec::new(),
                 origin: SourceOrigin::Imported as i32,
                 credential_storage: SourceCredentialStorage::File as i32,
+                source_id: "src_versionless".to_string(),
+                display_name: "versionless".to_string(),
+                source_key: "versionless".to_string(),
             }],
         },
     ))
@@ -740,7 +743,7 @@ async fn source_add_rejects_name_and_file_together() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
+async fn source_add_file_resolves_source_spec_relative_descriptor_from_manifest_dir() {
     let server = MockServer::start().await;
     let source_dir = tempdir().expect("source dir");
     let openapi_file = source_dir.path().join("openapi.yaml");
@@ -756,9 +759,10 @@ paths: {}
     std::fs::write(
         &manifest_file,
         r"
+spec_version: 1
+kind: source
 name: github
-dsl_version: 4
-surfaces:
+interfaces:
   - id: rest
     type: openapi
     file: openapi.yaml
@@ -789,6 +793,169 @@ surfaces:
     assert!(
         !manifest_yaml.contains("file: openapi.yaml"),
         "expected relative descriptor to be replaced before import: {manifest_yaml}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_rejects_relative_descriptor_outside_manifest_dir() {
+    let server = MockServer::start().await;
+    let root_dir = tempdir().expect("source root dir");
+    let source_dir = root_dir.path().join("source");
+    let outside_dir = root_dir.path().join("outside");
+    std::fs::create_dir_all(&source_dir).expect("source dir");
+    std::fs::create_dir_all(&outside_dir).expect("outside dir");
+    let openapi_file = outside_dir.join("openapi.yaml");
+    std::fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+paths: {}
+",
+    )
+    .expect("write descriptor");
+    let manifest_file = source_dir.join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+spec_version: 1
+kind: source
+name: github
+interfaces:
+  - id: rest
+    type: openapi
+    file: ../outside/openapi.yaml
+",
+    )
+    .expect("write manifest");
+
+    let assert = server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("resolves outside manifest directory"),
+        "expected containment error: {stderr}"
+    );
+    assert!(
+        server.import_source_requests().is_empty(),
+        "manifest with escaping descriptor must fail before import_source"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_rejects_relative_file_interface_outside_manifest_dir() {
+    let server = MockServer::start().await;
+    let root_dir = tempdir().expect("source root dir");
+    let source_dir = root_dir.path().join("source");
+    let outside_dir = root_dir.path().join("outside");
+    std::fs::create_dir_all(&source_dir).expect("source dir");
+    std::fs::create_dir_all(&outside_dir).expect("outside dir");
+    let data_file = outside_dir.join("messages.jsonl");
+    std::fs::write(&data_file, "{}\n").expect("write data file");
+    let manifest_file = source_dir.join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+spec_version: 1
+kind: source
+name: messages
+interfaces:
+  - id: messages
+    type: file
+    files:
+      - ../outside/messages.jsonl
+    format:
+      kind: jsonl
+",
+    )
+    .expect("write manifest");
+
+    let assert = server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("resolves outside manifest directory"),
+        "expected containment error: {stderr}"
+    );
+    assert!(
+        server.import_source_requests().is_empty(),
+        "manifest with escaping file ref must fail before import_source"
+    );
+
+    server.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_rejects_symlink_descriptor() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let openapi_file = source_dir.path().join("openapi.yaml");
+    std::fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+paths: {}
+",
+    )
+    .expect("write descriptor");
+    std::os::unix::fs::symlink(&openapi_file, source_dir.path().join("openapi-link.yaml"))
+        .expect("create descriptor symlink");
+    let manifest_file = source_dir.path().join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+spec_version: 1
+kind: source
+name: github
+interfaces:
+  - id: rest
+    type: openapi
+    file: openapi-link.yaml
+",
+    )
+    .expect("write manifest");
+
+    let assert = server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("must not be a symlink"),
+        "expected symlink error: {stderr}"
+    );
+    assert!(
+        server.import_source_requests().is_empty(),
+        "manifest with symlink descriptor must fail before import_source"
     );
 
     server.shutdown().await;

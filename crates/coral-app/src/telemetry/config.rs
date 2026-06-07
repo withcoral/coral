@@ -7,9 +7,9 @@ use serde::Deserialize;
 use crate::bootstrap::AppError;
 use crate::state::AppStateLayout;
 
-pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off,coral.mcp.body=off";
-pub(super) const DEFAULT_LOCAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace,coral.http.body=trace,coral.mcp.body=trace";
-pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
+pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_sql=trace,coral_sql::datafusion=off,coral.http.body=off,coral.mcp.body=off";
+pub(super) const DEFAULT_LOCAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_sql=trace,coral_sql::datafusion=trace,coral.http.body=trace,coral.mcp.body=trace";
+pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_sql=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
 const DEFAULT_TRACE_HISTORY_RETENTION_DAYS: u64 = 7;
 const DEFAULT_TRACE_HISTORY_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;

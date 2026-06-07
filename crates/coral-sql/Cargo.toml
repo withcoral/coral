@@ -1,0 +1,26 @@
+[package]
+name = "coral-sql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow.workspace = true
+async-trait.workspace = true
+datafusion.workspace = true
+datafusion-functions-json.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+coral-capabilities.workspace = true
+coral-exports.workspace = true
+coral-upstream.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

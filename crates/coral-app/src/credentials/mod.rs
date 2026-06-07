@@ -90,8 +90,7 @@ pub(crate) fn is_internal_material_key(key: &str) -> bool {
 pub(crate) struct CredentialSetId(String);
 
 impl CredentialSetId {
-    /// Build the source-backed credential-set id used for today's compatibility
-    /// model.
+    /// Build the source-backed credential-set id.
     #[must_use]
     pub(crate) fn for_source(source_name: &SourceName) -> Self {
         Self(format!("source.{}", source_name.as_str()))

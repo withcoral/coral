@@ -148,26 +148,15 @@ mod tests {
 
     const MINIMAL_MANIFEST: &str = r"
 name: minimal
-version: 0.1.0
-dsl_version: 3
-backend: http
-base_url: https://api.example.com
-tables:
-  - name: pings
-    description: Ping events
-    request:
-      method: GET
-      path: /ping
-    response:
-      rows_path: []
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Ping id
-        expr:
-          kind: path
-          path: [id]
+description: Minimal SourceSpec fixture.
+spec_version: 1
+kind: source
+interfaces:
+  - id: files
+    type: file
+    files: [./events.jsonl]
+    format:
+      kind: jsonl
 ";
 
     const MINIMAL_DOCS_JSON: &str = r#"{

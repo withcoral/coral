@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package coral.v1;
 
+import "coral/v1/resources.proto";
+
 // Query status derived from locally captured spans.
 enum TraceStatus {
   // Status was not recorded or could not be inferred.
@@ -107,6 +109,16 @@ message TraceSpan {
   string trace_state = 21;
   // Whether this span context was remote.
   bool is_remote = 22;
+  // Structured span attributes.
+  JsonValue attributes = 23;
+  // Structured span events.
+  JsonValue events = 24;
+  // Structured span links.
+  JsonValue links = 25;
+  // Structured process resource attributes.
+  JsonValue resource = 26;
+  // Structured instrumentation scope attributes.
+  JsonValue scope_attributes = 27;
 }
 
 // Trace detail for timeline and diagnostic views.

@@ -9,8 +9,7 @@ mod server;
 
 use crate::state::AppStateLayout;
 
-#[cfg(test)]
-pub(crate) use error::MAX_STATUS_DETAIL_BYTES;
+pub(crate) use env::stdio_path_env;
 pub(crate) use error::{app_status, core_status};
 
 pub use error::AppError;

@@ -1,0 +1,25 @@
+[package]
+name = "coral-upstream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+reqwest.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+coral-capabilities.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+wiremock.workspace = true

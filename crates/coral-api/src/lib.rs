@@ -8,8 +8,8 @@
 //! # Primary Surface
 //!
 //! - [`v1`] contains all generated messages, enums, and gRPC service traits.
-//! - Sibling crates such as `coral-app`, `coral-engine`, and
-//!   `coral-cli` and `coral-mcp` consume those generated types directly.
+//! - Sibling crates such as `coral-app`, `coral-cli`, and `coral-mcp`
+//!   consume those generated types directly.
 //!
 //! # Example
 //!
@@ -48,12 +48,25 @@ pub mod v1 {
 /// needs the bump — requests are small SQL strings.
 pub const QUERY_RESPONSE_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
-/// Maximum gRPC message size for `CatalogService` *responses*, in bytes.
+/// Maximum gRPC message size for `DiscoveryService` *responses*, in bytes.
 ///
-/// Catalog discovery can return full table/column metadata for large source
-/// sets, and the legacy unbounded table-listing path still needs to round-trip
-/// responses larger than tonic's 4 MB default.
-pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
+/// Describe can include serialized capability/export contracts for wide
+/// provider operations, so it uses the same response cap as query.
+pub const DISCOVERY_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
+
+/// Maximum gRPC message size for `CapabilityService` *responses*, in bytes.
+///
+/// Capability invocation can return file artifacts and provider envelopes that
+/// intentionally exceed tonic's 4 MB default. Keep this aligned with the
+/// invocation/runtime response caps.
+pub const CAPABILITY_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
+
+/// Maximum gRPC message size for `CodeModeService` *responses*, in bytes.
+///
+/// Code Mode execution returns structured event streams in one unary response.
+/// Those events can include SQL results and capability provider envelopes, so
+/// keep this aligned with the query/capability response caps.
+pub const CODE_MODE_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_SIZE;
 
 /// Maximum gRPC message size for `TraceService` *responses*, in bytes.
 ///

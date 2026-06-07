@@ -14,7 +14,7 @@
 
 - source lifecycle rules
 - source-spec parsing or validation semantics
-- query execution internals
+- SQL/capability execution internals
 - Arrow IPC wire handling
 
 ## Invariants
@@ -31,4 +31,5 @@
 - Treat CLI commands, flags, output, and workflows as documented surfaces; when
   they change, update the relevant docs under `docs/` in the same change.
 - Prefer improving prompts and terminal presentation here rather than pushing
-  user-facing formatting concerns into `coral-app` or `coral-engine`.
+  user-facing formatting concerns into `coral-app` or runtime crates such as
+  `coral-sql`.

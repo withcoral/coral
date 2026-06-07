@@ -13,7 +13,7 @@ review changes.
 - ergonomics improvements to core workflows
 - narrowly scoped source improvements
 - examples that help new users reach first success quickly
-- community sources (in sources/community)
+- community SourceSpecs
 
 ## Please discuss first
 
@@ -22,7 +22,7 @@ Open an issue or discussion before starting work on:
 - new public CLI commands or flags
 - new public config formats
 - large architectural changes
-- new core sources shipped with the binary (in sources/core)
+- changes to SourceSpec packaging or distribution
 - major source-spec or source-authoring changes
 - major scope expansions beyond the current product surface
 - the UI
@@ -84,20 +84,16 @@ matching `Cargo.toml` change. For broader dependency changes, run one normal
 Cargo build without `--locked` to regenerate the lockfile before rerunning the
 locked checks.
 
-### Source manifest linting
+### SourceSpec validation
 
-Source manifests under `sources/**/manifest.yaml` are checked with
-[`ryl`](https://github.com/owenlamont/ryl), a Rust-native yamllint port.
-Config lives in `.yamllint.yaml` at the repo root.
-
-Install `ryl` once with `cargo install ryl --locked`, then:
+Validate SourceSpec files directly with the CLI:
 
 ```bash
-make lint-sources   # check — run this before pushing changes to sources/
-make fix-sources    # auto-apply safe fixes in place
+coral source lint ./my-source.yaml
 ```
 
-CI installs `ryl` the same way and runs `make lint-sources`.
+The repository no longer carries a source catalog tree, so there is no
+repo-wide source-manifest Make target or source-lint CI job.
 
 ## Repo layout
 
@@ -106,12 +102,9 @@ The internal crate layout may change over time as the project evolves.
 - `crates/coral-cli`: CLI entrypoint
 - `crates/coral-client`: thin local bootstrap and shared query result helpers
 - `crates/coral-app`: local management plane and internal server composition
-- `crates/coral-engine`: backend compilation, runtime registration, and query execution
 - `crates/coral-spec`: source-spec parsing, validation, and input discovery
 - `crates/coral-mcp`: MCP adapter
 - `crates/coral-api`: protobuf and gRPC contract
-- `sources/core/`: bundled source specs shipped with the repo
-- `sources/community/`: community source specs kept out of the binary bundle
 
 ## Testing expectations
 
@@ -184,7 +177,7 @@ Examples:
 - `feat(cli): add source status command`
 - `fix(engine): preserve projected column aliases`
 - `docs: clarify workspace setup`
-- `refactor(spec)!: remove legacy manifest field`
+- `refactor(spec)!: simplify source spec fields`
 
 ### What counts as a breaking change for a CLI?
 

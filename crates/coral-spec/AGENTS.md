@@ -2,19 +2,20 @@
 
 ## Purpose
 
-`coral-spec` owns the declarative source-spec DSL: parsing, validation, input
-discovery, and normalized source-definition models.
+`coral-spec` owns SourceSpec parsing, validation, input discovery, and provider
+interface descriptor models.
 
 ## Owns
 
-- source-spec structs and enums shared across source kinds
-- file and HTTP source-spec parsing
-- source-spec validation helpers
+- SourceSpec structs and enums shared across interface kinds
+- OpenAPI, MCP, GraphQL, and file interface descriptor parsing
+- SourceSpec validation helpers
 - install/import-time input discovery
 
 ## Does Not Own
 
-- runtime registration or SQL execution
+- provider document import, capability generation, export generation, runtime
+  registration, or SQL execution
 - app bootstrap, source CRUD, or persistence policy
 - CLI prompting or user-facing rendering
 - transport or protobuf contracts
@@ -23,11 +24,10 @@ discovery, and normalized source-definition models.
 
 - Keep source-spec types transport-neutral; do not import protobuf or gRPC
   types.
-- Keep runtime execution concerns out of this crate. Engine behavior belongs in
-  `coral-engine`.
-- Backends that declare SQL relations, including tables and source-scoped table
-  functions, must project those names into the shared declared-relation
-  namespace validator in `src/validate.rs`; do not hand-roll backend-local
-  table/function collision checks.
+- Keep runtime execution concerns out of this crate. SQL behavior belongs in
+  `coral-sql`, provider invocation belongs in `coral-upstream`, and app-owned
+  orchestration belongs in `coral-app`.
+- SourceSpec is not a table/function authoring contract. SQL relation names are
+  generated downstream from capabilities and exports.
 - Prefer normalized source-spec values over raw YAML plumbing in public
   helpers.

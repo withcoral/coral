@@ -2,11 +2,13 @@
 //!
 //! `coral-app` is the local server composition root for Coral. It wires
 //! together the generated transport API from `coral-api` with the
-//! management-plane stores and the data plane in `coral-engine`.
+//! management-plane stores and the capability/export SQL runtime in
+//! `coral-sql`.
 //!
-//! This crate is primarily an internal workspace boundary. Sibling crates such
-//! as `coral-client` use its bootstrap seam, but end-user code should normally
-//! enter through `coral-client`, not through `coral-app` directly.
+//! This crate is primarily an internal workspace boundary. CLI and integration
+//! surfaces that need an in-process local server use [`ServerBuilder`] directly;
+//! transport clients should normally enter through `coral-client`, not through
+//! `coral-app`.
 //!
 //! # Main Internal Areas
 //!
@@ -20,27 +22,37 @@
 //! - `state/` owns persisted config-dir layout and config storage.
 //! - `credentials/` owns credential-set identity and credential material
 //!   persistence.
-//! - `query/` owns query-time source loading and `coral-engine`
-//!   orchestration.
-//! - `catalog/` owns workspace-scoped discovery semantics over query-visible
-//!   table metadata.
+//! - `query/` owns query-time loading of generated SQL export bindings and
+//!   `coral-sql` orchestration.
 //!
 //! # Crate Relationships
 //!
 //! - `coral-api` defines the generated gRPC surface.
 //! - `coral-spec` owns declarative source-spec parsing, validation, and input
 //!   discovery.
-//! - `coral-engine` owns the data plane: backend registration, `DataFusion`
-//!   runtime assembly, and `SQL` execution over validated specs.
+//! - `coral-sql` owns SQL projection execution over app-resolved export
+//!   bindings.
 //!
+#![allow(
+    dead_code,
+    reason = "Internal server composition exposes seams that are exercised through sibling crates and integration tests."
+)]
+
+#[cfg(test)]
+use wiremock as _;
+
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
-mod catalog;
+mod capability;
+mod code_mode;
 mod credentials;
+mod discovery;
 pub mod features;
 mod feedback;
+mod graphql_documents;
 mod identity;
 mod query;
+mod runtime;
 mod sources;
 mod state;
 mod storage;
@@ -51,9 +63,6 @@ mod workspaces;
 pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
-pub use coral_engine::{EngineExtensions, QuerySource};
-pub use query::extensions::{
-    AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
-};
+pub use runtime::RuntimeExposureMode;
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

@@ -1,0 +1,855 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Coral SourceSpec",
+  "type": "object",
+  "properties": {
+    "spec_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "const": 1
+    },
+    "kind": {
+      "$ref": "#/$defs/RawSourceSpecKind",
+      "const": "source"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "default": ""
+    },
+    "test_queries": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RawInput"
+      }
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RawInterface"
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "kind",
+    "name",
+    "interfaces"
+  ],
+  "$defs": {
+    "RawSourceSpecKind": {
+      "type": "string",
+      "enum": [
+        "source"
+      ]
+    },
+    "RawInput": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RawInputKind"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true
+        },
+        "default": {
+          "type": "string",
+          "default": ""
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "hint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawCredential"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "kind"
+      ]
+    },
+    "RawInputKind": {
+      "type": "string",
+      "enum": [
+        "variable",
+        "secret"
+      ]
+    },
+    "RawCredential": {
+      "type": "object",
+      "properties": {
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RawCredentialMethod"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "methods"
+      ]
+    },
+    "RawCredentialMethod": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/RawCredentialMethodKind"
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "hint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "oauth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawOAuthCredential"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "RawCredentialMethodKind": {
+      "type": "string",
+      "enum": [
+        "source_config",
+        "oauth"
+      ]
+    },
+    "RawOAuthCredential": {
+      "type": "object",
+      "properties": {
+        "flow": {
+          "$ref": "#/$defs/RawOAuthFlow"
+        },
+        "redirect_uri": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "redirect_uri_port_mode": {
+          "$ref": "#/$defs/RawOAuthRedirectUriPortMode"
+        },
+        "endpoints": {
+          "$ref": "#/$defs/RawOAuthEndpoints"
+        },
+        "client": {
+          "$ref": "#/$defs/RawOAuthClient"
+        },
+        "scopes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawOAuthScopes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "flow",
+        "endpoints",
+        "client"
+      ]
+    },
+    "RawOAuthFlow": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/RawOAuthFlowKind"
+        },
+        "pkce": {
+          "$ref": "#/$defs/RawOAuthPkceMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "pkce"
+      ]
+    },
+    "RawOAuthFlowKind": {
+      "type": "string",
+      "enum": [
+        "authorization_code",
+        "device_code"
+      ]
+    },
+    "RawOAuthPkceMode": {
+      "type": "string",
+      "enum": [
+        "required",
+        "disabled"
+      ]
+    },
+    "RawOAuthRedirectUriPortMode": {
+      "type": "string",
+      "enum": [
+        "fixed",
+        "random"
+      ]
+    },
+    "RawOAuthEndpoints": {
+      "type": "object",
+      "properties": {
+        "authorization_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "device_authorization_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "token_url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "token_url"
+      ]
+    },
+    "RawOAuthClient": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RawOAuthClientId"
+        },
+        "secret": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawOAuthClientSecret"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "RawOAuthClientId": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "input": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "RawOAuthClientSecret": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "transport": {
+          "$ref": "#/$defs/RawOAuthClientSecretTransport"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "transport"
+      ]
+    },
+    "RawOAuthClientSecretTransport": {
+      "type": "string",
+      "enum": [
+        "basic_auth",
+        "request_body"
+      ]
+    },
+    "RawOAuthScopes": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/RawOAuthScope"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope"
+      ]
+    },
+    "RawOAuthScope": {
+      "type": "object",
+      "properties": {
+        "delimiter": {
+          "$ref": "#/$defs/RawOAuthScopeDelimiter"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "delimiter",
+        "values"
+      ]
+    },
+    "RawOAuthScopeDelimiter": {
+      "type": "string",
+      "enum": [
+        "space",
+        "comma"
+      ]
+    },
+    "RawInterface": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "url": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ParsedTemplate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "file": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "base_url": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ParsedTemplate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "auth": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RawAuth"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RawInput"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "openapi"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "server": {
+              "$ref": "#/$defs/RawMcpServer"
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RawInput"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "mcp"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "server"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "endpoint": {
+              "$ref": "#/$defs/ParsedTemplate"
+            },
+            "schema": {
+              "$ref": "#/$defs/RawGraphqlSchema"
+            },
+            "auth": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RawAuth"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RawInput"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "graphql"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "endpoint",
+            "schema"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "format": {
+              "$ref": "#/$defs/RawFileFormat"
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RawInput"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "files",
+            "format"
+          ]
+        }
+      ]
+    },
+    "ParsedTemplate": {
+      "type": "string"
+    },
+    "RawAuth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "bearer_input"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "header_input"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RawMcpServer": {
+      "type": "object",
+      "properties": {
+        "transport": {
+          "$ref": "#/$defs/RawMcpTransport"
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RawMcpEnvBinding"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "transport"
+      ]
+    },
+    "RawMcpTransport": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "type": {
+              "type": "string",
+              "const": "stdio"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "$ref": "#/$defs/ParsedTemplate"
+            },
+            "type": {
+              "type": "string",
+              "const": "streamable_http"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "url"
+          ]
+        }
+      ]
+    },
+    "RawMcpEnvBinding": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "key"
+      ]
+    },
+    "RawGraphqlSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "sdl_url"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "sdl_file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "introspection_json_url"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "introspection_json_file"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ParsedTemplate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "kind": {
+              "type": "string",
+              "const": "introspection_query"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "RawFileFormat": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "json"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "jsonl"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "parquet"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "csv"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "$id": "https://coral.local/source_spec.schema.json"
+}

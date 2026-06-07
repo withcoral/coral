@@ -93,7 +93,7 @@ fn features_list_shows_feedback_status_without_state_creation() {
         "missing disabled effective state: {stdout}"
     );
     assert!(
-        stdout.contains("Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral."),
+        stdout.contains("Compatibility flag for existing feedback config entries. The MCP feedback tool is always exposed."),
         "feature list should match documented feedback text: {stdout}"
     );
     assert!(

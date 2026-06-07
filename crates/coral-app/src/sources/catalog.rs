@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
+use coral_spec::{SourceSpec, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
@@ -19,7 +19,7 @@ pub(crate) struct BundledSourceManifest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct InstalledSourceManifest {
-    pub(crate) source_spec: ValidatedSourceManifest,
+    pub(crate) source_spec: SourceSpec,
     pub(crate) candidate: CandidateSource,
     pub(crate) manifest_yaml: String,
 }
@@ -100,15 +100,15 @@ pub(crate) fn describe_manifest(
 }
 
 fn candidate_from_manifest(
-    manifest: &ValidatedSourceManifest,
+    manifest: &SourceSpec,
     origin: SourceOrigin,
     installed: bool,
 ) -> Result<CandidateSource, AppError> {
     Ok(CandidateSource {
-        name: SourceName::parse(manifest.schema_name())?,
-        description: manifest.description().to_string(),
-        version: manifest.source_version().map(ToString::to_string),
-        inputs: manifest.declared_inputs().to_vec(),
+        name: SourceName::parse(&manifest.name)?,
+        description: manifest.description.clone(),
+        version: None,
+        inputs: manifest.declared_inputs.clone(),
         installed,
         origin,
         credential_storage: None,
@@ -131,20 +131,13 @@ mod tests {
     use crate::sources::model::SourceOrigin;
 
     #[test]
-    fn bundled_sources_load_through_catalog() {
+    fn bundled_sources_catalog_includes_active_source_specs() {
         let sources = list_bundled_sources(&BTreeSet::new()).expect("bundled sources");
-        assert!(!sources.is_empty());
         assert!(
             sources
                 .iter()
-                .any(|source| source.name == SourceName::parse("github").expect("source"))
+                .any(|source| source.name.as_str() == "github")
         );
-        assert!(
-            sources
-                .iter()
-                .any(|source| source.name == SourceName::parse("stripe").expect("source"))
-        );
-        assert!(sources.iter().all(|source| source.version.is_some()));
     }
 
     #[test]
@@ -165,35 +158,24 @@ mod tests {
     #[test]
     fn describe_manifest_extracts_declared_inputs() {
         let source = describe_manifest(
-            r#"
+            r"
 name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
+spec_version: 1
+kind: source
 inputs:
-  API_BASE:
+  - key: API_BASE
     kind: variable
     default: https://example.com
-  API_TOKEN:
+  - key: API_TOKEN
     kind: secret
-base_url: "{{input.API_BASE}}"
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.API_TOKEN}}
-tables:
-  - name: messages
-    description: Demo messages
-    request:
-      method: GET
-      path: /messages
-    response: {}
-    columns:
-      - name: id
-        type: Utf8
-"#,
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: bearer_input
+      key: API_TOKEN
+",
             SourceOrigin::Imported,
             false,
         )
@@ -206,30 +188,22 @@ tables:
     }
 
     #[test]
-    fn describe_manifest_rejects_legacy_schema_field() {
+    fn describe_manifest_rejects_removed_schema_field() {
         let error = describe_manifest(
             r"
 name: demo
 schema: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: https://example.com
-tables:
-  - name: messages
-    description: Demo messages
-    request:
-      method: GET
-      path: /messages
-    response: {}
-    columns:
-      - name: id
-        type: Utf8
+spec_version: 1
+kind: source
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
 ",
             SourceOrigin::Imported,
             false,
         )
-        .expect_err("legacy schema field should fail");
+        .expect_err("removed schema field should fail");
         let message = error.to_string();
         assert!(message.starts_with("invalid input: source manifest failed schema validation:"));
         assert!(message.contains("'schema'"));

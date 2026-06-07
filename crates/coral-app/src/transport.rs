@@ -5,12 +5,11 @@ use std::future::Future;
 use coral_api::{
     CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
-        CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
-        ColumnSearchResult as ProtoColumnSearchResult,
-        DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
+        Column, JsonArray as ProtoJsonArray, JsonNull as ProtoJsonNull,
+        JsonObject as ProtoJsonObject, JsonValue as ProtoJsonValue, QueryTestFailure,
         QueryTestResult, QueryTestSuccess, Source, Table, TableFunction, TableFunctionArgument,
-        TableFunctionResultColumn, TableSummary, ValidateSourceResponse, Workspace, catalog_item,
-        query_test_result,
+        TableFunctionResultColumn, ValidateSourceResponse, Workspace,
+        json_value as proto_json_value, query_test_result,
     },
 };
 use opentelemetry::propagation::Extractor;
@@ -22,10 +21,6 @@ use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::{AppError, app_status, core_status};
-use crate::catalog::discovery::{
-    CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
-    ColumnSearchResult, DescribeTableResult,
-};
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -233,7 +228,7 @@ fn decode_grpc_error(status: &Status) -> GrpcErrorTelemetry {
 pub(crate) fn query_status(error: QueryManagerError) -> Status {
     match error {
         QueryManagerError::App(error) => app_status(error),
-        QueryManagerError::Core(error) => core_status(error),
+        QueryManagerError::Core(error) => core_status(&error),
     }
 }
 
@@ -245,16 +240,67 @@ pub(crate) fn workspace_name_from_proto(
     WorkspaceName::parse(&workspace.name).map_err(app_status)
 }
 
+pub(crate) fn json_value_to_proto(value: serde_json::Value) -> ProtoJsonValue {
+    let kind = match value {
+        serde_json::Value::Null => proto_json_value::Kind::NullValue(ProtoJsonNull {}),
+        serde_json::Value::Bool(value) => proto_json_value::Kind::BoolValue(value),
+        serde_json::Value::Number(value) => json_number_to_proto(&value),
+        serde_json::Value::String(value) => proto_json_value::Kind::StringValue(value),
+        serde_json::Value::Array(values) => proto_json_value::Kind::ArrayValue(ProtoJsonArray {
+            values: values.into_iter().map(json_value_to_proto).collect(),
+        }),
+        serde_json::Value::Object(fields) => proto_json_value::Kind::ObjectValue(ProtoJsonObject {
+            fields: fields
+                .into_iter()
+                .map(|(key, value)| (key, json_value_to_proto(value)))
+                .collect(),
+        }),
+    };
+    ProtoJsonValue { kind: Some(kind) }
+}
+
+pub(crate) fn proto_json_value_to_json(value: ProtoJsonValue) -> serde_json::Value {
+    match value.kind {
+        Some(proto_json_value::Kind::NullValue(_)) | None => serde_json::Value::Null,
+        Some(proto_json_value::Kind::BoolValue(value)) => serde_json::Value::Bool(value),
+        Some(proto_json_value::Kind::IntegerValue(value)) => serde_json::json!(value),
+        Some(proto_json_value::Kind::UnsignedIntegerValue(value)) => serde_json::json!(value),
+        Some(proto_json_value::Kind::DoubleValue(value)) => serde_json::json!(value),
+        Some(proto_json_value::Kind::StringValue(value)) => serde_json::Value::String(value),
+        Some(proto_json_value::Kind::ArrayValue(array)) => serde_json::Value::Array(
+            array
+                .values
+                .into_iter()
+                .map(proto_json_value_to_json)
+                .collect(),
+        ),
+        Some(proto_json_value::Kind::ObjectValue(object)) => serde_json::Value::Object(
+            object
+                .fields
+                .into_iter()
+                .map(|(key, value)| (key, proto_json_value_to_json(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn json_number_to_proto(number: &serde_json::Number) -> proto_json_value::Kind {
+    if let Some(value) = number.as_i64() {
+        proto_json_value::Kind::IntegerValue(value)
+    } else if let Some(value) = number.as_u64() {
+        proto_json_value::Kind::UnsignedIntegerValue(value)
+    } else {
+        proto_json_value::Kind::DoubleValue(number.as_f64().unwrap_or_default())
+    }
+}
+
 pub(crate) fn workspace_to_proto(workspace_name: &WorkspaceName) -> Workspace {
     Workspace {
         name: workspace_name.as_str().to_string(),
     }
 }
 
-pub(crate) fn table_to_proto(
-    workspace_name: &WorkspaceName,
-    table: coral_engine::TableInfo,
-) -> Table {
+pub(crate) fn table_to_proto(workspace_name: &WorkspaceName, table: coral_sql::TableInfo) -> Table {
     let columns = table.columns.into_iter().map(column_to_proto).collect();
 
     Table {
@@ -268,58 +314,9 @@ pub(crate) fn table_to_proto(
     }
 }
 
-pub(crate) fn table_summary_to_proto(
-    workspace_name: &WorkspaceName,
-    table: coral_engine::TableInfo,
-) -> TableSummary {
-    TableSummary {
-        workspace: Some(workspace_to_proto(workspace_name)),
-        schema_name: table.schema_name,
-        name: table.table_name,
-        description: table.description,
-        required_filters: table.required_filters,
-        guide: table.guide,
-    }
-}
-
-pub(crate) fn catalog_item_to_proto(
-    workspace_name: &WorkspaceName,
-    item: CatalogItem,
-) -> ProtoCatalogItem {
-    match item {
-        CatalogItem::Table(table) => ProtoCatalogItem {
-            item: Some(catalog_item::Item::Table(table_summary_to_proto(
-                workspace_name,
-                table,
-            ))),
-        },
-        CatalogItem::TableFunction(function) => ProtoCatalogItem {
-            item: Some(catalog_item::Item::TableFunction(table_function_to_proto(
-                workspace_name,
-                function,
-            ))),
-        },
-    }
-}
-
-pub(crate) fn catalog_search_result_to_proto(
-    workspace_name: &WorkspaceName,
-    result: CatalogSearchResult,
-) -> ProtoCatalogSearchResult {
-    ProtoCatalogSearchResult {
-        item: Some(catalog_item_to_proto(workspace_name, result.item)),
-        matched_fields: result
-            .matched_fields
-            .into_iter()
-            .map(CatalogMetadataField::as_proto_name)
-            .map(str::to_string)
-            .collect(),
-    }
-}
-
 pub(crate) fn table_function_to_proto(
     workspace_name: &WorkspaceName,
-    function: coral_engine::TableFunctionInfo,
+    function: coral_sql::TableFunctionInfo,
 ) -> TableFunction {
     TableFunction {
         workspace: Some(workspace_to_proto(workspace_name)),
@@ -348,63 +345,7 @@ pub(crate) fn table_function_to_proto(
     }
 }
 
-pub(crate) fn describe_table_response_to_proto(
-    workspace_name: &WorkspaceName,
-    result: DescribeTableResult,
-) -> ProtoDescribeTableResponse {
-    match result {
-        DescribeTableResult::Found(table) => ProtoDescribeTableResponse {
-            table: Some(table_to_proto(workspace_name, table)),
-            suggestions: Vec::new(),
-            available_schemas: Vec::new(),
-            same_schema_tables: Vec::new(),
-        },
-        DescribeTableResult::Missing(context) => ProtoDescribeTableResponse {
-            table: None,
-            suggestions: context
-                .suggestions
-                .into_iter()
-                .map(|table| table_summary_to_proto(workspace_name, table))
-                .collect(),
-            available_schemas: context.available_schemas,
-            same_schema_tables: context
-                .same_schema_tables
-                .into_iter()
-                .map(|table| table_summary_to_proto(workspace_name, table))
-                .collect(),
-        },
-    }
-}
-
-pub(crate) fn column_search_result_to_proto(result: ColumnSearchResult) -> ProtoColumnSearchResult {
-    ProtoColumnSearchResult {
-        column: Some(column_to_proto(result.column)),
-        matched_fields: result
-            .matched_fields
-            .into_iter()
-            .map(ColumnMetadataField::as_proto_name)
-            .map(str::to_string)
-            .collect(),
-    }
-}
-
-pub(crate) fn pagination_to_proto(
-    total_count: u32,
-    limit: u32,
-    offset: u32,
-    has_more: bool,
-    next_offset: Option<u32>,
-) -> PaginationResponse {
-    PaginationResponse {
-        total_count,
-        limit,
-        offset,
-        has_more,
-        next_offset: next_offset.unwrap_or(0),
-    }
-}
-
-fn column_to_proto(column: coral_engine::ColumnInfo) -> Column {
+fn column_to_proto(column: coral_sql::ColumnInfo) -> Column {
     Column {
         name: column.name,
         data_type: column.data_type,
@@ -416,9 +357,7 @@ fn column_to_proto(column: coral_engine::ColumnInfo) -> Column {
     }
 }
 
-pub(crate) fn query_test_result_to_proto(
-    result: &coral_engine::QueryTestResult,
-) -> QueryTestResult {
+pub(crate) fn query_test_result_to_proto(result: &coral_sql::QueryTestResult) -> QueryTestResult {
     let outcome = match result.result() {
         Ok(success) => Some(query_test_result::Outcome::Success(QueryTestSuccess {
             row_count: success.row_count(),
@@ -436,9 +375,9 @@ pub(crate) fn query_test_result_to_proto(
 pub(crate) fn validate_source_response_to_proto(
     source: Source,
     workspace_name: &WorkspaceName,
-    report: coral_engine::SourceValidationReport,
+    report: coral_sql::SourceValidationReport,
 ) -> ValidateSourceResponse {
-    let coral_engine::SourceValidationReport {
+    let coral_sql::SourceValidationReport {
         tables,
         table_functions,
         query_tests,
@@ -472,15 +411,12 @@ mod tests {
 
     use super::{
         GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
-        query_test_result_to_proto, table_summary_to_proto, table_to_proto,
-        workspace_name_from_proto, workspace_to_proto,
+        query_test_result_to_proto, table_to_proto, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
-    use coral_engine::{
-        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
-    };
+    use coral_sql::{ColumnInfo, QueryTestResult as EngineQueryTestResult, SqlError, TableInfo};
 
     #[test]
     fn query_status_maps_app_errors() {
@@ -494,12 +430,12 @@ mod tests {
 
     #[test]
     fn query_status_maps_core_errors() {
-        let status = query_status(QueryManagerError::Core(CoreError::Unavailable(
-            "backend down".to_string(),
+        let status = query_status(QueryManagerError::Core(SqlError::Unimplemented(
+            "provider SQL runtime".to_string(),
         )));
 
-        assert_eq!(status.code(), Code::Unavailable);
-        assert_eq!(status.message(), "unavailable: backend down");
+        assert_eq!(status.code(), Code::Unimplemented);
+        assert_eq!(status.message(), "unimplemented: provider SQL runtime");
     }
 
     #[test]
@@ -596,36 +532,6 @@ mod tests {
         assert!(proto.columns[0].is_required_filter);
         assert_eq!(proto.columns[0].description, "User id");
         assert_eq!(proto.columns[0].ordinal_position, 0);
-        assert_eq!(proto.required_filters, vec!["org_id"]);
-    }
-
-    #[test]
-    fn table_summary_to_proto_preserves_table_metadata_without_columns() {
-        let workspace_name = WorkspaceName::parse("default").expect("workspace");
-        let table = TableInfo {
-            schema_name: "demo".to_string(),
-            table_name: "users".to_string(),
-            description: "User records".to_string(),
-            guide: "Filter by org_id.".to_string(),
-            columns: vec![ColumnInfo {
-                name: "id".to_string(),
-                data_type: "Int64".to_string(),
-                nullable: false,
-                is_virtual: false,
-                is_required_filter: true,
-                description: "User id".to_string(),
-                ordinal_position: 0,
-            }],
-            required_filters: vec!["org_id".to_string()],
-        };
-
-        let proto = table_summary_to_proto(&workspace_name, table);
-
-        assert_eq!(proto.workspace, Some(workspace_to_proto(&workspace_name)));
-        assert_eq!(proto.schema_name, "demo");
-        assert_eq!(proto.name, "users");
-        assert_eq!(proto.description, "User records");
-        assert_eq!(proto.guide, "Filter by org_id.");
         assert_eq!(proto.required_filters, vec!["org_id"]);
     }
 

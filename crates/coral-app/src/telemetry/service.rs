@@ -14,7 +14,7 @@ use crate::telemetry::local_store::{
     StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceStore, TraceStoreError,
     TraceSummaryRecord,
 };
-use crate::transport::{grpc_span, instrument_grpc};
+use crate::transport::{grpc_span, instrument_grpc, json_value_to_proto};
 
 const DEFAULT_TRACE_PAGE_SIZE: usize = 50;
 const MAX_TRACE_PAGE_SIZE: usize = 200;
@@ -147,6 +147,11 @@ fn trace_summary_to_proto(summary: TraceSummaryRecord) -> TraceSummary {
 }
 
 fn trace_span_to_proto(span: TraceSpanRecord) -> TraceSpan {
+    let attributes_json = json_payload(&span.attributes);
+    let events_json = json_payload(&span.events);
+    let links_json = json_payload(&span.links);
+    let resource_json = json_payload(&span.resource);
+    let scope_attributes_json = json_payload(&span.scope_attributes);
     TraceSpan {
         trace_id: span.trace_id,
         span_id: span.span_id,
@@ -159,18 +164,27 @@ fn trace_span_to_proto(span: TraceSpanRecord) -> TraceSpan {
         start_time_unix_nanos: span.start_time_unix_nanos,
         end_time_unix_nanos: span.end_time_unix_nanos,
         duration_nanos: span.duration_nanos,
-        attributes_json: span.attributes_json,
-        events_json: span.events_json,
-        links_json: span.links_json,
-        resource_json: span.resource_json,
+        attributes_json,
+        events_json,
+        links_json,
+        resource_json,
+        attributes: Some(json_value_to_proto(span.attributes)),
+        events: Some(json_value_to_proto(span.events)),
+        links: Some(json_value_to_proto(span.links)),
+        resource: Some(json_value_to_proto(span.resource)),
         scope_name: span.scope_name,
         scope_version: span.scope_version.unwrap_or_default(),
         scope_schema_url: span.scope_schema_url.unwrap_or_default(),
-        scope_attributes_json: span.scope_attributes_json,
+        scope_attributes_json,
+        scope_attributes: Some(json_value_to_proto(span.scope_attributes)),
         trace_flags: span.trace_flags,
         trace_state: span.trace_state,
         is_remote: span.is_remote,
     }
+}
+
+fn json_payload(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_default()
 }
 
 fn trace_status_to_proto(status: StoredTraceStatus) -> TraceStatus {
@@ -184,6 +198,10 @@ fn trace_status_to_proto(status: StoredTraceStatus) -> TraceStatus {
 #[cfg(test)]
 mod tests {
     use super::{normalize_page_size, parse_page_token};
+    use serde_json::json;
+
+    use crate::telemetry::local_store::{StoredTraceStatus, TraceSpanRecord};
+    use crate::transport::proto_json_value_to_json;
 
     #[test]
     fn page_size_defaults_and_caps() {
@@ -198,5 +216,53 @@ mod tests {
         assert_eq!(parse_page_token("").expect("empty token"), 0);
         assert_eq!(parse_page_token("25").expect("offset token"), 25);
         parse_page_token("not-an-offset").unwrap_err();
+    }
+
+    #[test]
+    fn trace_span_proto_dual_populates_json_strings_and_structured_values() {
+        let proto = super::trace_span_to_proto(TraceSpanRecord {
+            trace_id: "trace".to_string(),
+            span_id: "span".to_string(),
+            parent_span_id: None,
+            parent_span_is_remote: false,
+            name: "span-name".to_string(),
+            kind: "internal".to_string(),
+            status: StoredTraceStatus::Ok,
+            status_message: None,
+            start_time_unix_nanos: 1,
+            end_time_unix_nanos: 2,
+            duration_nanos: 1,
+            attributes: json!({ "http.method": "GET" }),
+            events: json!([{ "name": "event" }]),
+            links: json!([]),
+            resource: json!({ "service.name": "coral" }),
+            scope_name: "scope".to_string(),
+            scope_version: None,
+            scope_schema_url: None,
+            scope_attributes: json!({ "scope.attr": true }),
+            trace_flags: 1,
+            trace_state: "state".to_string(),
+            is_remote: false,
+        });
+
+        assert_eq!(proto.attributes_json, r#"{"http.method":"GET"}"#);
+        assert_eq!(proto.events_json, r#"[{"name":"event"}]"#);
+        assert_eq!(proto.links_json, "[]");
+        assert_eq!(proto.resource_json, r#"{"service.name":"coral"}"#);
+        assert_eq!(proto.scope_attributes_json, r#"{"scope.attr":true}"#);
+        assert_eq!(
+            proto
+                .attributes
+                .map(proto_json_value_to_json)
+                .expect("structured attributes"),
+            json!({ "http.method": "GET" })
+        );
+        assert_eq!(
+            proto
+                .scope_attributes
+                .map(proto_json_value_to_json)
+                .expect("structured scope attributes"),
+            json!({ "scope.attr": true })
+        );
     }
 }

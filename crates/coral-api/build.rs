@@ -5,6 +5,10 @@ fn main() {
     let mut config = tonic_prost_build::Config::new();
     config.protoc_executable(protoc);
     config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
+    config.type_attribute(
+        ".coral.v1.InitializeCodeModeResponse",
+        "#[expect(clippy::struct_excessive_bools, reason = \"generated host capability flags are encoded as booleans in the protobuf contract\")]",
+    );
     // Keep the generated oneof enum small enough for workspace clippy.
     config.boxed(".coral.v1.SourceCredentialMethod.method.oauth");
 
@@ -14,7 +18,9 @@ fn main() {
         .compile_with_config(
             config,
             &[
-                "proto/coral/v1/catalog.proto",
+                "proto/coral/v1/capability.proto",
+                "proto/coral/v1/code_mode.proto",
+                "proto/coral/v1/discovery.proto",
                 "proto/coral/v1/resources.proto",
                 "proto/coral/v1/feedback.proto",
                 "proto/coral/v1/sources.proto",

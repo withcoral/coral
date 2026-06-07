@@ -6,8 +6,8 @@
 use std::fmt::Write as _;
 
 use coral_spec::{
-    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputSpec,
-    ValidatedSourceManifest,
+    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputSpec, SourceInterface,
+    SourceSpec,
 };
 
 /// Render the `changelog.mdx` page from a raw `CHANGELOG.md`.
@@ -52,7 +52,7 @@ fn strip_leading_changelog_heading(raw: &str) -> &str {
 }
 
 /// Render the `bundled-sources.mdx` index page.
-pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
+pub(crate) fn index_page(manifests: &[SourceSpec]) -> String {
     let mut out = String::new();
     out.push_str(INDEX_FRONTMATTER);
     out.push_str("{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}\n\n");
@@ -60,11 +60,11 @@ pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
 
     // At-a-glance table.
     out.push_str("\n## Bundled data sources\n\n");
-    out.push_str("| Source | Backend | Description |\n");
+    out.push_str("| Source | Interfaces | Description |\n");
     out.push_str("| --- | --- | --- |\n");
     for manifest in manifests {
-        let name = manifest.schema_name();
-        let description = manifest.description();
+        let name = &manifest.name;
+        let description = manifest.description.as_str();
         let description = if description.is_empty() {
             format!("Coral bundled source: {name}")
         } else {
@@ -76,7 +76,7 @@ pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
         writeln!(
             out,
             "| [{name}](#{name}) | `{}` | {description} |",
-            backend_label(manifest),
+            interface_label(manifest),
         )
         .expect("writing to String is infallible");
     }
@@ -103,41 +103,34 @@ pub(crate) fn index_page(manifests: &[ValidatedSourceManifest]) -> String {
 }
 
 /// Render the `community-sources.mdx` catalog page.
-pub(crate) fn community_sources_page(manifests: &[ValidatedSourceManifest]) -> String {
+pub(crate) fn community_sources_page(manifests: &[SourceSpec]) -> String {
     let mut out = String::new();
     out.push_str(COMMUNITY_FRONTMATTER);
     out.push_str("{/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}\n\n");
     out.push_str(COMMUNITY_INTRO);
 
     out.push_str("\n## Install a community source\n\n");
-    out.push_str("Clone the Coral repository so you have the source specs locally:\n\n");
+    out.push_str("Review the source's `SourceSpec` YAML, then add it from its file path:\n\n");
     out.push_str("```shellscript\n");
-    out.push_str("git clone https://github.com/withcoral/coral.git\n");
-    out.push_str("cd coral\n");
-    out.push_str("```\n\n");
-    out.push_str(
-        "Review the source's manifest and README when one exists, then add it from its manifest file:\n\n",
-    );
-    out.push_str("```shellscript\n");
-    out.push_str("coral source add --file sources/community/hn/manifest.yaml\n");
-    out.push_str("coral source test hn\n");
+    out.push_str("coral source add --file path/to/source.yaml\n");
+    out.push_str("coral source test <name>\n");
     out.push_str("```\n\n");
     out.push_str(
         "If a source declares inputs, Coral reads them from environment variables by default. Add `--interactive` to be prompted instead:\n\n",
     );
     out.push_str("```shellscript\n");
-    out.push_str("coral source add --interactive --file sources/community/fly/manifest.yaml\n");
+    out.push_str("coral source add --interactive --file path/to/source.yaml\n");
     out.push_str("```\n\n");
     out.push_str(
-        "After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes tables through `coral.tables`, `coral.columns`, the CLI, and MCP.\n",
+        "After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes generated exports through MCP `search`/`describe`. SQL projections are available through the CLI and Code Mode when the generated source exports include SQL bindings.\n",
     );
 
     out.push_str("\n## Available community sources\n\n");
     out.push_str("| Source | Description |\n");
     out.push_str("| --- | --- |\n");
     for manifest in manifests {
-        let name = manifest.schema_name();
-        let description = manifest.description();
+        let name = &manifest.name;
+        let description = manifest.description.as_str();
         let description = if description.is_empty() {
             format!("Coral community source: {name}")
         } else {
@@ -154,12 +147,12 @@ pub(crate) fn community_sources_page(manifests: &[ValidatedSourceManifest]) -> S
     out
 }
 
-fn render_source_section(out: &mut String, manifest: &ValidatedSourceManifest) {
-    let name = manifest.schema_name();
+fn render_source_section(out: &mut String, manifest: &SourceSpec) {
+    let name = &manifest.name;
     writeln!(out, "\n### `{name}`").expect("writing to String is infallible");
     out.push('\n');
 
-    let inputs = manifest.declared_inputs();
+    let inputs = &manifest.declared_inputs;
     if inputs.is_empty() {
         out.push_str("No configuration required.\n");
         return;
@@ -254,16 +247,20 @@ fn default_method_label(kind: ManifestCredentialMethodKind) -> &'static str {
     }
 }
 
-fn backend_label(manifest: &ValidatedSourceManifest) -> &'static str {
-    if manifest.as_http().is_some() {
-        "http"
-    } else if manifest.as_file().is_some() {
-        "file"
-    } else {
-        // ValidatedSourceManifest covers all current backends; unreachable in
-        // practice but we avoid `unreachable!` to keep the generator robust.
-        "unknown"
-    }
+fn interface_label(manifest: &SourceSpec) -> String {
+    manifest
+        .interfaces
+        .iter()
+        .map(|interface| match interface {
+            SourceInterface::OpenApi(_) => "openapi",
+            SourceInterface::Mcp(_) => "mcp",
+            SourceInterface::Graphql(_) => "graphql",
+            SourceInterface::File(_) => "file",
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Collapse internal whitespace for safe rendering inside a markdown table
@@ -424,8 +421,7 @@ const CHANGELOG_FRONTMATTER: &str = concat!(
 );
 
 const INDEX_INTRO: &str = concat!(
-    "Coral supports connecting to some data sources out of the box. These bundled specs live in [sources/core](https://github.com/withcoral/coral/tree/main/sources/core).<br />\n",
-    "If the source you need is not available, you can extend Coral by [writing a custom source spec](/guides/write-a-custom-source).\n",
+    "Coral can ship SourceSpec-backed sources with the CLI. This page lists active bundled sources that use `spec_version: 1`, `kind: source`. If the source you need is not available, extend Coral by [writing a custom source spec](/guides/write-a-custom-source).\n",
     "\n",
     "<Tip>\n",
     "  Run `coral source discover` to see the bundled sources available in your\n",
@@ -435,17 +431,19 @@ const INDEX_INTRO: &str = concat!(
 
 const INDEX_TYPES: &str = concat!(
     "\n## Supported data source types\n\n",
-    "Supported sources fall into two categories.\n\n",
-    "- **HTTP API** — Coral translates SQL queries into paginated HTTP requests against a provider's REST API.\n",
-    "- **File-backed** — Coral reads Parquet, JSONL, JSON, or CSV files directly.\n",
+    "SourceSpec supports four interface kinds.\n\n",
+    "- **OpenAPI** — Coral snapshots REST provider operations and derives capabilities.\n",
+    "- **Upstream MCP** — Coral snapshots provider `tools/list` and derives tool capabilities.\n",
+    "- **GraphQL** — Coral imports SDL or introspection and generates bounded root-field capabilities.\n",
+    "- **File** — Coral imports explicit read-only JSON, JSONL, CSV, or Parquet file relations.\n",
 );
 
 const INDEX_UPGRADING: &str = concat!(
     "\n## Upgrading bundled sources\n\n",
-    "To update bundled sources, upgrade the Coral binary. Coral resolves each bundled manifest ",
-    "from the current binary at validate or query time, so spec fixes and newly required inputs ",
-    "are picked up automatically, you don't need to remove and re-add the source. Your configured ",
-    "variables and secrets stay in local state across upgrades.\n",
+    "To update active bundled sources, upgrade the Coral binary. Installed source identity, ",
+    "variables, and secrets stay in local state. Generated capability/export artifacts are ",
+    "materialized at source add; re-add the source when the bundled SourceSpec or provider ",
+    "snapshot should be regenerated.\n",
 );
 
 const INDEX_OUTRO: &str = concat!(
@@ -456,23 +454,20 @@ const INDEX_OUTRO: &str = concat!(
 );
 
 const COMMUNITY_INTRO: &str = concat!(
-    "Community sources are source specs built and maintained by our community. These are kept in the Coral repository under\n",
-    "[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).\n",
+    "Community sources are SourceSpec files built and maintained by our community. This page lists active community entries that use `spec_version: 1`, `kind: source`.\n",
     "\n",
     "<Note>\n",
-    "  Community sources are not included in `coral source discover`, and `coral\n",
-    "  source add <name>` only installs [bundled sources](/reference/bundled-sources).\n",
-    "  Import community sources\n",
-    "  with `coral source add --file`.\n",
+    "  `coral source discover` lists only active bundled SourceSpec entries compiled into the CLI.\n",
+    "  Import community sources with `coral source add --file`.\n",
     "</Note>\n",
 );
 
 const COMMUNITY_OUTRO: &str = concat!(
     "\n## If a source is missing\n\n",
-    "If the source you need is not bundled and does not have a community spec yet, ",
+    "If the source you need does not have an active bundled or community SourceSpec yet, ",
     "[write a custom source spec](/guides/write-a-custom-source). If the source is ",
-    "generally useful, open a pull request that adds it under `sources/community` ",
-    "with a `manifest.yaml` and source-specific README.\n",
+    "generally useful, open a pull request that adds the SourceSpec YAML and ",
+    "source-specific README.\n",
 );
 
 #[cfg(test)]
@@ -484,88 +479,41 @@ mod tests {
         ManifestCredentialMethod, ManifestCredentialMethodKind, parse_source_manifest_yaml,
     };
 
-    const SAMPLE_MANIFEST: &str = r#"
+    const SAMPLE_MANIFEST: &str = r"
+spec_version: 1
+kind: source
 name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
 description: A small demo source used in snapshot tests
 inputs:
-  DEMO_API_BASE:
+  - key: DEMO_API_BASE
     kind: variable
     default: https://api.example.com
     hint: |
       For self-hosted deploys, use https://<host>/api/v3.
       Use the `admin` account's `token` value.
-  DEMO_TOKEN:
+  - key: DEMO_TOKEN
     kind: secret
     hint: Create an API token in Settings → Tokens
-    credential:
-      methods:
-        - type: oauth
-          label: Connect with demo
-          description: Authorize with OAuth.
-          hint: Sign in through the demo provider in your browser.
-          oauth:
-            flow:
-              type: device_code
-            endpoints:
-              device_authorization_url: https://demo.example.com/device/code
-              token_url: https://demo.example.com/token
-            client:
-              id:
-                default: demo-client
-        - type: source_config
-          label: Paste token
-          hint: Create a read-only API token in Settings.
-base_url: "{{input.DEMO_API_BASE}}"
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.DEMO_TOKEN}}
-tables:
-  - name: widgets
-    description: All the widgets
-    request:
-      method: GET
-      path: /widgets
-    response:
-      rows_path:
-        - widgets
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Widget identifier
-        expr:
-          kind: path
-          path: [id]
-"#;
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://api.example.com/openapi.yaml
+    base_url: https://api.example.com
+    auth:
+      kind: bearer_input
+      key: DEMO_TOKEN
+";
 
     const NO_INPUTS_MANIFEST: &str = r"
+spec_version: 1
+kind: source
 name: minimal
-version: 0.1.0
-dsl_version: 3
-backend: http
-base_url: https://api.example.com
-tables:
-  - name: pings
-    description: Ping events
-    request:
-      method: GET
-      path: /ping
-    response:
-      rows_path: []
-    columns:
-      - name: id
-        type: Utf8
-        nullable: false
-        description: Ping id
-        expr:
-          kind: path
-          path: [id]
+interfaces:
+  - id: files
+    type: file
+    files: [./pings.jsonl]
+    format:
+      kind: jsonl
 ";
 
     #[test]

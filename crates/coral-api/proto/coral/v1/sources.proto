@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package coral.v1;
 
-import "coral/v1/catalog.proto";
+import "coral/v1/query.proto";
 import "coral/v1/resources.proto";
 
 // How one installed source entered Coral ownership.
@@ -63,6 +63,12 @@ message Source {
   SourceOrigin origin = 6;
   // Where this installed source's credential material is stored.
   SourceCredentialStorage credential_storage = 7;
+  // Immutable app-assigned capability source id.
+  string source_id = 8;
+  // Mutable display name.
+  string display_name = 9;
+  // Immutable source key used for generated refs.
+  string source_key = 10;
 }
 
 // One manifest-declared source input prompt.
@@ -143,7 +149,7 @@ message OAuthCredentialMethod {
 // Supported OAuth credential flow kinds.
 enum OauthCredentialFlowType {
   // Flow kind is unspecified. Producers should set an explicit flow. Clients
-  // may interpret omitted legacy values as authorization-code credentials.
+  // may interpret omitted values as authorization-code credentials.
   OAUTH_CREDENTIAL_FLOW_TYPE_UNSPECIFIED = 0;
   // OAuth authorization-code flow.
   OAUTH_CREDENTIAL_FLOW_TYPE_AUTHORIZATION_CODE = 1;

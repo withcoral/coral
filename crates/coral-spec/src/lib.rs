@@ -7,7 +7,7 @@
 //! - parsing raw `YAML` or structured source-spec values
 //! - validating source-spec shape and source-level invariants
 //! - extracting interactive install-time inputs such as variables and secrets
-//! - exposing normalized backend-specific source-spec models to sibling crates
+//! - exposing normalized `SourceSpec` models to sibling crates
 //!
 //! In Coral terminology, a source spec is usually authored as a manifest YAML
 //! file on disk. Public parser APIs still use `manifest` in their names because
@@ -26,18 +26,17 @@
 //!   query/runtime path
 //! - [`parse_source_manifest_value`] parses a pre-built structured value for
 //!   engine callers that construct manifests programmatically
-//! - [`ValidatedSourceManifest`] provides a backend-agnostic validated
-//!   source-spec view with typed accessors for backend-specific models and
-//!   for the declared interactive inputs
+//! - [`SourceSpec`] is the validated source contract with one or more
+//!   provider interfaces
 //! - [`ManifestInputSpec`] describes one install-time input (variable or secret)
-//!   surfaced via [`ValidatedSourceManifest::declared_inputs`]
+//!   surfaced via [`SourceSpec::declared_inputs`]
 //!
 //! # Crate Relationships
 //!
 //! - `coral-app` and `coral-cli` use this crate for import-time source-spec
 //!   inspection and interactive input discovery.
-//! - `coral-engine` consumes validated backend-specific source-spec models and
-//!   compiles them into executable runtime sources.
+//! - Runtime code consumes capabilities and exports generated from
+//!   `SourceSpec`; manifest parsing is limited to this crate.
 //!
 //! # Example
 //!
@@ -46,61 +45,40 @@
 //!
 //! let manifest = parse_source_manifest_yaml(
 //!     r#"
+//! spec_version: 1
+//! kind: source
 //! name: demo
-//! version: 0.1.0
-//! dsl_version: 3
-//! backend: file
-//! tables:
-//!   - name: events
-//!     description: Demo events
-//!     format: jsonl
-//!     source:
-//!       location: file:///tmp/demo/
-//!     columns:
-//!       - name: kind
-//!         type: Utf8
+//! interfaces:
+//!   - id: files
+//!     type: file
+//!     files: [./events.jsonl]
+//!     format:
+//!       kind: jsonl
 //! "#,
 //! )?;
 //!
-//! assert_eq!(manifest.schema_name(), "demo");
-//! assert!(manifest.as_file().is_some());
-//! let _inputs = manifest.declared_inputs();
+//! assert_eq!(manifest.name, "demo");
+//! let _inputs = manifest.declared_inputs;
 //! # Ok::<(), coral_spec::ManifestError>(())
 //! ```
 
-#![allow(
+#![expect(
     clippy::missing_errors_doc,
     reason = "This internal crate exposes many validation-heavy helpers to sibling crates."
 )]
-#![allow(
+#![expect(
     clippy::must_use_candidate,
     reason = "These manifest builders and accessors are internal crate APIs, not end-user APIs."
 )]
-pub mod backends;
-mod common;
 mod error;
 mod inputs;
 mod loader;
+mod openapi;
 mod parser;
 mod schema;
+mod source;
 mod template;
-pub mod v4;
-mod validate;
 
-pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
-pub use backends::mcp::{
-    McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
-    McpTableFilterBinding, McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
-};
-pub(crate) use common::validate_test_queries;
-pub use common::{
-    BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,
-    FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode,
-    PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat,
-    ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
-    SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
-    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
-};
 pub use error::{ManifestError, Result};
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
@@ -111,13 +89,15 @@ pub use inputs::{
     ManifestOAuthScopeSpec, ManifestOAuthScopesSpec, resolve_inputs,
 };
 pub use loader::load_manifest_path;
-pub use parser::{
-    ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
+pub use openapi::{
+    OpenApiDocumentMetadata, normalize_openapi_document, openapi_document_metadata,
+    openapi_document_metadata_from_value,
+};
+pub use parser::{parse_source_manifest_value, parse_source_manifest_yaml};
+pub use source::{
+    AuthDescriptor, FileFormatDescriptor as SourceFileFormatDescriptor, FileInterface,
+    GraphqlInterface, GraphqlSchemaDescriptor, McpEnvBinding, McpInterface, McpServerDescriptor,
+    McpTransportDescriptor, OpenApiDescriptor, OpenApiInterface, SourceInterface, SourceSpec,
+    SourceSpecKind, generated_source_spec_schema,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
-pub(crate) use validate::{
-    DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, validate_columns,
-    validate_declared_relation_namespace, validate_detail_hint_references,
-    validate_filters_and_column_exprs, validate_http_function, validate_http_table,
-    validate_identifier, validate_unique_values,
-};

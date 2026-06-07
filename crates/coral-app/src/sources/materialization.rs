@@ -1,57 +1,184 @@
-//! DSL v4 source materialization and artifact loading.
+//! `SourceSpec` source materialization and artifact loading.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read as _;
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufRead as _, BufReader, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use coral_spec::v4::{
-    Diagnostic, Fingerprint, FingerprintSurface, MaterializedSurface, OPENAPI_IMPORTER_VERSION,
-    PROJECTION_GENERATOR_VERSION, ProjectionCatalog, SemanticIr, V4_ARTIFACT_SCHEMA_VERSION,
-    V4MaterializedSource, V4SourceManifest, generate_projection_catalog, import_openapi_surface,
-    normalize_source_document, openapi_document_metadata, validate_materialized_source,
-    validate_openapi_base_url_template,
-};
+use arrow::datatypes::{DataType, Field, Schema};
+use coral_capabilities::{SourceCapabilitySet, SourceId, UpstreamBinding};
+use coral_exports::{BindingBuildContext, SourceKey, TypescriptBindingContributor};
+use coral_importers::{ImportResult, RawInterfaceInput, import_source};
 use coral_spec::{
-    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
-    ManifestOAuthClientSecretTransport, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
-    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ParsedTemplate,
+    AuthDescriptor, FileInterface, GraphqlInterface, GraphqlSchemaDescriptor, McpInterface,
+    McpTransportDescriptor, OpenApiDescriptor, OpenApiInterface, ParsedTemplate,
+    SourceFileFormatDescriptor, SourceInterface, SourceSpec,
 };
-use serde_json::{Value, json};
+use coral_sql::SqlBindingContributor;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue};
+use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
+use crate::bootstrap::stdio_path_env;
+use crate::graphql_documents::{
+    GENERATED_GRAPHQL_OPERATIONS_DIR, operation_document_filename, render_operation_document,
+};
 use crate::sources::SourceName;
+use crate::sources::model::InstalledSourceIdentity;
 use crate::state::AppStateLayout;
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 
 const DESCRIPTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
-const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
+const DESCRIPTOR_USER_AGENT: &str = "coral-source-materializer";
+const MAX_MCP_TOOLS_LIST_PAGES: usize = 16;
+const MAX_FILE_SCHEMA_SAMPLE_ROWS: usize = 100;
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+const MCP_PROTOCOL_VERSION_HEADER: &str = "MCP-Protocol-Version";
+const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
+const MCP_ACCEPT: &str = "application/json, text/event-stream";
+const GRAPHQL_INTROSPECTION_QUERY: &str = r"
+query CoralIntrospection {
+  __schema {
+    queryType { name }
+    mutationType { name }
+    subscriptionType { name }
+    types {
+      kind
+      name
+      fields(includeDeprecated: true) {
+        name
+        isDeprecated
+        deprecationReason
+        args {
+          name
+          type { ...CoralTypeRef }
+        }
+        type { ...CoralTypeRef }
+      }
+      inputFields {
+        name
+        type { ...CoralTypeRef }
+      }
+      enumValues(includeDeprecated: true) {
+        name
+      }
+    }
+  }
+}
+
+fragment CoralTypeRef on __Type {
+  kind
+  name
+  ofType {
+    kind
+    name
+    ofType {
+      kind
+      name
+      ofType {
+        kind
+        name
+        ofType {
+          kind
+          name
+          ofType {
+            kind
+            name
+          }
+        }
+      }
+    }
+  }
+}
+";
+
+type ProviderCredentialMaterial = BTreeMap<String, String>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderRequestHeader {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug)]
+struct ProviderJsonResponse {
+    value: Option<Value>,
+    headers: BTreeMap<String, String>,
+}
+
+struct BlockingMcpStreamableHttpSession<'a> {
+    endpoint: &'a str,
+    request_headers: &'a [ProviderRequestHeader],
+    session_id: Option<String>,
+    next_id: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SourceMaterializationBuildRequest<'a> {
+    pub(crate) layout: &'a AppStateLayout,
+    pub(crate) workspace_name: &'a WorkspaceName,
+    pub(crate) source_name: &'a SourceName,
+    pub(crate) identity: &'a InstalledSourceIdentity,
+    pub(crate) manifest_yaml: &'a str,
+    pub(crate) manifest: &'a SourceSpec,
+    pub(crate) temp_suffix: &'a str,
+    pub(crate) provider_credentials: &'a BTreeMap<String, String>,
+}
 
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
     pub(crate) temp_dir: PathBuf,
+    pub(crate) kind: MaterializationKind,
 }
 
-pub(crate) fn build_v4_materialization_tmp(
-    layout: &AppStateLayout,
-    workspace_name: &WorkspaceName,
-    source_name: &SourceName,
-    manifest_yaml: &str,
-    manifest: &V4SourceManifest,
-    temp_suffix: &str,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaterializationKind {
+    SourceSpec,
+}
+
+#[derive(Debug)]
+pub(crate) struct MaterializationSwap {
+    pub(crate) kind: MaterializationKind,
+    pub(crate) backup: Option<PathBuf>,
+}
+
+pub(crate) fn build_source_materialization_tmp(
+    request: SourceMaterializationBuildRequest<'_>,
 ) -> Result<MaterializationBuild, AppError> {
-    let temp_dir = layout.v4_materialized_tmp_dir(workspace_name, source_name, temp_suffix);
+    let SourceMaterializationBuildRequest {
+        layout,
+        workspace_name,
+        source_name,
+        identity,
+        manifest_yaml,
+        manifest,
+        temp_suffix,
+        provider_credentials,
+    } = request;
+    let temp_dir = layout.source_materialized_tmp_dir(workspace_name, source_name, temp_suffix);
     if temp_dir.exists() {
         std::fs::remove_dir_all(&temp_dir)?;
     }
     fs::ensure_private_dir(&temp_dir)?;
 
-    match write_materialization(&temp_dir, manifest_yaml, manifest) {
-        Ok(()) => Ok(MaterializationBuild { temp_dir }),
+    match write_source_materialization(
+        &temp_dir,
+        source_name,
+        identity,
+        manifest_yaml,
+        manifest,
+        provider_credentials,
+    ) {
+        Ok(()) => Ok(MaterializationBuild {
+            temp_dir,
+            kind: MaterializationKind::SourceSpec,
+        }),
         Err(error) => {
             if temp_dir.exists() {
                 drop(std::fs::remove_dir_all(&temp_dir));
@@ -61,14 +188,31 @@ pub(crate) fn build_v4_materialization_tmp(
     }
 }
 
-pub(crate) fn replace_v4_materialization(
+pub(crate) fn replace_materialization(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    build: &MaterializationBuild,
+) -> Result<MaterializationSwap, AppError> {
+    let backup = match build.kind {
+        MaterializationKind::SourceSpec => {
+            replace_source_materialization(layout, workspace_name, source_name, &build.temp_dir)?
+        }
+    };
+    Ok(MaterializationSwap {
+        kind: build.kind,
+        backup,
+    })
+}
+
+pub(crate) fn replace_source_materialization(
     layout: &AppStateLayout,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     temp_dir: &Path,
 ) -> Result<Option<PathBuf>, AppError> {
-    let target = layout.v4_materialized_dir(workspace_name, source_name);
-    let backup = layout.v4_materialized_tmp_dir(
+    let target = layout.source_materialized_dir(workspace_name, source_name);
+    let backup = layout.source_materialized_tmp_dir(
         workspace_name,
         source_name,
         &format!("rollback.{}", Uuid::new_v4()),
@@ -89,7 +233,7 @@ pub(crate) fn replace_v4_materialization(
             && let Err(rollback_error) = std::fs::rename(&backup, &target)
         {
             return Err(AppError::FailedPrecondition(format!(
-                "failed to install DSL v4 materialization for source '{source_name}': {error}; failed to restore previous materialization from '{}': {rollback_error}",
+                "failed to install SourceSpec materialization for source '{source_name}': {error}; failed to restore previous materialization from '{}': {rollback_error}",
                 backup.display()
             )));
         }
@@ -98,8 +242,9 @@ pub(crate) fn replace_v4_materialization(
     Ok(had_existing.then_some(backup))
 }
 
-pub(crate) fn cleanup_materialization_backup(backup: Option<PathBuf>) {
-    if let Some(backup) = backup
+pub(crate) fn cleanup_materialization_backup(swap: Option<MaterializationSwap>) {
+    if let Some(swap) = swap
+        && let Some(backup) = swap.backup
         && backup.exists()
     {
         drop(std::fs::remove_dir_all(backup));
@@ -118,492 +263,1315 @@ pub(crate) fn restore_materialization_backup(
     layout: &AppStateLayout,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
-    backup: Option<PathBuf>,
+    swap: Option<MaterializationSwap>,
 ) -> Result<(), AppError> {
-    let target = layout.v4_materialized_dir(workspace_name, source_name);
-    if let Some(backup) = backup {
-        if target.exists() {
-            std::fs::remove_dir_all(&target)?;
+    if let Some(swap) = swap {
+        let target = match swap.kind {
+            MaterializationKind::SourceSpec => {
+                layout.source_materialized_dir(workspace_name, source_name)
+            }
+        };
+        if let Some(backup) = swap.backup {
+            if target.exists() {
+                std::fs::remove_dir_all(&target)?;
+            }
+            if backup.exists() {
+                std::fs::rename(backup, target)?;
+            }
+        } else if target.exists() {
+            std::fs::remove_dir_all(target)?;
         }
-        if backup.exists() {
-            std::fs::rename(backup, target)?;
-        }
-    } else if target.exists() {
-        std::fs::remove_dir_all(target)?;
     }
     Ok(())
 }
 
-pub(crate) fn load_v4_materialization(
-    layout: &AppStateLayout,
-    workspace_name: &WorkspaceName,
+fn write_source_materialization(
+    temp_dir: &Path,
     source_name: &SourceName,
+    identity: &InstalledSourceIdentity,
     manifest_yaml: &str,
-    manifest: &V4SourceManifest,
-) -> Result<V4MaterializedSource, AppError> {
-    let fingerprint_path = layout.v4_fingerprint_file(workspace_name, source_name);
-    let projections_path = layout.v4_projections_file(workspace_name, source_name);
-    let diagnostics_path = layout.v4_diagnostics_file(workspace_name, source_name);
-    if !fingerprint_path.exists() || !projections_path.exists() || !diagnostics_path.exists() {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "required artifact is missing",
-        ));
-    }
-    let fingerprint: Fingerprint =
-        read_artifact_yaml(source_name, "fingerprint", &fingerprint_path)?;
-    validate_fingerprint_header(source_name, manifest, &fingerprint)?;
-    if fingerprint.manifest_sha256 != sha256_hex(manifest_yaml.as_bytes()) {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "manifest fingerprint does not match installed manifest",
-        ));
-    }
-    let fingerprint_surfaces = validate_fingerprint_surfaces(source_name, manifest, &fingerprint)?;
-    let projections: ProjectionCatalog =
-        read_artifact_yaml(source_name, "projection catalog", &projections_path)?;
-    validate_projection_catalog_header(source_name, manifest, &projections)?;
-    let diagnostics: Vec<Diagnostic> =
-        read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
-    let mut surfaces = Vec::new();
-    for surface in &manifest.surfaces {
-        let surface_dir = layout.v4_surface_dir(workspace_name, source_name, &surface.id);
-        let raw_source_document_path = surface_dir.join("source-document.raw");
-        let normalized_source_document_path = surface_dir.join("source-document.yaml");
-        let semantic_ir_path = surface_dir.join("semantic-ir.yaml");
-        require_file(source_name, &raw_source_document_path)?;
-        require_file(source_name, &normalized_source_document_path)?;
-        require_file(source_name, &semantic_ir_path)?;
-        let semantic_ir: SemanticIr =
-            read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path)?;
-        let source_document_sha256 = fingerprint
-            .surfaces
-            .iter()
-            .find(|entry| entry.surface_id == surface.id)
-            .map(|entry| entry.descriptor_sha256.clone())
-            .unwrap_or_default();
-        surfaces.push(MaterializedSurface {
-            surface_id: surface.id.clone(),
-            semantic_ir,
-            source_document_sha256,
-            normalized_source_document_path,
-            raw_source_document_path,
-        });
-    }
-    let materialized = V4MaterializedSource {
-        fingerprint,
-        surfaces,
-        projections,
-        diagnostics,
+    manifest: &SourceSpec,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<(), AppError> {
+    let source_id = SourceId(identity.source_id.clone());
+    let source_key = SourceKey(identity.source_key.clone());
+    let display_name = identity.display_name.clone();
+    let raw_inputs = acquire_raw_interface_inputs(manifest, provider_credentials)?;
+    let import = import_source(source_id.clone(), manifest, &raw_inputs)
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let binding_ctx = BindingBuildContext {
+        source_id: source_id.clone(),
+        display_name: display_name.clone(),
+        source_key: source_key.clone(),
     };
-    validate_loaded_materialization(source_name, manifest, &materialized, &fingerprint_surfaces)?;
-    Ok(materialized)
-}
+    let ts_contributor = TypescriptBindingContributor::new();
+    let sql_contributor = SqlBindingContributor::new();
+    let source_exports = coral_exports::build_source_exports(
+        &import.capabilities,
+        &binding_ctx,
+        &[&ts_contributor, &sql_contributor],
+    )
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
 
-fn validate_fingerprint_header(
-    source_name: &SourceName,
-    manifest: &V4SourceManifest,
-    fingerprint: &Fingerprint,
-) -> Result<(), AppError> {
-    if fingerprint.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "fingerprint artifact schema version mismatch",
-        ));
-    }
-    if fingerprint.source_name != manifest.common.name {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "fingerprint source name does not match installed manifest",
-        ));
-    }
-    if fingerprint.importer_version != OPENAPI_IMPORTER_VERSION
-        || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
-    {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "fingerprint importer or generator version mismatch",
-        ));
-    }
+    let mut diagnostics = import.diagnostics.clone();
+    diagnostics.extend(source_exports.diagnostics.clone());
+
+    let (interface_index, fingerprint_interfaces) =
+        write_interface_materialization_artifacts(temp_dir, manifest, &raw_inputs, &import)?;
+
+    write_yaml(&temp_dir.join("capabilities.yaml"), &import.capabilities)?;
+    write_yaml(
+        &temp_dir.join("exports/source-exports.yaml"),
+        &source_exports,
+    )?;
+    write_yaml(&temp_dir.join("diagnostics.yaml"), &diagnostics)?;
+
+    let fingerprint = json!({
+        "artifact_schema_version": 1,
+        "source_id": source_id.as_str(),
+        "display_name": display_name,
+        "source_key": source_key.as_str(),
+        "spec_sha256": sha256_hex(manifest_yaml.as_bytes()),
+        "capability_generator_version": import.capabilities.generator_version,
+        "source_exports_generator_version": source_exports.generator_version,
+        "interfaces": fingerprint_interfaces,
+    });
+    write_yaml(&temp_dir.join("fingerprint.yaml"), &fingerprint)?;
+
+    let artifacts = json!({
+        "artifact_schema_version": 1,
+        "source_id": source_id.as_str(),
+        "fingerprint": "fingerprint.yaml",
+        "capabilities": "capabilities.yaml",
+        "exports": "exports/source-exports.yaml",
+        "diagnostics": "diagnostics.yaml",
+        "interfaces": interface_index,
+    });
+    write_yaml(&temp_dir.join("artifacts.yaml"), &artifacts)?;
+    validate_source_materialization_temp_dir(temp_dir, source_name)?;
     Ok(())
 }
 
-fn validate_fingerprint_surfaces(
-    source_name: &SourceName,
-    manifest: &V4SourceManifest,
-    fingerprint: &Fingerprint,
-) -> Result<BTreeMap<String, FingerprintSurface>, AppError> {
-    let expected_ids = manifest
-        .surfaces
-        .iter()
-        .map(|surface| surface.id.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut seen_ids = BTreeSet::new();
-    let mut by_id = BTreeMap::new();
-    for surface in &fingerprint.surfaces {
-        if !seen_ids.insert(surface.surface_id.as_str()) {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!("fingerprint repeats surface '{}'", surface.surface_id),
-            ));
+fn write_interface_materialization_artifacts(
+    temp_dir: &Path,
+    manifest: &SourceSpec,
+    raw_inputs: &BTreeMap<String, RawInterfaceInput>,
+    import: &ImportResult,
+) -> Result<(Map<String, Value>, Vec<Value>), AppError> {
+    let mut interface_index = Map::new();
+    let mut fingerprint_interfaces = Vec::new();
+    for snapshot in &import.provider_snapshots {
+        let interface_dir = temp_dir.join("interfaces").join(&snapshot.interface_id);
+        fs::ensure_private_dir(&interface_dir)?;
+        let raw_document_path = interface_dir.join("source-document.raw");
+        write_raw_interface_document(&raw_document_path, &snapshot.interface_id, raw_inputs)?;
+        write_yaml(&interface_dir.join("provider-snapshot.yaml"), snapshot)?;
+        if let Some(file_interface) = file_interface_by_id(manifest, &snapshot.interface_id) {
+            write_file_interface_artifacts(&interface_dir, file_interface)?;
         }
-        by_id.insert(surface.surface_id.clone(), surface.clone());
-    }
-    let actual_ids = seen_ids;
-    if actual_ids != expected_ids {
-        let missing = expected_ids
-            .difference(&actual_ids)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let extra = actual_ids
-            .difference(&expected_ids)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(incompatible_materialization_error(
-            source_name,
-            format!("fingerprint surface set mismatch; missing [{missing}], extra [{extra}]"),
-        ));
-    }
-    for surface in &manifest.surfaces {
-        let fingerprint_surface = by_id.get(&surface.id).ok_or_else(|| {
-            incompatible_materialization_error(
-                source_name,
-                format!("fingerprint is missing surface '{}'", surface.id),
-            )
-        })?;
-        if fingerprint_surface.surface_type != surface.surface_type {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!("surface '{}' type fingerprint does not match", surface.id),
-            ));
-        }
-        if fingerprint_surface.descriptor_kind != surface.descriptor.kind()
-            || fingerprint_surface.descriptor_location != surface.descriptor.location()
+        let generated_operations_sha = if snapshot.interface_type == "graphql" {
+            write_graphql_operation_artifacts(
+                &interface_dir,
+                &snapshot.interface_id,
+                &import.capabilities,
+            )?
+        } else {
+            None
+        };
+        let provider_snapshot_bytes = serde_yaml::to_string(snapshot)?;
+        let raw_document_bytes = std::fs::read(&raw_document_path)?;
+        let raw_sha = sha256_hex(&raw_document_bytes);
+        let snapshot_sha = sha256_hex(provider_snapshot_bytes.as_bytes());
+        interface_index.insert(
+            snapshot.interface_id.clone(),
+            interface_artifact_index_entry(&snapshot.interface_id, &snapshot_sha),
+        );
+        if generated_operations_sha.is_some()
+            && let Some(entry) = interface_index
+                .get_mut(&snapshot.interface_id)
+                .and_then(Value::as_object_mut)
         {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "surface '{}' descriptor fingerprint does not match",
-                    surface.id
-                ),
-            ));
+            entry.insert(
+                "generated_operations_dir".to_string(),
+                json!(format!(
+                    "interfaces/{}/{}",
+                    snapshot.interface_id, GENERATED_GRAPHQL_OPERATIONS_DIR
+                )),
+            );
         }
-        let expected = stable_input_declarations_sha256(&surface.inputs)?;
-        if fingerprint_surface.input_declarations_sha256 != expected {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "input declarations fingerprint does not match for surface '{}'",
-                    surface.id
-                ),
-            ));
-        }
-    }
-    Ok(by_id)
-}
-
-fn validate_projection_catalog_header(
-    source_name: &SourceName,
-    manifest: &V4SourceManifest,
-    projections: &ProjectionCatalog,
-) -> Result<(), AppError> {
-    if projections.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "projection catalog artifact schema version mismatch",
+        fingerprint_interfaces.push(interface_fingerprint_entry(
+            &snapshot.interface_id,
+            &snapshot.interface_type,
+            &snapshot_sha,
+            &raw_sha,
+            generated_operations_sha,
         ));
     }
-    if projections.source_name != manifest.common.name {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "projection catalog source name does not match installed manifest",
-        ));
-    }
-    if projections.generator_version != PROJECTION_GENERATOR_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "projection catalog generator version mismatch",
-        ));
-    }
-    Ok(())
+    Ok((interface_index, fingerprint_interfaces))
 }
 
-fn require_file(source_name: &SourceName, path: &Path) -> Result<(), AppError> {
-    if path.is_file() {
-        Ok(())
-    } else {
-        Err(incompatible_materialization_error(
-            source_name,
-            format!("required artifact '{}' is missing", path.display()),
-        ))
-    }
+fn file_interface_by_id<'a>(
+    manifest: &'a SourceSpec,
+    interface_id: &str,
+) -> Option<&'a FileInterface> {
+    manifest
+        .interfaces
+        .iter()
+        .find_map(|interface| match interface {
+            SourceInterface::File(file_interface) if file_interface.id == interface_id => {
+                Some(file_interface)
+            }
+            _ => None,
+        })
 }
 
-fn read_raw_source_document_artifact(
-    source_name: &SourceName,
-    surface: &coral_spec::v4::V4Surface,
-    path: &Path,
-) -> Result<Vec<u8>, AppError> {
-    std::fs::read(path).map_err(|error| {
-        incompatible_materialization_error(
-            source_name,
-            format!(
-                "failed to read raw source document artifact for surface '{}' '{}': {error}",
-                surface.id,
-                path.display()
-            ),
-        )
+fn interface_artifact_index_entry(interface_id: &str, snapshot_sha: &str) -> Value {
+    json!({
+        "raw_document": format!("interfaces/{interface_id}/source-document.raw"),
+        "provider_snapshot": format!("interfaces/{interface_id}/provider-snapshot.yaml"),
+        "provider_snapshot_sha256": snapshot_sha,
     })
 }
 
-fn validate_loaded_materialization(
-    source_name: &SourceName,
-    manifest: &V4SourceManifest,
-    materialized: &V4MaterializedSource,
-    fingerprint_surfaces: &BTreeMap<String, FingerprintSurface>,
-) -> Result<(), AppError> {
-    validate_materialized_source(manifest, materialized).map_err(|error| {
-        incompatible_materialization_error(
-            source_name,
-            format!("artifact validation failed: {error}"),
-        )
-    })?;
-    let mut operations_by_surface: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for surface in &manifest.surfaces {
-        let Some(materialized_surface) = materialized
-            .surfaces
-            .iter()
-            .find(|candidate| candidate.surface_id == surface.id)
-        else {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!("materialized surface '{}' is missing", surface.id),
-            ));
-        };
-        let Some(fingerprint_surface) = fingerprint_surfaces.get(&surface.id) else {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!("fingerprint is missing surface '{}'", surface.id),
-            ));
-        };
-        let raw_bytes = read_raw_source_document_artifact(
-            source_name,
-            surface,
-            &materialized_surface.raw_source_document_path,
-        )?;
-        let observed_raw_hash = sha256_hex(&raw_bytes);
-        if observed_raw_hash != fingerprint_surface.descriptor_sha256 {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "raw source document hash does not match for surface '{}'",
-                    surface.id
-                ),
-            ));
-        }
-        validate_semantic_ir(
-            source_name,
-            manifest,
-            surface,
-            &materialized_surface.semantic_ir,
-        )?;
-        operations_by_surface.insert(
-            surface.id.as_str(),
-            materialized_surface
-                .semantic_ir
-                .operations
-                .iter()
-                .map(|operation| operation.id.as_str())
-                .collect(),
+fn interface_fingerprint_entry(
+    interface_id: &str,
+    interface_type: &str,
+    snapshot_sha: &str,
+    raw_sha: &str,
+    generated_operations_sha: Option<String>,
+) -> Value {
+    let mut fingerprint = json!({
+        "id": interface_id,
+        "type": interface_type,
+        "provider_snapshot_sha256": snapshot_sha,
+    });
+    if let Some(object) = fingerprint.as_object_mut() {
+        object.insert(
+            source_document_hash_key(interface_type).to_string(),
+            json!(raw_sha),
         );
-    }
-    for projection in &materialized.projections.projections {
-        let Some(operations) = operations_by_surface.get(projection.surface_id.as_str()) else {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "projection '{}' references missing surface '{}'",
-                    projection.name, projection.surface_id
-                ),
-            ));
-        };
-        if !operations.contains(projection.operation_id.as_str()) {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!(
-                    "projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
-                ),
-            ));
+        if let Some(generated_operations_sha) = generated_operations_sha {
+            object.insert(
+                "generated_operations_sha256".to_string(),
+                json!(generated_operations_sha),
+            );
         }
     }
+    fingerprint
+}
+
+fn write_file_interface_artifacts(
+    interface_dir: &Path,
+    interface: &FileInterface,
+) -> Result<(), AppError> {
+    let files_dir = interface_dir.join("files");
+    fs::ensure_private_dir(&files_dir)?;
+    for (index, file) in interface.files.iter().enumerate() {
+        let canonical = canonicalize_file_descriptor(file)?;
+        std::fs::copy(&canonical, files_dir.join(format!("file_{index}")))?;
+    }
     Ok(())
 }
 
-fn validate_semantic_ir(
-    source_name: &SourceName,
-    manifest: &V4SourceManifest,
-    surface: &coral_spec::v4::V4Surface,
-    semantic_ir: &SemanticIr,
-) -> Result<(), AppError> {
-    if semantic_ir.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            format!(
-                "semantic IR schema version mismatch for surface '{}'",
-                surface.id
-            ),
-        ));
-    }
-    if semantic_ir.source_name != manifest.common.name
-        || semantic_ir.surface_id != surface.id
-        || semantic_ir.surface_type != surface.surface_type
+fn write_graphql_operation_artifacts(
+    interface_dir: &Path,
+    interface_id: &str,
+    capabilities: &SourceCapabilitySet,
+) -> Result<Option<String>, AppError> {
+    let mut documents = Vec::new();
+    for capability in capabilities
+        .capabilities
+        .iter()
+        .filter(|capability| capability.interface_id == interface_id)
     {
-        return Err(incompatible_materialization_error(
-            source_name,
-            format!("semantic IR identity mismatch for surface '{}'", surface.id),
-        ));
-    }
-    if semantic_ir.importer_version != OPENAPI_IMPORTER_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            format!(
-                "semantic IR importer version mismatch for surface '{}'",
-                surface.id
-            ),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn incompatible_materialization_error(
-    source_name: &SourceName,
-    detail: impl AsRef<str>,
-) -> AppError {
-    AppError::MissingOrIncompatibleV4Materialization {
-        source_name: source_name.to_string(),
-        detail: detail.as_ref().to_string(),
-    }
-}
-
-fn write_materialization(
-    temp_dir: &Path,
-    manifest_yaml: &str,
-    manifest: &V4SourceManifest,
-) -> Result<(), AppError> {
-    let manifest_sha256 = sha256_hex(manifest_yaml.as_bytes());
-    let mut materialized_surfaces = Vec::new();
-    let mut semantic_irs = Vec::new();
-    let mut fingerprint_surfaces = Vec::new();
-    for surface in &manifest.surfaces {
-        let bytes = read_descriptor(surface)?;
-        validate_materialized_surface_base_url(manifest, surface, &bytes)?;
-        let observed = sha256_hex(&bytes);
-        let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
+        let UpstreamBinding::Graphql(binding) = &capability.upstream_binding else {
+            continue;
+        };
+        let filename = operation_document_filename(binding).map_err(|message| {
             AppError::FailedPrecondition(format!(
-                "failed to import source '{}' surface '{}': {error}",
-                manifest.common.name, surface.id
+                "SourceSpec materialization for GraphQL interface '{interface_id}' has invalid operation document reference: {message}"
             ))
         })?;
-        let surface_dir = temp_dir.join("surfaces").join(&surface.id);
-        fs::ensure_private_dir(&surface_dir)?;
-        std::fs::write(surface_dir.join("source-document.raw"), &bytes)?;
-        std::fs::write(
-            surface_dir.join("source-document.yaml"),
-            normalize_source_document(&bytes)
-                .map_err(|error| AppError::FailedPrecondition(error.to_string()))?,
-        )?;
-        write_yaml(&surface_dir.join("semantic-ir.yaml"), &semantic_ir)?;
-        materialized_surfaces.push(MaterializedSurface {
-            surface_id: surface.id.clone(),
-            semantic_ir: semantic_ir.clone(),
-            source_document_sha256: observed.clone(),
-            normalized_source_document_path: surface_dir.join("source-document.yaml"),
-            raw_source_document_path: surface_dir.join("source-document.raw"),
-        });
-        semantic_irs.push(semantic_ir);
-        fingerprint_surfaces.push(FingerprintSurface {
-            surface_id: surface.id.clone(),
-            surface_type: surface.surface_type,
-            descriptor_kind: surface.descriptor.kind().to_string(),
-            descriptor_location: surface.descriptor.location(),
-            descriptor_sha256: observed,
-            input_declarations_sha256: stable_input_declarations_sha256(&surface.inputs)?,
-        });
+        let document = render_operation_document(binding).map_err(|message| {
+            AppError::FailedPrecondition(format!(
+                "SourceSpec materialization for GraphQL interface '{interface_id}' could not render generated operation document '{}': {message}",
+                capability.operation_id
+            ))
+        })?;
+        documents.push((filename, document));
     }
-    let projections = generate_projection_catalog(manifest, &semantic_irs)
-        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-    let mut diagnostics = projections.diagnostics.clone();
-    for ir in &semantic_irs {
-        diagnostics.extend(ir.diagnostics.clone());
-        diagnostics.extend(
-            ir.operations
-                .iter()
-                .flat_map(|operation| operation.diagnostics.clone()),
-        );
+    if documents.is_empty() {
+        return Ok(None);
     }
-    let fingerprint = Fingerprint {
-        artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
-        source_name: manifest.common.name.clone(),
-        manifest_sha256: manifest_sha256.clone(),
-        surfaces: fingerprint_surfaces,
-        importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
-        projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+    documents.sort_by(|left, right| left.0.cmp(&right.0));
+    let operations_dir = interface_dir.join(GENERATED_GRAPHQL_OPERATIONS_DIR);
+    fs::ensure_private_dir(&operations_dir)?;
+    let mut hash_input = Vec::new();
+    for (filename, document) in &documents {
+        std::fs::write(operations_dir.join(filename), document.as_bytes())?;
+        hash_input.extend_from_slice(filename.as_bytes());
+        hash_input.push(0);
+        hash_input.extend_from_slice(document.as_bytes());
+        hash_input.push(0);
+    }
+    Ok(Some(sha256_hex(&hash_input)))
+}
+
+fn acquire_raw_interface_inputs(
+    manifest: &SourceSpec,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<BTreeMap<String, RawInterfaceInput>, AppError> {
+    let mut raw_inputs = BTreeMap::new();
+    for interface in &manifest.interfaces {
+        match interface {
+            SourceInterface::OpenApi(openapi) => {
+                raw_inputs.insert(
+                    openapi.id.clone(),
+                    RawInterfaceInput::OpenApiDocument {
+                        bytes: read_openapi_interface_document(openapi, provider_credentials)?,
+                    },
+                );
+            }
+            SourceInterface::Mcp(mcp) => {
+                raw_inputs.insert(
+                    mcp.id.clone(),
+                    RawInterfaceInput::McpToolsList {
+                        value: read_mcp_tools_list(mcp, provider_credentials)?,
+                    },
+                );
+            }
+            SourceInterface::Graphql(graphql) => {
+                raw_inputs.insert(
+                    graphql.id.clone(),
+                    read_graphql_schema_input(graphql, provider_credentials)?,
+                );
+            }
+            SourceInterface::File(file) => {
+                validate_file_interface(file)?;
+                raw_inputs.insert(
+                    file.id.clone(),
+                    RawInterfaceInput::FileListing {
+                        schema: infer_file_interface_schema(file)?,
+                    },
+                );
+            }
+        }
+    }
+    Ok(raw_inputs)
+}
+
+fn read_openapi_interface_document(
+    interface: &OpenApiInterface,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<Vec<u8>, AppError> {
+    match &interface.descriptor {
+        OpenApiDescriptor::File { file } => read_file_descriptor(file),
+        OpenApiDescriptor::Url { url } => {
+            let url = literal_template_url(url, "OpenAPI descriptor url")?;
+            let provider_origin =
+                literal_template_url_if_static(interface.base_url.as_ref(), "OpenAPI base_url");
+            let request_headers = descriptor_materialization_auth_headers(
+                interface.auth.as_ref(),
+                "OpenAPI descriptor acquisition",
+                provider_credentials,
+                &url,
+                provider_origin.as_deref(),
+            )?;
+            read_url_descriptor(&url, "OpenAPI descriptor", &request_headers)
+        }
+    }
+}
+
+fn read_mcp_tools_list(
+    interface: &McpInterface,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<Value, AppError> {
+    match &interface.server.transport {
+        McpTransportDescriptor::StreamableHttp { url } => {
+            let request_headers = materialization_auth_headers(
+                interface.server.auth.as_ref(),
+                "MCP tools/list acquisition",
+                provider_credentials,
+            )?;
+            let endpoint = literal_template_url(url, "MCP Streamable HTTP url")?;
+            read_mcp_tools_list_streamable_http(&interface.id, &endpoint, &request_headers)
+        }
+        McpTransportDescriptor::Stdio { command, args } => {
+            let env = materialization_mcp_stdio_env(interface, provider_credentials)?;
+            read_mcp_tools_list_stdio(&interface.id, command, args, env)
+        }
+    }
+}
+
+fn materialization_mcp_stdio_env(
+    interface: &McpInterface,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<Vec<(String, coral_upstream::RedactableString)>, AppError> {
+    let mut env = minimal_stdio_env();
+    for binding in &interface.server.env {
+        env.push((
+            binding.name.clone(),
+            coral_upstream::RedactableString::new(provider_source_input_value(
+                provider_credentials,
+                &binding.key,
+                "MCP stdio environment acquisition",
+            )?),
+        ));
+    }
+    Ok(env)
+}
+
+fn minimal_stdio_env() -> Vec<(String, coral_upstream::RedactableString)> {
+    stdio_path_env()
+        .map(|value| {
+            vec![(
+                "PATH".to_string(),
+                coral_upstream::RedactableString::new(value.to_string_lossy().to_string()),
+            )]
+        })
+        .unwrap_or_default()
+}
+
+fn read_mcp_tools_list_stdio(
+    interface_id: &str,
+    command: &str,
+    args: &[String],
+    env: Vec<(String, coral_upstream::RedactableString)>,
+) -> Result<Value, AppError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "failed to initialize MCP stdio tools/list runtime for interface '{interface_id}': {error}"
+            ))
+        })?;
+    let server = coral_upstream::McpConnectionTarget::Stdio {
+        command: command.to_string(),
+        args: args.to_vec(),
+        env,
     };
-    let materialized = V4MaterializedSource {
-        fingerprint: fingerprint.clone(),
-        surfaces: materialized_surfaces,
-        projections: projections.clone(),
-        diagnostics: diagnostics.clone(),
-    };
-    validate_materialized_source(manifest, &materialized)
-        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-    write_yaml(&temp_dir.join("fingerprint.yaml"), &fingerprint)?;
-    write_yaml(&temp_dir.join("projections.yaml"), &projections)?;
-    write_yaml(&temp_dir.join("diagnostics.yaml"), &diagnostics)?;
+    runtime
+        .block_on(coral_upstream::list_mcp_tools(
+            &server,
+            Some(DESCRIPTOR_FETCH_TIMEOUT),
+        ))
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "MCP interface '{interface_id}' stdio tools/list failed: {error}"
+            ))
+        })
+}
+
+fn read_graphql_schema_input(
+    interface: &GraphqlInterface,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<RawInterfaceInput, AppError> {
+    match &interface.schema {
+        GraphqlSchemaDescriptor::SdlFile { file } => {
+            let bytes = read_file_descriptor(file)?;
+            let text = String::from_utf8(bytes).map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "GraphQL SDL file for interface '{}' is not UTF-8: {error}",
+                    interface.id
+                ))
+            })?;
+            Ok(RawInterfaceInput::GraphqlSchema { text })
+        }
+        GraphqlSchemaDescriptor::SdlUrl { url } => {
+            let url = literal_string_url(url, "GraphQL SDL URL")?;
+            let provider_origin =
+                literal_template_url_if_static(Some(&interface.endpoint), "GraphQL endpoint");
+            let request_headers = descriptor_materialization_auth_headers(
+                interface.auth.as_ref(),
+                "GraphQL SDL URL acquisition",
+                provider_credentials,
+                &url,
+                provider_origin.as_deref(),
+            )?;
+            let bytes = read_url_descriptor(&url, "GraphQL SDL URL", &request_headers)?;
+            let text = String::from_utf8(bytes).map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "GraphQL SDL URL for interface '{}' is not UTF-8: {error}",
+                    interface.id
+                ))
+            })?;
+            Ok(RawInterfaceInput::GraphqlSchema { text })
+        }
+        GraphqlSchemaDescriptor::IntrospectionJsonFile { file } => {
+            let bytes = read_file_descriptor(file)?;
+            Ok(RawInterfaceInput::GraphqlIntrospection {
+                value: serde_json::from_slice(&bytes).map_err(|error| {
+                    AppError::FailedPrecondition(format!(
+                        "failed to parse GraphQL introspection JSON for interface '{}': {error}",
+                        interface.id
+                    ))
+                })?,
+            })
+        }
+        GraphqlSchemaDescriptor::IntrospectionJsonUrl { url } => {
+            let url = literal_string_url(url, "GraphQL introspection JSON URL")?;
+            let provider_origin =
+                literal_template_url_if_static(Some(&interface.endpoint), "GraphQL endpoint");
+            let request_headers = descriptor_materialization_auth_headers(
+                interface.auth.as_ref(),
+                "GraphQL introspection JSON URL acquisition",
+                provider_credentials,
+                &url,
+                provider_origin.as_deref(),
+            )?;
+            let bytes =
+                read_url_descriptor(&url, "GraphQL introspection JSON URL", &request_headers)?;
+            Ok(RawInterfaceInput::GraphqlIntrospection {
+                value: serde_json::from_slice(&bytes).map_err(|error| {
+                    AppError::FailedPrecondition(format!(
+                        "failed to parse GraphQL introspection JSON for interface '{}': {error}",
+                        interface.id
+                    ))
+                })?,
+            })
+        }
+        GraphqlSchemaDescriptor::IntrospectionQuery { endpoint } => {
+            read_graphql_live_introspection(interface, endpoint.as_ref(), provider_credentials)
+        }
+    }
+}
+
+fn read_graphql_live_introspection(
+    interface: &GraphqlInterface,
+    endpoint_override: Option<&ParsedTemplate>,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<RawInterfaceInput, AppError> {
+    let endpoint_template = endpoint_override.unwrap_or(&interface.endpoint);
+    let endpoint = literal_template_url(endpoint_template, "GraphQL introspection endpoint")?;
+    let provider_origin =
+        literal_template_url_if_static(Some(&interface.endpoint), "GraphQL endpoint");
+    let request_headers = descriptor_materialization_auth_headers(
+        interface.auth.as_ref(),
+        "GraphQL live introspection",
+        provider_credentials,
+        &endpoint,
+        provider_origin.as_deref(),
+    )?;
+    let value = post_json_rpc_like_document(
+        endpoint,
+        &json!({ "query": GRAPHQL_INTROSPECTION_QUERY, "operationName": "CoralIntrospection" }),
+        &request_headers,
+    )?;
+    if let Some(errors) = value.get("errors").filter(|errors| !errors.is_null()) {
+        return Err(AppError::FailedPrecondition(format!(
+            "GraphQL live introspection for interface '{}' returned errors: {errors}",
+            interface.id
+        )));
+    }
+    Ok(RawInterfaceInput::GraphqlIntrospection { value })
+}
+
+fn validate_file_interface(interface: &FileInterface) -> Result<(), AppError> {
+    for file in &interface.files {
+        let canonical = canonicalize_file_descriptor(file)?;
+        if !canonical.is_file() {
+            return Err(AppError::FailedPrecondition(format!(
+                "file interface '{}' path '{}' is not a regular file",
+                interface.id,
+                file.display()
+            )));
+        }
+    }
     Ok(())
 }
 
-fn validate_materialized_surface_base_url(
-    manifest: &V4SourceManifest,
-    surface: &coral_spec::v4::V4Surface,
-    bytes: &[u8],
-) -> Result<(), AppError> {
-    if !surface.openapi_runtime.base_url.raw().trim().is_empty() {
-        return Ok(());
+fn infer_file_interface_schema(interface: &FileInterface) -> Result<Value, AppError> {
+    let mut properties = Map::new();
+    for file in &interface.files {
+        let canonical = canonicalize_file_descriptor(file)?;
+        let file_schema = infer_file_schema(&canonical, interface.format)?;
+        merge_schema_properties(&mut properties, &file_schema);
     }
-    let metadata = openapi_document_metadata(bytes).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to derive base_url for DSL v4 surface '{}': {error}",
-            surface.id
-        ))
-    })?;
-    let Some(server_url) = metadata.server_url.as_deref() else {
-        return Ok(());
-    };
-    let base_url = ParsedTemplate::parse(server_url).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to parse derived base_url for DSL v4 surface '{}': {error}",
-            surface.id
-        ))
-    })?;
-    validate_openapi_base_url_template(
-        &manifest.common.name,
-        &surface.id,
-        &surface.inputs,
-        &base_url,
-        "derived OpenAPI server",
-    )
-    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
+    Ok(json!({
+        "type": "object",
+        "properties": properties,
+    }))
 }
 
-fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
-    match &surface.descriptor {
-        coral_spec::v4::SurfaceDescriptor::File { file } => read_file_descriptor(file),
-        coral_spec::v4::SurfaceDescriptor::Url { url } => read_url_descriptor(url),
+fn infer_file_schema(path: &Path, format: SourceFileFormatDescriptor) -> Result<Value, AppError> {
+    match format {
+        SourceFileFormatDescriptor::Json => infer_json_file_schema(path),
+        SourceFileFormatDescriptor::Jsonl => infer_jsonl_file_schema(path),
+        SourceFileFormatDescriptor::Csv => infer_csv_file_schema(path),
+        SourceFileFormatDescriptor::Parquet => infer_parquet_file_schema(path),
     }
+}
+
+fn infer_json_file_schema(path: &Path) -> Result<Value, AppError> {
+    let bytes = std::fs::read(path)?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "file '{}' is not valid JSON for schema inference: {error}",
+            path.display()
+        ))
+    })?;
+    let mut properties = Map::new();
+    match value {
+        Value::Object(object) => merge_json_object_properties(&mut properties, &object),
+        Value::Array(values) => {
+            for value in values.iter().take(MAX_FILE_SCHEMA_SAMPLE_ROWS) {
+                if let Value::Object(object) = value {
+                    merge_json_object_properties(&mut properties, object);
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(object_schema(properties))
+}
+
+fn infer_jsonl_file_schema(path: &Path) -> Result<Value, AppError> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut properties = Map::new();
+    let mut sampled = 0usize;
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(trimmed).map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "file '{}' is not valid JSONL for schema inference: {error}",
+                path.display()
+            ))
+        })?;
+        if let Value::Object(object) = value {
+            merge_json_object_properties(&mut properties, &object);
+            sampled += 1;
+            if sampled >= MAX_FILE_SCHEMA_SAMPLE_ROWS {
+                break;
+            }
+        }
+    }
+    Ok(object_schema(properties))
+}
+
+fn infer_csv_file_schema(path: &Path) -> Result<Value, AppError> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut header = String::new();
+    reader.read_line(&mut header)?;
+    let properties = parse_csv_header(&header)
+        .into_iter()
+        .filter(|name| !name.is_empty())
+        .map(|name| (name, json!({ "type": "string" })))
+        .collect::<Map<_, _>>();
+    Ok(object_schema(properties))
+}
+
+fn infer_parquet_file_schema(path: &Path) -> Result<Value, AppError> {
+    let file = File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "file '{}' is not valid Parquet for schema inference: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(arrow_schema_to_json_schema(builder.schema().as_ref()))
+}
+
+fn merge_schema_properties(properties: &mut Map<String, Value>, schema: &Value) {
+    let Some(schema_properties) = schema.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    for (name, property_schema) in schema_properties {
+        merge_property_schema(properties, name, property_schema.clone());
+    }
+}
+
+fn merge_json_object_properties(properties: &mut Map<String, Value>, object: &Map<String, Value>) {
+    for (name, value) in object {
+        merge_property_schema(properties, name, json_value_to_schema(value));
+    }
+}
+
+fn merge_property_schema(properties: &mut Map<String, Value>, name: &str, incoming: Value) {
+    match properties.get_mut(name) {
+        Some(existing) if existing == &incoming => {}
+        Some(existing) => {
+            let existing_type = existing.get("type").and_then(Value::as_str);
+            let incoming_type = incoming.get("type").and_then(Value::as_str);
+            if existing_type != incoming_type {
+                *existing = json!({ "type": "string" });
+            }
+        }
+        None => {
+            properties.insert(name.to_string(), incoming);
+        }
+    }
+}
+
+fn json_value_to_schema(value: &Value) -> Value {
+    match value {
+        Value::Bool(_) => json!({ "type": "boolean" }),
+        Value::Number(number) if number.is_i64() || number.is_u64() => {
+            json!({ "type": "integer" })
+        }
+        Value::Number(_) => json!({ "type": "number" }),
+        Value::String(_) | Value::Null => json!({ "type": "string" }),
+        Value::Array(_) | Value::Object(_) => json!({ "type": "object" }),
+    }
+}
+
+fn object_schema(properties: Map<String, Value>) -> Value {
+    let mut schema = Map::new();
+    schema.insert("type".to_string(), Value::String("object".to_string()));
+    schema.insert("properties".to_string(), Value::Object(properties));
+    Value::Object(schema)
+}
+
+fn parse_csv_header(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.trim_end_matches(['\r', '\n']).chars().peekable();
+    let mut in_quotes = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes && chars.peek() == Some(&'"') => {
+                current.push('"');
+                chars.next();
+            }
+            '"' => {
+                in_quotes = !in_quotes;
+            }
+            ',' if !in_quotes => {
+                fields.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    fields.push(current.trim().to_string());
+    fields
+}
+
+fn arrow_schema_to_json_schema(schema: &Schema) -> Value {
+    let properties = schema
+        .fields()
+        .iter()
+        .map(|field| (field.name().clone(), arrow_field_to_json_schema(field)))
+        .collect::<Map<_, _>>();
+    object_schema(properties)
+}
+
+fn arrow_field_to_json_schema(field: &Field) -> Value {
+    match field.data_type() {
+        DataType::Boolean => json!({ "type": "boolean" }),
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => json!({ "type": "integer" }),
+        DataType::Float16
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Decimal32(_, _)
+        | DataType::Decimal64(_, _)
+        | DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _) => json!({ "type": "number" }),
+        DataType::Struct(fields) => {
+            let properties = fields
+                .iter()
+                .map(|field| (field.name().clone(), arrow_field_to_json_schema(field)))
+                .collect::<Map<_, _>>();
+            object_schema(properties)
+        }
+        _ => json!({ "type": "string" }),
+    }
+}
+
+fn write_raw_interface_document(
+    path: &Path,
+    interface_id: &str,
+    raw_inputs: &BTreeMap<String, RawInterfaceInput>,
+) -> Result<(), AppError> {
+    let raw_input = raw_inputs.get(interface_id);
+    let bytes = match raw_input {
+        Some(RawInterfaceInput::OpenApiDocument { bytes }) => bytes.clone(),
+        Some(RawInterfaceInput::McpToolsList { value }) => serde_json::to_vec_pretty(value)?,
+        Some(RawInterfaceInput::GraphqlSchema { text }) => text.as_bytes().to_vec(),
+        Some(RawInterfaceInput::GraphqlIntrospection { value }) => {
+            serde_json::to_vec_pretty(value)?
+        }
+        Some(RawInterfaceInput::FileListing { schema }) => serde_json::to_vec_pretty(schema)?,
+        None => Vec::new(),
+    };
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+fn validate_source_materialization_temp_dir(
+    temp_dir: &Path,
+    source_name: &SourceName,
+) -> Result<(), AppError> {
+    for artifact in [
+        "artifacts.yaml",
+        "fingerprint.yaml",
+        "capabilities.yaml",
+        "exports/source-exports.yaml",
+        "diagnostics.yaml",
+    ] {
+        let path = temp_dir.join(artifact);
+        if !path.exists() {
+            return Err(AppError::FailedPrecondition(format!(
+                "SourceSpec materialization for source '{source_name}' is missing required artifact '{artifact}'"
+            )));
+        }
+    }
+    reject_deleted_artifact(temp_dir, source_name, "projections", "projection")?;
+    reject_deleted_artifact(temp_dir, source_name, "semantic-ir", "semantic IR")?;
+    validate_generated_graphql_operation_documents(temp_dir, source_name)?;
+    Ok(())
+}
+
+fn reject_deleted_artifact(
+    dir: &Path,
+    source_name: &SourceName,
+    stem: &str,
+    label: &str,
+) -> Result<(), AppError> {
+    let deleted_artifact = deleted_artifact_name(stem);
+    reject_deleted_artifact_inner(dir, source_name, &deleted_artifact, label)
+}
+
+fn reject_deleted_artifact_inner(
+    dir: &Path,
+    source_name: &SourceName,
+    deleted_artifact: &str,
+    label: &str,
+) -> Result<(), AppError> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            reject_deleted_artifact_inner(&path, source_name, deleted_artifact, label)?;
+            continue;
+        }
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == deleted_artifact)
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "SourceSpec materialization for source '{source_name}' must not write deleted {label} artifacts"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_generated_graphql_operation_documents(
+    temp_dir: &Path,
+    source_name: &SourceName,
+) -> Result<(), AppError> {
+    let capabilities_path = temp_dir.join("capabilities.yaml");
+    let capabilities: SourceCapabilitySet =
+        serde_yaml::from_slice(&std::fs::read(&capabilities_path)?).map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "SourceSpec materialization for source '{source_name}' has invalid capabilities.yaml: {error}"
+            ))
+        })?;
+    for capability in &capabilities.capabilities {
+        let UpstreamBinding::Graphql(binding) = &capability.upstream_binding else {
+            continue;
+        };
+        let document_path = crate::graphql_documents::operation_document_path(
+            temp_dir,
+            &capability.interface_id,
+            binding,
+        )
+        .map_err(|message| {
+            AppError::FailedPrecondition(format!(
+                "SourceSpec materialization for source '{source_name}' has invalid GraphQL document reference for capability '{}': {message}",
+                capability.capability_id
+            ))
+        })?;
+        if !document_path.is_file() {
+            return Err(AppError::FailedPrecondition(format!(
+                "SourceSpec materialization for source '{source_name}' is missing generated GraphQL operation document '{}' for capability '{}'; re-add the source to regenerate artifacts",
+                document_path.display(),
+                capability.capability_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn source_document_hash_key(interface_type: &str) -> &'static str {
+    match interface_type {
+        "mcp" => "tools_list_snapshot_sha256",
+        "graphql" => "schema_document_sha256",
+        _ => "source_document_sha256",
+    }
+}
+
+fn deleted_artifact_name(stem: &str) -> String {
+    format!("{stem}.yaml")
+}
+
+fn materialization_auth_headers(
+    auth: Option<&AuthDescriptor>,
+    context: &str,
+    provider_credentials: &ProviderCredentialMaterial,
+) -> Result<Vec<ProviderRequestHeader>, AppError> {
+    match auth {
+        None | Some(AuthDescriptor::None) => Ok(Vec::new()),
+        Some(AuthDescriptor::BearerInput { key }) => Ok(vec![ProviderRequestHeader {
+            name: AUTHORIZATION.as_str().to_string(),
+            value: format!(
+                "Bearer {}",
+                provider_credential_value(provider_credentials, key, context)?
+            ),
+        }]),
+        Some(AuthDescriptor::HeaderInput { name, key }) => {
+            validate_provider_header_name(name, context)?;
+            Ok(vec![ProviderRequestHeader {
+                name: name.clone(),
+                value: provider_credential_value(provider_credentials, key, context)?,
+            }])
+        }
+    }
+}
+
+fn descriptor_materialization_auth_headers(
+    auth: Option<&AuthDescriptor>,
+    context: &str,
+    provider_credentials: &ProviderCredentialMaterial,
+    descriptor_url: &str,
+    provider_origin_url: Option<&str>,
+) -> Result<Vec<ProviderRequestHeader>, AppError> {
+    if !descriptor_auth_origin_matches(descriptor_url, provider_origin_url, context)? {
+        return Ok(Vec::new());
+    }
+    materialization_auth_headers(auth, context, provider_credentials)
+}
+
+fn descriptor_auth_origin_matches(
+    descriptor_url: &str,
+    provider_origin_url: Option<&str>,
+    context: &str,
+) -> Result<bool, AppError> {
+    let Some(provider_origin_url) = provider_origin_url else {
+        return Ok(false);
+    };
+    let descriptor_url = reqwest::Url::parse(descriptor_url).map_err(|error| {
+        AppError::InvalidInput(format!(
+            "{context} URL '{descriptor_url}' is invalid: {error}"
+        ))
+    })?;
+    let provider_origin_url = reqwest::Url::parse(provider_origin_url).map_err(|error| {
+        AppError::InvalidInput(format!(
+            "{context} provider URL '{provider_origin_url}' is invalid: {error}"
+        ))
+    })?;
+    Ok(same_origin(&descriptor_url, &provider_origin_url))
+}
+
+fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn provider_credential_value(
+    provider_credentials: &ProviderCredentialMaterial,
+    key: &str,
+    context: &str,
+) -> Result<String, AppError> {
+    provider_credentials.get(key).cloned().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "{context} requires source secret '{key}', but no credential material was available during source materialization"
+        ))
+    })
+}
+
+fn provider_source_input_value(
+    provider_credentials: &ProviderCredentialMaterial,
+    key: &str,
+    context: &str,
+) -> Result<String, AppError> {
+    provider_credentials.get(key).cloned().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "{context} requires source input '{key}', but no material was available during source materialization"
+        ))
+    })
+}
+
+fn validate_provider_header_name(name: &str, context: &str) -> Result<(), AppError> {
+    HeaderName::from_bytes(name.as_bytes())
+        .map(|_| ())
+        .map_err(|error| {
+            AppError::InvalidInput(format!(
+                "{context} auth header name '{name}' is invalid: {error}"
+            ))
+        })
+}
+
+fn literal_template_url(template: &ParsedTemplate, field: &str) -> Result<String, AppError> {
+    if template.tokens().next().is_some() {
+        return Err(AppError::FailedPrecondition(format!(
+            "{field} contains template tokens, but source materialization currently supports only literal provider acquisition URLs"
+        )));
+    }
+    Ok(template.raw().to_string())
+}
+
+fn literal_template_url_if_static(
+    template: Option<&ParsedTemplate>,
+    _field: &str,
+) -> Option<String> {
+    let template = template?;
+    if template.tokens().next().is_some() {
+        return None;
+    }
+    Some(template.raw().to_string())
+}
+
+fn literal_string_url(url: &str, field: &str) -> Result<String, AppError> {
+    if url.contains("{{") || url.contains("}}") {
+        return Err(AppError::FailedPrecondition(format!(
+            "{field} contains template tokens, but source materialization currently supports only literal provider acquisition URLs"
+        )));
+    }
+    Ok(url.to_string())
+}
+
+impl<'a> BlockingMcpStreamableHttpSession<'a> {
+    fn initialize(
+        interface_id: &str,
+        endpoint: &'a str,
+        request_headers: &'a [ProviderRequestHeader],
+    ) -> Result<Self, AppError> {
+        let mut session = Self {
+            endpoint,
+            request_headers,
+            session_id: None,
+            next_id: 1,
+        };
+        let initialize = json!({
+            "jsonrpc": "2.0",
+            "id": session.next_request_id(),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+            },
+        });
+        let response = session.post_json(&initialize, true)?;
+        session.remember_session_id(&response);
+        let value = response.value.ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "MCP interface '{interface_id}' initialize response was empty"
+            ))
+        })?;
+        json_rpc_result(interface_id, "initialize", value)?;
+        session.post_notification(interface_id, "notifications/initialized")?;
+        Ok(session)
+    }
+
+    fn post_request(&mut self, method: &str, params: &Value) -> Result<Value, AppError> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": self.next_request_id(),
+            "method": method,
+            "params": params,
+        });
+        let response = self.post_json(&request, true)?;
+        self.remember_session_id(&response);
+        response
+            .value
+            .ok_or_else(|| AppError::FailedPrecondition(format!("MCP {method} response was empty")))
+    }
+
+    fn post_notification(&mut self, interface_id: &str, method: &str) -> Result<(), AppError> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+        });
+        let response = self.post_json(&request, false)?;
+        self.remember_session_id(&response);
+        if let Some(value) = response.value
+            && let Some(error) = value.get("error")
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "MCP interface '{interface_id}' {method} returned JSON-RPC error: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn post_json(
+        &self,
+        body: &Value,
+        require_body: bool,
+    ) -> Result<ProviderJsonResponse, AppError> {
+        let request_headers = self.mcp_request_headers();
+        post_json_request_on_blocking_thread(self.endpoint, body, &request_headers, require_body)
+    }
+
+    fn mcp_request_headers(&self) -> Vec<ProviderRequestHeader> {
+        let mut headers = self.request_headers.to_vec();
+        headers.push(ProviderRequestHeader {
+            name: ACCEPT.as_str().to_string(),
+            value: MCP_ACCEPT.to_string(),
+        });
+        headers.push(ProviderRequestHeader {
+            name: MCP_PROTOCOL_VERSION_HEADER.to_string(),
+            value: MCP_PROTOCOL_VERSION.to_string(),
+        });
+        if let Some(session_id) = &self.session_id {
+            headers.push(ProviderRequestHeader {
+                name: MCP_SESSION_ID_HEADER.to_string(),
+                value: session_id.clone(),
+            });
+        }
+        headers
+    }
+
+    fn remember_session_id(&mut self, response: &ProviderJsonResponse) {
+        if let Some(session_id) = response
+            .headers
+            .get(&MCP_SESSION_ID_HEADER.to_ascii_lowercase())
+        {
+            self.session_id = Some(session_id.clone());
+        }
+    }
+
+    fn next_request_id(&mut self) -> u64 {
+        let request_id = self.next_id;
+        self.next_id += 1;
+        request_id
+    }
+}
+
+fn read_mcp_tools_list_streamable_http(
+    interface_id: &str,
+    endpoint: &str,
+    request_headers: &[ProviderRequestHeader],
+) -> Result<Value, AppError> {
+    let mut session =
+        BlockingMcpStreamableHttpSession::initialize(interface_id, endpoint, request_headers)?;
+    let mut all_tools = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        pages += 1;
+        if pages > MAX_MCP_TOOLS_LIST_PAGES {
+            return Err(AppError::FailedPrecondition(format!(
+                "MCP interface '{interface_id}' tools/list exceeded {MAX_MCP_TOOLS_LIST_PAGES} pages"
+            )));
+        }
+        let mut params = serde_json::Map::new();
+        if let Some(cursor) = cursor.take() {
+            params.insert("cursor".to_string(), Value::String(cursor));
+        }
+        let response = session.post_request("tools/list", &Value::Object(params))?;
+        let result = json_rpc_result(interface_id, "tools/list", response)?;
+        let tools = result
+            .get("tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "MCP interface '{interface_id}' tools/list result did not contain a tools array"
+                ))
+            })?;
+        all_tools.extend(tools);
+        cursor = result
+            .get("nextCursor")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(json!({
+        "protocol_version": null,
+        "server": {
+            "transport": "streamable_http",
+            "url": endpoint,
+        },
+        "tools": all_tools,
+        "tools_list_changed": false,
+    }))
+}
+
+fn json_rpc_result(interface_id: &str, method: &str, response: Value) -> Result<Value, AppError> {
+    let Value::Object(mut object) = response else {
+        return Err(AppError::FailedPrecondition(format!(
+            "MCP interface '{interface_id}' {method} response was not a JSON object"
+        )));
+    };
+    if let Some(error) = object.remove("error") {
+        return Err(AppError::FailedPrecondition(format!(
+            "MCP interface '{interface_id}' {method} returned JSON-RPC error: {error}"
+        )));
+    }
+    object.remove("result").ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "MCP interface '{interface_id}' {method} response did not include result"
+        ))
+    })
+}
+
+fn post_json_rpc_like_document(
+    endpoint: String,
+    body: &Value,
+    request_headers: &[ProviderRequestHeader],
+) -> Result<Value, AppError> {
+    let panic_endpoint = endpoint.clone();
+    let body = body.clone();
+    let request_headers = request_headers.to_vec();
+    std::thread::spawn(move || post_json_on_blocking_thread(&endpoint, &body, &request_headers))
+        .join()
+        .map_err(|_panic| {
+            AppError::Unavailable(format!(
+                "failed to POST provider descriptor '{panic_endpoint}': fetch thread panicked"
+            ))
+        })?
+}
+
+fn post_json_on_blocking_thread(
+    endpoint: &str,
+    body: &Value,
+    request_headers: &[ProviderRequestHeader],
+) -> Result<Value, AppError> {
+    post_json_request_on_blocking_thread(endpoint, body, request_headers, true)?
+        .value
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "provider descriptor response '{endpoint}' was empty"
+            ))
+        })
+}
+
+fn post_json_request_on_blocking_thread(
+    endpoint: &str,
+    body: &Value,
+    request_headers: &[ProviderRequestHeader],
+    require_body: bool,
+) -> Result<ProviderJsonResponse, AppError> {
+    let allows_http_loopback = ensure_allowed_descriptor_url(endpoint)?;
+    let redirect_policy = if request_headers.is_empty() {
+        descriptor_redirect_policy()
+    } else {
+        reqwest::redirect::Policy::none()
+    };
+    let mut client_builder = reqwest::blocking::Client::builder()
+        .timeout(DESCRIPTOR_FETCH_TIMEOUT)
+        .redirect(redirect_policy)
+        .user_agent(DESCRIPTOR_USER_AGENT);
+    if !allows_http_loopback {
+        client_builder = client_builder.https_only(true);
+    }
+    let client = client_builder.build().map_err(|error| {
+        AppError::Unavailable(format!(
+            "failed to build provider descriptor client for '{endpoint}': {error}"
+        ))
+    })?;
+    let request =
+        apply_provider_request_headers(client.post(endpoint).json(body), request_headers)?;
+    let mut response = request
+        .send()
+        .map_err(|error| AppError::Unavailable(format!("failed to POST '{endpoint}': {error}")))?;
+    if !descriptor_url_is_allowed(response.url()) {
+        return Err(AppError::FailedPrecondition(format!(
+            "provider descriptor '{endpoint}' redirected to disallowed URL '{}'",
+            response.url()
+        )));
+    }
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::Unavailable(format!(
+            "failed to POST provider descriptor '{endpoint}': HTTP {status}"
+        )));
+    }
+    let response_headers = blocking_response_headers(response.headers());
+    let media_type = response_headers
+        .get(CONTENT_TYPE.as_str())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let bytes =
+        read_bounded_descriptor_response(&mut response, endpoint, "provider descriptor response")?;
+    let value = if bytes.is_empty() {
+        None
+    } else {
+        Some(decode_provider_json_response(
+            endpoint,
+            media_type.as_deref(),
+            &bytes,
+        )?)
+    };
+    if require_body && value.is_none() {
+        return Err(AppError::FailedPrecondition(format!(
+            "provider descriptor response '{endpoint}' was empty"
+        )));
+    }
+    Ok(ProviderJsonResponse {
+        value,
+        headers: response_headers,
+    })
+}
+
+fn decode_provider_json_response(
+    endpoint: &str,
+    media_type: Option<&str>,
+    bytes: &[u8],
+) -> Result<Value, AppError> {
+    if media_type.is_some_and(|value| value.starts_with("text/event-stream")) {
+        return decode_sse_json_response(endpoint, bytes);
+    }
+    serde_json::from_slice(bytes).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "provider descriptor response '{endpoint}' was not JSON: {error}"
+        ))
+    })
+}
+
+fn decode_sse_json_response(endpoint: &str, bytes: &[u8]) -> Result<Value, AppError> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "provider descriptor response '{endpoint}' SSE stream was not UTF-8: {error}"
+        ))
+    })?;
+    for event in text.split("\n\n") {
+        let mut data = String::new();
+        for line in event.lines() {
+            if let Some(value) = line.strip_prefix("data:") {
+                data.push_str(value.trim_start());
+                data.push('\n');
+            }
+        }
+        let data = data.trim();
+        if !data.is_empty() {
+            return serde_json::from_str(data).map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "provider descriptor response '{endpoint}' SSE data was not JSON: {error}"
+                ))
+            });
+        }
+    }
+    Err(AppError::FailedPrecondition(format!(
+        "provider descriptor response '{endpoint}' SSE stream did not include a JSON data event"
+    )))
 }
 
 fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
@@ -622,7 +1590,7 @@ fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
 pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppError> {
     if !file.is_absolute() {
         return Err(AppError::InvalidInput(format!(
-            "OpenAPI descriptor '{}' is relative, but imported DSL v4 manifests must use absolute file descriptors. Use `coral source add --file <manifest>` so Coral can resolve relative descriptors from the manifest directory.",
+            "OpenAPI descriptor '{}' is relative, but SourceSpec manifests must use absolute file descriptors after import. Use `coral source add --file <manifest>` so Coral can resolve relative descriptors from the manifest directory.",
             file.display()
         )));
     }
@@ -643,223 +1611,167 @@ pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppEr
     Ok(canonical)
 }
 
-fn read_url_descriptor(url: &str) -> Result<Vec<u8>, AppError> {
-    let url = url.to_string();
-    let panic_url = url.clone();
-    std::thread::spawn(move || read_url_descriptor_on_blocking_thread(&url))
-        .join()
-        .map_err(|_panic| {
-            AppError::Unavailable(format!(
-                "failed to fetch OpenAPI descriptor '{panic_url}': fetch thread panicked"
-            ))
-        })?
-}
-
-fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError> {
-    ensure_https_descriptor_url(url)?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(DESCRIPTOR_FETCH_TIMEOUT)
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(DESCRIPTOR_USER_AGENT)
-        .build()
-        .map_err(|error| {
-            AppError::Unavailable(format!(
-                "failed to build OpenAPI descriptor client for '{url}': {error}"
+fn apply_provider_request_headers(
+    mut request: reqwest::blocking::RequestBuilder,
+    request_headers: &[ProviderRequestHeader],
+) -> Result<reqwest::blocking::RequestBuilder, AppError> {
+    for header in request_headers {
+        let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|error| {
+            AppError::InvalidInput(format!(
+                "provider descriptor header '{}' is invalid: {error}",
+                header.name
             ))
         })?;
-    let mut response = client.get(url).send().map_err(|error| {
+        let value = HeaderValue::from_str(&header.value).map_err(|error| {
+            AppError::InvalidInput(format!(
+                "provider descriptor header '{}' value is invalid: {error}",
+                header.name
+            ))
+        })?;
+        request = request.header(name, value);
+    }
+    Ok(request)
+}
+
+fn read_url_descriptor(
+    url: &str,
+    label: &'static str,
+    request_headers: &[ProviderRequestHeader],
+) -> Result<Vec<u8>, AppError> {
+    let url = url.to_string();
+    let panic_url = url.clone();
+    let request_headers = request_headers.to_vec();
+    std::thread::spawn(move || {
+        read_url_descriptor_on_blocking_thread(&url, label, &request_headers)
+    })
+    .join()
+    .map_err(|_panic| {
         AppError::Unavailable(format!(
-            "failed to fetch OpenAPI descriptor '{url}': {error}"
+            "failed to fetch {label} '{panic_url}': fetch thread panicked"
+        ))
+    })?
+}
+
+fn read_url_descriptor_on_blocking_thread(
+    url: &str,
+    label: &'static str,
+    request_headers: &[ProviderRequestHeader],
+) -> Result<Vec<u8>, AppError> {
+    let allows_http_loopback = ensure_allowed_descriptor_url(url)?;
+    let redirect_policy = if request_headers.is_empty() {
+        descriptor_redirect_policy()
+    } else {
+        reqwest::redirect::Policy::none()
+    };
+    let mut client_builder = reqwest::blocking::Client::builder()
+        .timeout(DESCRIPTOR_FETCH_TIMEOUT)
+        .redirect(redirect_policy)
+        .user_agent(DESCRIPTOR_USER_AGENT);
+    if !allows_http_loopback {
+        client_builder = client_builder.https_only(true);
+    }
+    let client = client_builder.build().map_err(|error| {
+        AppError::Unavailable(format!(
+            "failed to build {label} client for '{url}': {error}"
         ))
     })?;
-    if response.url().scheme() != "https" {
+    let request = apply_provider_request_headers(client.get(url), request_headers)?;
+    let mut response = request.send().map_err(|error| {
+        AppError::Unavailable(format!("failed to fetch {label} '{url}': {error}"))
+    })?;
+    if !descriptor_url_is_allowed(response.url()) {
         return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor '{url}' redirected to non-HTTPS URL '{}'",
+            "{label} '{url}' redirected to disallowed URL '{}'",
             response.url()
         )));
     }
     if !response.status().is_success() {
         return Err(AppError::Unavailable(format!(
-            "failed to fetch OpenAPI descriptor '{url}': HTTP {}",
+            "failed to fetch {label} '{url}': HTTP {}",
             response.status()
         )));
     }
+    read_bounded_descriptor_response(&mut response, url, label)
+}
+
+fn read_bounded_descriptor_response(
+    response: &mut reqwest::blocking::Response,
+    url: &str,
+    label: &str,
+) -> Result<Vec<u8>, AppError> {
     if let Some(length) = response.content_length()
         && length > MAX_DESCRIPTOR_BYTES
     {
         return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor '{url}' is too large: {length} bytes exceeds {MAX_DESCRIPTOR_BYTES}"
+            "{label} '{url}' is too large: {length} bytes exceeds {MAX_DESCRIPTOR_BYTES}"
         )));
     }
     let mut bytes = Vec::new();
     let mut limited = response.by_ref().take(MAX_DESCRIPTOR_BYTES + 1);
     limited.read_to_end(&mut bytes).map_err(|error| {
-        AppError::Unavailable(format!(
-            "failed to read OpenAPI descriptor '{url}': {error}"
-        ))
+        AppError::Unavailable(format!("failed to read {label} '{url}': {error}"))
     })?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_DESCRIPTOR_BYTES {
         return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor '{url}' is too large: exceeds {MAX_DESCRIPTOR_BYTES} bytes"
+            "{label} '{url}' is too large: exceeds {MAX_DESCRIPTOR_BYTES} bytes"
         )));
     }
     Ok(bytes)
 }
 
-fn ensure_https_descriptor_url(url: &str) -> Result<(), AppError> {
+fn blocking_response_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
+        })
+        .collect()
+}
+
+fn ensure_allowed_descriptor_url(url: &str) -> Result<bool, AppError> {
     let parsed = reqwest::Url::parse(url).map_err(|error| {
         AppError::InvalidInput(format!(
             "OpenAPI descriptor URL '{url}' is invalid: {error}"
         ))
     })?;
-    if parsed.scheme() != "https" {
+    if !descriptor_url_is_allowed(&parsed) {
         return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor URL '{url}' must use HTTPS"
+            "OpenAPI descriptor URL '{url}' must use HTTPS, except localhost development URLs"
         )));
     }
-    Ok(())
+    Ok(parsed.scheme() == "http")
 }
 
-fn stable_input_declarations_sha256(inputs: &[ManifestInputSpec]) -> Result<String, AppError> {
-    let stable = inputs.iter().map(stable_input_spec).collect::<Vec<_>>();
-    let bytes = serde_json::to_vec(&stable).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to encode DSL v4 input declarations fingerprint: {error}"
-        ))
-    })?;
-    Ok(sha256_hex(&bytes))
-}
-
-fn stable_input_spec(input: &ManifestInputSpec) -> Value {
-    json!({
-        "key": &input.key,
-        "kind": stable_input_kind(input.kind),
-        "required": input.required,
-        "default_value": &input.default_value,
-        "hint": &input.hint,
-        "credential": input.credential.as_ref().map(stable_credential_spec),
+fn descriptor_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.error("too many descriptor redirects");
+        }
+        if descriptor_url_is_allowed(attempt.url()) {
+            attempt.follow()
+        } else {
+            let target = attempt.url().to_string();
+            attempt.error(format!(
+                "descriptor redirect target '{target}' is disallowed"
+            ))
+        }
     })
 }
 
-fn stable_credential_spec(credential: &coral_spec::ManifestCredentialSpec) -> Value {
-    json!({
-        "methods": credential
-            .methods
-            .iter()
-            .map(stable_credential_method)
-            .collect::<Vec<_>>(),
-    })
-}
-
-fn stable_credential_method(method: &ManifestCredentialMethod) -> Value {
-    json!({
-        "kind": stable_credential_method_kind(method.kind),
-        "label": &method.label,
-        "description": &method.description,
-        "hint": &method.hint,
-        "oauth": method.oauth.as_ref().map(stable_oauth_credential),
-    })
-}
-
-fn stable_oauth_credential(oauth: &coral_spec::ManifestOAuthCredentialSpec) -> Value {
-    json!({
-        "flow": {
-            "kind": stable_oauth_flow_kind(oauth.flow.kind),
-            "pkce": stable_oauth_pkce_mode(oauth.flow.pkce),
+fn descriptor_url_is_allowed(url: &reqwest::Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => match url.host() {
+            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
         },
-        "redirect_uri": &oauth.redirect_uri,
-        "redirect_uri_port_mode": stable_redirect_uri_port_mode(oauth.redirect_uri_port_mode),
-        "authorization_url": &oauth.authorization_url,
-        "device_authorization_url": &oauth.device_authorization_url,
-        "token_url": &oauth.token_url,
-        "client": {
-            "id": {
-                "default": &oauth.client.id.default,
-                "input": &oauth.client.id.input,
-            },
-            "secret": oauth.client.secret.as_ref().map(|secret| json!({
-                "input": &secret.input,
-                "transport": stable_client_secret_transport(secret.transport),
-            })),
-        },
-        "scopes": oauth.scopes.as_ref().map(|scopes| json!({
-            "scope": {
-                "delimiter": stable_scope_delimiter(scopes.scope.delimiter),
-                "values": &scopes.scope.values,
-            },
-        })),
-    })
-}
-
-fn stable_input_kind(kind: ManifestInputKind) -> &'static str {
-    match kind {
-        ManifestInputKind::Variable => "variable",
-        ManifestInputKind::Secret => "secret",
+        _ => false,
     }
-}
-
-fn stable_credential_method_kind(kind: ManifestCredentialMethodKind) -> &'static str {
-    match kind {
-        ManifestCredentialMethodKind::SourceConfig => "source_config",
-        ManifestCredentialMethodKind::OAuth => "oauth",
-    }
-}
-
-fn stable_oauth_flow_kind(kind: ManifestOAuthFlowKind) -> &'static str {
-    match kind {
-        ManifestOAuthFlowKind::AuthorizationCode => "authorization_code",
-        ManifestOAuthFlowKind::DeviceCode => "device_code",
-    }
-}
-
-fn stable_oauth_pkce_mode(mode: ManifestOAuthPkceMode) -> &'static str {
-    match mode {
-        ManifestOAuthPkceMode::Required => "required",
-        ManifestOAuthPkceMode::Disabled => "disabled",
-    }
-}
-
-fn stable_redirect_uri_port_mode(mode: ManifestOAuthRedirectUriPortMode) -> &'static str {
-    match mode {
-        ManifestOAuthRedirectUriPortMode::Fixed => "fixed",
-        ManifestOAuthRedirectUriPortMode::Random => "random",
-    }
-}
-
-fn stable_client_secret_transport(transport: ManifestOAuthClientSecretTransport) -> &'static str {
-    match transport {
-        ManifestOAuthClientSecretTransport::BasicAuth => "basic_auth",
-        ManifestOAuthClientSecretTransport::RequestBody => "request_body",
-    }
-}
-
-fn stable_scope_delimiter(delimiter: ManifestOAuthScopeDelimiter) -> &'static str {
-    match delimiter {
-        ManifestOAuthScopeDelimiter::Space => "space",
-        ManifestOAuthScopeDelimiter::Comma => "comma",
-    }
-}
-
-fn read_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, AppError> {
-    let bytes = std::fs::read(path)?;
-    serde_yaml::from_slice(&bytes).map_err(AppError::from)
-}
-
-fn read_artifact_yaml<T: serde::de::DeserializeOwned>(
-    source_name: &SourceName,
-    artifact: &str,
-    path: &Path,
-) -> Result<T, AppError> {
-    read_yaml(path).map_err(|error| {
-        incompatible_materialization_error(
-            source_name,
-            format!(
-                "failed to read {artifact} artifact '{}': {error}",
-                path.display()
-            ),
-        )
-    })
 }
 
 fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
@@ -883,6 +1795,10 @@ pub(crate) fn new_materialization_suffix(prefix: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::thread::JoinHandle;
+
     use coral_spec::parse_source_manifest_yaml;
     use tempfile::TempDir;
 
@@ -890,10 +1806,6 @@ mod tests {
 
     fn workspace_name() -> WorkspaceName {
         WorkspaceName::default()
-    }
-
-    fn source_name() -> SourceName {
-        SourceName::parse("github_v4_materialization_test").expect("source name")
     }
 
     fn openapi_fixture() -> &'static str {
@@ -916,262 +1828,655 @@ paths:
 "
     }
 
-    fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
+    fn loopback_http_response(response: String) -> (String, JoinHandle<String>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback test server");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept descriptor request");
+            let mut buffer = [0_u8; 2048];
+            let read = stream.read(&mut buffer).expect("read descriptor request");
+            stream
+                .write_all(response.as_bytes())
+                .expect("write descriptor response");
+            let request_bytes = buffer.get(..read).expect("read length within buffer");
+            String::from_utf8_lossy(request_bytes).into_owned()
+        });
+        (format!("http://{addr}/descriptor"), handle)
+    }
+
+    fn loopback_http_conversation(responses: Vec<String>) -> (String, JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback test server");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept descriptor request");
+                let mut buffer = [0_u8; 4096];
+                let read = stream.read(&mut buffer).expect("read descriptor request");
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write descriptor response");
+                let request_bytes = buffer.get(..read).expect("read length within buffer");
+                requests.push(String::from_utf8_lossy(request_bytes).into_owned());
+            }
+            requests
+        });
+        (format!("http://{addr}/mcp"), handle)
+    }
+
+    fn http_response(status: &str, headers: &[(&str, &str)], body: &str) -> String {
+        let mut response = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\n", body.len());
+        for (name, value) in headers {
+            response.push_str(name);
+            response.push_str(": ");
+            response.push_str(value);
+            response.push_str("\r\n");
+        }
+        response.push_str("\r\n");
+        response.push_str(body);
+        response
+    }
+
+    fn graphql_fixture() -> &'static str {
+        r"
+type Query {
+  repository(owner: String, name: String): Repository
+}
+
+type Repository {
+  id: ID
+  name: String
+}
+"
+    }
+
+    fn build_source_spec_materialization_fixture()
+    -> (TempDir, AppStateLayout, SourceName, MaterializationBuild) {
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("openapi.yaml");
-        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
+        let graphql_file = descriptor_temp.path().join("schema.graphql");
+        let data_file = descriptor_temp.path().join("issues.jsonl");
+        std::fs::write(&openapi_file, openapi_fixture()).expect("write OpenAPI");
+        std::fs::write(&graphql_file, graphql_fixture()).expect("write GraphQL");
+        std::fs::write(&data_file, "{}\n").expect("write data");
 
         let state_temp = TempDir::new().expect("state temp dir");
         let layout =
             AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
+        let source_name = SourceName::parse("github_source_materialization_test").expect("source");
         let manifest_yaml = format!(
             r"
-name: github_v4_materialization_test
-dsl_version: 4
-surfaces:
+spec_version: 1
+kind: source
+name: github_source_materialization_test
+interfaces:
   - id: rest
     type: openapi
     file: {}
-    base_url: https://api.example.com
+  - id: graph
+    type: graphql
+    endpoint: https://api.example.com/graphql
+    schema:
+      kind: sdl_file
+      file: {}
+  - id: files
+    type: file
+    files:
+      - {}
+    format:
+      kind: jsonl
 ",
-            openapi_file.display()
+            openapi_file.display(),
+            graphql_file.display(),
+            data_file.display()
         );
-        let manifest = parse_source_manifest_yaml(&manifest_yaml)
-            .expect("parse v4 manifest")
-            .as_v4()
-            .expect("v4")
-            .clone();
-        let build = build_v4_materialization_tmp(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-            "test",
-        )
-        .expect("build materialization");
-        replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
-            .expect("install materialization");
-        (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
+        let manifest = parse_source_manifest_yaml(&manifest_yaml).expect("parse SourceSpec");
+
+        build_source_materialization_tmp(SourceMaterializationBuildRequest {
+            layout: &layout,
+            workspace_name: &workspace_name(),
+            source_name: &source_name,
+            identity: &crate::sources::model::InstalledSource::identity_for_name(&source_name),
+            manifest_yaml: &manifest_yaml,
+            manifest: &manifest,
+            temp_suffix: "test",
+            provider_credentials: &BTreeMap::new(),
+        })
+        .map(|build| (state_temp, layout, source_name, build))
+        .expect("build SourceSpec materialization")
     }
 
-    fn credential_method_hint_manifest(hint: &str) -> V4SourceManifest {
+    #[test]
+    fn source_spec_materialization_writes_capabilities_and_exports() {
+        let (_state_temp, layout, source_name, build) = build_source_spec_materialization_fixture();
+        assert_eq!(build.kind, MaterializationKind::SourceSpec);
+        assert!(build.temp_dir.join("artifacts.yaml").exists());
+        assert!(build.temp_dir.join("capabilities.yaml").exists());
+        assert!(build.temp_dir.join("exports/source-exports.yaml").exists());
+        assert!(
+            build
+                .temp_dir
+                .join("interfaces/rest/provider-snapshot.yaml")
+                .exists()
+        );
+        assert!(
+            build
+                .temp_dir
+                .join("interfaces/graph/provider-snapshot.yaml")
+                .exists()
+        );
+        let graphql_document = build
+            .temp_dir
+            .join("interfaces/graph")
+            .join(crate::graphql_documents::GENERATED_GRAPHQL_OPERATIONS_DIR)
+            .join("query_repository.graphql");
+        assert_eq!(
+            std::fs::read_to_string(&graphql_document).expect("read generated GraphQL document"),
+            "query QueryRepository($owner: String, $name: String) { repository(owner: $owner, name: $name) { __typename } }"
+        );
+        let artifacts: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(build.temp_dir.join("artifacts.yaml"))
+                .expect("read artifacts"),
+        )
+        .expect("parse artifacts");
+        assert_eq!(
+            artifacts
+                .pointer("/interfaces/graph/generated_operations_dir")
+                .and_then(Value::as_str),
+            Some("interfaces/graph/generated-graphql-operations")
+        );
+        let fingerprint: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(build.temp_dir.join("fingerprint.yaml"))
+                .expect("read fingerprint"),
+        )
+        .expect("parse fingerprint");
+        assert!(
+            fingerprint
+                .pointer("/interfaces/1/generated_operations_sha256")
+                .and_then(Value::as_str)
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read_to_string(build.temp_dir.join("interfaces/files/files/file_0"))
+                .expect("read installed file artifact"),
+            "{}\n"
+        );
+        assert!(
+            !build
+                .temp_dir
+                .join(deleted_artifact_name("projections"))
+                .exists()
+        );
+        assert!(
+            !build
+                .temp_dir
+                .join("interfaces/rest")
+                .join(deleted_artifact_name("semantic-ir"))
+                .exists()
+        );
+
+        let swap = replace_materialization(&layout, &workspace_name(), &source_name, &build)
+            .expect("install SourceSpec materialization");
+        assert_eq!(swap.kind, MaterializationKind::SourceSpec);
+        let installed = layout.source_materialized_dir(&workspace_name(), &source_name);
+        assert!(installed.join("capabilities.yaml").exists());
+        assert!(installed.join("exports/source-exports.yaml").exists());
+    }
+
+    #[test]
+    fn materialization_validation_requires_generated_graphql_operation_documents() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let graphql_file = descriptor_temp.path().join("schema.graphql");
+        std::fs::write(&graphql_file, graphql_fixture()).expect("write GraphQL");
+
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let source_name = SourceName::parse("missing_graphql_doc_test").expect("source");
         let manifest_yaml = format!(
             r"
-name: github_v4_materialization_test
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    file: /tmp/openapi.yaml
-    inputs:
-      ACCESS_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: source_config
-              label: Paste token
-              description: Configure a token manually.
-              hint: {hint}
-"
+spec_version: 1
+kind: source
+name: missing_graphql_doc_test
+interfaces:
+  - id: graph
+    type: graphql
+    endpoint: https://api.example.com/graphql
+    schema:
+      kind: sdl_file
+      file: {}
+",
+            graphql_file.display()
         );
-        parse_source_manifest_yaml(&manifest_yaml)
-            .expect("parse v4 manifest")
-            .as_v4()
-            .expect("v4")
-            .clone()
-    }
+        let manifest = parse_source_manifest_yaml(&manifest_yaml).expect("parse SourceSpec");
 
-    #[test]
-    fn input_declarations_fingerprint_includes_credential_method_hint() {
-        let first = credential_method_hint_manifest("Use source config one.");
-        let second = credential_method_hint_manifest("Use source config two.");
-
-        let first_hash =
-            stable_input_declarations_sha256(&first.surfaces.first().expect("surface").inputs)
-                .expect("first hash");
-        let second_hash =
-            stable_input_declarations_sha256(&second.surfaces.first().expect("surface").inputs)
-                .expect("second hash");
-
-        assert_ne!(first_hash, second_hash);
-    }
-
-    #[test]
-    fn load_v4_materialization_rejects_mismatched_manifest_hash() {
-        let (_state, _descriptor, layout, manifest_yaml, _manifest) = setup_materialization();
-        let changed_manifest_yaml = format!("description: changed\n{manifest_yaml}");
-        let changed_manifest = parse_source_manifest_yaml(&changed_manifest_yaml)
-            .expect("parse changed manifest")
-            .as_v4()
-            .expect("v4")
-            .clone();
-
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &changed_manifest_yaml,
-            &changed_manifest,
+        let build = build_source_materialization_tmp(SourceMaterializationBuildRequest {
+            layout: &layout,
+            workspace_name: &workspace_name(),
+            source_name: &source_name,
+            identity: &crate::sources::model::InstalledSource::identity_for_name(&source_name),
+            manifest_yaml: &manifest_yaml,
+            manifest: &manifest,
+            temp_suffix: "test",
+            provider_credentials: &BTreeMap::new(),
+        })
+        .expect("build SourceSpec materialization");
+        std::fs::remove_file(
+            build
+                .temp_dir
+                .join("interfaces/graph/generated-graphql-operations/query_repository.graphql"),
         )
-        .expect_err("changed manifest hash should fail");
+        .expect("remove generated GraphQL document");
+
+        let error = validate_source_materialization_temp_dir(&build.temp_dir, &source_name)
+            .expect_err("missing generated GraphQL document should fail validation");
 
         assert!(
             error
                 .to_string()
-                .contains("manifest fingerprint does not match installed manifest"),
+                .contains("missing generated GraphQL operation document"),
             "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn load_v4_materialization_rejects_corrupted_artifact_yaml_with_readd_guidance() {
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
-        std::fs::write(&fingerprint_path, b": not yaml").expect("corrupt fingerprint");
-
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-        )
-        .expect_err("corrupted artifact should fail");
-        let message = error.to_string();
-
-        assert!(
-            message.contains("missing or incompatible DSL v4 materialized artifacts"),
-            "unexpected error: {error}"
-        );
-        assert!(
-            message.contains("Re-add the source"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn load_v4_materialization_rejects_extra_fingerprint_surface() {
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
-        let mut fingerprint: serde_yaml::Value =
-            serde_yaml::from_slice(&std::fs::read(&fingerprint_path).expect("fingerprint"))
-                .expect("fingerprint yaml");
-        let surfaces = fingerprint
-            .get_mut("surfaces")
-            .and_then(serde_yaml::Value::as_sequence_mut)
-            .expect("surfaces");
-        let mut extra = surfaces.first().expect("first surface").clone();
-        extra
-            .as_mapping_mut()
-            .expect("surface mapping")
-            .insert("surface_id".into(), "extra".into());
-        surfaces.push(extra);
-        std::fs::write(
-            &fingerprint_path,
-            serde_yaml::to_string(&fingerprint).expect("encode fingerprint"),
-        )
-        .expect("write fingerprint");
-
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-        )
-        .expect_err("extra surface should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("fingerprint surface set mismatch"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn load_v4_materialization_rejects_corrupted_raw_source_document() {
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let raw_path = layout
-            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
-            .join("source-document.raw");
-        std::fs::write(&raw_path, b"corrupted").expect("corrupt raw descriptor");
-
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-        )
-        .expect_err("corrupted raw descriptor should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("raw source document hash does not match"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn load_v4_materialization_rejects_unreadable_raw_source_document_with_readd_guidance() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let raw_path = layout
-            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
-            .join("source-document.raw");
-        let original_permissions = std::fs::metadata(&raw_path)
-            .expect("raw descriptor metadata")
-            .permissions();
-        let mut unreadable_permissions = original_permissions.clone();
-        unreadable_permissions.set_mode(0o000);
-        std::fs::set_permissions(&raw_path, unreadable_permissions)
-            .expect("make raw descriptor unreadable");
-        if std::fs::read(&raw_path).is_ok() {
-            std::fs::set_permissions(&raw_path, original_permissions)
-                .expect("restore raw descriptor permissions");
-            return;
-        }
-
-        let result = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-        );
-
-        std::fs::set_permissions(&raw_path, original_permissions)
-            .expect("restore raw descriptor permissions");
-        let message = result
-            .expect_err("unreadable raw descriptor should fail")
-            .to_string();
-        assert!(
-            message.contains("missing or incompatible DSL v4 materialized artifacts"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("failed to read raw source document artifact"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("Re-add the source"),
-            "unexpected error: {message}"
         );
     }
 
     #[test]
     fn read_url_descriptor_rejects_non_https_urls() {
-        let error = read_url_descriptor_on_blocking_thread("http://example.com/openapi.yaml")
-            .expect_err("plain HTTP descriptor should fail");
+        let error = read_url_descriptor_on_blocking_thread(
+            "http://example.com/openapi.yaml",
+            "OpenAPI descriptor",
+            &[],
+        )
+        .expect_err("plain HTTP descriptor should fail");
 
         assert!(
             error.to_string().contains("must use HTTPS"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn descriptor_url_policy_allows_loopback_http_for_development() {
+        assert!(
+            !ensure_allowed_descriptor_url("https://example.com/openapi.yaml")
+                .expect("https descriptor")
+        );
+        assert!(
+            ensure_allowed_descriptor_url("http://localhost:3000/openapi.yaml")
+                .expect("localhost descriptor")
+        );
+        assert!(
+            ensure_allowed_descriptor_url("http://127.0.0.1:3000/openapi.yaml")
+                .expect("loopback descriptor")
+        );
+        assert!(
+            ensure_allowed_descriptor_url("http://[::1]:3000/openapi.yaml")
+                .expect("ipv6 loopback descriptor")
+        );
+    }
+
+    #[test]
+    fn read_url_descriptor_allows_loopback_http_for_development() {
+        let body = "openapi: 3.0.3\npaths: {}\n";
+        let (url, server) = loopback_http_response(http_response(
+            "200 OK",
+            &[("Content-Type", "application/yaml")],
+            body,
+        ));
+
+        let bytes = read_url_descriptor_on_blocking_thread(&url, "OpenAPI descriptor", &[])
+            .expect("read descriptor");
+        server.join().expect("server thread");
+        assert_eq!(bytes, body.as_bytes());
+    }
+
+    #[test]
+    fn read_url_descriptor_sends_provider_auth_headers() {
+        let body = "openapi: 3.0.3\npaths: {}\n";
+        let (url, server) = loopback_http_response(http_response(
+            "200 OK",
+            &[("Content-Type", "application/yaml")],
+            body,
+        ));
+
+        let bytes = read_url_descriptor_on_blocking_thread(
+            &url,
+            "OpenAPI descriptor",
+            &[ProviderRequestHeader {
+                name: "authorization".to_string(),
+                value: "Bearer secret-token".to_string(),
+            }],
+        )
+        .expect("read descriptor");
+        let request = server.join().expect("server thread");
+        assert_eq!(bytes, body.as_bytes());
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Bearer secret-token")),
+            "descriptor request did not include auth header:\n{request}"
+        );
+    }
+
+    #[test]
+    fn openapi_descriptor_acquisition_omits_cross_origin_provider_auth() {
+        let body = openapi_fixture();
+        let (url, server) = loopback_http_response(http_response(
+            "200 OK",
+            &[("Content-Type", "application/yaml")],
+            body,
+        ));
+        let interface = OpenApiInterface {
+            id: "rest".to_string(),
+            descriptor: OpenApiDescriptor::Url {
+                url: ParsedTemplate::parse(&url).expect("descriptor URL"),
+            },
+            base_url: Some(ParsedTemplate::parse("https://api.example.com").expect("base URL")),
+            auth: Some(AuthDescriptor::BearerInput {
+                key: "token".to_string(),
+            }),
+            inputs: Vec::new(),
+        };
+        let credentials = BTreeMap::from([("token".to_string(), "secret-token".to_string())]);
+
+        let bytes = read_openapi_interface_document(&interface, &credentials)
+            .expect("read OpenAPI descriptor");
+        let request = server.join().expect("server thread");
+
+        assert_eq!(bytes, body.as_bytes());
+        assert!(
+            !request
+                .lines()
+                .any(|line| line.to_ascii_lowercase().starts_with("authorization:")),
+            "cross-origin descriptor request leaked auth header:\n{request}"
+        );
+    }
+
+    #[test]
+    fn openapi_descriptor_acquisition_sends_same_origin_provider_auth() {
+        let body = openapi_fixture();
+        let (url, server) = loopback_http_response(http_response(
+            "200 OK",
+            &[("Content-Type", "application/yaml")],
+            body,
+        ));
+        let mut base_url = reqwest::Url::parse(&url).expect("descriptor URL");
+        base_url.set_path("/api");
+        let interface = OpenApiInterface {
+            id: "rest".to_string(),
+            descriptor: OpenApiDescriptor::Url {
+                url: ParsedTemplate::parse(&url).expect("descriptor URL"),
+            },
+            base_url: Some(ParsedTemplate::parse(base_url.as_str()).expect("base URL")),
+            auth: Some(AuthDescriptor::BearerInput {
+                key: "token".to_string(),
+            }),
+            inputs: Vec::new(),
+        };
+        let credentials = BTreeMap::from([("token".to_string(), "secret-token".to_string())]);
+
+        let bytes = read_openapi_interface_document(&interface, &credentials)
+            .expect("read OpenAPI descriptor");
+        let request = server.join().expect("server thread");
+
+        assert_eq!(bytes, body.as_bytes());
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Bearer secret-token")),
+            "same-origin descriptor request did not include auth header:\n{request}"
+        );
+    }
+
+    #[test]
+    fn post_json_descriptor_allows_loopback_http_for_development() {
+        let body = r#"{"data":{"__schema":{"queryType":{"name":"Query"}}}}"#;
+        let (url, server) = loopback_http_response(http_response(
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            body,
+        ));
+
+        let value =
+            post_json_on_blocking_thread(&url, &json!({ "query": "query { __schema }" }), &[])
+                .expect("POST descriptor");
+        server.join().expect("server thread");
+        assert_eq!(
+            value
+                .pointer("/data/__schema/queryType/name")
+                .and_then(Value::as_str),
+            Some("Query")
+        );
+    }
+
+    #[test]
+    fn graphql_introspection_query_requests_field_deprecation_metadata() {
+        assert!(GRAPHQL_INTROSPECTION_QUERY.contains("fields(includeDeprecated: true)"));
+        assert!(GRAPHQL_INTROSPECTION_QUERY.contains("isDeprecated"));
+        assert!(GRAPHQL_INTROSPECTION_QUERY.contains("deprecationReason"));
+    }
+
+    #[test]
+    fn materialization_auth_headers_resolve_secret_material() {
+        let mut credentials = BTreeMap::new();
+        credentials.insert("token".to_string(), "secret-token".to_string());
+        let headers = materialization_auth_headers(
+            Some(&AuthDescriptor::BearerInput {
+                key: "token".to_string(),
+            }),
+            "GraphQL live introspection",
+            &credentials,
+        )
+        .expect("auth headers");
+
+        assert_eq!(
+            headers,
+            vec![ProviderRequestHeader {
+                name: "authorization".to_string(),
+                value: "Bearer secret-token".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn materialization_auth_headers_reject_missing_secret_material() {
+        let error = materialization_auth_headers(
+            Some(&AuthDescriptor::HeaderInput {
+                name: "X-Api-Key".to_string(),
+                key: "token".to_string(),
+            }),
+            "MCP tools/list acquisition",
+            &BTreeMap::new(),
+        )
+        .expect_err("missing provider material should fail");
+
+        assert!(
+            error.to_string().contains("no credential material"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn descriptor_auth_headers_do_not_require_secret_for_cross_origin_descriptors() {
+        let headers = descriptor_materialization_auth_headers(
+            Some(&AuthDescriptor::BearerInput {
+                key: "token".to_string(),
+            }),
+            "GraphQL SDL URL acquisition",
+            &BTreeMap::new(),
+            "https://schemas.example.com/schema.graphql",
+            Some("https://api.example.com/graphql"),
+        )
+        .expect("cross-origin descriptor auth decision");
+
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn post_json_descriptor_sends_provider_auth_headers() {
+        let body = r#"{"data":{"__schema":{"queryType":{"name":"Query"}}}}"#;
+        let (url, server) = loopback_http_response(http_response(
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            body,
+        ));
+
+        let value = post_json_on_blocking_thread(
+            &url,
+            &json!({ "query": "query { __schema }" }),
+            &[
+                ProviderRequestHeader {
+                    name: "Authorization".to_string(),
+                    value: "Bearer secret-token".to_string(),
+                },
+                ProviderRequestHeader {
+                    name: "X-Api-Key".to_string(),
+                    value: "secret-key".to_string(),
+                },
+            ],
+        )
+        .expect("POST descriptor");
+        let request = server.join().expect("server thread").to_ascii_lowercase();
+        assert_eq!(
+            value
+                .pointer("/data/__schema/queryType/name")
+                .and_then(Value::as_str),
+            Some("Query")
+        );
+        assert!(
+            request.contains("\r\nauthorization: bearer secret-token\r\n"),
+            "request did not include authorization header:\n{request}"
+        );
+        assert!(
+            request.contains("\r\nx-api-key: secret-key\r\n"),
+            "request did not include custom auth header:\n{request}"
+        );
+    }
+
+    #[test]
+    fn mcp_tools_list_initializes_streamable_http_session() {
+        let (url, server) = loopback_http_conversation(vec![
+            http_response(
+                "200 OK",
+                &[
+                    ("Content-Type", "application/json"),
+                    (MCP_SESSION_ID_HEADER, "session-123"),
+                ],
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fixture","version":"0.1.0"}}}"#,
+            ),
+            http_response("202 Accepted", &[], ""),
+            http_response(
+                "200 OK",
+                &[("Content-Type", "application/json")],
+                r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"list_issues","inputSchema":{"type":"object"}}]}}"#,
+            ),
+        ]);
+
+        let value =
+            read_mcp_tools_list_streamable_http("tools", &url, &[]).expect("read tools/list");
+        let requests = server.join().expect("server thread");
+        assert_eq!(
+            value
+                .pointer("/tools/0/name")
+                .and_then(serde_json::Value::as_str),
+            Some("list_issues")
+        );
+        let [initialize, initialized, tools_list] = requests.as_slice() else {
+            panic!("expected three MCP requests, got {}", requests.len());
+        };
+        assert!(
+            initialize.contains(r#""method":"initialize""#),
+            "first request should initialize:\n{initialize}"
+        );
+        assert!(
+            initialized.contains(r#""method":"notifications/initialized""#),
+            "second request should send initialized notification:\n{initialized}"
+        );
+        assert!(
+            tools_list.contains(r#""method":"tools/list""#),
+            "third request should list tools:\n{tools_list}"
+        );
+        for request in [initialized, tools_list] {
+            let lower = request.to_ascii_lowercase();
+            assert!(
+                lower.contains("\r\nmcp-session-id: session-123\r\n"),
+                "request did not include MCP session id:\n{request}"
+            );
+            assert!(
+                lower.contains("\r\nmcp-protocol-version: 2025-06-18\r\n"),
+                "request did not include MCP protocol version:\n{request}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_tools_list_supports_stdio_transport() {
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fixture","version":"0.1.0"}}}\n' "$id"
+      ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echo","inputSchema":{"type":"object"}}]}}\n' "$id"
+      ;;
+  esac
+done
+"#;
+        let value = read_mcp_tools_list_stdio(
+            "tools",
+            "sh",
+            &["-c".to_string(), script.to_string()],
+            Vec::new(),
+        )
+        .expect("read stdio tools/list");
+
+        assert_eq!(
+            value.pointer("/tools/0/name").and_then(Value::as_str),
+            Some("echo")
+        );
+        assert_eq!(
+            value
+                .pointer("/tools/0/inputSchema/type")
+                .and_then(Value::as_str),
+            Some("object")
+        );
+    }
+
+    #[test]
+    fn post_json_descriptor_rejects_oversized_response_before_reading_body() {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{}}",
+            MAX_DESCRIPTOR_BYTES + 1
+        );
+        let (url, server) = loopback_http_response(response);
+
+        let error =
+            post_json_on_blocking_thread(&url, &json!({ "query": "query { __schema }" }), &[])
+                .expect_err("oversized POST descriptor should fail");
+        server.join().expect("server thread");
+        assert!(
+            error.to_string().contains("is too large"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn read_url_descriptor_rejects_disallowed_redirect_before_following() {
+        let (url, server) = loopback_http_response(http_response(
+            "302 Found",
+            &[("Location", "http://example.com/openapi.yaml")],
+            "",
+        ));
+
+        let error = read_url_descriptor_on_blocking_thread(&url, "OpenAPI descriptor", &[])
+            .expect_err("remote HTTP redirect should fail");
+        server.join().expect("server thread");
+        let message = error.to_string();
+        assert!(
+            message.contains("following redirect"),
             "unexpected error: {error}"
         );
     }

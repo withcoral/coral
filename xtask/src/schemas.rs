@@ -7,12 +7,12 @@ use anyhow::{Context, Result};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct Args {
-    /// Path to the generated DSL v4 source manifest schema.
+    /// Path to the generated `SourceSpec` schema.
     #[arg(
         long,
-        default_value = "crates/coral-spec/src/schema/source_manifest_v4.schema.json"
+        default_value = "crates/coral-spec/src/schema/source_spec.schema.json"
     )]
-    v4_schema: PathBuf,
+    source_spec_schema: PathBuf,
 
     /// Render in memory and diff against disk instead of writing.
     #[arg(long)]
@@ -20,19 +20,19 @@ pub(crate) struct Args {
 }
 
 pub(crate) fn run(args: &Args) -> Result<bool> {
-    let body = generated_v4_schema_body()?;
+    let body = generated_source_spec_schema_body()?;
     if args.check {
-        Ok(check_file(&args.v4_schema, &body))
+        Ok(check_file(&args.source_spec_schema, &body))
     } else {
-        write_if_changed(&args.v4_schema, &body)?;
+        write_if_changed(&args.source_spec_schema, &body)?;
         Ok(true)
     }
 }
 
-fn generated_v4_schema_body() -> Result<String> {
-    let schema = coral_spec::v4::generated_v4_source_manifest_schema();
+fn generated_source_spec_schema_body() -> Result<String> {
+    let schema = coral_spec::generated_source_spec_schema();
     let mut body =
-        serde_json::to_string_pretty(&schema).context("serializing generated DSL v4 schema")?;
+        serde_json::to_string_pretty(&schema).context("serializing generated SourceSpec schema")?;
     body.push('\n');
     Ok(body)
 }

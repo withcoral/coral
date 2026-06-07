@@ -9,39 +9,29 @@ description: "Discover community-maintained Coral source specs and import them i
 
 {/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
 
-Community sources are source specs built and maintained by our community. These are kept in the Coral repository under
-[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).
+Community sources are SourceSpec files built and maintained by our community. This page lists active community entries that use `spec_version: 1`, `kind: source`.
 
 <Note>
-  Community sources are not included in `coral source discover`, and `coral
-  source add <name>` only installs [bundled sources](/reference/bundled-sources).
-  Import community sources
-  with `coral source add --file`.
+  `coral source discover` lists only active bundled SourceSpec entries compiled into the CLI.
+  Import community sources with `coral source add --file`.
 </Note>
 
 ## Install a community source
 
-Clone the Coral repository so you have the source specs locally:
+Review the source's `SourceSpec` YAML, then add it from its file path:
 
 ```shellscript
-git clone https://github.com/withcoral/coral.git
-cd coral
-```
-
-Review the source's manifest and README when one exists, then add it from its manifest file:
-
-```shellscript
-coral source add --file sources/community/hn/manifest.yaml
-coral source test hn
+coral source add --file path/to/source.yaml
+coral source test <name>
 ```
 
 If a source declares inputs, Coral reads them from environment variables by default. Add `--interactive` to be prompted instead:
 
 ```shellscript
-coral source add --interactive --file sources/community/fly/manifest.yaml
+coral source add --interactive --file path/to/source.yaml
 ```
 
-After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes tables through `coral.tables`, `coral.columns`, the CLI, and MCP.
+After importing, the source behaves like any other installed source. It appears in `coral source list`, works with `coral source info <name> --verbose`, and exposes generated exports through MCP `search`/`describe`. SQL projections are available through the CLI and Code Mode when the generated source exports include SQL bindings.
 
 ## Available community sources
 
@@ -52,4 +42,4 @@ After importing, the source behaves like any other installed source. It appears 
 
 ## If a source is missing
 
-If the source you need is not bundled and does not have a community spec yet, [write a custom source spec](/guides/write-a-custom-source). If the source is generally useful, open a pull request that adds it under `sources/community` with a `manifest.yaml` and source-specific README.
+If the source you need does not have an active bundled or community SourceSpec yet, [write a custom source spec](/guides/write-a-custom-source). If the source is generally useful, open a pull request that adds the SourceSpec YAML and source-specific README.

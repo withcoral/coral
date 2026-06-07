@@ -628,8 +628,8 @@ mod tests {
         assert!(error.is_none());
         assert!(targets.would_enable("coral_client::grpc", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
-        assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
-        assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_sql", &tracing::Level::TRACE));
+        assert!(!targets.would_enable("coral_sql::datafusion", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral.http.body", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
@@ -642,8 +642,8 @@ mod tests {
         assert!(error.is_none());
         assert!(targets.would_enable("coral_client::grpc", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
-        assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
-        assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_sql", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_sql::datafusion", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
@@ -653,8 +653,8 @@ mod tests {
         let (targets, error) = trace_layer_filter(Some(DEFAULT_TRACE_FILTER), true);
 
         assert!(error.is_none());
-        assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
-        assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_sql", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral_sql::datafusion", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
@@ -663,7 +663,7 @@ mod tests {
     fn target_filtering_exporter_filters_finished_spans() {
         let memory = InMemorySpanExporter::default();
         let (targets, error) = build_trace_targets(
-            "coral_app=info,coral_engine::datafusion=off",
+            "coral_app=info,coral_sql::datafusion=off",
             DEFAULT_TRACE_FILTER,
         );
         assert!(error.is_none());
@@ -685,7 +685,7 @@ mod tests {
             let _dropped_debug = dropped_debug.enter();
 
             let dropped_datafusion =
-                tracing::trace_span!(target: "coral_engine::datafusion", "dropped_datafusion");
+                tracing::trace_span!(target: "coral_sql::datafusion", "dropped_datafusion");
             let _dropped_datafusion = dropped_datafusion.enter();
         });
         provider.force_flush().expect("flush spans");

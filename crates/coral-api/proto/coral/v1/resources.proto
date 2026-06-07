@@ -7,3 +7,64 @@ message Workspace {
   // Bare workspace name, such as `default`.
   string name = 1;
 }
+
+// Page request parameters for list-style APIs.
+message PaginationRequest {
+  // Maximum number of items to return. Zero means API-specific default or
+  // unbounded behavior.
+  uint32 limit = 1;
+  // Number of matching items to skip before returning results.
+  uint32 offset = 2;
+}
+
+// Page metadata returned by list-style APIs.
+message PaginationResponse {
+  // Matching item count before pagination.
+  uint32 total_count = 1;
+  // Applied result limit. Zero means unbounded.
+  uint32 limit = 2;
+  // Applied result offset.
+  uint32 offset = 3;
+  // Whether another page is available.
+  bool has_more = 4;
+  // Offset to request for the next page when `has_more` is true.
+  uint32 next_offset = 5;
+}
+
+// JSON null marker.
+message JsonNull {}
+
+// Generic JSON value.
+message JsonValue {
+  // JSON value kind.
+  oneof kind {
+    // Null value.
+    JsonNull null_value = 1;
+    // Boolean value.
+    bool bool_value = 2;
+    // Signed integer value.
+    int64 integer_value = 3;
+    // Unsigned integer value.
+    uint64 unsigned_integer_value = 4;
+    // Floating-point value.
+    double double_value = 5;
+    // String value.
+    string string_value = 6;
+    // Object value.
+    JsonObject object_value = 7;
+    // Array value.
+    JsonArray array_value = 8;
+  }
+}
+
+// Generic JSON object.
+message JsonObject {
+  // Object fields.
+  map<string, JsonValue> fields = 1;
+}
+
+// Generic JSON array.
+message JsonArray {
+  // Array values.
+  repeated JsonValue values = 1;
+}

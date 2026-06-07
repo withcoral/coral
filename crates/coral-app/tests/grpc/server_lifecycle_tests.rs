@@ -7,7 +7,8 @@
 //! `coral_app::shutdown_tracing` at process exit.
 
 use coral_api::v1::ListSourcesRequest;
-use coral_client::{AppClient, default_workspace, local::ServerBuilder};
+use coral_app::ServerBuilder;
+use coral_client::{AppClient, default_workspace};
 use tempfile::TempDir;
 use tonic::Request;
 

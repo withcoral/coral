@@ -36,16 +36,13 @@ fn coral_lint(file: &Path) -> std::process::Output {
 fn lint_accepts_valid_manifest() {
     let (_dir, path) = temp_manifest(
         r"
+spec_version: 1
+kind: source
 name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: https://example.com
-tables:
-  - name: messages
-    description: Demo messages
-    request:
-      path: /messages
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
 ",
     );
     let output = coral_lint(&path);
@@ -65,15 +62,9 @@ tables:
 fn lint_rejects_schema_violation() {
     let (_dir, path) = temp_manifest(
         r"
+spec_version: 1
 name: demo
-version: 1.0.0
-dsl_version: 3
-base_url: https://example.com
-tables:
-  - name: messages
-    description: Demo messages
-    request:
-      path: /messages
+interfaces: []
 ",
     );
     let output = coral_lint(&path);
@@ -81,8 +72,8 @@ tables:
     assert!(!output.status.success(), "expected non-zero exit status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("\"backend\" is a required property"),
-        "expected missing-backend schema error, got: {stderr}"
+        stderr.contains("source spec must declare spec_version: 1 and kind: source"),
+        "expected missing SourceSpec marker error, got: {stderr}"
     );
 }
 
@@ -90,21 +81,16 @@ tables:
 fn lint_rejects_semantic_violation() {
     let (_dir, path) = temp_manifest(
         r"
+spec_version: 1
+kind: source
 name: demo
-version: 1.0.0
-dsl_version: 3
-backend: http
-base_url: https://example.com
-tables:
-  - name: messages
-    description: Demo messages
-    request:
-      path: /messages
-    columns:
-      - name: id
-        type: Utf8
-      - name: id
-        type: Int64
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
 ",
     );
     let output = coral_lint(&path);
@@ -112,7 +98,7 @@ tables:
     assert!(!output.status.success(), "expected non-zero exit status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("duplicate column 'id'"),
-        "expected duplicate-column error, got: {stderr}"
+        stderr.contains("duplicate interface id 'rest'"),
+        "expected duplicate-interface error, got: {stderr}"
     );
 }

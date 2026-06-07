@@ -10,18 +10,21 @@ publish = false
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 arrow.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
+csv.workspace = true
 etcetera.workspace = true
 fs2.workspace = true
 keyring-core.workspace = true
+jsonschema.workspace = true
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
-regex.workspace = true
+parquet.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,6 +32,7 @@ serde_yaml.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
 toml.workspace = true
 toml_edit.workspace = true
@@ -43,9 +47,14 @@ url.workspace = true
 uuid.workspace = true
 
 coral-api.workspace = true
-coral-auth-aws = { path = "../auth/aws" }
-coral-engine.workspace = true
+coral-capabilities.workspace = true
+coral-client.workspace = true
+coral-code-mode = { workspace = true, features = ["code-mode"] }
+coral-exports.workspace = true
+coral-importers.workspace = true
+coral-sql.workspace = true
 coral-spec.workspace = true
+coral-upstream.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store.workspace = true
@@ -57,7 +66,6 @@ windows-native-keyring-store.workspace = true
 zbus-secret-service-keyring-store.workspace = true
 
 [dev-dependencies]
-coral-client.workspace = true
 prost.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

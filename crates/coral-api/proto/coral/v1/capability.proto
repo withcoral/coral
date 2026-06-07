@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Invokes one generated provider capability through the app-owned runtime.
+message InvokeCapabilityRequest {
+  // Workspace whose exports and credentials should authorize the invocation.
+  Workspace workspace = 1;
+  // Stable generated capability id.
+  string capability_id = 2;
+  // Captured typed binding ref, such as typescript:github.issues.addLabels.
+  string binding_ref = 3;
+  // Captured TypeScript binding path when invocation came from generated code.
+  repeated string binding_path = 4;
+  // JSON object arguments for the capability.
+  string args_json = 5;
+}
+
+// Structured invocation error.
+message InvokeCapabilityError {
+  // Stable error kind, such as invalid_args, unsupported_mutation, or not_found.
+  string kind = 1;
+  // Human-readable message.
+  string message = 2;
+  // Optional structured JSON details.
+  JsonValue details = 3;
+}
+
+// Invocation response.
+message InvokeCapabilityResponse {
+  // Whether the invocation succeeded.
+  bool ok = 1;
+  // JSON success value when ok.
+  JsonValue value = 2;
+  // Error when not ok.
+  InvokeCapabilityError error = 3;
+  // Provider response envelope, when available.
+  JsonValue envelope = 4;
+}
+
+// Capability invocation APIs.
+service CapabilityService {
+  // Invokes one generated provider capability.
+  rpc Invoke(InvokeCapabilityRequest) returns (InvokeCapabilityResponse);
+}

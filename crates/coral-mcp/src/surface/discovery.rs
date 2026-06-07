@@ -1,19 +1,10 @@
 use rmcp::ErrorData;
 use serde_json::{Map, Value};
 
-const DEFAULT_LIMIT: u32 = 50;
-const MAX_LIMIT: u32 = 200;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Pagination {
     pub(crate) limit: u32,
     pub(crate) offset: u32,
-}
-
-pub(crate) fn parse_pagination(
-    arguments: Option<&Map<String, Value>>,
-) -> Result<Pagination, ErrorData> {
-    parse_pagination_with_limits(arguments, DEFAULT_LIMIT, MAX_LIMIT)
 }
 
 pub(crate) fn parse_pagination_with_limits(

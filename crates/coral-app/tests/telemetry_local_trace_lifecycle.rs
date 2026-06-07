@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use coral_api::v1::ListTracesRequest;
 use coral_api::v1::trace_service_client::TraceServiceClient;
-use coral_client::local::ServerBuilder;
+use coral_app::ServerBuilder;
 use serde_json::json;
 use tempfile::TempDir;
 use tonic::Request;
@@ -93,14 +93,14 @@ fn write_trace(dir: &Path, trace_id: &str) {
         "start_time_unix_nanos": 1,
         "end_time_unix_nanos": 2,
         "duration_nanos": 1,
-        "attributes_json": "{}",
-        "events_json": "[]",
-        "links_json": "[]",
-        "resource_json": "{}",
+        "attributes": {},
+        "events": [],
+        "links": [],
+        "resource": {},
         "scope_name": "test",
         "scope_version": null,
         "scope_schema_url": null,
-        "scope_attributes_json": "{}",
+        "scope_attributes": {},
         "trace_flags": 0,
         "trace_state": "",
         "is_remote": false

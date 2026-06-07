@@ -47,8 +47,8 @@ impl QueryServiceApi for QueryService {
                     execution.arrow_schema(),
                     execution.batches(),
                 )
-                .map_err(coral_engine::CoreError::from)
-                .map_err(core_status)?,
+                .map_err(coral_sql::SqlError::from)
+                .map_err(|error| core_status(&error))?,
                 row_count: i64::try_from(execution.row_count()).unwrap_or(i64::MAX),
             };
             Ok(Response::new(response))
@@ -77,7 +77,7 @@ impl QueryServiceApi for QueryService {
     }
 }
 
-fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {
+fn query_plan_to_proto(plan: &coral_sql::QueryPlan) -> QueryPlanProto {
     QueryPlanProto {
         unoptimized_logical_plan: plan.unoptimized_logical_plan().to_string(),
         optimized_logical_plan: plan.optimized_logical_plan().to_string(),

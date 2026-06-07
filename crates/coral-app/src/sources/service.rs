@@ -524,6 +524,9 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
         workspace: Some(workspace_to_proto(workspace_name)),
         name: source.name.as_str().to_string(),
         version: source.version.unwrap_or_default(),
+        source_id: source.source_id,
+        display_name: source.display_name,
+        source_key: source.source_key,
         secrets: source
             .secrets
             .into_iter()

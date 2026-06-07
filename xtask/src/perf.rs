@@ -9,13 +9,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-const DEFAULT_SQL: &str = "select * from coral.tables";
+const DEFAULT_SQL: &str = "select * from perf_messages.read_files";
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct Args {
     /// Path to the release Coral binary to benchmark.
-    #[arg(long, default_value = "target/release/coral")]
-    coral_bin: PathBuf,
+    ///
+    /// Defaults to Cargo's active target directory, so environments with a
+    /// configured `target-dir` benchmark the binary that `cargo build` wrote.
+    #[arg(long)]
+    coral_bin: Option<PathBuf>,
 
     /// Fail when hyperfine reports a mean above this many seconds.
     #[arg(long, default_value_t = 0.75)]
@@ -28,17 +31,16 @@ pub(crate) struct Args {
     /// Number of hyperfine warmup runs.
     #[arg(long, default_value_t = 1)]
     warmup: u32,
-
-    /// Fake token used to install the GitHub source without real credentials.
-    #[arg(long, default_value = "coral-ci-fake-token")]
-    github_token: String,
 }
 
 pub(crate) fn run(args: &Args) -> Result<bool> {
     validate_args(args)?;
     require_command("hyperfine")?;
 
-    let coral_bin = absolute_path(&args.coral_bin)?;
+    let coral_bin = match &args.coral_bin {
+        Some(path) => absolute_path(path)?,
+        None => default_release_coral_bin()?,
+    };
     ensure_executable(&coral_bin)?;
 
     let temp_dir = TempDir::create("coral-tables-perf")?;
@@ -51,7 +53,7 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
     )
     .with_context(|| format!("writing {}", config_dir.join("config.toml").display()))?;
 
-    install_github_source(&coral_bin, &config_dir, &args.github_token)?;
+    install_perf_source(&coral_bin, &config_dir, temp_dir.path())?;
     run_coral_sql(&coral_bin, &config_dir)?;
 
     let result_json = temp_dir.path().join("hyperfine.json");
@@ -59,7 +61,7 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
 
     let result = load_hyperfine_result(&result_json)?;
     println!(
-        "coral.tables mean: {:.3}s (stddev {:.3}s, threshold {:.3}s)",
+        "perf SourceSpec table mean: {:.3}s (stddev {:.3}s, threshold {:.3}s)",
         result.mean, result.stddev, args.max_mean_seconds
     );
     if result.mean > args.max_mean_seconds {
@@ -89,9 +91,9 @@ fn require_command(command: &str) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .with_context(|| format!("{command} is required for the coral.tables performance check"))?;
+        .with_context(|| format!("{command} is required for the SQL performance check"))?;
     if !status.success() {
-        bail!("{command} is required for the coral.tables performance check");
+        bail!("{command} is required for the SQL performance check");
     }
     Ok(())
 }
@@ -105,6 +107,28 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
         .join(path))
 }
 
+fn default_release_coral_bin() -> Result<PathBuf> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version=1", "--no-deps", "--locked"])
+        .output()
+        .context("running cargo metadata to locate target directory")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("cargo metadata failed while locating target directory: {stderr}");
+    }
+
+    let metadata: Value =
+        serde_json::from_slice(&output.stdout).context("parsing cargo metadata JSON")?;
+    let target_dir = metadata
+        .get("target_directory")
+        .and_then(Value::as_str)
+        .context("cargo metadata JSON did not contain target_directory")?;
+
+    Ok(PathBuf::from(target_dir)
+        .join("release")
+        .join(format!("coral{}", std::env::consts::EXE_SUFFIX)))
+}
+
 fn ensure_executable(path: &Path) -> Result<()> {
     let metadata = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
     if !metadata.is_file() {
@@ -113,23 +137,48 @@ fn ensure_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn install_github_source(coral_bin: &Path, config_dir: &Path, github_token: &str) -> Result<()> {
+fn install_perf_source(coral_bin: &Path, config_dir: &Path, temp_dir: &Path) -> Result<()> {
+    let source_dir = temp_dir.join("perf-source");
+    fs::create_dir_all(&source_dir)
+        .with_context(|| format!("creating {}", source_dir.display()))?;
+    fs::write(
+        source_dir.join("messages.jsonl"),
+        "{\"id\":1,\"text\":\"hello\"}\n{\"id\":2,\"text\":\"world\"}\n",
+    )
+    .with_context(|| format!("writing {}", source_dir.join("messages.jsonl").display()))?;
+    let manifest = source_dir.join("manifest.yaml");
+    fs::write(
+        &manifest,
+        r"
+spec_version: 1
+kind: source
+name: perf_messages
+interfaces:
+  - id: read_files
+    type: file
+    files:
+      - ./messages.jsonl
+    format:
+      kind: jsonl
+",
+    )
+    .with_context(|| format!("writing {}", manifest.display()))?;
+
     let output = Command::new(coral_bin)
-        .args(["source", "add", "github"])
+        .args(["source", "add", "--file", path_to_str(&manifest)?])
         .env("CORAL_CONFIG_DIR", config_dir)
-        .env("GITHUB_TOKEN", github_token)
         .output()
-        .with_context(|| format!("running {} source add github", coral_bin.display()))?;
+        .with_context(|| format!("running {} source add --file", coral_bin.display()))?;
 
     let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
     log.push_str(&String::from_utf8_lossy(&output.stderr));
 
     if !output.status.success() {
         print!("{log}");
-        bail!("failed to install github source with fake credentials");
+        bail!("failed to install perf SourceSpec fixture");
     }
 
-    println!("Installed github source with fake credentials.");
+    println!("Installed perf SourceSpec fixture.");
     print_tail(&log, 20);
     Ok(())
 }
@@ -142,7 +191,7 @@ fn run_coral_sql(coral_bin: &Path, config_dir: &Path) -> Result<()> {
         .status()
         .with_context(|| format!("running {} sql", coral_bin.display()))?;
     if !status.success() {
-        bail!("coral.tables warmup query failed");
+        bail!("perf SQL warmup query failed");
     }
     Ok(())
 }
@@ -171,7 +220,7 @@ fn run_hyperfine(
             "--export-json",
             result_json,
             "--command-name",
-            "coral tables",
+            "coral perf source table",
             &command,
         ])
         .env("CORAL_CONFIG_DIR", config_dir)

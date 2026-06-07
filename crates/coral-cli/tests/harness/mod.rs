@@ -13,23 +13,26 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
-use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
+use coral_api::v1::code_mode_service_server::{CodeModeService, CodeModeServiceServer};
+use coral_api::v1::discovery_service_server::{DiscoveryService, DiscoveryServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
-    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response,
-    source_input_spec::Input as ProtoSourceInput,
+    CodeModeCellStarted, CodeModeRunCompleted, CodeModeRunEvent, CodeModeRunStarted,
+    CodeModeRunStatus, CreateBundledSourceRequest, CreateBundledSourceResponse,
+    CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse, DeleteSourceRequest,
+    DeleteSourceResponse, DescribeExportRequest, DescribeExportResponse, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, ExecCodeModeRequest, ExecCodeModeResponse, ExecuteSqlRequest,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, ExportBindingKind,
+    ExportDescription, ExportDiagnosticDescription, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    InitializeCodeModeRequest, InitializeCodeModeResponse, JsonObject, JsonValue,
+    ListSourcesRequest, ListSourcesResponse, QueryPlan, SearchExportItem, SearchExportsRequest,
+    SearchExportsResponse, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, Table, TerminateCodeModeRequest, ValidateSourceRequest,
+    ValidateSourceResponse, WaitCodeModeRequest, WaitCodeModeResponse, Workspace,
+    code_mode_run_event, create_bundled_source_with_o_auth_response, import_source_response,
+    json_value, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tempfile::TempDir;
@@ -57,6 +60,9 @@ fn mock_source() -> Source {
         variables: Vec::new(),
         origin: SourceOrigin::Bundled as i32,
         credential_storage: SourceCredentialStorage::File as i32,
+        source_id: "src_github".to_string(),
+        display_name: "github".to_string(),
+        source_key: "github".to_string(),
     }
 }
 
@@ -72,141 +78,9 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
     }
 }
 
-fn mock_visible_table() -> Table {
-    Table {
-        workspace: Some(workspace()),
-        schema_name: "local_messages".to_string(),
-        name: "messages".to_string(),
-        description: "Fixture messages".to_string(),
-        guide: "Query fixture messages.".to_string(),
-        columns: vec![
-            Column {
-                name: "owner".to_string(),
-                data_type: "Utf8".to_string(),
-                nullable: false,
-                is_virtual: true,
-                is_required_filter: true,
-                description: "Repository owner filter".to_string(),
-                ordinal_position: 0,
-            },
-            Column {
-                name: "repo".to_string(),
-                data_type: "Utf8".to_string(),
-                nullable: false,
-                is_virtual: true,
-                is_required_filter: true,
-                description: "Repository name filter".to_string(),
-                ordinal_position: 1,
-            },
-            Column {
-                name: "text".to_string(),
-                data_type: "Utf8".to_string(),
-                nullable: false,
-                is_virtual: false,
-                is_required_filter: false,
-                description: "Message text".to_string(),
-                ordinal_position: 2,
-            },
-        ],
-        required_filters: vec!["owner".to_string(), "repo".to_string()],
-    }
-}
-
-fn mock_visible_tables() -> Vec<Table> {
-    let messages = mock_visible_table();
-    let mut sessions = mock_visible_table();
-    sessions.name = "sessions".to_string();
-    sessions.description = "Fixture sessions".to_string();
-    sessions.guide = "Query fixture sessions.".to_string();
-    let mut events = mock_visible_table();
-    events.name = "events".to_string();
-    events.description = "Fixture events".to_string();
-    events.guide = "Query fixture events.".to_string();
-    vec![events, messages, sessions]
-}
-
-fn table_summary(table: &Table) -> TableSummary {
-    TableSummary {
-        workspace: table.workspace.clone(),
-        schema_name: table.schema_name.clone(),
-        name: table.name.clone(),
-        description: table.description.clone(),
-        required_filters: table.required_filters.clone(),
-        guide: table.guide.clone(),
-    }
-}
-
-fn paginate<T>(items: Vec<T>, pagination: PaginationRequest) -> (Vec<T>, PaginationResponse) {
-    let total = u32::try_from(items.len()).unwrap_or(u32::MAX);
-    let offset = usize::try_from(pagination.offset).expect("offset");
-    let limit = usize::try_from(pagination.limit).expect("limit");
-    let items = if pagination.limit == 0 {
-        items.into_iter().skip(offset).collect::<Vec<_>>()
-    } else {
-        items
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect::<Vec<_>>()
-    };
-    let returned_count = u32::try_from(items.len()).unwrap_or(u32::MAX);
-    let has_more =
-        pagination.limit != 0 && pagination.offset.saturating_add(returned_count) < total;
-    let next_offset = if has_more {
-        pagination.offset.saturating_add(returned_count)
-    } else {
-        0
-    };
-    (
-        items,
-        PaginationResponse {
-            total_count: total,
-            limit: pagination.limit,
-            offset: pagination.offset,
-            has_more,
-            next_offset,
-        },
-    )
-}
-
-fn table_matched_fields(table: &Table, regex: &regex::Regex) -> Vec<String> {
-    let name = format!("{}.{}", table.schema_name, table.name);
-    let candidates = [
-        ("schema_name", table.schema_name.as_str()),
-        ("table_name", table.name.as_str()),
-        ("name", name.as_str()),
-        ("description", table.description.as_str()),
-        ("guide", table.guide.as_str()),
-    ];
-    let mut matches = candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
-        .collect::<Vec<_>>();
-    if table
-        .required_filters
-        .iter()
-        .any(|filter| regex.is_match(filter))
-    {
-        matches.push("required_filters".to_string());
-    }
-    matches
-}
-
-fn column_matched_fields(column: &Column, regex: &regex::Regex) -> Vec<String> {
-    let candidates = [
-        ("column_name", column.name.as_str()),
-        ("description", column.description.as_str()),
-        ("data_type", column.data_type.as_str()),
-    ];
-    candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field.to_string()))
-        .collect()
-}
-
 fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
-    if sql.contains("FROM coral.tables") {
-        return mock_coral_tables_response();
+    if sql.contains("FROM information_schema.tables") {
+        return mock_information_schema_tables_response();
     }
 
     let (schema, batch, row_count) = if sql.contains("local_messages.messages") {
@@ -233,41 +107,23 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     }
 }
 
-fn mock_coral_tables_response() -> ExecuteSqlResponse {
+fn mock_information_schema_tables_response() -> ExecuteSqlResponse {
     let schema = Schema::new(vec![
-        Field::new("schema_name", DataType::Utf8, false),
-        Field::new("table_name", DataType::Utf8, false),
-        Field::new("description", DataType::Utf8, false),
-        Field::new("guide", DataType::Utf8, false),
-        Field::new("required_filters", DataType::Utf8, false),
+        Field::new("table_schema", DataType::Utf8, false),
+        Field::new("table_count", DataType::Int64, false),
     ]);
     let batch = RecordBatch::try_new(
         Arc::new(schema.clone()),
         vec![
-            Arc::new(StringArray::from(vec![
-                "local_messages",
-                "local_messages",
-                "local_messages",
-            ])),
-            Arc::new(StringArray::from(vec!["events", "messages", "sessions"])),
-            Arc::new(StringArray::from(vec![
-                "Fixture events",
-                "Fixture messages",
-                "Fixture sessions",
-            ])),
-            Arc::new(StringArray::from(vec![
-                "Query fixture events.",
-                "Query fixture messages.",
-                "Query fixture sessions.",
-            ])),
-            Arc::new(StringArray::from(vec!["", "owner,repo", ""])),
+            Arc::new(StringArray::from(vec!["local_messages"])),
+            Arc::new(Int64Array::from(vec![3_i64])),
         ],
     )
-    .expect("build coral.tables batch");
+    .expect("build information_schema.tables batch");
 
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
-        row_count: 3,
+        row_count: 1,
     }
 }
 
@@ -312,6 +168,142 @@ fn mock_validate_response() -> ValidateSourceResponse {
         ],
         table_functions: Vec::new(),
         query_tests: Vec::new(),
+    }
+}
+
+fn mock_search_exports_response(request: &SearchExportsRequest) -> SearchExportsResponse {
+    let items = if request.query.contains("missing") {
+        Vec::new()
+    } else {
+        vec![SearchExportItem {
+            alias: "github.rest.listIssues".to_string(),
+            full_path: "tools.github.rest.listIssues".to_string(),
+            capability_id: "src_github.rest.list_issues".to_string(),
+            refs: vec![
+                "typescript:github.rest.listIssues".to_string(),
+                "sql_table:github.list_issues".to_string(),
+            ],
+            source_id: "src_github".to_string(),
+            display_name: "github".to_string(),
+            source_key: "github".to_string(),
+            capability_kind: "query".to_string(),
+            effects: vec!["read".to_string()],
+            title: "List issues".to_string(),
+            description: "List GitHub issues".to_string(),
+            available_bindings: vec![
+                ExportBindingKind::Typescript as i32,
+                ExportBindingKind::SqlTable as i32,
+            ],
+            diagnostic_count: 0,
+            score: 100,
+            matched_fields: vec!["title".to_string()],
+            rank_reason: "mock rank".to_string(),
+            deprecated: false,
+            support_status: "generated".to_string(),
+        }]
+    };
+    let total = u32::try_from(items.len()).unwrap_or(u32::MAX);
+    SearchExportsResponse {
+        items,
+        total,
+        has_more: false,
+        next_offset: 0,
+        limit: request
+            .pagination
+            .as_ref()
+            .map_or(20, |pagination| pagination.limit),
+        offset: request
+            .pagination
+            .as_ref()
+            .map_or(0, |pagination| pagination.offset),
+        diagnostics: vec![ExportDiagnosticDescription {
+            code: "SOURCE_ARTIFACTS_UNAVAILABLE".to_string(),
+            severity: "warning".to_string(),
+            stage: "materialization".to_string(),
+            message: "stale source skipped".to_string(),
+            source_ref: "codex".to_string(),
+            details: Some(json_object_value([(
+                "source_name",
+                JsonValue {
+                    kind: Some(json_value::Kind::StringValue("codex".to_string())),
+                },
+            )])),
+        }],
+    }
+}
+
+fn mock_describe_export_response(request: &DescribeExportRequest) -> DescribeExportResponse {
+    if request.reference.contains("missing") {
+        return DescribeExportResponse {
+            found: false,
+            ambiguous: false,
+            entry: None,
+            candidates: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+    }
+    DescribeExportResponse {
+        found: true,
+        ambiguous: false,
+        entry: Some(ExportDescription {
+            capability_id: "src_github.rest.list_issues".to_string(),
+            alias: "github.rest.listIssues".to_string(),
+            refs: vec![
+                "typescript:github.rest.listIssues".to_string(),
+                "sql_table:github.list_issues".to_string(),
+            ],
+            source_id: "src_github".to_string(),
+            display_name: "github".to_string(),
+            source_key: "github".to_string(),
+            interface_id: "rest".to_string(),
+            operation_id: "list_issues".to_string(),
+            title: "List issues".to_string(),
+            description: "List GitHub issues".to_string(),
+            capability_kind: "query".to_string(),
+            effects: vec!["read".to_string()],
+            typescript_path: vec![
+                "github".to_string(),
+                "rest".to_string(),
+                "listIssues".to_string(),
+            ],
+            capability: Some(json_object_value([(
+                "operation_id",
+                JsonValue {
+                    kind: Some(json_value::Kind::StringValue("list_issues".to_string())),
+                },
+            )])),
+            typescript_binding: None,
+            sql_bindings: Vec::new(),
+            diagnostics: vec![ExportDiagnosticDescription {
+                code: "demo".to_string(),
+                severity: "warning".to_string(),
+                stage: "runtime".to_string(),
+                message: "demo diagnostic".to_string(),
+                source_ref: "github.yaml".to_string(),
+                details: Some(json_object_value([(
+                    "field",
+                    JsonValue {
+                        kind: Some(json_value::Kind::StringValue("query.q".to_string())),
+                    },
+                )])),
+            }],
+            full_path: "tools.github.rest.listIssues".to_string(),
+            deprecated: false,
+            support_status: "generated".to_string(),
+        }),
+        candidates: Vec::new(),
+        diagnostics: Vec::new(),
+    }
+}
+
+fn json_object_value(fields: impl IntoIterator<Item = (&'static str, JsonValue)>) -> JsonValue {
+    JsonValue {
+        kind: Some(json_value::Kind::ObjectValue(JsonObject {
+            fields: fields
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        })),
     }
 }
 
@@ -460,6 +452,9 @@ impl Default for MockServerConfig {
                         variables: Vec::new(),
                         origin: SourceOrigin::Bundled as i32,
                         credential_storage: SourceCredentialStorage::File as i32,
+                        source_id: "src_github".to_string(),
+                        display_name: "github".to_string(),
+                        source_key: "github".to_string(),
                     },
                     Source {
                         workspace: Some(workspace()),
@@ -469,6 +464,9 @@ impl Default for MockServerConfig {
                         variables: Vec::new(),
                         origin: SourceOrigin::Imported as i32,
                         credential_storage: SourceCredentialStorage::File as i32,
+                        source_id: "src_jira".to_string(),
+                        display_name: "jira".to_string(),
+                        source_key: "jira".to_string(),
                     },
                 ],
             }),
@@ -542,43 +540,15 @@ impl MockServerConfig {
     }
 }
 
-fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
-    let tables = mock_visible_tables()
-        .into_iter()
-        .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
-        .collect::<Vec<_>>();
-    let table_count = u32::try_from(tables.len()).unwrap_or(u32::MAX);
-    let items = tables
-        .into_iter()
-        .filter(|_| request.kind == 0 || request.kind == 1)
-        .map(|table| CatalogItem {
-            item: Some(catalog_item::Item::Table(table_summary(&table))),
-        })
-        .collect::<Vec<_>>();
-    let (items, pagination) = paginate(
-        items,
-        request.pagination.unwrap_or(PaginationRequest {
-            limit: 0,
-            offset: 0,
-        }),
-    );
-    ListCatalogResponse {
-        items,
-        pagination: Some(pagination),
-        counts: Some(CatalogCounts {
-            table_count,
-            table_function_count: 0,
-        }),
-    }
-}
-
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
-    list_catalog: Mutex<Vec<ListCatalogRequest>>,
-    search_catalog: Mutex<Vec<SearchCatalogRequest>>,
-    describe_table: Mutex<Vec<DescribeTableRequest>>,
-    list_columns: Mutex<Vec<ListColumnsRequest>>,
+    search_exports: Mutex<Vec<SearchExportsRequest>>,
+    describe_export: Mutex<Vec<DescribeExportRequest>>,
+    initialize_code_mode: Mutex<Vec<InitializeCodeModeRequest>>,
+    exec_code_mode: Mutex<Vec<ExecCodeModeRequest>>,
+    wait_code_mode: Mutex<Vec<WaitCodeModeRequest>>,
+    terminate_code_mode: Mutex<Vec<TerminateCodeModeRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
     get_source: Mutex<Vec<GetSourceRequest>>,
@@ -603,6 +573,150 @@ pub(crate) fn encode_arrow_ipc_stream(
         writer.finish()?;
     }
     Ok(bytes)
+}
+
+#[derive(Clone)]
+struct MockDiscoveryService {
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl DiscoveryService for MockDiscoveryService {
+    async fn search(
+        &self,
+        request: Request<SearchExportsRequest>,
+    ) -> Result<Response<SearchExportsResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .search_exports
+            .lock()
+            .expect("search exports capture")
+            .push(request.clone());
+        Ok(Response::new(mock_search_exports_response(&request)))
+    }
+
+    async fn describe(
+        &self,
+        request: Request<DescribeExportRequest>,
+    ) -> Result<Response<DescribeExportResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .describe_export
+            .lock()
+            .expect("describe export capture")
+            .push(request.clone());
+        Ok(Response::new(mock_describe_export_response(&request)))
+    }
+}
+
+#[derive(Clone)]
+struct MockCodeModeService {
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl CodeModeService for MockCodeModeService {
+    async fn initialize(
+        &self,
+        request: Request<InitializeCodeModeRequest>,
+    ) -> Result<Response<InitializeCodeModeResponse>, Status> {
+        self.captured
+            .initialize_code_mode
+            .lock()
+            .expect("initialize code mode capture")
+            .push(request.into_inner());
+        Ok(Response::new(InitializeCodeModeResponse {
+            protocol_version: 1,
+            workspace_id: "default".to_string(),
+            experimental_mutations: false,
+            supports_search: true,
+            supports_describe: true,
+            supports_sql: true,
+            supports_invoke: true,
+        }))
+    }
+
+    async fn exec(
+        &self,
+        request: Request<ExecCodeModeRequest>,
+    ) -> Result<Response<ExecCodeModeResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .exec_code_mode
+            .lock()
+            .expect("exec code mode capture")
+            .push(request);
+        Ok(Response::new(ExecCodeModeResponse {
+            run_id: "run_1".to_string(),
+            cell_id: "cell_1".to_string(),
+            status: CodeModeRunStatus::Completed as i32,
+            events: completed_code_mode_events(),
+        }))
+    }
+
+    async fn wait(
+        &self,
+        request: Request<WaitCodeModeRequest>,
+    ) -> Result<Response<WaitCodeModeResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .wait_code_mode
+            .lock()
+            .expect("wait code mode capture")
+            .push(request.clone());
+        Ok(Response::new(WaitCodeModeResponse {
+            run_id: request.run_id,
+            cell_id: "cell_1".to_string(),
+            status: CodeModeRunStatus::Completed as i32,
+            events: Vec::new(),
+        }))
+    }
+
+    async fn terminate(
+        &self,
+        request: Request<TerminateCodeModeRequest>,
+    ) -> Result<Response<WaitCodeModeResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .terminate_code_mode
+            .lock()
+            .expect("terminate code mode capture")
+            .push(request.clone());
+        Ok(Response::new(WaitCodeModeResponse {
+            run_id: request.run_id,
+            cell_id: "cell_1".to_string(),
+            status: CodeModeRunStatus::Terminated as i32,
+            events: Vec::new(),
+        }))
+    }
+}
+
+fn completed_code_mode_events() -> Vec<CodeModeRunEvent> {
+    vec![
+        CodeModeRunEvent {
+            id: 1,
+            event: Some(code_mode_run_event::Event::RunStarted(CodeModeRunStarted {
+                run_id: "run_1".to_string(),
+            })),
+        },
+        CodeModeRunEvent {
+            id: 2,
+            event: Some(code_mode_run_event::Event::CellStarted(
+                CodeModeCellStarted {
+                    run_id: "run_1".to_string(),
+                    cell_id: "cell_1".to_string(),
+                },
+            )),
+        },
+        CodeModeRunEvent {
+            id: 3,
+            event: Some(code_mode_run_event::Event::RunCompleted(
+                CodeModeRunCompleted {
+                    run_id: "run_1".to_string(),
+                },
+            )),
+        },
+    ]
 }
 
 #[derive(Clone)]
@@ -650,162 +764,6 @@ impl QueryService for MockQueryService {
                 optimized_logical_plan: "OptimizedLogicalPlan".to_string(),
                 physical_plan: "PhysicalPlan".to_string(),
             }),
-        }))
-    }
-}
-
-#[derive(Clone)]
-struct MockCatalogService {
-    captured: Arc<Captured>,
-}
-
-#[tonic::async_trait]
-impl CatalogService for MockCatalogService {
-    async fn list_catalog(
-        &self,
-        request: Request<ListCatalogRequest>,
-    ) -> Result<Response<ListCatalogResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .list_catalog
-            .lock()
-            .expect("list_catalog capture")
-            .push(request.clone());
-        Ok(Response::new(list_catalog_response(&request)))
-    }
-
-    async fn search_catalog(
-        &self,
-        request: Request<SearchCatalogRequest>,
-    ) -> Result<Response<SearchCatalogResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .search_catalog
-            .lock()
-            .expect("search_catalog capture")
-            .push(request.clone());
-        let pattern = regex::RegexBuilder::new(&request.pattern)
-            .case_insensitive(request.ignore_case)
-            .build()
-            .map_err(|error| Status::invalid_argument(format!("invalid regex pattern: {error}")))?;
-        let mut matches = Vec::new();
-        if request.kind == 0 || request.kind == 1 {
-            for table in mock_visible_tables().into_iter().filter(|table| {
-                request.schema_name.is_empty() || table.schema_name == request.schema_name
-            }) {
-                let matched_fields = table_matched_fields(&table, &pattern);
-                if !matched_fields.is_empty() {
-                    matches.push(CatalogSearchResult {
-                        item: Some(CatalogItem {
-                            item: Some(catalog_item::Item::Table(table_summary(&table))),
-                        }),
-                        matched_fields,
-                    });
-                }
-            }
-        }
-        let (items, pagination) = paginate(
-            matches,
-            request.pagination.unwrap_or(PaginationRequest {
-                limit: 20,
-                offset: 0,
-            }),
-        );
-        Ok(Response::new(SearchCatalogResponse {
-            items,
-            pagination: Some(pagination),
-        }))
-    }
-
-    async fn describe_table(
-        &self,
-        request: Request<DescribeTableRequest>,
-    ) -> Result<Response<DescribeTableResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .describe_table
-            .lock()
-            .expect("describe_table capture")
-            .push(request.clone());
-        let table = mock_visible_tables().into_iter().find(|table| {
-            table.schema_name == request.schema_name && table.name == request.table_name
-        });
-        if let Some(table) = table {
-            return Ok(Response::new(DescribeTableResponse {
-                table: Some(table),
-                suggestions: Vec::new(),
-                available_schemas: Vec::new(),
-                same_schema_tables: Vec::new(),
-            }));
-        }
-        let same_schema_tables = mock_visible_tables()
-            .into_iter()
-            .filter(|table| table.schema_name == request.schema_name)
-            .take(10)
-            .map(|table| table_summary(&table))
-            .collect();
-        Ok(Response::new(DescribeTableResponse {
-            table: None,
-            suggestions: Vec::new(),
-            available_schemas: vec!["local_messages".to_string()],
-            same_schema_tables,
-        }))
-    }
-
-    async fn list_columns(
-        &self,
-        request: Request<ListColumnsRequest>,
-    ) -> Result<Response<ListColumnsResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .list_columns
-            .lock()
-            .expect("list_columns capture")
-            .push(request.clone());
-        let table = mock_visible_tables()
-            .into_iter()
-            .find(|table| {
-                table.schema_name == request.schema_name && table.name == request.table_name
-            })
-            .ok_or_else(|| Status::not_found("table not found"))?;
-        let regex = request
-            .pattern
-            .as_deref()
-            .map(|pattern| {
-                regex::RegexBuilder::new(pattern)
-                    .case_insensitive(request.ignore_case)
-                    .build()
-                    .map_err(|error| {
-                        Status::invalid_argument(format!("invalid regex pattern: {error}"))
-                    })
-            })
-            .transpose()?;
-        let mut columns = Vec::new();
-        for column in table.columns {
-            if request.required_only && !column.is_required_filter {
-                continue;
-            }
-            let matched_fields = regex
-                .as_ref()
-                .map_or_else(Vec::new, |regex| column_matched_fields(&column, regex));
-            if regex.is_some() && matched_fields.is_empty() {
-                continue;
-            }
-            columns.push(ColumnSearchResult {
-                column: Some(column),
-                matched_fields,
-            });
-        }
-        let (columns, pagination) = paginate(
-            columns,
-            request.pagination.unwrap_or(PaginationRequest {
-                limit: 50,
-                offset: 0,
-            }),
-        );
-        Ok(Response::new(ListColumnsResponse {
-            columns,
-            pagination: Some(pagination),
         }))
     }
 }
@@ -992,13 +950,17 @@ impl MockServer {
         let config = Arc::new(config);
         let captured = Arc::new(Captured::default());
         let query_captured = Arc::clone(&captured);
-        let catalog_captured = Arc::clone(&captured);
+        let discovery_captured = Arc::clone(&captured);
+        let code_mode_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
             Server::builder()
-                .add_service(CatalogServiceServer::new(MockCatalogService {
-                    captured: catalog_captured,
+                .add_service(DiscoveryServiceServer::new(MockDiscoveryService {
+                    captured: discovery_captured,
+                }))
+                .add_service(CodeModeServiceServer::new(MockCodeModeService {
+                    captured: code_mode_captured,
                 }))
                 .add_service(QueryServiceServer::new(MockQueryService {
                     config: query_config,
@@ -1066,35 +1028,51 @@ impl MockServer {
             .clone()
     }
 
-    pub(crate) fn list_catalog_requests(&self) -> Vec<ListCatalogRequest> {
+    pub(crate) fn search_exports_requests(&self) -> Vec<SearchExportsRequest> {
         self.captured
-            .list_catalog
+            .search_exports
             .lock()
-            .expect("list_catalog capture")
+            .expect("search exports capture")
             .clone()
     }
 
-    pub(crate) fn search_catalog_requests(&self) -> Vec<SearchCatalogRequest> {
+    pub(crate) fn describe_export_requests(&self) -> Vec<DescribeExportRequest> {
         self.captured
-            .search_catalog
+            .describe_export
             .lock()
-            .expect("search_catalog capture")
+            .expect("describe export capture")
             .clone()
     }
 
-    pub(crate) fn describe_table_requests(&self) -> Vec<DescribeTableRequest> {
+    pub(crate) fn initialize_code_mode_requests(&self) -> Vec<InitializeCodeModeRequest> {
         self.captured
-            .describe_table
+            .initialize_code_mode
             .lock()
-            .expect("describe_table capture")
+            .expect("initialize code mode capture")
             .clone()
     }
 
-    pub(crate) fn list_columns_requests(&self) -> Vec<ListColumnsRequest> {
+    pub(crate) fn exec_code_mode_requests(&self) -> Vec<ExecCodeModeRequest> {
         self.captured
-            .list_columns
+            .exec_code_mode
             .lock()
-            .expect("list_columns capture")
+            .expect("exec code mode capture")
+            .clone()
+    }
+
+    pub(crate) fn wait_code_mode_requests(&self) -> Vec<WaitCodeModeRequest> {
+        self.captured
+            .wait_code_mode
+            .lock()
+            .expect("wait code mode capture")
+            .clone()
+    }
+
+    pub(crate) fn terminate_code_mode_requests(&self) -> Vec<TerminateCodeModeRequest> {
+        self.captured
+            .terminate_code_mode
+            .lock()
+            .expect("terminate code mode capture")
             .clone()
     }
 
