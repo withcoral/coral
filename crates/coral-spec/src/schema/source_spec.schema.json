@@ -74,6 +74,13 @@
           "type": "string",
           "default": ""
         },
+        "allowed_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
         "label": {
           "type": [
             "string",

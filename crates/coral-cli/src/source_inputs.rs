@@ -66,15 +66,17 @@ pub(crate) enum SourceInputDecodeError {
 pub(crate) fn manifest_input_from_proto(
     input: &SourceInputSpec,
 ) -> Result<ManifestInputSpec, SourceInputDecodeError> {
-    let (kind, default_value, credential) = match input.input.as_ref() {
+    let (kind, default_value, allowed_values, credential) = match input.input.as_ref() {
         Some(ProtoSourceInput::Variable(variable)) => (
             ManifestInputKind::Variable,
             variable.default_value.clone(),
+            variable.allowed_values.clone(),
             None,
         ),
         Some(ProtoSourceInput::Secret(secret)) => (
             ManifestInputKind::Secret,
             String::new(),
+            Vec::new(),
             secret
                 .credential
                 .as_ref()
@@ -92,6 +94,7 @@ pub(crate) fn manifest_input_from_proto(
         kind,
         required: input.required,
         default_value,
+        allowed_values,
         hint: (!input.hint.is_empty()).then(|| input.hint.clone()),
         credential,
     })
@@ -273,11 +276,31 @@ mod tests {
     use coral_api::v1::{
         OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialEndpoints,
         OAuthCredentialMethod, SourceConfigCredentialMethod, SourceSecretInput,
-        source_credential_method::Method as ProtoCredentialMethod,
+        SourceVariableInput, source_credential_method::Method as ProtoCredentialMethod,
         source_input_spec::Input as ProtoSourceInput,
     };
 
     use super::*;
+
+    #[test]
+    fn manifest_input_from_proto_preserves_variable_allowed_values() {
+        let input = SourceInputSpec {
+            key: "DD_SITE".to_string(),
+            required: true,
+            hint: String::new(),
+            input: Some(ProtoSourceInput::Variable(SourceVariableInput {
+                default_value: "datadoghq.com".to_string(),
+                allowed_values: vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()],
+            })),
+        };
+
+        let input = manifest_input_from_proto(&input).expect("manifest input");
+        assert_eq!(input.default_value, "datadoghq.com");
+        assert_eq!(
+            input.allowed_values,
+            vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()]
+        );
+    }
 
     #[test]
     fn manifest_input_from_proto_preserves_credential_methods() {

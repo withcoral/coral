@@ -203,6 +203,8 @@ struct RawInput {
     #[serde(default)]
     default: String,
     #[serde(default)]
+    allowed_values: Vec<String>,
+    #[serde(default)]
     label: Option<String>,
     #[serde(default)]
     hint: Option<String>,
@@ -767,6 +769,7 @@ fn parse_inputs(
                     input.key
                 )));
             }
+            validate_input_allowed_values(source_name, owner, input, kind)?;
             if kind == ManifestInputKind::Variable && credential_like_input_key(&input.key) {
                 return Err(ManifestError::validation(format!(
                     "source '{source_name}' {owner} input '{}' looks credential-like and must use kind: secret",
@@ -780,11 +783,56 @@ fn parse_inputs(
                 kind,
                 required: input.required,
                 default_value: input.default.clone(),
+                allowed_values: input.allowed_values.clone(),
                 hint: input.hint.clone().or_else(|| input.label.clone()),
                 credential,
             })
         })
         .collect()
+}
+
+fn validate_input_allowed_values(
+    source_name: &str,
+    owner: &str,
+    input: &RawInput,
+    kind: ManifestInputKind,
+) -> Result<()> {
+    if input.allowed_values.is_empty() {
+        return Ok(());
+    }
+    if kind == ManifestInputKind::Secret {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' {owner} secret input '{}' must not declare allowed_values",
+            input.key
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for value in &input.allowed_values {
+        if value.is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' {owner} input '{}' allowed_values must not contain an empty value",
+                input.key
+            )));
+        }
+        if !seen.insert(value.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' {owner} input '{}' declares duplicate allowed value '{value}'",
+                input.key
+            )));
+        }
+    }
+    if !input.default.is_empty()
+        && !input
+            .allowed_values
+            .iter()
+            .any(|allowed| allowed == &input.default)
+    {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' {owner} input '{}' default must be one of allowed_values",
+            input.key
+        )));
+    }
+    Ok(())
 }
 
 fn parse_credential(
@@ -1753,6 +1801,63 @@ interfaces:
         )
         .expect_err("secret default rejected");
         assert!(error.to_string().contains("must not declare a default"));
+    }
+
+    #[test]
+    fn parses_variable_allowed_values() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+spec_version: 1
+kind: source
+name: datadog
+inputs:
+  - key: DD_SITE
+    kind: variable
+    default: datadoghq.com
+    allowed_values:
+      - datadoghq.com
+      - datadoghq.eu
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    base_url: https://api.{{input.DD_SITE}}
+",
+        )
+        .expect("allowed values should parse");
+        let input = manifest
+            .declared_inputs
+            .iter()
+            .find(|input| input.key == "DD_SITE")
+            .expect("DD_SITE input");
+        assert_eq!(
+            input.allowed_values,
+            vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()]
+        );
+    }
+
+    #[test]
+    fn variable_default_must_be_in_allowed_values() {
+        let error = parse_source_manifest_yaml(
+            r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: DD_SITE
+    kind: variable
+    default: datadoghq.com
+    allowed_values:
+      - datadoghq.eu
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    base_url: https://api.{{input.DD_SITE}}
+",
+        )
+        .expect_err("default outside allowed_values should fail");
+        assert!(error.to_string().contains("default must be one of"));
     }
 
     #[test]

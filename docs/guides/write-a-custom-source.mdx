@@ -275,10 +275,16 @@ inputs:
   - key: API_BASE
     kind: variable
     default: https://api.example.com
+    allowed_values:
+      - https://api.example.com
   - key: API_TOKEN
     kind: secret
     required: true
 ```
+
+Use `allowed_values` when a non-secret variable selects a constrained provider
+site, region, tenant host, or other value used in credentialed provider URLs.
+The default must be one of the allowed values.
 
 For interactive OAuth collection, put the OAuth contract on the secret input:
 

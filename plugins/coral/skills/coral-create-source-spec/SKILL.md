@@ -97,6 +97,9 @@ snapshots.
 - `name` is an install-time proposal for display/source key, not identity.
 - Interface ids must match `[a-z][a-z0-9_]*`.
 - Use source variables for non-secret configuration.
+- Use `allowed_values` for non-secret variables that choose constrained
+  provider sites, regions, tenant hosts, or other values used in credentialed
+  provider URLs.
 - Use source secrets for credentials. API keys, bearer tokens, OAuth tokens,
   passwords, private keys, and authorization header values must be `kind:
   secret`.
@@ -123,7 +126,8 @@ snapshots.
   GraphQL `endpoint`, and GraphQL live-introspection endpoint overrides may use
   `{{input.KEY}}` URL templates. Provider URL templates must reference declared
   `kind: variable` inputs only; never use secret inputs or inline defaults in
-  those URL templates.
+  those URL templates. Constrain provider-host variables with
+  `allowed_values`.
 - Add `test_queries` only for cheap read-only SQL checks.
 - Do not assume every capability gets a SQL binding. Mutations, actions,
   ambiguous output, and most upstream MCP tools are TypeScript-callable only.

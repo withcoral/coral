@@ -7,6 +7,13 @@ inputs:
     kind: variable
     label: Datadog site
     default: datadoghq.com
+    allowed_values:
+      - datadoghq.com
+      - datadoghq.eu
+      - us3.datadoghq.com
+      - us5.datadoghq.com
+      - ap1.datadoghq.com
+      - ap2.datadoghq.com
     hint: Datadog site host for your org, such as datadoghq.com, datadoghq.eu, us3.datadoghq.com, us5.datadoghq.com, ap1.datadoghq.com, or ap2.datadoghq.com. The Datadog MCP Server does not support GovCloud sites.
     required: true
   - key: DD_API_KEY

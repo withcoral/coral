@@ -778,6 +778,7 @@ fn collect_inputs_with_hint(
             }
             continue;
         }
+        validate_input_allowed_value(input, &value, "source input")?;
         match input.kind {
             ManifestInputKind::Variable => variables.push(SourceVariable {
                 key: input.key.clone(),
@@ -1693,6 +1694,7 @@ pub(crate) fn finalize_input_value(
     kind_label: &str,
 ) -> Result<Option<String>, anyhow::Error> {
     if !value.is_empty() {
+        validate_input_allowed_value(input, &value, kind_label)?;
         return Ok(Some(value));
     }
     if input.required {
@@ -1702,6 +1704,24 @@ pub(crate) fn finalize_input_value(
         ));
     }
     Ok(None)
+}
+
+fn validate_input_allowed_value(
+    input: &ManifestInputSpec,
+    value: &str,
+    kind_label: &str,
+) -> Result<(), anyhow::Error> {
+    if input.allowed_values.is_empty()
+        || input.allowed_values.iter().any(|allowed| allowed == value)
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{kind_label} '{}' value '{}' is not allowed; expected one of: {}",
+        input.key,
+        value,
+        input.allowed_values.join(", ")
+    );
 }
 
 #[cfg(test)]
@@ -1740,6 +1760,7 @@ mod tests {
                 kind: ManifestInputKind::Variable,
                 required: false,
                 default_value: "https://api.linear.app".to_string(),
+                allowed_values: Vec::new(),
                 hint: None,
                 credential: None,
             },
@@ -1748,6 +1769,7 @@ mod tests {
                 kind: ManifestInputKind::Secret,
                 required: true,
                 default_value: String::new(),
+                allowed_values: Vec::new(),
                 hint: None,
                 credential: None,
             },
@@ -1774,6 +1796,7 @@ mod tests {
             kind: ManifestInputKind::Secret,
             required: false,
             default_value: String::new(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: Some(ManifestCredentialSpec {
                 methods: vec![ManifestCredentialMethod {
@@ -1806,6 +1829,7 @@ mod tests {
             kind: ManifestInputKind::Secret,
             required: true,
             default_value: String::new(),
+            allowed_values: Vec::new(),
             hint: input_hint.map(ToString::to_string),
             credential: Some(ManifestCredentialSpec {
                 methods: vec![method.clone()],
@@ -1870,6 +1894,7 @@ mod tests {
             kind: ManifestInputKind::Variable,
             required: false,
             default_value: String::new(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: None,
         };
@@ -1878,6 +1903,7 @@ mod tests {
             kind: ManifestInputKind::Secret,
             required: false,
             default_value: String::new(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: None,
         };
@@ -1893,6 +1919,7 @@ mod tests {
             kind: ManifestInputKind::Variable,
             required: false,
             default_value: "https://example.com".to_string(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: None,
         }];
@@ -1910,6 +1937,7 @@ mod tests {
             kind: ManifestInputKind::Variable,
             required: true,
             default_value: "https://example.com".to_string(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: None,
         }];
@@ -1921,6 +1949,26 @@ mod tests {
     }
 
     #[test]
+    fn collect_inputs_rejects_values_outside_allowed_values() {
+        let inputs = vec![ManifestInputSpec {
+            key: "DD_SITE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "datadoghq.com".to_string(),
+            allowed_values: vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()],
+            hint: None,
+            credential: None,
+        }];
+        let error = collect_inputs_with_hint(
+            &inputs,
+            |_| "datadoghq.com.attacker.example".to_string(),
+            None,
+        )
+        .expect_err("invalid allowed value should fail");
+        assert!(error.to_string().contains("not allowed"));
+    }
+
+    #[test]
     fn collect_inputs_errors_on_missing_required() {
         let inputs = vec![
             ManifestInputSpec {
@@ -1928,6 +1976,7 @@ mod tests {
                 kind: ManifestInputKind::Secret,
                 required: true,
                 default_value: String::new(),
+                allowed_values: Vec::new(),
                 hint: None,
                 credential: None,
             },
@@ -1936,6 +1985,7 @@ mod tests {
                 kind: ManifestInputKind::Variable,
                 required: true,
                 default_value: String::new(),
+                allowed_values: Vec::new(),
                 hint: None,
                 credential: None,
             },
@@ -1964,6 +2014,7 @@ mod tests {
             kind: ManifestInputKind::Variable,
             required: false,
             default_value: String::new(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: None,
         }];
@@ -1980,6 +2031,7 @@ mod tests {
             kind: ManifestInputKind::Variable,
             required: false,
             default_value: "https://example.com".to_string(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: None,
         };
@@ -1997,6 +2049,7 @@ mod tests {
             kind: ManifestInputKind::Variable,
             required: true,
             default_value: "datadoghq.com".to_string(),
+            allowed_values: vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()],
             hint: None,
             credential: None,
         };
@@ -2013,12 +2066,33 @@ mod tests {
     }
 
     #[test]
+    fn finalize_input_value_rejects_values_outside_allowed_values() {
+        let input = ManifestInputSpec {
+            key: "DD_SITE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "datadoghq.com".to_string(),
+            allowed_values: vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()],
+            hint: None,
+            credential: None,
+        };
+        let error = finalize_input_value(
+            &input,
+            "datadoghq.com.attacker.example".to_string(),
+            "source variable",
+        )
+        .expect_err("invalid allowed value should fail");
+        assert!(error.to_string().contains("not allowed"));
+    }
+
+    #[test]
     fn empty_required_input_without_default_is_rejected() {
         let input = ManifestInputSpec {
             key: "API_TOKEN".to_string(),
             kind: ManifestInputKind::Secret,
             required: true,
             default_value: String::new(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: None,
         };

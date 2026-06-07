@@ -1244,6 +1244,23 @@ fn validate_bindings(
         }
     }
 
+    for input in &candidate.inputs {
+        if input.kind != ManifestInputKind::Variable || input.allowed_values.is_empty() {
+            continue;
+        }
+        let Some(value) = variable_values.get(&input.key) else {
+            continue;
+        };
+        if !input.allowed_values.iter().any(|allowed| allowed == value) {
+            return Err(AppError::InvalidInput(format!(
+                "source variable '{}' value '{}' is not allowed; expected one of: {}",
+                input.key,
+                value,
+                input.allowed_values.join(", ")
+            )));
+        }
+    }
+
     Ok(ValidatedBindings {
         variables: variable_values,
         replaced_oauth_inputs: secret_values.keys().cloned().collect(),
@@ -1509,8 +1526,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        OAuthInstallTail, SourceManager, ValidatedBindings, durable_import_manifest_yaml,
-        normalize_binding_key,
+        OAuthInstallTail, SourceBinding, SourceBindings, SourceManager, ValidatedBindings,
+        durable_import_manifest_yaml, normalize_binding_key, validate_bindings,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::sources::SourceName;
@@ -1563,6 +1580,42 @@ interfaces:
             std::fs::read_to_string(manifest_path).expect("manifest file"),
             manifest_yaml
         );
+    }
+
+    #[test]
+    fn validate_bindings_rejects_values_outside_allowed_values() {
+        let manifest_yaml = r"
+spec_version: 1
+kind: source
+name: datadog
+inputs:
+  - key: DD_SITE
+    kind: variable
+    default: datadoghq.com
+    allowed_values:
+      - datadoghq.com
+      - datadoghq.eu
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    base_url: https://api.{{input.DD_SITE}}
+";
+        let candidate =
+            describe_manifest(manifest_yaml, SourceOrigin::Imported, false).expect("candidate");
+        let bindings = SourceBindings {
+            variables: vec![SourceBinding {
+                key: "DD_SITE".to_string(),
+                value: "datadoghq.com.attacker.example".to_string(),
+            }],
+            secrets: Vec::new(),
+        };
+        let Err(error) = validate_bindings(&candidate, &bindings, &BTreeMap::new()) else {
+            panic!("invalid site should be rejected");
+        };
+        let message = error.to_string();
+        assert!(message.contains("DD_SITE"));
+        assert!(message.contains("not allowed"));
     }
 
     #[test]

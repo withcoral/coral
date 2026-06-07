@@ -582,6 +582,7 @@ fn candidate_source_input_to_proto(input: ManifestInputSpec) -> SourceInputSpec 
     let input_body = match input.kind {
         ManifestInputKind::Variable => ProtoSourceInput::Variable(SourceVariableInput {
             default_value: input.default_value,
+            allowed_values: input.allowed_values,
         }),
         ManifestInputKind::Secret => ProtoSourceInput::Secret(SourceSecretInput {
             credential: input.credential.map(credential_to_proto),
@@ -718,12 +719,37 @@ mod tests {
     };
 
     #[test]
+    fn converts_variable_allowed_values_to_source_input_spec() {
+        let input = ManifestInputSpec {
+            key: "DD_SITE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "datadoghq.com".to_string(),
+            allowed_values: vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()],
+            hint: None,
+            credential: None,
+        };
+
+        let proto = candidate_source_input_to_proto(input);
+        let variable = match proto.input.expect("input") {
+            ProtoSourceInput::Variable(variable) => variable,
+            ProtoSourceInput::Secret(_) => panic!("expected variable input"),
+        };
+        assert_eq!(variable.default_value, "datadoghq.com");
+        assert_eq!(
+            variable.allowed_values,
+            vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()]
+        );
+    }
+
+    #[test]
     fn converts_credential_methods_to_source_input_spec() {
         let input = ManifestInputSpec {
             key: "API_TOKEN".to_string(),
             kind: ManifestInputKind::Secret,
             required: true,
             default_value: String::new(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: Some(ManifestCredentialSpec {
                 methods: vec![
@@ -809,6 +835,7 @@ mod tests {
             kind: ManifestInputKind::Secret,
             required: true,
             default_value: String::new(),
+            allowed_values: Vec::new(),
             hint: None,
             credential: None,
         };

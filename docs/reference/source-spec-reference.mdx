@@ -60,6 +60,8 @@ inputs:
   - key: API_BASE
     kind: variable
     default: https://api.example.com
+    allowed_values:
+      - https://api.example.com
     label: API base URL
     required: true
   - key: API_TOKEN
@@ -74,12 +76,15 @@ inputs:
 | `kind` | Yes | `variable` or `secret`. |
 | `required` | No | Defaults to `true`. |
 | `default` | No | Default value for variables. |
+| `allowed_values` | No | Exact allowed values for variables. Empty or omitted means unconstrained. Defaults must be included when this is set. |
 | `label` | No | Short prompt/display label. |
 | `hint` | No | Longer prompt guidance. |
 | `credential` | No | Credential retrieval methods for secret inputs. |
 
 Declare credentials as `kind: secret`. This includes API keys, bearer tokens,
 OAuth access tokens, passwords, private keys, and authorization header values.
+Use `allowed_values` for non-secret variables that influence credentialed
+provider hosts, regions, sites, or other constrained provider routing.
 
 Interface-level `inputs` are allowed and are merged with top-level inputs. A
 duplicate input key must have the same declaration everywhere it appears.
@@ -173,6 +178,8 @@ template tokens must reference declared `kind: variable` inputs, not secrets,
 and must not include inline defaults. Coral validates the rendered URL during
 materialization and invocation. HTTP remains limited to localhost or loopback
 development URLs.
+When a URL-template variable selects a credentialed provider host or site, the
+input should declare `allowed_values` for the exact supported provider values.
 
 OAuth credential-method endpoint URLs (`authorization_url`,
 `device_authorization_url`, and `token_url`) may use source-input templates, but

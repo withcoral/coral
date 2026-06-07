@@ -29,6 +29,8 @@ pub struct ManifestInputSpec {
     pub required: bool,
     /// The source-spec-declared default value, if any.
     pub default_value: String,
+    /// Exact non-secret values accepted for this input. Empty means unconstrained.
+    pub allowed_values: Vec<String>,
     /// Optional authored hint shown to the user when collecting the input.
     pub hint: Option<String>,
     /// Optional credential retrieval choices for a secret input.
@@ -451,6 +453,7 @@ mod tests {
                 kind: ManifestInputKind::Secret,
                 required: true,
                 default_value: String::new(),
+                allowed_values: Vec::new(),
                 hint: None,
                 credential: None,
             },
@@ -459,6 +462,7 @@ mod tests {
                 kind: ManifestInputKind::Variable,
                 required: false,
                 default_value: "https://api.example.com".to_string(),
+                allowed_values: Vec::new(),
                 hint: None,
                 credential: None,
             },
@@ -467,6 +471,7 @@ mod tests {
                 kind: ManifestInputKind::Variable,
                 required: true,
                 default_value: String::new(),
+                allowed_values: Vec::new(),
                 hint: None,
                 credential: None,
             },

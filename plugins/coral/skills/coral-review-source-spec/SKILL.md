@@ -44,6 +44,9 @@ generated downstream from provider snapshots and capabilities.
   authorization header values.
 - Non-secret configuration such as base URLs, tenant ids, regions, account ids,
   and organization slugs may be `kind: variable`.
+- Non-secret variables used in credentialed provider URL templates are
+  constrained with `allowed_values` when the provider has a finite set of valid
+  sites, regions, or hosts.
 - Input hints tell users what value is expected, where to get it, and the
   minimum scopes/permissions needed.
 - Secret inputs that offer interactive credential retrieval declare
@@ -51,12 +54,14 @@ generated downstream from provider snapshots and capabilities.
   provider endpoints, client id/secret metadata, and scopes needed by the
   provider.
 - Auth descriptors reference declared inputs and place values correctly:
-  `bearer_input`, `header_input`, or `none`.
+  `bearer_input`, `header_input`, `headers`, or `none`.
 - Descriptor/schema URLs rely on interface auth only when same-origin with the
   runtime OpenAPI `base_url` or GraphQL `endpoint`; cross-origin descriptors
   must be public, anonymous, or local files.
 - OAuth credential endpoint URLs use HTTPS except localhost or loopback HTTP
   development fixtures; endpoint templates must not render to non-loopback HTTP.
+- Provider URL templates may use `{{input.KEY}}` only for declared
+  `kind: variable` inputs, never secret inputs or inline defaults.
 - Secret values do not appear in examples, generated artifacts, README text,
   diagnostics, logs, or committed fixtures.
 

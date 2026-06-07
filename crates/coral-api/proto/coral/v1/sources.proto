@@ -92,6 +92,8 @@ message SourceInputSpec {
 message SourceVariableInput {
   // Optional manifest-declared default value.
   string default_value = 1;
+  // Optional exact allowed values for this non-secret input. Empty means unconstrained.
+  repeated string allowed_values = 2;
 }
 
 // Manifest-declared secret input metadata.

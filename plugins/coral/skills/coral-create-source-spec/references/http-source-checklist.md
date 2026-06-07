@@ -46,6 +46,8 @@ exports.
 
 - Keep credential storage separate from wire placement.
 - Declare non-secret configuration as `kind: variable`.
+- Use `allowed_values` for finite provider site, region, or tenant-host
+  variables that are interpolated into credentialed provider URLs.
 - Declare credentials as `kind: secret`.
 - Declare interactive retrieval with `credential.methods` on the secret input.
   OAuth methods should include flow, PKCE mode, redirect URI/port mode,
