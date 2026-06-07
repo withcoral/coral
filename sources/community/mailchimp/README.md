@@ -22,7 +22,7 @@ Or copy `manifest.yaml` into your workspace and pass that path to
 
 Requires a Mailchimp API key and your account's server prefix.
 
-1. In Mailchimp, go to **Account > Extras > API Keys > Create A Key**.
+1. In Mailchimp, go to **Profile > Extras > API keys > Create A Key**.
 2. Note the server prefix from the end of your API key (e.g. if the key ends
    in `-us6`, your prefix is `us6`).
 3. Run:
@@ -39,10 +39,10 @@ Or pass them interactively when prompted.
 
 Mailchimp API keys carry the full permissions of the account that created
 them — Mailchimp has no key-level scopes. All four tables (`lists`,
-`campaigns`, `members`, `reports`) are accessible on every paid Mailchimp
-plan. A 403 response means the account's plan or user role does not allow
-access to that endpoint, not that the key is invalid. Check your plan level
-and user permissions at **Account > Settings > Users**. See the
+`campaigns`, `members`, `reports`) still depend on the authorizing user's
+role and the account's plan. A 403 response means the account's plan or user
+role does not allow access to that endpoint, not that the key is invalid.
+Check the user's access level and the error response details. See the
 [API fundamentals](https://mailchimp.com/developer/marketing/docs/fundamentals/#connecting-to-the-api)
 and [error reference](https://mailchimp.com/developer/marketing/docs/errors/)
 for details.
@@ -54,11 +54,11 @@ for details.
 | `lists` | none | — | All audiences with subscriber counts and engagement averages |
 | `campaigns` | none | `status`, `list_id`, `since_send_time`, `before_send_time`, `sort_field`, `sort_dir` | Campaigns with status, subject, send time, and summary stats |
 | `members` | `list_id` | `status` | Subscribers in an audience with email, status, and signup times |
-| `reports` | none | `since_send_time`, `before_send_time`, `sort_field`, `sort_dir` | Per-campaign performance: opens, clicks, bounces, unsubscribes |
+| `reports` | none | `since_send_time`, `before_send_time` | Per-campaign performance: opens, clicks, bounces, unsubscribes |
 
 ## Example queries
 
-### List all audiences
+### Audiences ranked by subscriber count
 
 ```sql
 SELECT id, name, subscriber_count, open_rate, click_rate, date_created
@@ -66,6 +66,8 @@ FROM mailchimp.lists
 ORDER BY subscriber_count DESC
 LIMIT 20;
 ```
+
+This ranks the audiences within the table's 100-row default fetch limit.
 
 ### Most recent sent campaigns
 
@@ -92,10 +94,13 @@ ORDER BY timestamp_signup DESC
 LIMIT 50;
 ```
 
-### Top campaigns by open rate in a time window
+### Campaigns by open rate within a fetched time window
 
 Use `since_send_time` to bound the result set so `ORDER BY open_rate DESC`
-ranks across all campaigns in that window, not just the fetched page.
+ranks the fetched reports from a relevant time window. Mailchimp does not
+support server-side report sorting, and this table fetches at most 100 rows by
+default, so the result is not a global ranking when the window contains more
+than 100 reports.
 
 ```sql
 SELECT campaign_title, emails_sent, open_rate, click_rate,
@@ -122,7 +127,7 @@ LIMIT 20;
 
 ## Cross-source examples
 
-### Subscribers who also have open Linear issues
+### Subscribers who also have open Linear issues (requires `linear` source)
 
 ```sql
 SELECT m.email_address, m.full_name, li.title AS issue_title, li.state_type
@@ -134,7 +139,7 @@ WHERE m.list_id = 'YOUR_LIST_ID'
 LIMIT 30;
 ```
 
-### Salesforce contacts who are active subscribers
+### Salesforce contacts who are active subscribers (requires `salesforce` source)
 
 ```sql
 SELECT c.first_name, c.last_name, c.email, m.status AS mailchimp_status
@@ -195,7 +200,7 @@ coral source test mailchimp
 ```
 
 ```bash
-# Representative query — list all audiences (output sanitized)
+# Representative query — list audiences (output sanitized)
 coral sql "SELECT id, name, subscriber_count, open_rate FROM mailchimp.lists LIMIT 3"
 ```
 
@@ -222,7 +227,8 @@ coral sql "SELECT id, name, subscriber_count, open_rate FROM mailchimp.lists LIM
 - **API key expiry** — Mailchimp API keys do not expire by default but can be
   revoked. Re-add the source if you regenerate your key.
 - **Rate limits** — Mailchimp allows 10 simultaneous connections per account.
-  Always use `LIMIT` on large audiences.
+  Always use provider-side filters where available. Each table also has a
+  100-row default fetch limit; SQL `LIMIT` alone does not increase that cap.
 - Community sources are maintained separately from bundled core sources.
 
 ## Contributing

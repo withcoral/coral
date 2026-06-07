@@ -14,12 +14,12 @@ inputs:
     hint: |
       Your Mailchimp server prefix. It is the suffix of your API key after
       the last hyphen: if your key ends in `-us6`, enter `us6`.
-      Find it under Account > Extras > API Keys.
+      Find it under Profile > Extras > API keys.
   MAILCHIMP_API_KEY:
     kind: secret
     hint: |
       Your Mailchimp API key. Generate one at:
-      Account > Extras > API Keys > Create A Key.
+      Profile > Extras > API keys > Create A Key.
       API keys carry the full permissions of the account that created them —
       Mailchimp has no key-level scopes. The key must belong to a user whose
       plan allows reading lists, campaigns, members, and reports. A 403
@@ -498,18 +498,14 @@ tables:
       Bounces and abuse_reports help identify list health issues.
       Use since_send_time and before_send_time (ISO 8601,
       e.g. 2025-01-01T00:00:00Z) to push a time window to the server so
-      that ORDER BY on the result is meaningful across all matching rows.
-      Use sort_field (campaign_title or send_time) with sort_dir (ASC or DESC)
-      to have Mailchimp sort before Coral applies LIMIT.
+      local analysis stays within a relevant period. Mailchimp does not expose
+      server-side sort parameters for this endpoint, so ORDER BY applies only
+      to the rows fetched within the table's 100-row default fetch limit.
     fetch_limit_default: 100
     filters:
       - name: since_send_time
         required: false
       - name: before_send_time
-        required: false
-      - name: sort_field
-        required: false
-      - name: sort_dir
         required: false
     request:
       method: GET
@@ -521,12 +517,6 @@ tables:
         - name: before_send_time
           from: filter
           key: before_send_time
-        - name: sort_field
-          from: filter
-          key: sort_field
-        - name: sort_dir
-          from: filter
-          key: sort_dir
     response:
       rows_path:
         - reports
