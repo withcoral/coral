@@ -1100,6 +1100,7 @@ fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, 
         .with_prompt(prompt)
         .allow_empty(true)
         .interact_text()?;
+    let value = apply_prompt_default(input, value);
     let Some(value) = finalize_input_value(input, value, "source variable")? else {
         return Ok(None);
     };
@@ -1124,6 +1125,7 @@ fn prompt_secret(
         .with_prompt(prompt)
         .allow_empty_password(true)
         .interact()?;
+    let value = apply_prompt_default(input, value);
     let Some(value) = finalize_input_value(input, value, "source secret")? else {
         return Ok(None);
     };
@@ -1678,6 +1680,13 @@ fn print_prompt_hint(hint: Option<&str>) {
     }
 }
 
+fn apply_prompt_default(input: &ManifestInputSpec, value: String) -> String {
+    if value.is_empty() && !input.default_value.is_empty() {
+        return input.default_value.clone();
+    }
+    value
+}
+
 pub(crate) fn finalize_input_value(
     input: &ManifestInputSpec,
     value: String,
@@ -1717,10 +1726,10 @@ mod tests {
 
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
-        apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, render_redirect_prompt_key_echo, resolve_prompt_hint,
-        shell_quote_arg, source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
-        validation_follow_up,
+        apply_prompt_default, apply_redirect_prompt_key, collect_inputs_with_hint,
+        expected_oauth_redirect, finalize_input_value, render_redirect_prompt_key_echo,
+        resolve_prompt_hint, shell_quote_arg, source_name_arg, submit_oauth_redirect_url,
+        validate_oauth_redirect_url, validation_follow_up,
     };
 
     #[test]
@@ -1978,6 +1987,28 @@ mod tests {
             finalize_input_value(&input, String::new(), "source variable")
                 .expect("empty optional input should be omitted"),
             None
+        );
+    }
+
+    #[test]
+    fn empty_prompt_input_uses_authored_default() {
+        let input = ManifestInputSpec {
+            key: "DD_SITE".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "datadoghq.com".to_string(),
+            hint: None,
+            credential: None,
+        };
+        let value = apply_prompt_default(&input, String::new());
+        assert_eq!(
+            finalize_input_value(&input, value, "source variable")
+                .expect("prompt default should satisfy required input"),
+            Some("datadoghq.com".to_string())
+        );
+        assert_eq!(
+            apply_prompt_default(&input, "datadoghq.eu".to_string()),
+            "datadoghq.eu"
         );
     }
 
