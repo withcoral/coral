@@ -954,7 +954,7 @@ mod tests {
 
         let error = error.to_string();
         assert!(
-            error.contains("requires 'source-exports-v8'"),
+            error.contains("requires 'source-exports-v9'"),
             "unexpected error: {error}"
         );
         assert!(
@@ -965,7 +965,7 @@ mod tests {
             error.contains("Restart any MCP/client session"),
             "expected restart guidance in error: {error}"
         );
-        assert_eq!(SOURCE_EXPORTS_GENERATOR_VERSION, "source-exports-v8");
+        assert_eq!(SOURCE_EXPORTS_GENERATOR_VERSION, "source-exports-v9");
     }
 
     #[test]

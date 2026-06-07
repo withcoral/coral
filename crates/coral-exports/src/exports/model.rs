@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::package::SourceKey;
 
 /// Generator version for source export artifacts produced by this binary.
-pub const SOURCE_EXPORTS_GENERATOR_VERSION: &str = "source-exports-v8";
+pub const SOURCE_EXPORTS_GENERATOR_VERSION: &str = "source-exports-v9";
 
 /// Build context for one installed source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +252,17 @@ pub struct SqlBinding {
 pub enum SqlBindingKind {
     Table,
     Function,
+}
+
+impl SqlBindingKind {
+    /// Build the typed export ref for this SQL binding kind.
+    #[must_use]
+    pub fn export_ref(self, sql_reference: impl Into<String>) -> ExportRef {
+        match self {
+            Self::Table => ExportRef::sql_table(sql_reference),
+            Self::Function => ExportRef::sql_function(sql_reference),
+        }
+    }
 }
 
 /// Serializable SQL projection metadata.

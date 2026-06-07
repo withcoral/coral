@@ -61,17 +61,28 @@ pub fn validate_source_exports(
                     binding_ref.value
                 )));
             }
-            if let Binding::Typescript(binding) = binding {
-                if binding.ref_.kind != ExportKind::Typescript {
-                    return Err(ExportError::validation(
-                        "TypeScript binding must use a TypeScript export ref",
-                    ));
+            match binding {
+                Binding::Typescript(binding) => {
+                    if binding.ref_.kind != ExportKind::Typescript {
+                        return Err(ExportError::validation(
+                            "TypeScript binding must use a TypeScript export ref",
+                        ));
+                    }
+                    if !ts_paths.insert(binding.path.join(".")) {
+                        return Err(ExportError::validation(format!(
+                            "duplicate TypeScript binding path '{}'",
+                            binding.path.join(".")
+                        )));
+                    }
                 }
-                if !ts_paths.insert(binding.path.join(".")) {
-                    return Err(ExportError::validation(format!(
-                        "duplicate TypeScript binding path '{}'",
-                        binding.path.join(".")
-                    )));
+                Binding::Sql(binding) => {
+                    let expected_ref = binding.kind.export_ref(binding.sql_reference.as_str());
+                    if binding.ref_ != expected_ref {
+                        return Err(ExportError::validation(format!(
+                            "SQL binding '{}' must use matching export ref '{}'",
+                            binding.sql_reference, expected_ref.value
+                        )));
+                    }
                 }
             }
         }

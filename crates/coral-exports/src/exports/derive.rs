@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use coral_capabilities::{Diagnostic, DiagnosticSeverity, DiagnosticStage, SourceCapabilitySet};
 
 use super::model::{
-    Binding, BindingBuildContext, BindingContributor, CapabilityExport, ExportRef, SourceExports,
+    Binding, BindingBuildContext, BindingContributor, CapabilityExport, SourceExports,
     WorkspaceExportSource, WorkspaceExports,
 };
 use super::validate::{Result, validate_source_exports, validate_workspace_exports};
@@ -127,12 +127,12 @@ fn disambiguate_duplicate_sql_refs(exports: &mut SourceExports) {
             let table_base = format!("{}_{}", entry.interface_id, table);
             let mut candidate = format!("{schema}.{table_base}");
             let mut suffix = 2usize;
-            while used_refs.contains(&ExportRef::sql_table(candidate.clone()).value) {
+            while used_refs.contains(&binding.kind.export_ref(candidate.clone()).value) {
                 candidate = format!("{schema}.{table_base}_{suffix}");
                 suffix += 1;
             }
             binding.sql_reference = candidate;
-            binding.ref_ = ExportRef::sql_table(binding.sql_reference.clone());
+            binding.ref_ = binding.kind.export_ref(binding.sql_reference.clone());
             used_refs.insert(binding.ref_.value.clone());
         }
     }
@@ -151,7 +151,9 @@ mod tests {
     use super::*;
 
     #[derive(Debug)]
-    struct DuplicateSqlContributor;
+    struct DuplicateSqlContributor {
+        kind: SqlBindingKind,
+    }
 
     impl BindingContributor for DuplicateSqlContributor {
         fn name(&self) -> &'static str {
@@ -163,11 +165,12 @@ mod tests {
             _capability: &Capability,
             _ctx: &BindingBuildContext,
         ) -> crate::Result<BindingContribution> {
+            let sql_reference = "datadog.list_apikeys";
             Ok(BindingContribution {
                 bindings: vec![Binding::Sql(SqlBinding {
-                    kind: SqlBindingKind::Table,
-                    ref_: ExportRef::sql_table("datadog.list_apikeys"),
-                    sql_reference: "datadog.list_apikeys".to_string(),
+                    kind: self.kind,
+                    ref_: self.kind.export_ref(sql_reference),
+                    sql_reference: sql_reference.to_string(),
                     projection: SqlProjectionV1 {
                         row_shape: SqlRowShape::Collection,
                         columns: Vec::new(),
@@ -201,7 +204,9 @@ mod tests {
                 display_name: "Datadog".to_string(),
                 source_key: SourceKey("datadog".to_string()),
             },
-            &[&DuplicateSqlContributor],
+            &[&DuplicateSqlContributor {
+                kind: SqlBindingKind::Table,
+            }],
         )
         .expect("exports");
         let sql_refs = exports
@@ -218,6 +223,55 @@ mod tests {
             vec![
                 "datadog.rest_v1_list_apikeys",
                 "datadog.rest_v2_list_apikeys"
+            ]
+        );
+    }
+
+    #[test]
+    fn build_source_exports_preserves_duplicate_sql_function_refs() {
+        let source_id = SourceId("src_datadog".to_string());
+        let capabilities = SourceCapabilitySet::new(
+            source_id.clone(),
+            vec![
+                test_capability(source_id.clone(), "rest_v1"),
+                test_capability(source_id.clone(), "rest_v2"),
+            ],
+        );
+        let exports = build_source_exports(
+            &capabilities,
+            &BindingBuildContext {
+                source_id,
+                display_name: "Datadog".to_string(),
+                source_key: SourceKey("datadog".to_string()),
+            },
+            &[&DuplicateSqlContributor {
+                kind: SqlBindingKind::Function,
+            }],
+        )
+        .expect("exports");
+        let sql_bindings = exports
+            .entries
+            .iter()
+            .flat_map(|entry| &entry.bindings)
+            .filter_map(|binding| match binding {
+                Binding::Sql(binding) => Some(binding),
+                Binding::Typescript(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sql_bindings
+                .iter()
+                .map(|binding| (binding.kind, binding.ref_.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    SqlBindingKind::Function,
+                    "sql_function:datadog.rest_v1_list_apikeys"
+                ),
+                (
+                    SqlBindingKind::Function,
+                    "sql_function:datadog.rest_v2_list_apikeys"
+                ),
             ]
         );
     }
