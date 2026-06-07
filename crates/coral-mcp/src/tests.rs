@@ -41,10 +41,11 @@ fn write_fixture_manifest(root: &Path) -> PathBuf {
 name: local_messages
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: events
     description: Fixture events
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -57,6 +58,7 @@ tables:
         type: Utf8
   - name: messages
     description: Fixture messages
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -69,6 +71,7 @@ tables:
         type: Utf8
   - name: sessions
     description: Fixture sessions
+    format: jsonl
     source:
       location: file://{}/
       glob: "**/*.jsonl"
@@ -79,9 +82,6 @@ tables:
         type: Utf8
       - name: text
         type: Utf8
-    filters:
-      - name: sessionId
-        required: true
 "#,
         data_dir.display(),
         data_dir.display(),
@@ -673,9 +673,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let required_columns = required_columns
         .structured_content
         .expect("structured content");
-    assert_eq!(required_columns["total"], 1);
-    assert_eq!(required_columns["columns"][0]["column_name"], "sessionId");
-    assert_eq!(required_columns["columns"][0]["is_required_filter"], true);
+    assert_eq!(required_columns["total"], 0);
     assert_matches_output_schema(list_columns_tool, &required_columns);
 
     let filtered_columns = client
@@ -1077,6 +1075,34 @@ async fn mcp_tool_error_does_not_end_session() {
         "local_messages.events"
     );
     assert_eq!(catalog_after_error.is_error, Some(false));
+
+    session.shutdown().await;
+}
+
+/// End-to-end guard for the MCP JSON contract: a large `Int64` result must
+/// arrive in `structured_content` as a JSON string, not a JSON number, so
+/// clients that parse JSON via IEEE-754 doubles preserve the exact value.
+#[tokio::test]
+async fn mcp_sql_returns_large_int64_as_string() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT CAST(-8504475857937456387 AS BIGINT) AS user_id"
+            }))),
+        )
+        .await
+        .expect("sql");
+    assert_eq!(sql.is_error, Some(false));
+
+    let rows = &sql.structured_content.expect("structured content")["rows"];
+    assert_eq!(
+        rows[0]["user_id"],
+        Value::String("-8504475857937456387".to_string()),
+    );
 
     session.shutdown().await;
 }
