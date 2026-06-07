@@ -1623,7 +1623,7 @@ inputs:
   - key: WORKSPACE_ID
     kind: variable
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       env:

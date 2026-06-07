@@ -17,8 +17,8 @@ Coral can ship SourceSpec-backed sources with the CLI. This page lists active bu
 | Source | Interfaces | Description |
 | --- | --- | --- |
 | [datadog](#datadog) | `mcp, openapi` | Query Datadog monitors, dashboards, incidents, hosts, services, logs, metrics, traces, synthetics, users, and API metadata through Datadog REST APIs and the Datadog MCP Server. |
-| [github](#github) | `graphql, openapi` | Query GitHub repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata. |
-| [linear](#linear) | `graphql` | Query Linear issues, teams, users, projects, cycles, initiatives, comments, workflow states, and API metadata through Linear's GraphQL API. |
+| [github](#github) | `graphql, mcp, openapi` | Query GitHub repositories, issues, pull requests, workflows, organizations, users, teams, notifications, code, Actions, security alerts, and API metadata through GitHub REST, GraphQL, and MCP APIs. |
+| [linear](#linear) | `graphql, mcp` | Query Linear issues, teams, users, projects, cycles, initiatives, comments, workflow states, and API metadata through Linear's GraphQL API and MCP server. |
 | [slack](#slack) | `mcp` | Use Slack's hosted MCP server over Streamable HTTP to search Slack, read messages and canvases, manage users, and send messages as the authenticated user. |
 
 ## Supported data source types
@@ -58,13 +58,13 @@ Datadog site host for your org, such as datadoghq.com, datadoghq.eu, us3.datadog
 
 `GITHUB_TOKEN` (required)
 
-GitHub personal access token or OAuth bearer token used as the REST Authorization bearer token.
+GitHub personal access token or OAuth bearer token. Coral sends it as an Authorization bearer token for GitHub REST, GraphQL, and MCP calls.
 
 ### `linear`
 
 `LINEAR_API_KEY` (required)
 
-Personal Linear API key. Coral sends it as the Authorization header value.
+Personal Linear API key. Coral sends it as the raw Authorization header value for GraphQL and as an Authorization bearer token for Linear MCP calls.
 
 ### `slack`
 

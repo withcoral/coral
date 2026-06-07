@@ -1,12 +1,12 @@
 spec_version: 1
 kind: source
 name: github
-description: Query GitHub repositories, issues, pull requests, workflows, organizations, users, teams, and API metadata.
+description: Query GitHub repositories, issues, pull requests, workflows, organizations, users, teams, notifications, code, Actions, security alerts, and API metadata through GitHub REST, GraphQL, and MCP APIs.
 inputs:
   - key: GITHUB_TOKEN
     kind: secret
     label: GitHub token
-    hint: GitHub personal access token or OAuth bearer token used as the REST Authorization bearer token.
+    hint: GitHub personal access token or OAuth bearer token. Coral sends it as an Authorization bearer token for GitHub REST, GraphQL, and MCP calls.
     required: true
 interfaces:
   - id: rest
@@ -24,3 +24,12 @@ interfaces:
       key: GITHUB_TOKEN
     schema:
       kind: introspection_query
+  - id: mcp
+    type: mcp
+    server:
+      transport:
+        type: streamable_http
+        url: https://api.githubcopilot.com/mcp/
+      auth:
+        kind: bearer_input
+        key: GITHUB_TOKEN

@@ -151,7 +151,7 @@ Use an `mcp` interface for provider MCP tools:
 
 ```yaml
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:

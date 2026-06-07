@@ -1,12 +1,12 @@
 spec_version: 1
 kind: source
 name: linear
-description: Query Linear issues, teams, users, projects, cycles, initiatives, comments, workflow states, and API metadata through Linear's GraphQL API.
+description: Query Linear issues, teams, users, projects, cycles, initiatives, comments, workflow states, and API metadata through Linear's GraphQL API and MCP server.
 inputs:
   - key: LINEAR_API_KEY
     kind: secret
     label: Linear API key
-    hint: Personal Linear API key. Coral sends it as the Authorization header value.
+    hint: Personal Linear API key. Coral sends it as the raw Authorization header value for GraphQL and as an Authorization bearer token for Linear MCP calls.
     required: true
 interfaces:
   - id: graph
@@ -18,3 +18,12 @@ interfaces:
       key: LINEAR_API_KEY
     schema:
       kind: introspection_query
+  - id: mcp
+    type: mcp
+    server:
+      transport:
+        type: streamable_http
+        url: https://mcp.linear.app/mcp
+      auth:
+        kind: bearer_input
+        key: LINEAR_API_KEY

@@ -49,14 +49,6 @@ impl BindingContributor for TypescriptBindingContributor {
 }
 
 fn typescript_path(capability: &Capability, ctx: &BindingBuildContext) -> Vec<String> {
-    if capability.provider_origin.kind == ProviderOriginKind::McpTool
-        && capability.interface_id == "tools"
-    {
-        return vec![
-            identifier_segment(ctx.source_key.as_str()),
-            identifier_segment(&capability.provider_origin.provider_name),
-        ];
-    }
     let mut path = vec![
         identifier_segment(ctx.source_key.as_str()),
         identifier_segment(&capability.interface_id),
@@ -412,20 +404,20 @@ mod tests {
     }
 
     #[test]
-    fn typescript_contributor_flattens_generic_mcp_tools_interface() {
+    fn typescript_contributor_keeps_mcp_interface_segment() {
         let source_id = SourceId("src_slack".to_string());
         let capability = Capability::new(
             source_id.clone(),
-            "tools",
+            "mcp",
             "slack_search_public",
             ProviderOrigin {
                 kind: ProviderOriginKind::McpTool,
-                snapshot_ref: "interfaces/tools/provider-snapshot.yaml#/tools/slack_search_public"
+                snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/slack_search_public"
                     .to_string(),
                 provider_name: "slackSearchPublic".to_string(),
             },
             UpstreamBinding::McpTool(McpToolUpstreamBinding {
-                server_ref: "source/src_slack/interface/tools/server/default".to_string(),
+                server_ref: "source/src_slack/interface/mcp/server/default".to_string(),
                 tool_name: "slackSearchPublic".to_string(),
                 task_support: McpTaskSupport::Forbidden,
             }),
@@ -443,7 +435,7 @@ mod tests {
         let Some(Binding::Typescript(binding)) = contribution.bindings.first() else {
             panic!("expected TypeScript binding");
         };
-        assert_eq!(binding.path, ["slack", "slackSearchPublic"]);
-        assert_eq!(binding.ref_.value, "typescript:slack.slackSearchPublic");
+        assert_eq!(binding.path, ["slack", "mcp", "slackSearchPublic"]);
+        assert_eq!(binding.ref_.value, "typescript:slack.mcp.slackSearchPublic");
     }
 }

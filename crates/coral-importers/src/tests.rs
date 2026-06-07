@@ -29,7 +29,7 @@ interfaces:
     auth:
       kind: bearer_input
       key: token
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -128,7 +128,7 @@ spec_version: 1
 kind: source
 name: mcp_ref_output
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -138,7 +138,7 @@ interfaces:
     )
     .expect("parse source spec");
     let raw = BTreeMap::from([(
-        "tools".to_string(),
+        "mcp".to_string(),
         RawInterfaceInput::McpToolsList {
             value: json!({
                 "tools": [{
@@ -216,7 +216,7 @@ fn imports_vertical_capability_slice() {
             },
         );
     raw.insert(
-        "tools".to_string(),
+        "mcp".to_string(),
         RawInterfaceInput::McpToolsList {
             value: json!({
                 "protocol_version": "2025-06-18",

@@ -1488,7 +1488,7 @@ interfaces:
     auth:
       kind: bearer_input
       key: github_token
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -1555,7 +1555,7 @@ inputs:
         - type: source_config
           label: Paste user token
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -1789,7 +1789,7 @@ inputs:
       methods:
         - type: source_config
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -1819,7 +1819,7 @@ inputs:
       methods:
         - type: oauth
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -1895,7 +1895,7 @@ interfaces:
     endpoint: https://api.{{input.DD_SITE}}/graphql
     schema:
       kind: introspection_query
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -1917,7 +1917,7 @@ inputs:
   - key: API_TOKEN
     kind: secret
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -1940,7 +1940,7 @@ inputs:
   - key: HOST
     kind: variable
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -1960,7 +1960,7 @@ spec_version: 1
 kind: source
 name: bad
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:

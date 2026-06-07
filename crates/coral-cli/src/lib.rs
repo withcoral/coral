@@ -1185,7 +1185,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "coral",
             "invoke",
-            "tools.slack.slackSearchPublic",
+            "tools.slack.mcp.slackSearchPublic",
             "--json",
             r#"{"query":"from:me"}"#,
         ])
@@ -1195,7 +1195,7 @@ mod tests {
         let super::Command::Invoke(args) = cli.command else {
             panic!("expected invoke command");
         };
-        assert_eq!(args.reference, "tools.slack.slackSearchPublic");
+        assert_eq!(args.reference, "tools.slack.mcp.slackSearchPublic");
         assert_eq!(args.json, r#"{"query":"from:me"}"#);
     }
 

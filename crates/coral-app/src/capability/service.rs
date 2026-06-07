@@ -2539,16 +2539,16 @@ mod tests {
     fn mcp_capability() -> Capability {
         let mut capability = Capability::new(
             SourceId("src_github".to_string()),
-            "tools",
+            "mcp",
             "search_issues",
             ProviderOrigin {
                 kind: ProviderOriginKind::McpTool,
-                snapshot_ref: "interfaces/tools/provider-snapshot.yaml#/tools/search_issues"
+                snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/search_issues"
                     .to_string(),
                 provider_name: "search_issues".to_string(),
             },
             UpstreamBinding::McpTool(McpToolUpstreamBinding {
-                server_ref: "source/src_github/interface/tools/server/default".to_string(),
+                server_ref: "source/src_github/interface/mcp/server/default".to_string(),
                 tool_name: "search_issues".to_string(),
                 task_support: McpTaskSupport::Unknown,
             }),
@@ -3550,7 +3550,7 @@ spec_version: 1
 kind: source
 name: github
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -3564,7 +3564,7 @@ interfaces:
             capability,
             vec![
                 "github".to_string(),
-                "tools".to_string(),
+                "mcp".to_string(),
                 "searchIssues".to_string(),
             ],
             materialized_dir,
@@ -3572,7 +3572,7 @@ interfaces:
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.tools.searchIssues".to_string(),
+            binding_ref: "typescript:github.mcp.searchIssues".to_string(),
             binding_path: Vec::new(),
             args_json: "{}".to_string(),
         };
@@ -3604,7 +3604,7 @@ inputs:
   - key: WORKSPACE_ID
     kind: variable
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       env:
@@ -3622,7 +3622,7 @@ interfaces:
             capability,
             vec![
                 "github".to_string(),
-                "tools".to_string(),
+                "mcp".to_string(),
                 "searchIssues".to_string(),
             ],
             materialized_dir,
@@ -3636,7 +3636,7 @@ interfaces:
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.tools.searchIssues".to_string(),
+            binding_ref: "typescript:github.mcp.searchIssues".to_string(),
             binding_path: Vec::new(),
             args_json: "{}".to_string(),
         };

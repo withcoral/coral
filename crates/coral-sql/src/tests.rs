@@ -100,16 +100,15 @@ fn mcp_read_tool_without_output_schema_reports_sql_diagnostic() {
     let source_id = SourceId("src_demo".to_string());
     let mut capability = Capability::new(
         source_id.clone(),
-        "tools",
+        "mcp",
         "search_public",
         ProviderOrigin {
             kind: ProviderOriginKind::McpTool,
-            snapshot_ref: "interfaces/tools/provider-snapshot.yaml#/tools/search_public"
-                .to_string(),
+            snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/search_public".to_string(),
             provider_name: "search_public".to_string(),
         },
         UpstreamBinding::McpTool(McpToolUpstreamBinding {
-            server_ref: "source/src_demo/interface/tools/server/default".to_string(),
+            server_ref: "source/src_demo/interface/mcp/server/default".to_string(),
             tool_name: "search_public".to_string(),
             task_support: McpTaskSupport::Unknown,
         }),
@@ -146,16 +145,15 @@ fn mcp_read_tool_with_list_output_schema_gets_sql_binding() {
     let source_id = SourceId("src_demo".to_string());
     let mut capability = Capability::new(
         source_id.clone(),
-        "tools",
+        "mcp",
         "search_public",
         ProviderOrigin {
             kind: ProviderOriginKind::McpTool,
-            snapshot_ref: "interfaces/tools/provider-snapshot.yaml#/tools/search_public"
-                .to_string(),
+            snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/search_public".to_string(),
             provider_name: "search_public".to_string(),
         },
         UpstreamBinding::McpTool(McpToolUpstreamBinding {
-            server_ref: "source/src_demo/interface/tools/server/default".to_string(),
+            server_ref: "source/src_demo/interface/mcp/server/default".to_string(),
             tool_name: "search_public".to_string(),
             task_support: McpTaskSupport::Unknown,
         }),

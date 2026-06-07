@@ -56,7 +56,7 @@ inputs:
                                 - groups:read
                                 - mpim:read
 interfaces:
-    - id: tools
+    - id: mcp
       type: mcp
       server:
           transport:

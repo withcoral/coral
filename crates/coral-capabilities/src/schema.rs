@@ -1225,17 +1225,17 @@ mod tests {
     #[test]
     fn code_mode_input_schema_preserves_resolvable_local_refs() {
         let mut capability = Capability::new(
-            SourceId("src_tools".to_string()),
-            "tools",
+            SourceId("src_mcp".to_string()),
+            "mcp",
             "create_issue",
             ProviderOrigin {
                 kind: ProviderOriginKind::McpTool,
-                snapshot_ref: "interfaces/tools/provider-snapshot.yaml#/tools/create_issue"
+                snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/create_issue"
                     .to_string(),
                 provider_name: "create_issue".to_string(),
             },
             UpstreamBinding::McpTool(McpToolUpstreamBinding {
-                server_ref: "source/src_tools/interface/tools/server/default".to_string(),
+                server_ref: "source/src_mcp/interface/mcp/server/default".to_string(),
                 tool_name: "create_issue".to_string(),
                 task_support: McpTaskSupport::Unknown,
             }),
@@ -1282,17 +1282,16 @@ mod tests {
     #[test]
     fn code_mode_input_schema_does_not_rewrite_non_rest_path_properties() {
         let mut capability = Capability::new(
-            SourceId("src_tools".to_string()),
-            "tools",
+            SourceId("src_mcp".to_string()),
+            "mcp",
             "walk_path",
             ProviderOrigin {
                 kind: ProviderOriginKind::McpTool,
-                snapshot_ref: "interfaces/tools/provider-snapshot.yaml#/tools/walk_path"
-                    .to_string(),
+                snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/walk_path".to_string(),
                 provider_name: "walk_path".to_string(),
             },
             UpstreamBinding::McpTool(McpToolUpstreamBinding {
-                server_ref: "source/src_tools/interface/tools/server/default".to_string(),
+                server_ref: "source/src_mcp/interface/mcp/server/default".to_string(),
                 tool_name: "walk_path".to_string(),
                 task_support: McpTaskSupport::Unknown,
             }),

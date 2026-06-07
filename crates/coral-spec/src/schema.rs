@@ -87,7 +87,7 @@ interfaces:
     auth:
       kind: bearer_input
       key: token
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
@@ -142,7 +142,7 @@ inputs:
                   - search:read.public
         - type: source_config
 interfaces:
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:

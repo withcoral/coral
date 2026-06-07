@@ -42,7 +42,7 @@ interfaces:
           key: DD_API_KEY
         - name: DD-APPLICATION-KEY
           key: DD_APPLICATION_KEY
-  - id: tools
+  - id: mcp
     type: mcp
     server:
       transport:
